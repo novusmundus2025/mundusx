@@ -5,7 +5,7 @@ This is the current command surface for the Rust CLI.
 ## Core Commands
 
 - `opengpu init` - create the local config and device identity
-- `opengpu start` - create local state if needed, connect, and print startup status
+- `opengpu start` - create local state if needed, connect, and print a startup summary
 - `opengpu login` - store local auth state
 - `opengpu logout` - clear local auth state
 - `opengpu connect` - mark the machine as ready to contribute

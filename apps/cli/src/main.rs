@@ -5,8 +5,10 @@ mod types;
 
 use clap::{Parser, Subcommand};
 use serde::Serialize;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
 use types::{Backend, JobRequest};
 
 use config::{
@@ -158,6 +160,20 @@ fn print_nodes_table() {
     }
 }
 
+fn print_startup_summary(config: &Config, path: &std::path::Path) {
+    let cores = thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+
+    println!("startup ready for {}", config.device_id);
+    println!("platform: {}-{}", env::consts::OS, env::consts::ARCH);
+    println!("cpuCores: {}", cores);
+    println!("backendPreference: {}", config.backend_preference);
+    println!("connected: yes");
+    println!("paused: no");
+    println!("configPath: {}", path.display());
+}
+
 fn print_doctor() -> Result<(), String> {
     let primary_dir = config_dir();
     let fallback_dir = PathBuf::from(".opengpu");
@@ -252,10 +268,7 @@ fn main() {
 
             match save_config(&config) {
                 Ok(path) => {
-                    println!("startup ready for {}", config.device_id);
-                    println!("connected: yes");
-                    println!("paused: no");
-                    println!("backendPreference: {}", config.backend_preference);
+                    print_startup_summary(&config, &path);
                     println!("config saved at {}", path.display());
                 }
                 Err(error) => {

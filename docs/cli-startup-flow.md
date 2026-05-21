@@ -37,6 +37,30 @@ the CLI:
 2. Optionally stores a profile name.
 3. Keeps the machine ready for future control-plane calls.
 
+## Start
+
+When the user runs:
+
+```bash
+opengpu start
+```
+
+the CLI:
+
+1. Creates local config if needed.
+2. Marks the machine connected.
+3. Clears the paused state.
+4. Optionally sets `--m` or `--cuda`.
+5. Prints a startup summary with:
+   - device ID
+   - platform
+   - CPU core count
+   - backend preference
+   - connection state
+   - pause state
+   - config path
+6. Saves the updated config.
+
 ## Connect
 
 When the user runs:
