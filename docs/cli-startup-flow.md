@@ -95,6 +95,20 @@ the CLI:
 2. Clears the paused state.
 3. Prepares the machine to participate in routing once the control plane is online.
 
+## Exit
+
+When the user runs:
+
+```bash
+opengpu exit
+```
+
+the CLI:
+
+1. Marks the local config as disconnected.
+2. Pauses contribution.
+3. Leaves the identity and config in place for the next `start`.
+
 ## Status
 
 When the user runs:

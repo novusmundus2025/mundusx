@@ -10,6 +10,7 @@ This is the current command surface for the Rust CLI.
 - `opengpu logout` - clear local auth state
 - `opengpu connect` - mark the machine as ready
 - `opengpu disconnect` - mark the machine as disconnected
+- `opengpu exit` - leave local contribution mode and pause the machine
 - `opengpu status` - show local state and routing decision
 - `opengpu nodes` - show the current sample node inventory
 - `opengpu pause` - pause contribution

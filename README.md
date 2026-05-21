@@ -60,6 +60,7 @@ opengpu logout
 opengpu init
 opengpu status
 opengpu nodes
+opengpu exit
 opengpu pause
 opengpu resume
 opengpu doctor

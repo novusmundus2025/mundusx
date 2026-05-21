@@ -15,6 +15,7 @@ opengpu start
 opengpu login
 opengpu status
 opengpu nodes
+opengpu exit
 opengpu doctor
 opengpu config show
 opengpu config set backend cuda

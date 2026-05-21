@@ -61,6 +61,7 @@ enum Commands {
     Logout,
     Connect,
     Disconnect,
+    Exit,
     Status {
         #[arg(long)]
         json: bool,
@@ -575,6 +576,29 @@ fn main() {
                     config.device_id,
                     path.display()
                 ),
+                Err(error) => {
+                    eprintln!("failed to save config: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Exit => {
+            if !config_exists() {
+                eprintln!("run \"opengpu init\" first");
+                std::process::exit(1);
+            }
+
+            let mut config = current_config_or_default();
+            config.connected = false;
+            config.paused = true;
+
+            match save_config(&config) {
+                Ok(path) => {
+                    println!("exited local contribution mode");
+                    println!("connected: no");
+                    println!("paused: yes");
+                    println!("config saved at {}", path.display());
+                }
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
                     std::process::exit(1);
