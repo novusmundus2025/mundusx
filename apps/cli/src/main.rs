@@ -265,7 +265,12 @@ fn detect_backend() -> Backend {
     Backend::Auto
 }
 
-fn prompt_contribution_percent(default_percent: u8) -> u8 {
+enum PromptOutcome {
+    Selected(u8),
+    Cancelled,
+}
+
+fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
     const OPTIONS: &[(u8, &str)] = &[
         (20, "light"),
         (30, "balanced"),
@@ -281,11 +286,11 @@ fn prompt_contribution_percent(default_percent: u8) -> u8 {
             const OPTIONS: [u8; 5] = [20, 30, 50, 75, 90];
             if let Ok(value) = choice.parse::<usize>() {
                 if (1..=OPTIONS.len()).contains(&value) {
-                    return OPTIONS[value - 1];
+                    return PromptOutcome::Selected(OPTIONS[value - 1]);
                 }
             }
         }
-        return default_percent;
+        return PromptOutcome::Selected(default_percent);
     }
 
     let mut selected = OPTIONS
@@ -294,7 +299,7 @@ fn prompt_contribution_percent(default_percent: u8) -> u8 {
         .unwrap_or(1);
 
     if enable_raw_mode().is_err() {
-        return default_percent;
+        return PromptOutcome::Selected(default_percent);
     }
 
     let render_menu = |selected: usize| {
@@ -318,8 +323,7 @@ fn prompt_contribution_percent(default_percent: u8) -> u8 {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let _ = disable_raw_mode();
                     println!();
-                    eprintln!("cancelled");
-                    std::process::exit(130);
+                    return PromptOutcome::Cancelled;
                 }
                 KeyCode::Up => {
                     selected = selected.saturating_sub(1);
@@ -341,7 +345,10 @@ fn prompt_contribution_percent(default_percent: u8) -> u8 {
     };
 
     let _ = disable_raw_mode();
-    result.unwrap_or(default_percent)
+    match result {
+        Some(value) => PromptOutcome::Selected(value),
+        None => PromptOutcome::Selected(default_percent),
+    }
 }
 
 fn print_doctor() -> Result<(), String> {
@@ -489,7 +496,20 @@ fn main() {
             if let Some(percent) = percent {
                 config.contribution_percent = percent;
             } else if config.contribution_percent == 0 {
-                config.contribution_percent = prompt_contribution_percent(30);
+                match prompt_contribution_percent(30) {
+                    PromptOutcome::Selected(percent) => {
+                        config.contribution_percent = percent;
+                    }
+                    PromptOutcome::Cancelled => {
+                        config.connected = false;
+                        config.paused = true;
+                        if let Err(error) = save_config(&config) {
+                            eprintln!("failed to save config after cancel: {error}");
+                        }
+                        eprintln!("cancelled");
+                        std::process::exit(130);
+                    }
+                }
             }
 
             match save_config(&config) {
