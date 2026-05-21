@@ -16,12 +16,14 @@ the CLI:
 
 1. Creates a local config file.
 2. Generates a device ID.
-3. Sets default values for:
+3. Reuses an existing local keypair if present, or generates one on first run.
+4. Sets default values for:
    - connection state
    - pause state
    - backend preference
    - control-plane URL
-4. Stores the config in the preferred config directory, or falls back to a local `.opengpu/config.json` file if needed.
+5. Stores the config in the preferred config directory, or falls back to a local `.opengpu/config.json` file if needed.
+6. If `OPENGPU_HOME` is set, that path wins over any repo-local fallback.
 
 ## Login
 
@@ -53,6 +55,7 @@ the CLI:
 4. Optionally sets `--m` or `--cuda`.
 5. Prints a startup summary with:
    - device ID
+   - public key fingerprint
    - platform
    - CPU core count
    - backend preference
@@ -64,6 +67,7 @@ the CLI:
 7. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
    - `CUDA` means a GPU-utilization budget on NVIDIA nodes
+8. Keeps the reused device identity attached to the local config.
 
 ## Connect
 

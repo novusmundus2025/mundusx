@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub version: u32,
     pub device_id: String,
+    pub public_key_fingerprint: Option<String>,
     pub profile_name: Option<String>,
     pub auth_token: Option<String>,
     pub connected: bool,
@@ -21,6 +22,7 @@ impl Default for Config {
         Self {
             version: 1,
             device_id: format!("node-{}", uuid::Uuid::new_v4().simple()),
+            public_key_fingerprint: None,
             profile_name: None,
             auth_token: None,
             connected: false,
@@ -48,6 +50,10 @@ pub fn local_config_path() -> PathBuf {
 }
 
 pub fn resolved_config_path() -> PathBuf {
+    if std::env::var_os("OPENGPU_HOME").is_some() {
+        return config_path();
+    }
+
     let home = config_path();
     if home.exists() {
         return home;

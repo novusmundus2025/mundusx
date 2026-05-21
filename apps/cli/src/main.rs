@@ -1,4 +1,5 @@
 mod config;
+mod identity;
 mod nodes;
 mod routing;
 mod types;
@@ -14,6 +15,10 @@ use types::{Backend, JobRequest};
 use config::{
     config_dir, config_exists, config_path, load_config, remove_config_files, resolved_config_path,
     save_config, Config,
+};
+use identity::{
+    device_id_for_identity, ensure_identity, load_identity, load_or_create_identity,
+    resolved_identity_path,
 };
 use nodes::{live_nodes, sample_nodes};
 use routing::select_best_node;
@@ -118,6 +123,27 @@ fn current_config_or_default() -> Config {
     load_config().ok().flatten().unwrap_or_default()
 }
 
+fn display_public_key_fingerprint(config: &Config) -> String {
+    config
+        .public_key_fingerprint
+        .clone()
+        .or_else(|| {
+            load_identity()
+                .ok()
+                .flatten()
+                .map(|identity| identity.fingerprint)
+        })
+        .unwrap_or_else(|| "unset".to_string())
+}
+
+fn config_from_identity(identity: &identity::DeviceIdentity) -> Config {
+    Config {
+        device_id: device_id_for_identity(identity),
+        public_key_fingerprint: Some(identity.fingerprint.clone()),
+        ..Config::default()
+    }
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     serde_json::to_string_pretty(value)
         .map(|output| {
@@ -129,6 +155,7 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
 fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
+    println!("publicKeyFingerprint: {}", display_public_key_fingerprint(config));
     println!(
         "profileName: {}",
         config.profile_name.as_deref().unwrap_or("unset")
@@ -172,6 +199,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         .unwrap_or(1);
 
     println!("startup ready for {}", config.device_id);
+    println!("publicKeyFingerprint: {}", display_public_key_fingerprint(config));
     println!("platform: {}-{}", env::consts::OS, env::consts::ARCH);
     println!("cpuCores: {}", cores);
     println!("backendPreference: {}", config.backend_preference);
@@ -204,6 +232,7 @@ fn print_doctor() -> Result<(), String> {
     }
 
     println!("configDir: {}", primary_dir.display());
+    println!("identityPath: {}", resolved_identity_path().display());
     println!("effectiveConfigPath: {}", resolved_config_path().display());
     println!(
         "fallbackConfigPath: {}",
@@ -217,6 +246,14 @@ fn print_doctor() -> Result<(), String> {
         "fallbackWritable: {}",
         if fallback_writable { "yes" } else { "no" }
     );
+    match identity::load_identity() {
+        Ok(Some(identity)) => {
+            println!("deviceIdentity: reused");
+            println!("publicKeyFingerprint: {}", identity.fingerprint);
+        }
+        Ok(None) => println!("deviceIdentity: missing"),
+        Err(error) => println!("deviceIdentityError: {error}"),
+    }
     println!("installer: https://novusx.ai/install");
     println!("releaseChannel: cli-v*");
     println!("binaryName: opengpu");
@@ -240,14 +277,34 @@ fn main() {
 
     match cli.command {
         Commands::Init { force } => {
+            let (identity, created, identity_path) = match ensure_identity() {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("failed to initialize identity: {error}");
+                    std::process::exit(1);
+                }
+            };
+
             if config_exists() && !force {
+                if created {
+                    println!("generated device identity at {}", identity_path.display());
+                } else {
+                    println!("reused device identity at {}", identity_path.display());
+                }
                 println!("config already exists at {}", config_path().display());
                 return;
             }
 
-            let config = Config::default();
+            let config = config_from_identity(&identity);
             match save_config(&config) {
-                Ok(path) => println!("initialized {}", path.display()),
+                Ok(path) => {
+                    if created {
+                        println!("generated device identity at {}", identity_path.display());
+                    } else {
+                        println!("reused device identity at {}", identity_path.display());
+                    }
+                    println!("initialized {}", path.display());
+                }
                 Err(error) => {
                     eprintln!("failed to initialize config: {error}");
                     std::process::exit(1);
@@ -255,10 +312,25 @@ fn main() {
             }
         }
         Commands::Start { m, cuda, percent } => {
+            let (identity, created, identity_path) = match ensure_identity() {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("failed to prepare device identity: {error}");
+                    std::process::exit(1);
+                }
+            };
+
             if !config_exists() {
-                let config = Config::default();
+                let config = config_from_identity(&identity);
                 match save_config(&config) {
-                    Ok(path) => println!("initialized {}", path.display()),
+                    Ok(path) => {
+                        if created {
+                            println!("generated device identity at {}", identity_path.display());
+                        } else {
+                            println!("reused device identity at {}", identity_path.display());
+                        }
+                        println!("initialized {}", path.display());
+                    }
                     Err(error) => {
                         eprintln!("failed to initialize config: {error}");
                         std::process::exit(1);
@@ -267,6 +339,8 @@ fn main() {
             }
 
             let mut config = current_config_or_default();
+            config.device_id = device_id_for_identity(&identity);
+            config.public_key_fingerprint = Some(identity.fingerprint.clone());
             config.connected = true;
             config.paused = false;
 
@@ -340,6 +414,10 @@ fn main() {
             }
 
             let mut config = current_config_or_default();
+            if let Ok((identity, _, _)) = load_or_create_identity() {
+                config.device_id = device_id_for_identity(&identity);
+                config.public_key_fingerprint = Some(identity.fingerprint);
+            }
             config.connected = true;
             config.paused = false;
 
@@ -429,6 +507,10 @@ fn main() {
             }
 
             let mut config = current_config_or_default();
+            if let Ok((identity, _, _)) = load_or_create_identity() {
+                config.device_id = device_id_for_identity(&identity);
+                config.public_key_fingerprint = Some(identity.fingerprint);
+            }
             config.backend_preference = match (m, cuda) {
                 (true, false) => Backend::M,
                 (false, true) => Backend::Cuda,
