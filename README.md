@@ -28,7 +28,7 @@ Rust workspace:
 Users should install the CLI with a single command and never need Rust locally:
 
 ```bash
-curl -fsSL https://opengpu.ai/install | bash
+curl -fsSL https://novusx.ai/install | bash
 ```
 
 That installer will download the prebuilt binary for the user's operating system and CPU architecture.
@@ -51,17 +51,24 @@ Route each request to the most suitable live node, rather than combining partial
 
 ## First Commands
 
-The CLI will eventually support:
+The CLI now supports local setup, node inspection, and preference management:
 
 ```bash
 opengpu init
 opengpu login
+opengpu logout
 opengpu connect
+opengpu disconnect
 opengpu status
+opengpu nodes
 opengpu contribute --m
 opengpu contribute --cuda
 opengpu pause
 opengpu resume
+opengpu doctor
+opengpu config path
+opengpu config show
+opengpu config reset --yes
 opengpu logs
 opengpu update
 ```

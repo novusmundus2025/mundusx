@@ -41,4 +41,3 @@ mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
 
 echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
 echo "Make sure ${INSTALL_DIR} is on your PATH."
-

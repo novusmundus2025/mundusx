@@ -1,12 +1,25 @@
+mod config;
+mod nodes;
+mod routing;
+mod types;
+
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use types::{Backend, JobRequest};
 
-mod routing;
+use config::{config_dir, config_exists, config_path, load_config, remove_config_files, resolved_config_path, save_config, Config};
+use nodes::{live_nodes, sample_nodes};
+use routing::select_best_node;
 
 #[derive(Parser, Debug)]
-#[command(name = "opengpu", version, about = "OpenGPU CLI", arg_required_else_help = true)]
+#[command(
+    name = "opengpu",
+    version,
+    about = "OpenGPU CLI",
+    arg_required_else_help = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -14,10 +27,27 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Init,
-    Login,
+    Init {
+        #[arg(long)]
+        force: bool,
+    },
+    Login {
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    Logout,
     Connect,
-    Status,
+    Disconnect,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    Nodes {
+        #[arg(long)]
+        json: bool,
+    },
     Contribute {
         #[arg(long)]
         m: bool,
@@ -26,188 +56,129 @@ enum Commands {
     },
     Pause,
     Resume,
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+    Doctor,
     Logs,
     Update,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct Config {
-    version: u32,
-    device_id: String,
-    backend_preference: Option<String>,
-    connected: bool,
-    paused: bool,
-    control_plane_url: String,
+#[derive(Subcommand, Debug)]
+enum ConfigCommands {
+    Path,
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    Reset {
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
-fn config_dir() -> PathBuf {
-    std::env::var_os("OPENGPU_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|dir| dir.join(".opengpu")))
-        .unwrap_or_else(|| PathBuf::from(".opengpu"))
-}
-
-fn config_path() -> PathBuf {
-    config_dir().join("config.json")
-}
-
-fn local_config_path() -> PathBuf {
-    PathBuf::from(".opengpu").join("config.json")
-}
-
-fn resolve_config_path() -> PathBuf {
-    let home = config_path();
-    if home.exists() {
-        return home;
-    }
-
-    let local = local_config_path();
-    if local.exists() {
-        return local;
-    }
-
-    home
-}
-
-fn default_config() -> Config {
-    Config {
-        version: 1,
-        device_id: format!("node-{}", uuid::Uuid::new_v4().simple()),
-        backend_preference: None,
-        connected: false,
-        paused: false,
-        control_plane_url: "https://api.opengpu.ai".to_string(),
+fn default_job_request(preferred_backend: Backend) -> JobRequest {
+    JobRequest {
+        request_id: format!("local-{}", uuid::Uuid::new_v4().simple()),
+        prompt: "status".to_string(),
+        preferred_backend,
     }
 }
 
-fn read_config() -> Option<Config> {
-    let path = resolve_config_path();
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+fn current_config_or_default() -> Config {
+    load_config()
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
-fn write_config(config: &Config) -> std::io::Result<PathBuf> {
-    let path = config_path();
-    let data = serde_json::to_string_pretty(config).expect("config serialization");
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    match fs::write(&path, format!("{data}\n")) {
-        Ok(()) => Ok(path),
-        Err(_) => {
-            let fallback = local_config_path();
-            if let Some(parent) = fallback.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&fallback, format!("{data}\n"))?;
-            Ok(fallback)
-        }
-    }
+fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
+    serde_json::to_string_pretty(value)
+        .map(|output| {
+            println!("{output}");
+        })
+        .map_err(|error| error.to_string())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NodeStatus {
-    node_id: String,
-    backend: String,
-    status: String,
-    available_memory_mb: u32,
-    available_gpu_percent: u32,
-    label: String,
-}
-
-fn sample_nodes() -> Vec<NodeStatus> {
-    vec![
-        NodeStatus {
-            node_id: "m-001".to_string(),
-            backend: "m".to_string(),
-            status: "idle".to_string(),
-            available_memory_mb: 24_576,
-            available_gpu_percent: 72,
-            label: "MacBook M-series".to_string(),
-        },
-        NodeStatus {
-            node_id: "cuda-001".to_string(),
-            backend: "cuda".to_string(),
-            status: "online".to_string(),
-            available_memory_mb: 49_152,
-            available_gpu_percent: 84,
-            label: "CUDA Worker".to_string(),
-        },
-        NodeStatus {
-            node_id: "cuda-002".to_string(),
-            backend: "cuda".to_string(),
-            status: "offline".to_string(),
-            available_memory_mb: 32_768,
-            available_gpu_percent: 0,
-            label: "Dead CUDA Worker".to_string(),
-        },
-    ]
-}
-
-fn choose_best_node(preference: Option<&str>) -> Option<NodeStatus> {
-    let mut live_nodes: Vec<NodeStatus> = sample_nodes()
-        .into_iter()
-        .filter(|node| node.status != "offline")
-        .collect();
-
-    if let Some(preferred) = preference {
-        let preferred_nodes: Vec<NodeStatus> = live_nodes
-            .iter()
-            .cloned()
-            .filter(|node| node.backend == preferred)
-            .collect();
-
-        if !preferred_nodes.is_empty() {
-            live_nodes = preferred_nodes;
-        }
-    }
-
-    live_nodes.into_iter().max_by(|a, b| {
-        let a_score = routing::score_node(a);
-        let b_score = routing::score_node(b);
-        a_score.partial_cmp(&b_score).unwrap_or(std::cmp::Ordering::Equal)
-    })
-}
-
-fn print_status(config: &Config) {
-    let selected = choose_best_node(config.backend_preference.as_deref());
-
+fn print_config_summary(config: &Config, path: &std::path::Path) {
+    println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
+    println!("profileName: {}", config.profile_name.as_deref().unwrap_or("unset"));
+    println!("authenticated: {}", if config.auth_token.is_some() { "yes" } else { "no" });
     println!("connected: {}", if config.connected { "yes" } else { "no" });
     println!("paused: {}", if config.paused { "yes" } else { "no" });
-    println!(
-        "backendPreference: {}",
-        config.backend_preference.as_deref().unwrap_or("auto")
-    );
+    println!("backendPreference: {}", config.backend_preference);
     println!("controlPlaneUrl: {}", config.control_plane_url);
-    println!(
-        "bestLiveNode: {}",
-        selected
-            .map(|node| format!("{} ({})", node.node_id, node.backend))
-            .unwrap_or_else(|| "none".to_string())
-    );
+}
+
+fn print_nodes_table() {
+    let nodes = sample_nodes();
+    let live_count = live_nodes().len();
+    println!("liveNodes: {live_count}");
+    println!("totalNodes: {}", nodes.len());
+    for node in nodes {
+        println!(
+            "- {} | {} | {} | {} MB | {}% | {}",
+            node.node_id,
+            node.backend,
+            node.state,
+            node.available_memory_mb,
+            node.available_gpu_percent,
+            node.label
+        );
+    }
+}
+
+fn print_doctor() -> Result<(), String> {
+    let primary_dir = config_dir();
+    let fallback_dir = PathBuf::from(".opengpu");
+    let primary_writable = probe_directory(&primary_dir);
+    let fallback_writable = probe_directory(&fallback_dir);
+
+    if !primary_writable && !fallback_writable {
+        return Err(format!(
+            "cannot write to {} or {}",
+            primary_dir.display(),
+            fallback_dir.display()
+        ));
+    }
+
+    println!("configDir: {}", primary_dir.display());
+    println!("effectiveConfigPath: {}", resolved_config_path().display());
+    println!("fallbackConfigPath: {}", config::local_config_path().display());
+    println!("primaryWritable: {}", if primary_writable { "yes" } else { "no" });
+    println!("fallbackWritable: {}", if fallback_writable { "yes" } else { "no" });
+    println!("installer: https://novusx.ai/install");
+    println!("releaseChannel: cli-v*");
+    println!("binaryName: opengpu");
+    println!("cliVersion: {}", env!("CARGO_PKG_VERSION"));
+    Ok(())
+}
+
+fn probe_directory(dir: &std::path::Path) -> bool {
+    if fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+
+    let probe = dir.join(".write-test");
+    let writable = fs::write(&probe, "ok").is_ok();
+    let _ = fs::remove_file(&probe);
+    writable
 }
 
 fn main() {
     let cli = Cli::parse();
-    let config_path = resolve_config_path();
-    let config_exists = config_path.exists();
-    let mut config = if config_exists {
-        read_config().unwrap_or_else(default_config)
-    } else {
-        default_config()
-    };
 
     match cli.command {
-        Commands::Init => {
-            if config_exists {
-                println!("config already exists at {}", config_path.display());
+        Commands::Init { force } => {
+            if config_exists() && !force {
+                println!("config already exists at {}", config_path().display());
                 return;
             }
 
-            match write_config(&config) {
+            let config = Config::default();
+            match save_config(&config) {
                 Ok(path) => println!("initialized {}", path.display()),
                 Err(error) => {
                     eprintln!("failed to initialize config: {error}");
@@ -215,10 +186,29 @@ fn main() {
                 }
             }
         }
-        Commands::Login => {
+        Commands::Login { token, name } => {
+            let mut config = current_config_or_default();
+            config.profile_name = name.or(config.profile_name);
+            config.auth_token = Some(token.unwrap_or_else(|| format!("dev-{}", uuid::Uuid::new_v4().simple())));
+
+            match save_config(&config) {
+                Ok(path) => {
+                    println!("authenticated profile {}", config.profile_name.as_deref().unwrap_or("local-user"));
+                    println!("config saved at {}", path.display());
+                }
+                Err(error) => {
+                    eprintln!("failed to save config: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Logout => {
+            let mut config = current_config_or_default();
+            config.auth_token = None;
             config.connected = false;
-            match write_config(&config) {
-                Ok(path) => println!("login flow not wired yet, but config is ready at {}", path.display()),
+
+            match save_config(&config) {
+                Ok(path) => println!("logged out and saved config at {}", path.display()),
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
                     std::process::exit(1);
@@ -226,78 +216,187 @@ fn main() {
             }
         }
         Commands::Connect => {
-            if !config_exists {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
-            }
-            config.connected = true;
-            config.paused = false;
-            if let Err(error) = write_config(&config) {
-                eprintln!("failed to save config: {error}");
-                std::process::exit(1);
-            }
-            println!("connected device {}", config.device_id);
-        }
-        Commands::Status => {
-            if !config_exists {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
-            }
-            print_status(&config);
-        }
-        Commands::Contribute { m, cuda } => {
-            if !config_exists {
+            if !config_exists() {
                 eprintln!("run \"opengpu init\" first");
                 std::process::exit(1);
             }
 
-            match (m, cuda) {
-                (true, false) => config.backend_preference = Some("m".to_string()),
-                (false, true) => config.backend_preference = Some("cuda".to_string()),
-                _ => {
-                    eprintln!("choose a backend with --m or --cuda");
+            let mut config = current_config_or_default();
+            config.connected = true;
+            config.paused = false;
+
+            match save_config(&config) {
+                Ok(path) => println!("connected device {} (config: {})", config.device_id, path.display()),
+                Err(error) => {
+                    eprintln!("failed to save config: {error}");
                     std::process::exit(1);
                 }
             }
-
-            if let Err(error) = write_config(&config) {
-                eprintln!("failed to save config: {error}");
-                std::process::exit(1);
-            }
-            println!(
-                "set backend preference to {}",
-                config.backend_preference.as_deref().unwrap_or("auto")
-            );
         }
-        Commands::Pause => {
-            if !config_exists {
+        Commands::Disconnect => {
+            if !config_exists() {
                 eprintln!("run \"opengpu init\" first");
                 std::process::exit(1);
             }
+
+            let mut config = current_config_or_default();
+            config.connected = false;
+
+            match save_config(&config) {
+                Ok(path) => println!("disconnected device {} (config: {})", config.device_id, path.display()),
+                Err(error) => {
+                    eprintln!("failed to save config: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Status { json } => {
+            if !config_exists() {
+                eprintln!("run \"opengpu init\" first");
+                std::process::exit(1);
+            }
+
+            let config = current_config_or_default();
+            let nodes = live_nodes();
+            let request = default_job_request(config.backend_preference);
+            let decision = select_best_node(&nodes, &request);
+
+            if json {
+                let payload = serde_json::json!({
+                    "config": config,
+                    "live_nodes": nodes,
+                    "decision": decision,
+                });
+                if let Err(error) = print_json(&payload) {
+                    eprintln!("failed to print json: {error}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            print_config_summary(&config, &resolved_config_path());
+            println!("liveNodes: {}", nodes.len());
+            println!("routingDecision: {}", decision.reason);
+            println!(
+                "bestLiveNode: {}",
+                decision.selected_node_id.unwrap_or_else(|| "none".to_string())
+            );
+        }
+        Commands::Nodes { json } => {
+            let nodes = sample_nodes();
+            if json {
+                if let Err(error) = print_json(&nodes) {
+                    eprintln!("failed to print json: {error}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            print_nodes_table();
+        }
+        Commands::Contribute { m, cuda } => {
+            if !config_exists() {
+                eprintln!("run \"opengpu init\" first");
+                std::process::exit(1);
+            }
+
+            let mut config = current_config_or_default();
+            config.backend_preference = match (m, cuda) {
+                (true, false) => Backend::M,
+                (false, true) => Backend::Cuda,
+                (false, false) => Backend::Auto,
+                (true, true) => {
+                    eprintln!("choose only one backend: --m or --cuda");
+                    std::process::exit(1);
+                }
+            };
+
+            match save_config(&config) {
+                Ok(path) => println!("set backend preference to {} (config: {})", config.backend_preference, path.display()),
+                Err(error) => {
+                    eprintln!("failed to save config: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Pause => {
+            if !config_exists() {
+                eprintln!("run \"opengpu init\" first");
+                std::process::exit(1);
+            }
+
+            let mut config = current_config_or_default();
             config.paused = true;
-            if let Err(error) = write_config(&config) {
+
+            if let Err(error) = save_config(&config) {
                 eprintln!("failed to save config: {error}");
                 std::process::exit(1);
             }
             println!("paused contribution");
         }
         Commands::Resume => {
-            if !config_exists {
+            if !config_exists() {
                 eprintln!("run \"opengpu init\" first");
                 std::process::exit(1);
             }
+
+            let mut config = current_config_or_default();
             config.paused = false;
-            if let Err(error) = write_config(&config) {
+
+            if let Err(error) = save_config(&config) {
                 eprintln!("failed to save config: {error}");
                 std::process::exit(1);
             }
             println!("resumed contribution");
         }
+        Commands::Config { command } => match command {
+            ConfigCommands::Path => {
+                println!("{}", resolved_config_path().display());
+            }
+            ConfigCommands::Show { json } => {
+                let config = current_config_or_default();
+                if json {
+                    if let Err(error) = print_json(&config) {
+                        eprintln!("failed to print json: {error}");
+                        std::process::exit(1);
+                    }
+                } else {
+                    print_config_summary(&config, &resolved_config_path());
+                }
+            }
+            ConfigCommands::Reset { yes } => {
+                if !yes {
+                    eprintln!("refusing to reset without --yes");
+                    std::process::exit(1);
+                }
+
+                match remove_config_files() {
+                    Ok(()) => println!("reset local config"),
+                    Err(error) => {
+                        eprintln!("failed to reset config: {error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        },
+        Commands::Doctor => {
+            if let Err(error) = print_doctor() {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         Commands::Logs => {
-            println!("no logs yet; node agent and control plane are still stubs");
+            let config = current_config_or_default();
+            println!("logSource: local cli state");
+            println!("configPath: {}", resolved_config_path().display());
+            println!("connected: {}", if config.connected { "yes" } else { "no" });
+            println!("paused: {}", if config.paused { "yes" } else { "no" });
+            println!("note: worker and control-plane logs will appear once those services are online");
         }
         Commands::Update => {
-            println!("update channel not wired yet");
+            println!("updateChannel: GitHub Releases");
+            println!("tagPattern: cli-v*");
+            println!("installer: https://novusx.ai/install");
         }
     }
 }

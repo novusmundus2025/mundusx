@@ -33,7 +33,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build CLI
-        run: cargo build --release --locked --manifest-path apps/cli/Cargo.toml --target ${{ matrix.target }}
+        run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ matrix.target }}
 
       - name: Prepare binary
         run: |
