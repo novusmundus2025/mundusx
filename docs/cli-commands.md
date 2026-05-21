@@ -14,6 +14,8 @@ This is the current command surface for the Rust CLI.
 - `opengpu nodes` - show the current sample node inventory
 - `opengpu contribute --m` - prefer Apple Silicon `M` nodes
 - `opengpu contribute --cuda` - prefer `CUDA` nodes
+- `opengpu contribute --m --percent <1-100>` - prefer `M` nodes with a contribution cap
+- `opengpu contribute --cuda --percent <1-100>` - prefer `CUDA` nodes with a contribution cap
 - `opengpu pause` - pause contribution
 - `opengpu resume` - resume contribution
 - `opengpu doctor` - inspect config paths and writability
@@ -29,6 +31,7 @@ This is the current command surface for the Rust CLI.
 - `opengpu config set profile-name <name>` - update the local profile name
 - `opengpu config set backend <auto|m|cuda>` - update the backend preference
 - `opengpu config set device-id <id>` - override the local device ID
+- `opengpu config set contribution-percent <1-100>` - set the contribution cap
 - `opengpu config reset --yes` - delete local config files
 
 ## Notes

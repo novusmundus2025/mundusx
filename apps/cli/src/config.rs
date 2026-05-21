@@ -12,6 +12,7 @@ pub struct Config {
     pub connected: bool,
     pub paused: bool,
     pub backend_preference: Backend,
+    pub contribution_percent: u8,
     pub control_plane_url: String,
 }
 
@@ -25,6 +26,7 @@ impl Default for Config {
             connected: false,
             paused: false,
             backend_preference: Backend::Auto,
+            contribution_percent: 30,
             control_plane_url: "https://api.novusx.ai".to_string(),
         }
     }

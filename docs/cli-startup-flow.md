@@ -56,10 +56,14 @@ the CLI:
    - platform
    - CPU core count
    - backend preference
+   - contribution percent
    - connection state
    - pause state
    - config path
 6. Saves the updated config.
+7. Prints how the contribution cap should be interpreted:
+   - `M` means a memory-and-compute budget on Apple Silicon
+   - `CUDA` means a GPU-utilization budget on NVIDIA nodes
 
 ## Connect
 

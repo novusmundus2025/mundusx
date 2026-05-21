@@ -10,6 +10,7 @@ This document tracks what is still missing before OpenGPU becomes a full product
 - [x] One-click installer script
 - [x] Release workflow for prebuilt binaries
 - [x] Config setter commands
+- [x] Contribution cap config
 - [ ] Signed release binaries published from tags
 - [ ] Public install endpoint behind `novusx.ai`
 - [ ] Packaging checks on macOS and Linux release artifacts

@@ -41,6 +41,8 @@ enum Commands {
         m: bool,
         #[arg(long)]
         cuda: bool,
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+        percent: Option<u8>,
     },
     Login {
         #[arg(long)]
@@ -64,6 +66,8 @@ enum Commands {
         m: bool,
         #[arg(long)]
         cuda: bool,
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+        percent: Option<u8>,
     },
     Pause,
     Resume,
@@ -99,6 +103,7 @@ enum ConfigKey {
     ProfileName,
     Backend,
     DeviceId,
+    ContributionPercent,
 }
 
 fn default_job_request(preferred_backend: Backend) -> JobRequest {
@@ -139,6 +144,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("connected: {}", if config.connected { "yes" } else { "no" });
     println!("paused: {}", if config.paused { "yes" } else { "no" });
     println!("backendPreference: {}", config.backend_preference);
+    println!("contributionPercent: {}", config.contribution_percent);
     println!("controlPlaneUrl: {}", config.control_plane_url);
 }
 
@@ -169,9 +175,18 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     println!("platform: {}-{}", env::consts::OS, env::consts::ARCH);
     println!("cpuCores: {}", cores);
     println!("backendPreference: {}", config.backend_preference);
+    println!("contributionPercent: {}", config.contribution_percent);
     println!("connected: yes");
     println!("paused: no");
     println!("configPath: {}", path.display());
+}
+
+fn contribution_semantics(backend: Backend) -> &'static str {
+    match backend {
+        Backend::M => "memory-and-compute budget for Apple Silicon M-series",
+        Backend::Cuda => "gpu-utilization budget for CUDA nodes",
+        Backend::Auto => "automatic routing budget",
+    }
 }
 
 fn print_doctor() -> Result<(), String> {
@@ -239,7 +254,7 @@ fn main() {
                 }
             }
         }
-        Commands::Start { m, cuda } => {
+        Commands::Start { m, cuda, percent } => {
             if !config_exists() {
                 let config = Config::default();
                 match save_config(&config) {
@@ -266,9 +281,17 @@ fn main() {
                 config.backend_preference = Backend::Cuda;
             }
 
+            if let Some(percent) = percent {
+                config.contribution_percent = percent;
+            }
+
             match save_config(&config) {
                 Ok(path) => {
                     print_startup_summary(&config, &path);
+                    println!(
+                        "contributionMeaning: {}",
+                        contribution_semantics(config.backend_preference)
+                    );
                     println!("config saved at {}", path.display());
                 }
                 Err(error) => {
@@ -399,7 +422,7 @@ fn main() {
 
             print_nodes_table();
         }
-        Commands::Contribute { m, cuda } => {
+        Commands::Contribute { m, cuda, percent } => {
             if !config_exists() {
                 eprintln!("run \"opengpu init\" first");
                 std::process::exit(1);
@@ -416,10 +439,15 @@ fn main() {
                 }
             };
 
+            if let Some(percent) = percent {
+                config.contribution_percent = percent;
+            }
+
             match save_config(&config) {
                 Ok(path) => println!(
-                    "set backend preference to {} (config: {})",
+                    "set backend preference to {} at {}% (config: {})",
                     config.backend_preference,
+                    config.contribution_percent,
                     path.display()
                 ),
                 Err(error) => {
@@ -508,6 +536,14 @@ fn main() {
                             Ok("device id updated".to_string())
                         }
                     }
+                    ConfigKey::ContributionPercent => match value.parse::<u8>() {
+                        Ok(percent) if (1..=100).contains(&percent) => {
+                            config.contribution_percent = percent;
+                            Ok(format!("contribution percent updated to {percent}%"))
+                        }
+                        Ok(_) => Err("contribution percent must be between 1 and 100".to_string()),
+                        Err(_) => Err("contribution percent must be a number".to_string()),
+                    },
                 };
 
                 match result {
