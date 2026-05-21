@@ -35,4 +35,4 @@ This is the current command surface for the Rust CLI.
 
 - The CLI currently operates on local state only.
 - Real control-plane calls and node registration will come later.
-- The startup picker can be cancelled with `Ctrl-C`.
+- The active `opengpu start` session can be cancelled with `Ctrl-C`.

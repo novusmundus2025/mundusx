@@ -64,7 +64,7 @@ the CLI:
    - `75%` aggressive
    - `90%` max
    - use the arrow keys and press Enter to confirm
-   - press `Ctrl-C` to cancel cleanly
+   - press `Ctrl-C` to cancel the active `opengpu start` session cleanly
 7. Prints a startup summary with:
    - device ID
    - public key
