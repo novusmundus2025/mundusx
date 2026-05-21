@@ -9,4 +9,4 @@ target/
 coverage/
 .turbo/
 .next/
-
+.opengpu/
