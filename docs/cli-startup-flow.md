@@ -57,7 +57,7 @@ the CLI:
    - Apple Silicon `aarch64` on macOS becomes `M`
    - CUDA hints in the environment become `CUDA`
 5. Optionally overrides that with `--m` or `--cuda`.
-6. If no contribution cap is saved yet, shows a compact retro selection box for:
+6. If no contribution cap is saved yet, shows a compact retro vertical selector for:
    - `20%` light
    - `30%` balanced
    - `50%` strong

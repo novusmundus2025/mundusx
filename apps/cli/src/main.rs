@@ -6,7 +6,7 @@ mod types;
 
 use clap::{Parser, Subcommand};
 use crossterm::event::{read, Event, KeyCode};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size as terminal_size};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -298,49 +298,15 @@ fn prompt_contribution_percent(default_percent: u8) -> u8 {
     }
 
     let render_menu = |selected: usize| {
-        let (cols, _) = terminal_size().unwrap_or((80, 24));
-        let width = usize::min(44, cols.saturating_sub(4) as usize).max(28);
-        let left_pad = usize::max((cols as usize).saturating_sub(width) / 2, 0);
-        let pad = " ".repeat(left_pad);
-        let inner_width = width.saturating_sub(2);
-
-        let border = format!("+{}+", "-".repeat(inner_width));
-        let title = "Contribution level";
-        let title_line = format!("| {:<width$} |", title, width = inner_width.saturating_sub(2));
-        let mut lines = Vec::new();
-
-        lines.push(border.clone());
-        lines.push(title_line);
-        lines.push(format!("| {:<width$} |", "", width = inner_width.saturating_sub(2)));
-
-        for (index, (percent, label)) in OPTIONS.iter().enumerate() {
-            let marker = if index == selected { ">" } else { " " };
-            let line = format!("{marker} {percent:>2}% - {label}");
-            let truncated = if line.len() > inner_width.saturating_sub(2) {
-                let cutoff = inner_width.saturating_sub(5);
-                format!("{}...", &line[..cutoff])
-            } else {
-                line
-            };
-            lines.push(format!(
-                "| {:<width$} |",
-                truncated,
-                width = inner_width.saturating_sub(2)
-            ));
-        }
-
-        lines.push(format!("| {:<width$} |", "", width = inner_width.saturating_sub(2)));
-        lines.push(format!(
-            "| {:<width$} |",
-            "Use ↑/↓, Enter.",
-            width = inner_width.saturating_sub(2)
-        ));
-        lines.push(border);
-
         print!("\x1b[2J\x1b[H");
-        for line in lines {
-            println!("{pad}{line}");
+        println!("Contribution level");
+        println!("-------------------");
+        for (index, (percent, label)) in OPTIONS.iter().enumerate() {
+            let marker = if index == selected { ">>" } else { "  " };
+            println!("{marker} {percent:>2}% - {label}");
         }
+        println!();
+        println!("Use ↑/↓ and Enter");
         let _ = io::stdout().flush();
     };
 
