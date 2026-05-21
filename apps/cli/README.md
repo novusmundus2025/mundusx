@@ -12,6 +12,7 @@ Useful commands:
 
 ```bash
 opengpu init
+opengpu start
 opengpu login
 opengpu status
 opengpu nodes
@@ -19,3 +20,14 @@ opengpu doctor
 opengpu config show
 opengpu config set backend cuda
 ```
+
+Startup flow:
+
+- `opengpu init` creates local state
+- `opengpu start` creates local state if needed and marks the machine ready
+- `opengpu login` stores auth locally
+- `opengpu connect` marks the machine ready
+- `opengpu contribute --m` or `--cuda` sets the backend lane
+- `opengpu status` shows the live local routing decision
+
+See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-flow.md) for the full first-run sequence.

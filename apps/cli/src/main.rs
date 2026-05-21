@@ -34,6 +34,12 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    Start {
+        #[arg(long)]
+        m: bool,
+        #[arg(long)]
+        cuda: bool,
+    },
     Login {
         #[arg(long)]
         token: Option<String>,
@@ -213,6 +219,47 @@ fn main() {
                 Ok(path) => println!("initialized {}", path.display()),
                 Err(error) => {
                     eprintln!("failed to initialize config: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Start { m, cuda } => {
+            if !config_exists() {
+                let config = Config::default();
+                match save_config(&config) {
+                    Ok(path) => println!("initialized {}", path.display()),
+                    Err(error) => {
+                        eprintln!("failed to initialize config: {error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            let mut config = current_config_or_default();
+            config.connected = true;
+            config.paused = false;
+
+            if m && cuda {
+                eprintln!("choose only one backend: --m or --cuda");
+                std::process::exit(1);
+            }
+
+            if m {
+                config.backend_preference = Backend::M;
+            } else if cuda {
+                config.backend_preference = Backend::Cuda;
+            }
+
+            match save_config(&config) {
+                Ok(path) => {
+                    println!("startup ready for {}", config.device_id);
+                    println!("connected: yes");
+                    println!("paused: no");
+                    println!("backendPreference: {}", config.backend_preference);
+                    println!("config saved at {}", path.display());
+                }
+                Err(error) => {
+                    eprintln!("failed to save config: {error}");
                     std::process::exit(1);
                 }
             }

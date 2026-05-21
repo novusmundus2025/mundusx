@@ -55,6 +55,7 @@ The CLI now supports local setup, node inspection, and preference management:
 
 ```bash
 opengpu init
+opengpu start
 opengpu login
 opengpu logout
 opengpu connect
@@ -75,3 +76,12 @@ opengpu config reset --yes
 opengpu logs
 opengpu update
 ```
+
+## CLI Startup Flow
+
+See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-flow.md) for the exact first-run and command-by-command behavior.
+
+## Docs
+
+- [docs/cli-commands.md](/Users/DBATALL/Documents/aigrid/docs/cli-commands.md) for the current CLI command reference
+- [docs/missing-items.md](/Users/DBATALL/Documents/aigrid/docs/missing-items.md) for the work that is still missing
