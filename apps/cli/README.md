@@ -12,7 +12,6 @@ Useful commands:
 
 ```bash
 opengpu start
-opengpu init
 opengpu login
 opengpu status
 opengpu nodes
@@ -25,6 +24,7 @@ Startup flow:
 
 - `opengpu init` creates local state
 - `opengpu start` creates local state if needed and marks the machine ready
+- `opengpu start` creates local state if needed, connects locally, and marks the machine ready
 - `opengpu login` stores auth locally
 - `opengpu connect` marks the machine ready
 - `opengpu contribute --m` or `--cuda` sets the backend lane

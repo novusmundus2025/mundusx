@@ -55,11 +55,9 @@ The CLI now supports local setup, node inspection, and preference management:
 
 ```bash
 opengpu start
-opengpu init
 opengpu login
 opengpu logout
-opengpu connect
-opengpu disconnect
+opengpu init
 opengpu status
 opengpu nodes
 opengpu contribute --m

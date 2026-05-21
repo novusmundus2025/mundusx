@@ -51,7 +51,7 @@ opengpu start
 the CLI:
 
 1. Creates local config if needed.
-2. Marks the machine connected.
+2. Connects the machine locally.
 3. Clears the paused state.
 4. Detects the machine backend when possible:
    - Apple Silicon `aarch64` on macOS becomes `M`
