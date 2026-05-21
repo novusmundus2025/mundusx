@@ -5,7 +5,7 @@ mod routing;
 mod types;
 
 use clap::{Parser, Subcommand};
-use crossterm::event::{read, Event, KeyCode};
+use crossterm::event::{read, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::Serialize;
 use std::env;
@@ -315,6 +315,12 @@ fn prompt_contribution_percent(default_percent: u8) -> u8 {
     let result = loop {
         match read() {
             Ok(Event::Key(key)) => match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = disable_raw_mode();
+                    println!();
+                    eprintln!("cancelled");
+                    std::process::exit(130);
+                }
                 KeyCode::Up => {
                     selected = selected.saturating_sub(1);
                     render_menu(selected);
