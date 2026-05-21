@@ -12,10 +12,10 @@ This is the current command surface for the Rust CLI.
 - `opengpu disconnect` - mark the machine as disconnected
 - `opengpu status` - show local state and routing decision
 - `opengpu nodes` - show the current sample node inventory
-- `opengpu contribute --m` - prefer Apple Silicon `M` nodes
-- `opengpu contribute --cuda` - prefer `CUDA` nodes
-- `opengpu contribute --m --percent <1-100>` - prefer `M` nodes with a contribution cap
-- `opengpu contribute --cuda --percent <1-100>` - prefer `CUDA` nodes with a contribution cap
+- `opengpu contribute --m` - optional backend override for Apple Silicon `M` nodes
+- `opengpu contribute --cuda` - optional backend override for `CUDA` nodes
+- `opengpu contribute --m --percent <1-100>` - optional backend override with a contribution cap
+- `opengpu contribute --cuda --percent <1-100>` - optional backend override with a contribution cap
 - `opengpu pause` - pause contribution
 - `opengpu resume` - resume contribution
 - `opengpu doctor` - inspect config paths and writability

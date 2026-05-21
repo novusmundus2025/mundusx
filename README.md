@@ -60,8 +60,6 @@ opengpu logout
 opengpu init
 opengpu status
 opengpu nodes
-opengpu contribute --m
-opengpu contribute --cuda
 opengpu pause
 opengpu resume
 opengpu doctor

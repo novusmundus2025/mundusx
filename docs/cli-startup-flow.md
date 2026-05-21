@@ -95,6 +95,8 @@ the CLI:
 
 ## Contribute
 
+The `contribute` command is optional and mainly for power users who want to override the saved setup later.
+
 When the user runs:
 
 ```bash
@@ -111,7 +113,8 @@ the CLI:
 
 1. Updates the backend preference in local config.
 2. Sets the machine’s target compute lane.
-3. Uses that preference later when the CLI scores local sample nodes.
+3. Updates the contribution percent if provided.
+4. Uses that preference later when the CLI scores local sample nodes.
 
 ## Status
 
