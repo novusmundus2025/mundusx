@@ -66,9 +66,8 @@ pub fn load_config() -> std::io::Result<Option<Config>> {
     }
 
     let raw = fs::read_to_string(path)?;
-    let config = serde_json::from_str(&raw).map_err(|error| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, error)
-    })?;
+    let config = serde_json::from_str(&raw)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     Ok(Some(config))
 }
 
@@ -123,4 +122,3 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
         Err(error) => Err(error),
     }
 }
-

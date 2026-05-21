@@ -17,4 +17,5 @@ opengpu status
 opengpu nodes
 opengpu doctor
 opengpu config show
+opengpu config set backend cuda
 ```

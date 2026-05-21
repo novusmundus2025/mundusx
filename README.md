@@ -68,6 +68,9 @@ opengpu resume
 opengpu doctor
 opengpu config path
 opengpu config show
+opengpu config set control-plane-url https://api.novusx.ai
+opengpu config set profile-name novus
+opengpu config set backend cuda
 opengpu config reset --yes
 opengpu logs
 opengpu update

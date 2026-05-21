@@ -1,6 +1,7 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -27,6 +28,19 @@ impl Backend {
 
     pub fn is_auto(self) -> bool {
         matches!(self, Self::Auto)
+    }
+}
+
+impl FromStr for Backend {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.trim().to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "m" => Ok(Self::M),
+            "cuda" => Ok(Self::Cuda),
+            _ => Err("backend must be one of: auto, m, cuda".to_string()),
+        }
     }
 }
 
@@ -87,4 +101,3 @@ pub struct RoutingDecision {
     pub selected_backend: Option<Backend>,
     pub reason: String,
 }
-

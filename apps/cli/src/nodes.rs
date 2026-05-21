@@ -47,4 +47,3 @@ pub fn live_nodes() -> Vec<NodeStatus> {
         .filter(|node| node.state != NodeState::Offline)
         .collect()
 }
-

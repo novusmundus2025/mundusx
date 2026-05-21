@@ -9,7 +9,10 @@ use std::fs;
 use std::path::PathBuf;
 use types::{Backend, JobRequest};
 
-use config::{config_dir, config_exists, config_path, load_config, remove_config_files, resolved_config_path, save_config, Config};
+use config::{
+    config_dir, config_exists, config_path, load_config, remove_config_files, resolved_config_path,
+    save_config, Config,
+};
 use nodes::{live_nodes, sample_nodes};
 use routing::select_best_node;
 
@@ -72,10 +75,22 @@ enum ConfigCommands {
         #[arg(long)]
         json: bool,
     },
+    Set {
+        key: ConfigKey,
+        value: String,
+    },
     Reset {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum ConfigKey {
+    ControlPlaneUrl,
+    ProfileName,
+    Backend,
+    DeviceId,
 }
 
 fn default_job_request(preferred_backend: Backend) -> JobRequest {
@@ -87,10 +102,7 @@ fn default_job_request(preferred_backend: Backend) -> JobRequest {
 }
 
 fn current_config_or_default() -> Config {
-    load_config()
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+    load_config().ok().flatten().unwrap_or_default()
 }
 
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
@@ -104,8 +116,18 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
 fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
-    println!("profileName: {}", config.profile_name.as_deref().unwrap_or("unset"));
-    println!("authenticated: {}", if config.auth_token.is_some() { "yes" } else { "no" });
+    println!(
+        "profileName: {}",
+        config.profile_name.as_deref().unwrap_or("unset")
+    );
+    println!(
+        "authenticated: {}",
+        if config.auth_token.is_some() {
+            "yes"
+        } else {
+            "no"
+        }
+    );
     println!("connected: {}", if config.connected { "yes" } else { "no" });
     println!("paused: {}", if config.paused { "yes" } else { "no" });
     println!("backendPreference: {}", config.backend_preference);
@@ -146,9 +168,18 @@ fn print_doctor() -> Result<(), String> {
 
     println!("configDir: {}", primary_dir.display());
     println!("effectiveConfigPath: {}", resolved_config_path().display());
-    println!("fallbackConfigPath: {}", config::local_config_path().display());
-    println!("primaryWritable: {}", if primary_writable { "yes" } else { "no" });
-    println!("fallbackWritable: {}", if fallback_writable { "yes" } else { "no" });
+    println!(
+        "fallbackConfigPath: {}",
+        config::local_config_path().display()
+    );
+    println!(
+        "primaryWritable: {}",
+        if primary_writable { "yes" } else { "no" }
+    );
+    println!(
+        "fallbackWritable: {}",
+        if fallback_writable { "yes" } else { "no" }
+    );
     println!("installer: https://novusx.ai/install");
     println!("releaseChannel: cli-v*");
     println!("binaryName: opengpu");
@@ -189,11 +220,15 @@ fn main() {
         Commands::Login { token, name } => {
             let mut config = current_config_or_default();
             config.profile_name = name.or(config.profile_name);
-            config.auth_token = Some(token.unwrap_or_else(|| format!("dev-{}", uuid::Uuid::new_v4().simple())));
+            config.auth_token =
+                Some(token.unwrap_or_else(|| format!("dev-{}", uuid::Uuid::new_v4().simple())));
 
             match save_config(&config) {
                 Ok(path) => {
-                    println!("authenticated profile {}", config.profile_name.as_deref().unwrap_or("local-user"));
+                    println!(
+                        "authenticated profile {}",
+                        config.profile_name.as_deref().unwrap_or("local-user")
+                    );
                     println!("config saved at {}", path.display());
                 }
                 Err(error) => {
@@ -226,7 +261,11 @@ fn main() {
             config.paused = false;
 
             match save_config(&config) {
-                Ok(path) => println!("connected device {} (config: {})", config.device_id, path.display()),
+                Ok(path) => println!(
+                    "connected device {} (config: {})",
+                    config.device_id,
+                    path.display()
+                ),
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
                     std::process::exit(1);
@@ -243,7 +282,11 @@ fn main() {
             config.connected = false;
 
             match save_config(&config) {
-                Ok(path) => println!("disconnected device {} (config: {})", config.device_id, path.display()),
+                Ok(path) => println!(
+                    "disconnected device {} (config: {})",
+                    config.device_id,
+                    path.display()
+                ),
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
                     std::process::exit(1);
@@ -279,7 +322,9 @@ fn main() {
             println!("routingDecision: {}", decision.reason);
             println!(
                 "bestLiveNode: {}",
-                decision.selected_node_id.unwrap_or_else(|| "none".to_string())
+                decision
+                    .selected_node_id
+                    .unwrap_or_else(|| "none".to_string())
             );
         }
         Commands::Nodes { json } => {
@@ -312,7 +357,11 @@ fn main() {
             };
 
             match save_config(&config) {
-                Ok(path) => println!("set backend preference to {} (config: {})", config.backend_preference, path.display()),
+                Ok(path) => println!(
+                    "set backend preference to {} (config: {})",
+                    config.backend_preference,
+                    path.display()
+                ),
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
                     std::process::exit(1);
@@ -364,6 +413,60 @@ fn main() {
                     print_config_summary(&config, &resolved_config_path());
                 }
             }
+            ConfigCommands::Set { key, value } => {
+                if !config_exists() {
+                    eprintln!("run \"opengpu init\" first");
+                    std::process::exit(1);
+                }
+
+                let mut config = current_config_or_default();
+                let result = match key {
+                    ConfigKey::ControlPlaneUrl => {
+                        config.control_plane_url = value;
+                        Ok("control plane URL updated".to_string())
+                    }
+                    ConfigKey::ProfileName => {
+                        config.profile_name = if value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(value)
+                        };
+                        Ok("profile name updated".to_string())
+                    }
+                    ConfigKey::Backend => match value.parse::<Backend>() {
+                        Ok(backend) => {
+                            config.backend_preference = backend;
+                            Ok(format!("backend preference updated to {backend}"))
+                        }
+                        Err(error) => Err(error),
+                    },
+                    ConfigKey::DeviceId => {
+                        if value.trim().is_empty() {
+                            Err("device id cannot be empty".to_string())
+                        } else {
+                            config.device_id = value;
+                            Ok("device id updated".to_string())
+                        }
+                    }
+                };
+
+                match result {
+                    Ok(message) => match save_config(&config) {
+                        Ok(path) => {
+                            println!("{message}");
+                            println!("config saved at {}", path.display());
+                        }
+                        Err(error) => {
+                            eprintln!("failed to save config: {error}");
+                            std::process::exit(1);
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             ConfigCommands::Reset { yes } => {
                 if !yes {
                     eprintln!("refusing to reset without --yes");
@@ -391,7 +494,9 @@ fn main() {
             println!("configPath: {}", resolved_config_path().display());
             println!("connected: {}", if config.connected { "yes" } else { "no" });
             println!("paused: {}", if config.paused { "yes" } else { "no" });
-            println!("note: worker and control-plane logs will appear once those services are online");
+            println!(
+                "note: worker and control-plane logs will appear once those services are online"
+            );
         }
         Commands::Update => {
             println!("updateChannel: GitHub Releases");
