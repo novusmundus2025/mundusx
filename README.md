@@ -18,11 +18,28 @@ This repository is a monorepo for the core platform:
 - `packages/shared` - shared utilities and types
 - `packages/proto` - protobuf and RPC contracts
 
+Rust workspace:
+
+- `Cargo.toml` at the repo root
+- `apps/cli` is the first compiled Rust crate
+
+## One-Click Install
+
+Users should install the CLI with a single command and never need Rust locally:
+
+```bash
+curl -fsSL https://opengpu.ai/install | bash
+```
+
+That installer will download the prebuilt binary for the user's operating system and CPU architecture.
+
 ## First Implementation Files
 
+- `apps/cli/src/main.rs` for the Rust CLI entrypoint
+- `apps/cli/src/routing.rs` for local selection scoring
+- `install.sh` for one-click binary installation
 - `packages/shared/src/index.ts` for cross-package types
 - `packages/proto/schema/opengpu.proto` for the wire contract
-- `apps/cli/src/index.js` for the installable CLI entrypoint
 - `apps/control-plane/src/main.js` for the service skeleton
 - `agents/node/src/main.js` for the local node daemon skeleton
 
