@@ -65,6 +65,7 @@ the CLI:
    - `90%` max
 7. Prints a startup summary with:
    - device ID
+   - public key
    - public key fingerprint
    - platform
    - CPU core count

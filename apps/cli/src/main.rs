@@ -129,6 +129,22 @@ fn display_public_key_fingerprint(config: &Config) -> String {
         .unwrap_or_else(|| "unset".to_string())
 }
 
+fn display_public_key_hex(config: &Config) -> String {
+    if let Some(public_key) = config.public_key_fingerprint.as_ref() {
+        if let Ok(Some(identity)) = load_identity() {
+            if identity.fingerprint == *public_key {
+                return identity.public_key_hex;
+            }
+        }
+    }
+
+    load_identity()
+        .ok()
+        .flatten()
+        .map(|identity| identity.public_key_hex)
+        .unwrap_or_else(|| "unset".to_string())
+}
+
 fn config_from_identity(identity: &identity::DeviceIdentity) -> Config {
     Config {
         device_id: device_id_for_identity(identity),
@@ -148,6 +164,7 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
 fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
+    println!("publicKey: {}", display_public_key_hex(config));
     println!(
         "publicKeyFingerprint: {}",
         display_public_key_fingerprint(config)
@@ -202,6 +219,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         .unwrap_or(1);
 
     println!("startup ready for {}", config.device_id);
+    println!("publicKey: {}", display_public_key_hex(config));
     println!(
         "publicKeyFingerprint: {}",
         display_public_key_fingerprint(config)
