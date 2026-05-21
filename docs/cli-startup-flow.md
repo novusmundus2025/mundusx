@@ -63,6 +63,7 @@ the CLI:
    - `50%` strong
    - `75%` aggressive
    - `90%` max
+   - use the arrow keys and press Enter to confirm
 7. Prints a startup summary with:
    - device ID
    - public key

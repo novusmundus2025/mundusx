@@ -5,10 +5,12 @@ mod routing;
 mod types;
 
 use clap::{Parser, Subcommand};
+use crossterm::event::{read, Event, KeyCode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::Serialize;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::thread;
 use types::{Backend, JobRequest};
@@ -271,34 +273,69 @@ fn prompt_contribution_percent(default_percent: u8) -> u8 {
         (90, "max"),
     ];
 
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        let mut input = String::new();
+        if io::stdin().read_to_string(&mut input).is_ok() {
+            let choice = input.trim();
+            const OPTIONS: [u8; 5] = [20, 30, 50, 75, 90];
+            if let Ok(value) = choice.parse::<usize>() {
+                if (1..=OPTIONS.len()).contains(&value) {
+                    return OPTIONS[value - 1];
+                }
+            }
+        }
+        return default_percent;
+    }
+
+    let mut selected = OPTIONS
+        .iter()
+        .position(|(percent, _)| *percent == default_percent)
+        .unwrap_or(1);
+
+    if enable_raw_mode().is_err() {
+        return default_percent;
+    }
+
+    let render_menu = |selected: usize| {
+        print!("\x1b[2J\x1b[H");
+        println!("Select contribution level:");
+        for (index, (percent, label)) in OPTIONS.iter().enumerate() {
+            let marker = if index == selected { ">" } else { " " };
+            println!("  {} {}% - {}", marker, percent, label);
+        }
+        println!();
+        println!("Use ↑ ↓ and press Enter.");
+        let _ = io::stdout().flush();
+    };
+
+    render_menu(selected);
+
+    let result = loop {
+        match read() {
+            Ok(Event::Key(key)) => match key.code {
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    render_menu(selected);
+                }
+                KeyCode::Down => {
+                    if selected + 1 < OPTIONS.len() {
+                        selected += 1;
+                    }
+                    render_menu(selected);
+                }
+                KeyCode::Enter => break Some(OPTIONS[selected].0),
+                KeyCode::Esc => break None,
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break None,
+        }
+    };
+
+    let _ = disable_raw_mode();
     println!();
-    println!("Select contribution level:");
-    for (index, (percent, label)) in OPTIONS.iter().enumerate() {
-        let marker = if *percent == default_percent {
-            "(*)"
-        } else {
-            "( )"
-        };
-        println!("  {} {} {}% - {}", index + 1, marker, percent, label);
-    }
-    println!("Press Enter to keep the default.");
-    print!("Choice [1-5]: ");
-    let _ = io::stdout().flush();
 
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_err() {
-        return default_percent;
-    }
-
-    let choice = input.trim();
-    if choice.is_empty() {
-        return default_percent;
-    }
-
-    match choice.parse::<usize>() {
-        Ok(value) if (1..=OPTIONS.len()).contains(&value) => OPTIONS[value - 1].0,
-        _ => default_percent,
-    }
+    result.unwrap_or(default_percent)
 }
 
 fn print_doctor() -> Result<(), String> {
