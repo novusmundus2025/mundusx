@@ -33,6 +33,8 @@ curl -fsSL https://opengpu.ai/install | bash
 
 That installer will download the prebuilt binary for the user's operating system and CPU architecture.
 
+Release builds for the CLI are published from GitHub Actions on `cli-v*` tags.
+
 ## First Implementation Files
 
 - `apps/cli/src/main.rs` for the Rust CLI entrypoint
