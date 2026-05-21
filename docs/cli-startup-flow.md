@@ -22,6 +22,7 @@ the CLI:
    - pause state
    - backend preference
    - control-plane URL
+   - contribution cap placeholder
 5. Stores the config in the preferred config directory, or falls back to a local `.opengpu/config.json` file if needed.
 6. If `OPENGPU_HOME` is set, that path wins over any repo-local fallback.
 
@@ -52,8 +53,17 @@ the CLI:
 1. Creates local config if needed.
 2. Marks the machine connected.
 3. Clears the paused state.
-4. Optionally sets `--m` or `--cuda`.
-5. Prints a startup summary with:
+4. Detects the machine backend when possible:
+   - Apple Silicon `aarch64` on macOS becomes `M`
+   - CUDA hints in the environment become `CUDA`
+5. Optionally overrides that with `--m` or `--cuda`.
+6. If no contribution cap is saved yet, shows a retro numbered selection menu for:
+   - `20%` light
+   - `30%` balanced
+   - `50%` strong
+   - `75%` aggressive
+   - `90%` max
+7. Prints a startup summary with:
    - device ID
    - public key fingerprint
    - platform
@@ -63,11 +73,11 @@ the CLI:
    - connection state
    - pause state
    - config path
-6. Saves the updated config.
-7. Prints how the contribution cap should be interpreted:
+8. Saves the updated config.
+9. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
    - `CUDA` means a GPU-utilization budget on NVIDIA nodes
-8. Keeps the reused device identity attached to the local config.
+10. Keeps the reused device identity attached to the local config.
 
 ## Connect
 

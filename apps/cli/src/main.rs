@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::thread;
 use types::{Backend, JobRequest};
@@ -155,7 +156,10 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
 fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
-    println!("publicKeyFingerprint: {}", display_public_key_fingerprint(config));
+    println!(
+        "publicKeyFingerprint: {}",
+        display_public_key_fingerprint(config)
+    );
     println!(
         "profileName: {}",
         config.profile_name.as_deref().unwrap_or("unset")
@@ -171,7 +175,14 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("connected: {}", if config.connected { "yes" } else { "no" });
     println!("paused: {}", if config.paused { "yes" } else { "no" });
     println!("backendPreference: {}", config.backend_preference);
-    println!("contributionPercent: {}", config.contribution_percent);
+    println!(
+        "contributionPercent: {}",
+        if config.contribution_percent == 0 {
+            "unset".to_string()
+        } else {
+            format!("{}%", config.contribution_percent)
+        }
+    );
     println!("controlPlaneUrl: {}", config.control_plane_url);
 }
 
@@ -199,11 +210,21 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         .unwrap_or(1);
 
     println!("startup ready for {}", config.device_id);
-    println!("publicKeyFingerprint: {}", display_public_key_fingerprint(config));
+    println!(
+        "publicKeyFingerprint: {}",
+        display_public_key_fingerprint(config)
+    );
     println!("platform: {}-{}", env::consts::OS, env::consts::ARCH);
     println!("cpuCores: {}", cores);
     println!("backendPreference: {}", config.backend_preference);
-    println!("contributionPercent: {}", config.contribution_percent);
+    println!(
+        "contributionPercent: {}",
+        if config.contribution_percent == 0 {
+            "unset".to_string()
+        } else {
+            format!("{}%", config.contribution_percent)
+        }
+    );
     println!("connected: yes");
     println!("paused: no");
     println!("configPath: {}", path.display());
@@ -214,6 +235,59 @@ fn contribution_semantics(backend: Backend) -> &'static str {
         Backend::M => "memory-and-compute budget for Apple Silicon M-series",
         Backend::Cuda => "gpu-utilization budget for CUDA nodes",
         Backend::Auto => "automatic routing budget",
+    }
+}
+
+fn detect_backend() -> Backend {
+    if env::consts::OS == "macos" && env::consts::ARCH == "aarch64" {
+        return Backend::M;
+    }
+
+    if env::var_os("NVIDIA_VISIBLE_DEVICES").is_some()
+        || env::var_os("CUDA_VISIBLE_DEVICES").is_some()
+    {
+        return Backend::Cuda;
+    }
+
+    Backend::Auto
+}
+
+fn prompt_contribution_percent(default_percent: u8) -> u8 {
+    const OPTIONS: &[(u8, &str)] = &[
+        (20, "light"),
+        (30, "balanced"),
+        (50, "strong"),
+        (75, "aggressive"),
+        (90, "max"),
+    ];
+
+    println!();
+    println!("Select contribution level:");
+    for (index, (percent, label)) in OPTIONS.iter().enumerate() {
+        let marker = if *percent == default_percent {
+            "(*)"
+        } else {
+            "( )"
+        };
+        println!("  {} {} {}% - {}", index + 1, marker, percent, label);
+    }
+    println!("Press Enter to keep the default.");
+    print!("Choice [1-5]: ");
+    let _ = io::stdout().flush();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return default_percent;
+    }
+
+    let choice = input.trim();
+    if choice.is_empty() {
+        return default_percent;
+    }
+
+    match choice.parse::<usize>() {
+        Ok(value) if (1..=OPTIONS.len()).contains(&value) => OPTIONS[value - 1].0,
+        _ => default_percent,
     }
 }
 
@@ -344,6 +418,10 @@ fn main() {
             config.connected = true;
             config.paused = false;
 
+            if config.backend_preference.is_auto() {
+                config.backend_preference = detect_backend();
+            }
+
             if m && cuda {
                 eprintln!("choose only one backend: --m or --cuda");
                 std::process::exit(1);
@@ -357,6 +435,8 @@ fn main() {
 
             if let Some(percent) = percent {
                 config.contribution_percent = percent;
+            } else if config.contribution_percent == 0 {
+                config.contribution_percent = prompt_contribution_percent(30);
             }
 
             match save_config(&config) {
@@ -510,6 +590,10 @@ fn main() {
             if let Ok((identity, _, _)) = load_or_create_identity() {
                 config.device_id = device_id_for_identity(&identity);
                 config.public_key_fingerprint = Some(identity.fingerprint);
+            }
+
+            if config.backend_preference.is_auto() {
+                config.backend_preference = detect_backend();
             }
             config.backend_preference = match (m, cuda) {
                 (true, false) => Backend::M,

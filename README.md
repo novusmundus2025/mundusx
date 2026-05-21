@@ -54,8 +54,8 @@ Route each request to the most suitable live node, rather than combining partial
 The CLI now supports local setup, node inspection, and preference management:
 
 ```bash
-opengpu init
 opengpu start
+opengpu init
 opengpu login
 opengpu logout
 opengpu connect

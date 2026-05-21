@@ -28,7 +28,7 @@ impl Default for Config {
             connected: false,
             paused: false,
             backend_preference: Backend::Auto,
-            contribution_percent: 30,
+            contribution_percent: 0,
             control_plane_url: "https://api.novusx.ai".to_string(),
         }
     }

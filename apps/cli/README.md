@@ -11,8 +11,8 @@ curl -fsSL https://novusx.ai/install | bash
 Useful commands:
 
 ```bash
-opengpu init
 opengpu start
+opengpu init
 opengpu login
 opengpu status
 opengpu nodes
