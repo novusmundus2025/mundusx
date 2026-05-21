@@ -93,29 +93,6 @@ the CLI:
 2. Clears the paused state.
 3. Prepares the machine to participate in routing once the control plane is online.
 
-## Contribute
-
-The `contribute` command is optional and mainly for power users who want to override the saved setup later.
-
-When the user runs:
-
-```bash
-opengpu contribute --m
-```
-
-or:
-
-```bash
-opengpu contribute --cuda
-```
-
-the CLI:
-
-1. Updates the backend preference in local config.
-2. Sets the machine’s target compute lane.
-3. Updates the contribution percent if provided.
-4. Uses that preference later when the CLI scores local sample nodes.
-
 ## Status
 
 When the user runs:

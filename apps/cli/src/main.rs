@@ -67,14 +67,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    Contribute {
-        #[arg(long)]
-        m: bool,
-        #[arg(long)]
-        cuda: bool,
-        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
-        percent: Option<u8>,
-    },
     Pause,
     Resume,
     Config {
@@ -579,48 +571,6 @@ fn main() {
             }
 
             print_nodes_table();
-        }
-        Commands::Contribute { m, cuda, percent } => {
-            if !config_exists() {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
-            }
-
-            let mut config = current_config_or_default();
-            if let Ok((identity, _, _)) = load_or_create_identity() {
-                config.device_id = device_id_for_identity(&identity);
-                config.public_key_fingerprint = Some(identity.fingerprint);
-            }
-
-            if config.backend_preference.is_auto() {
-                config.backend_preference = detect_backend();
-            }
-            config.backend_preference = match (m, cuda) {
-                (true, false) => Backend::M,
-                (false, true) => Backend::Cuda,
-                (false, false) => Backend::Auto,
-                (true, true) => {
-                    eprintln!("choose only one backend: --m or --cuda");
-                    std::process::exit(1);
-                }
-            };
-
-            if let Some(percent) = percent {
-                config.contribution_percent = percent;
-            }
-
-            match save_config(&config) {
-                Ok(path) => println!(
-                    "set backend preference to {} at {}% (config: {})",
-                    config.backend_preference,
-                    config.contribution_percent,
-                    path.display()
-                ),
-                Err(error) => {
-                    eprintln!("failed to save config: {error}");
-                    std::process::exit(1);
-                }
-            }
         }
         Commands::Pause => {
             if !config_exists() {
