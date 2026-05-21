@@ -1,0 +1,10 @@
+{
+  "name": "@opengpu/worker-cuda",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "echo \"cuda worker check not configured yet\""
+  }
+}
+

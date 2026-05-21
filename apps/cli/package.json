@@ -1,0 +1,14 @@
+{
+  "name": "@opengpu/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "opengpu": "src/index.js"
+  },
+  "scripts": {
+    "dev": "node src/index.js",
+    "check": "echo \"cli check not configured yet\""
+  }
+}
+

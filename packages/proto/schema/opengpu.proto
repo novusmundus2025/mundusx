@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package opengpu.v1;
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_M = 1;
+  BACKEND_CUDA = 2;
+}
+
+message NodeHeartbeat {
+  string node_id = 1;
+  Backend backend = 2;
+  string status = 3;
+  uint32 available_memory_mb = 4;
+  uint32 available_gpu_percent = 5;
+  string updated_at = 6;
+}
+
+message JobRequest {
+  string request_id = 1;
+  string prompt = 2;
+  Backend preferred_backend = 3;
+}
+
+message JobResponse {
+  string request_id = 1;
+  string node_id = 2;
+  string output = 3;
+}
+

@@ -1,0 +1,11 @@
+{
+  "name": "@opengpu/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/main.js",
+    "check": "echo \"control plane check not configured yet\""
+  }
+}
+

@@ -1,0 +1,11 @@
+{
+  "name": "@opengpu/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/main.js",
+    "check": "echo \"dashboard check not configured yet\""
+  }
+}
+
