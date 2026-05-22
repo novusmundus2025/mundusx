@@ -59,6 +59,11 @@ opengpu start
 opengpu init
 opengpu status
 opengpu exit
+opengpu model list
+opengpu model use <name>
+opengpu model add <name>
+opengpu model remove <name>
+opengpu model prune --yes
 opengpu doctor
 opengpu logs
 opengpu update
@@ -77,6 +82,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/heartbeat-flow.md](/Users/DBATALL/Documents/aigrid/docs/heartbeat-flow.md) for the proposed node heartbeat timing and offline thresholds
 - [docs/system-flow.md](/Users/DBATALL/Documents/aigrid/docs/system-flow.md) for the living end-to-end architecture diagram
 - [docs/runtime-transport.md](/Users/DBATALL/Documents/aigrid/docs/runtime-transport.md) for the local-process versus HTTP-server map
+- [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md) for contributor-side model cache, switch, and prune rules
 - [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the cross-platform distribution plan
 - [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
 - [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files

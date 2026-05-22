@@ -8,6 +8,11 @@ This is the current command surface for the Rust CLI.
 - `opengpu init` - create the local config and device identity
 - `opengpu status` - show local state, detected backend, and local provider status
 - `opengpu exit` - leave local contribution mode and pause the machine
+- `opengpu model list` - show the local model cache and active model
+- `opengpu model use <name>` - activate a cached model, or create a cache entry and activate it
+- `opengpu model add <name>` - add a model to the local cache without switching to it
+- `opengpu model remove <name>` - remove a cached model
+- `opengpu model prune --yes` - remove inactive cached models
 - `opengpu doctor` - inspect config paths and writability
 - `opengpu logs` - show local log source information
 - `opengpu update` - show update channel information
@@ -40,3 +45,4 @@ These remain available, but they are hidden from the default `--help` output so 
 - The active `opengpu start` session can be aborted with `Ctrl-C`, which rolls local state back to disconnected and paused.
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
+- The model commands currently manage the local model cache manifest and active selection; real model downloads are still a future step.

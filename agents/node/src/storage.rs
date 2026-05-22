@@ -17,9 +17,11 @@ pub struct AgentConfig {
     pub backend_preference: Backend,
     pub contribution_percent: u8,
     pub control_plane_url: String,
-    /// Explicit path to model directory. Defaults to ~/.ollama/models when absent.
+    /// Explicit path to model directory. Defaults to ~/.opengpu/models when absent.
     #[serde(default)]
     pub model_dir: Option<String>,
+    #[serde(default)]
+    pub active_model: Option<String>,
     /// Model identifiers this node has available (e.g. ["llama3.1:8b"]).
     #[serde(default)]
     pub models: Vec<String>,
@@ -39,13 +41,14 @@ impl Default for AgentConfig {
             contribution_percent: 0,
             control_plane_url: "https://api.novusx.ai".to_string(),
             model_dir: None,
+            active_model: None,
             models: Vec::new(),
         }
     }
 }
 
 impl AgentConfig {
-    /// Effective model directory: explicit path, or ~/.ollama/models as fallback.
+    /// Effective model directory: explicit path, or ~/.opengpu/models as fallback.
     pub fn effective_model_dir(&self) -> std::path::PathBuf {
         self.model_dir
             .as_ref()
@@ -53,7 +56,7 @@ impl AgentConfig {
             .unwrap_or_else(|| {
                 dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                    .join(".ollama/models")
+                    .join(".opengpu/models")
             })
     }
 }

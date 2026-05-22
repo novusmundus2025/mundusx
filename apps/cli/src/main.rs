@@ -1,5 +1,6 @@
 mod config;
 mod identity;
+mod model;
 mod routing;
 mod types;
 
@@ -16,6 +17,10 @@ use types::Backend;
 use config::{config_exists, load_config, resolved_config_path, save_config, Config};
 use identity::{
     device_id_for_identity, ensure_identity, load_identity, load_or_create_identity,
+};
+use model::{
+    active_model_name, add_model, configured_model_dir_string, ensure_effective_model_dir,
+    list_models, prune_models, remove_model, use_model, ModelRecord,
 };
 
 #[derive(Parser, Debug)]
@@ -41,8 +46,41 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Manage the local model cache
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
+    },
     /// Update the OpenGPU binary
     Update,
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelCommands {
+    /// List cached models
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download or cache a model and mark it active
+    Use {
+        name: String,
+    },
+    /// Download or cache a model without switching to it
+    Add {
+        name: String,
+    },
+    /// Remove a cached model
+    Remove {
+        name: String,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove inactive cached models
+    Prune {
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn current_config_or_default() -> Config {
@@ -149,6 +187,14 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("detectedBackend: {}", detected_backend);
     println!("providerCount: {}", provider_count);
     println!(
+        "modelDir: {}",
+        configured_model_dir_string(config)
+    );
+    println!(
+        "activeModel: {}",
+        active_model_name(config).unwrap_or_else(|| "unset".to_string())
+    );
+    println!(
         "contributionPercent: {}",
         if config.contribution_percent == 0 {
             "unset".to_string()
@@ -176,6 +222,14 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     println!("backendPreference: {}", config.backend_preference);
     println!("detectedBackend: {}", detected_backend);
     println!(
+        "modelDir: {}",
+        configured_model_dir_string(config)
+    );
+    println!(
+        "activeModel: {}",
+        active_model_name(config).unwrap_or_else(|| "unset".to_string())
+    );
+    println!(
         "contributionPercent: {}",
         if config.contribution_percent == 0 {
             "unset".to_string()
@@ -189,6 +243,37 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         colored_state(false, Color::AnsiValue(208), "yes", "no")
     );
     println!("configPath: {}", path.display());
+}
+
+fn print_model_inventory(config: &Config, models: &[ModelRecord], json: bool) {
+    if json {
+        let payload = serde_json::json!({
+            "model_dir": configured_model_dir_string(config),
+            "active_model": active_model_name(config),
+            "models": models,
+        });
+        if let Err(error) = print_json(&payload) {
+            eprintln!("failed to print json: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    println!("modelDir: {}", configured_model_dir_string(config));
+    println!(
+        "activeModel: {}",
+        active_model_name(config).unwrap_or_else(|| "unset".to_string())
+    );
+    if models.is_empty() {
+        println!("models: none");
+        return;
+    }
+
+    println!("models:");
+    for model in models {
+        let marker = if model.active { "*" } else { " " };
+        println!("  {marker} {}", model.name);
+    }
 }
 
 fn contribution_semantics(backend: Backend) -> &'static str {
@@ -457,11 +542,15 @@ fn run_init() -> Config {
     // model selection — mandatory, no skip
     match prompt_model_selection(config.backend_preference) {
         ModelChoice::Model(model) => {
-            config.models = vec![model];
-            config.model_dir = None;
+            ensure_effective_model_dir(&mut config);
+            if let Err(error) = use_model(&mut config, &model) {
+                eprintln!("failed to cache model `{model}`: {error}");
+                std::process::exit(1);
+            }
         }
         ModelChoice::LocalPath(path) => {
             config.model_dir = Some(path);
+            config.active_model = None;
             config.models = vec![];
         }
     }
@@ -575,6 +664,85 @@ fn main() {
                 "selectedProvider: {}",
                 if provider_count == 1 { "self" } else { "none" }
             );
+        }
+        Commands::Model { command } => {
+            let mut config = current_config_or_default();
+            match command {
+                ModelCommands::List { json } => {
+                    let models = match list_models(&config) {
+                        Ok(models) => models,
+                        Err(error) => {
+                            eprintln!("failed to read model cache: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    print_model_inventory(&config, &models, json);
+                }
+                ModelCommands::Use { name } => {
+                    if let Err(error) = use_model(&mut config, &name) {
+                        eprintln!("failed to activate model `{name}`: {error}");
+                        std::process::exit(1);
+                    }
+                    if let Err(error) = save_config(&config) {
+                        eprintln!("failed to save config: {error}");
+                        std::process::exit(1);
+                    }
+                    println!("active model: {}", name);
+                    println!("modelDir: {}", configured_model_dir_string(&config));
+                }
+                ModelCommands::Add { name } => {
+                    if let Err(error) = add_model(&mut config, &name) {
+                        eprintln!("failed to cache model `{name}`: {error}");
+                        std::process::exit(1);
+                    }
+                    if let Err(error) = save_config(&config) {
+                        eprintln!("failed to save config: {error}");
+                        std::process::exit(1);
+                    }
+                    println!("cached model: {}", name);
+                    println!("modelDir: {}", configured_model_dir_string(&config));
+                }
+                ModelCommands::Remove { name, force } => {
+                    match remove_model(&mut config, &name, force) {
+                        Ok(true) => {
+                            if let Err(error) = save_config(&config) {
+                                eprintln!("failed to save config: {error}");
+                                std::process::exit(1);
+                            }
+                            println!("removed model: {}", name);
+                            println!("modelDir: {}", configured_model_dir_string(&config));
+                        }
+                        Ok(false) => {
+                            eprintln!("model not found: {name}");
+                            std::process::exit(1);
+                        }
+                        Err(error) => {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                ModelCommands::Prune { yes } => {
+                    if !yes {
+                        eprintln!("refusing to prune without --yes");
+                        std::process::exit(1);
+                    }
+                    match prune_models(&mut config) {
+                        Ok(removed) => {
+                            if let Err(error) = save_config(&config) {
+                                eprintln!("failed to save config: {error}");
+                                std::process::exit(1);
+                            }
+                            println!("pruned models: {removed}");
+                            println!("modelDir: {}", configured_model_dir_string(&config));
+                        }
+                        Err(error) => {
+                            eprintln!("failed to prune models: {error}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
         }
         Commands::Update => {
             println!("updateChannel: GitHub Releases");

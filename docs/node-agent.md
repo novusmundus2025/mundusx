@@ -37,6 +37,7 @@ The prototype agent:
 - launches the local worker as a subprocess when requested
 - sends a busy heartbeat before worker launch and a ready heartbeat after completion
 - posts the worker result back to the control plane
+- treats the configured model directory as a local cache, not as something the control plane owns
 - emits heartbeats on a loop
 - writes the last heartbeat to disk
 - treats paused or disconnected state as non-active
@@ -55,3 +56,5 @@ opengpu config set control-plane-url http://127.0.0.1:8787
 ```
 
 The prototype agent does not speak TLS yet, so `https://` URLs will be rejected with a helpful error.
+
+For contributor-side model switching and cleanup rules, see [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md).

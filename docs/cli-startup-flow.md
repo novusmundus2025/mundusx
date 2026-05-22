@@ -65,7 +65,8 @@ the CLI:
    - `90%` max
    - use the arrow keys and press Enter to confirm
    - press `Ctrl-C` to abort the active `opengpu start` session cleanly and roll back to disconnected/paused
-7. Prints a startup summary with:
+7. If no active model is saved yet, caches a local model entry and marks it active.
+8. Prints a startup summary with:
    - device ID
    - public key
    - public key fingerprint
@@ -73,15 +74,17 @@ the CLI:
    - CPU core count
    - backend preference
    - detected backend when `backend preference` is `auto`
+   - active model
+   - model cache directory
    - contribution percent
    - connection state
    - pause state
    - config path
-8. Saves the updated config.
-9. Prints how the contribution cap should be interpreted:
+9. Saves the updated config.
+10. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
    - `CUDA` means a GPU-utilization budget on NVIDIA nodes
-10. Keeps the reused device identity attached to the local config.
+11. Keeps the reused device identity attached to the local config.
 
 ## Connect
 
@@ -95,7 +98,8 @@ the CLI:
 
 1. Marks the local config as connected.
 2. Clears the paused state.
-3. Prepares the machine to participate in routing once the control plane is online.
+3. Reuses the active model cache if one already exists.
+4. Prepares the machine to participate in routing once the control plane is online.
 
 ## Exit
 
@@ -124,7 +128,7 @@ the CLI:
 1. Reads the current local config.
 2. Resolves the machine backend if `backend preference` is `auto`.
 3. Treats the current machine as the active provider when connected and not paused.
-4. Prints local provider state and the active backend decision.
+4. Prints local provider state, active model, model cache directory, and the active backend decision.
 5. Keeps sample node inventory out of the main status view for now.
 
 ## What It Does Not Do Yet
