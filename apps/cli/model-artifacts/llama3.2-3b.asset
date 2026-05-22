@@ -1,0 +1,6 @@
+OpenGPU starter model pack
+name: llama3.2:3b
+family: llama3.2
+size: 3b
+purpose: balanced contributor starter pack
+format: opengpu-modelpack-v1

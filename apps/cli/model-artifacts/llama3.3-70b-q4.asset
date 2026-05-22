@@ -1,0 +1,6 @@
+OpenGPU starter model pack
+name: llama3.3:70b-q4
+family: llama3.3
+size: 70b-q4
+purpose: high-capacity contributor pack
+format: opengpu-modelpack-v1

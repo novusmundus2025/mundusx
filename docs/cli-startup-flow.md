@@ -67,6 +67,8 @@ the CLI:
    - press `Ctrl-C` to abort the active `opengpu start` session cleanly and roll back to disconnected/paused
 7. If no active model is saved yet, caches a local model entry and marks it active.
    - the starter model presets come from `apps/cli/config/official-models.json`
+   - the starter artifact payloads live in `apps/cli/model-artifacts/`
+   - on first run the CLI copies the selected starter artifact into the local cache
 8. Prints a startup summary with:
    - device ID
    - public key
@@ -101,6 +103,7 @@ the CLI:
 2. Clears the paused state.
 3. Reuses the active model cache if one already exists.
 4. Prepares the machine to participate in routing once the control plane is online.
+5. Reuses or refreshes the active starter model pack if it is already configured.
 
 ## Exit
 

@@ -575,6 +575,13 @@ fn run_init() -> Config {
                 eprintln!("failed to cache model `{}`: {error}", model.name);
                 std::process::exit(1);
             }
+            print_model_event(
+                "MODEL MATERIALIZED",
+                &model.name,
+                "starter pack copied into local cache",
+                Color::Cyan,
+                &config,
+            );
         }
         ModelChoice::LocalPath(path) => {
             config.model_dir = Some(path);
@@ -627,6 +634,12 @@ fn main() {
             if let Ok((identity, _, _)) = load_or_create_identity() {
                 config.device_id = device_id_for_identity(&identity);
                 config.public_key_fingerprint = Some(identity.fingerprint);
+            }
+            if let Some(active_model) = active_model_name(&config) {
+                if let Err(error) = use_model(&mut config, &active_model) {
+                    eprintln!("failed to refresh active model `{active_model}`: {error}");
+                    std::process::exit(1);
+                }
             }
             config.connected = true;
             config.paused = false;

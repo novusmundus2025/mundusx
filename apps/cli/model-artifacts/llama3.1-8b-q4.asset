@@ -1,0 +1,6 @@
+OpenGPU starter model pack
+name: llama3.1:8b-q4
+family: llama3.1
+size: 8b-q4
+purpose: compressed high-capacity contributor pack
+format: opengpu-modelpack-v1

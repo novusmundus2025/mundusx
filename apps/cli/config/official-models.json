@@ -8,12 +8,16 @@
       "lighter": {
         "name": "llama3.2:1b",
         "label": "Llama 3.2 1B",
-        "notes": "lighter, works on lower-spec machines"
+        "notes": "lighter, works on lower-spec machines",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-1b.asset"
       },
       "recommended": {
         "name": "llama3.2:3b",
         "label": "Llama 3.2 3B",
-        "notes": "recommended for your hardware"
+        "notes": "recommended for your hardware",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-3b.asset"
       }
     },
     {
@@ -23,12 +27,16 @@
       "lighter": {
         "name": "llama3.2:1b",
         "label": "Llama 3.2 1B",
-        "notes": "lower memory footprint for tiny machines"
+        "notes": "lower memory footprint for tiny machines",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-1b.asset"
       },
       "recommended": {
         "name": "llama3.2:3b",
         "label": "Llama 3.2 3B",
-        "notes": "balanced Apple Silicon starter"
+        "notes": "balanced Apple Silicon starter",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-3b.asset"
       }
     },
     {
@@ -38,12 +46,16 @@
       "lighter": {
         "name": "llama3.2:3b",
         "label": "Llama 3.2 3B",
-        "notes": "safer default for mid-range Apple Silicon"
+        "notes": "safer default for mid-range Apple Silicon",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-3b.asset"
       },
       "recommended": {
         "name": "llama3.1:8b",
         "label": "Llama 3.1 8B",
-        "notes": "balanced Apple Silicon choice"
+        "notes": "balanced Apple Silicon choice",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b.asset"
       }
     },
     {
@@ -53,12 +65,16 @@
       "lighter": {
         "name": "llama3.1:8b",
         "label": "Llama 3.1 8B",
-        "notes": "strong local model for larger unified memory"
+        "notes": "strong local model for larger unified memory",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b.asset"
       },
       "recommended": {
         "name": "llama3.1:8b-q4",
         "label": "Llama 3.1 8B Q4",
-        "notes": "compressed recommended preset for Mac contributors"
+        "notes": "compressed recommended preset for Mac contributors",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b-q4.asset"
       }
     },
     {
@@ -68,12 +84,16 @@
       "lighter": {
         "name": "llama3.1:8b",
         "label": "Llama 3.1 8B",
-        "notes": "lighter fallback for very large memory Macs"
+        "notes": "lighter fallback for very large memory Macs",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b.asset"
       },
       "recommended": {
         "name": "llama3.3:70b-q4",
         "label": "Llama 3.3 70B Q4",
-        "notes": "high-capacity Mac preset"
+        "notes": "high-capacity Mac preset",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.3-70b-q4.asset"
       }
     },
     {
@@ -83,12 +103,16 @@
       "lighter": {
         "name": "llama3.2:1b",
         "label": "Llama 3.2 1B",
-        "notes": "small GPU-friendly starter"
+        "notes": "small GPU-friendly starter",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-1b.asset"
       },
       "recommended": {
         "name": "llama3.2:3b",
         "label": "Llama 3.2 3B",
-        "notes": "balanced CUDA starter"
+        "notes": "balanced CUDA starter",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-3b.asset"
       }
     },
     {
@@ -98,12 +122,16 @@
       "lighter": {
         "name": "llama3.2:3b",
         "label": "Llama 3.2 3B",
-        "notes": "safer starter for modest VRAM"
+        "notes": "safer starter for modest VRAM",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.2-3b.asset"
       },
       "recommended": {
         "name": "llama3.1:8b",
         "label": "Llama 3.1 8B",
-        "notes": "balanced CUDA choice"
+        "notes": "balanced CUDA choice",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b.asset"
       }
     },
     {
@@ -113,12 +141,16 @@
       "lighter": {
         "name": "llama3.1:8b",
         "label": "Llama 3.1 8B",
-        "notes": "strong local model for larger VRAM"
+        "notes": "strong local model for larger VRAM",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b.asset"
       },
       "recommended": {
         "name": "llama3.1:8b-q4",
         "label": "Llama 3.1 8B Q4",
-        "notes": "compressed CUDA recommendation"
+        "notes": "compressed CUDA recommendation",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b-q4.asset"
       }
     },
     {
@@ -128,12 +160,16 @@
       "lighter": {
         "name": "llama3.1:8b",
         "label": "Llama 3.1 8B",
-        "notes": "lighter fallback for big GPUs"
+        "notes": "lighter fallback for big GPUs",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.1-8b.asset"
       },
       "recommended": {
         "name": "llama3.3:70b-q4",
         "label": "Llama 3.3 70B Q4",
-        "notes": "high-capacity CUDA preset"
+        "notes": "high-capacity CUDA preset",
+        "source_kind": "repo-file",
+        "source_path": "model-artifacts/llama3.3-70b-q4.asset"
       }
     }
   ]

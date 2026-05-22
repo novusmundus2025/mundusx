@@ -24,6 +24,12 @@ The official starter model presets are defined in:
 
 That file is the reviewable source of truth for the default `start` / `connect` model choices on the CLI.
 
+The starter model packs that the CLI copies into the local cache live in:
+
+- [apps/cli/model-artifacts/](/Users/DBATALL/Documents/aigrid/apps/cli/model-artifacts/)
+
+At the moment those are repo-managed starter packs, so reviewers can inspect the source catalog and the artifact payloads together. The next step after this prototype is a remote registry-backed downloader.
+
 The CLI now has working local cache commands that operate on a manifest directory inside the model cache:
 
 - `opengpu model list`
@@ -39,8 +45,8 @@ The terminal output for these commands is intentionally styled like a compact re
 ### First run
 
 1. `opengpu start` or `opengpu connect` bootstraps the machine.
-2. The CLI checks whether the selected model is already cached.
-3. If the model is missing, it creates a local cache entry for it.
+2. The CLI checks whether the selected starter model pack is already cached.
+3. If the pack is missing, it copies the repo-managed artifact into the local cache.
 4. The selected model becomes the active model.
 
 ### Switching models
@@ -68,6 +74,7 @@ opengpu model add llama3.3:70b-q4
 Behavior:
 
 - Add the model to the local cache.
+- If the model is one of the official presets, copy the matching artifact from `apps/cli/model-artifacts/`.
 - Do not make it active unless the user also asks to use it.
 
 ### Removing a model
@@ -111,7 +118,7 @@ Behavior:
 
 ## What To Build Next
 
-- real model downloads from a registry or model source
+- remote model downloads from a registry or model source
 - `M` worker adapter
 - `CUDA` worker adapter
 - health checks for worker backends
