@@ -24,7 +24,8 @@ The official starter model presets are defined in:
 
 That file is the reviewable source of truth for the default `start` / `connect` model choices on the CLI.
 
-Important: the current CLI still only records and switches local model entries. It does **not** yet fetch real model weights from a registry or CDN.
+Those starter presets now point at public Hugging Face model files, so the default path does **not** need a Hugging Face account.
+If a model is missing, the CLI downloads the public model file, verifies the checksum when one is provided, and then caches it locally.
 
 The CLI now has working local cache commands that operate on a manifest directory inside the model cache:
 
@@ -41,22 +42,23 @@ The terminal output for these commands is intentionally styled like a compact re
 ### First run
 
 1. `opengpu start` or `opengpu connect` bootstraps the machine.
-2. The CLI checks whether the selected model is already cached.
-3. If the model is missing, it creates a local cache entry for it.
-4. The selected model becomes the active model.
+2. The CLI checks whether the selected open model is already cached.
+3. If the model is missing, it downloads the public Hugging Face model file first.
+4. When a checksum is present in the catalog, the CLI verifies the downloaded file before activating it.
+5. The selected model becomes the active model.
 
 ### Switching models
 
 Use a command like:
 
 ```bash
-opengpu model use llama3.1:8b
+opengpu model use Qwen/Qwen2.5-1.5B-Instruct
 ```
 
 Behavior:
 
 - If the model is already cached, switch immediately.
-- If it is missing, create a cache entry first, then switch.
+- If it is missing and the model is one of the official open presets, download it first, then switch.
 - Do not delete the old model automatically.
 
 ### Downloading a new model
@@ -64,12 +66,13 @@ Behavior:
 Use a command like:
 
 ```bash
-opengpu model add llama3.3:70b-q4
+opengpu model add HuggingFaceTB/SmolLM2-135M-Instruct
 ```
 
 Behavior:
 
 - Add the model to the local cache.
+- If the model is one of the official open presets, download it from Hugging Face first.
 - Do not make it active unless the user also asks to use it.
 
 ### Removing a model
@@ -77,7 +80,7 @@ Behavior:
 Use a command like:
 
 ```bash
-opengpu model remove llama3.1:8b
+opengpu model remove Qwen/Qwen2.5-1.5B-Instruct
 ```
 
 Behavior:
@@ -113,7 +116,6 @@ Behavior:
 
 ## What To Build Next
 
-- real model downloads from a registry or model source
 - `M` worker adapter
 - `CUDA` worker adapter
 - health checks for worker backends

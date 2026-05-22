@@ -1,8 +1,10 @@
 use crate::config::{config_dir, Config};
+use crate::model_catalog::{lookup_model, ModelOption};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +66,7 @@ pub fn list_models(config: &Config) -> io::Result<Vec<ModelRecord>> {
 
 pub fn add_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     ensure_effective_model_dir(config);
+    let _ = download_model_if_available(config, name)?;
     let mut models = list_models(config)?;
     let record = upsert_model(config, &mut models, name, false)?;
     sync_config_models(config, &models);
@@ -73,6 +76,7 @@ pub fn add_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
 
 pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     ensure_effective_model_dir(config);
+    let _ = download_model_if_available(config, name)?;
     let mut models = list_models(config)?;
     let record = upsert_model(config, &mut models, name, true)?;
     sync_config_models(config, &models);
@@ -102,6 +106,7 @@ pub fn remove_model(config: &mut Config, name: &str, force: bool) -> io::Result<
     }
 
     sync_config_models(config, &models);
+    let _ = remove_model_dir(config, name);
     if models.is_empty() {
         remove_manifest_dir_if_empty(config)?;
     } else {
@@ -123,6 +128,12 @@ pub fn prune_models(config: &mut Config) -> io::Result<usize> {
     });
 
     let removed = before.saturating_sub(models.len());
+    let active_to_keep = active_name.as_deref();
+    for model in models.iter() {
+        if Some(model.name.as_str()) != active_to_keep {
+            let _ = remove_model_dir(config, &model.name);
+        }
+    }
     if models.is_empty() {
         remove_manifest_dir_if_empty(config)?;
     } else {
@@ -148,6 +159,127 @@ pub fn configured_model_dir_string(config: &Config) -> String {
 
 pub fn manifest_dir(config: &Config) -> PathBuf {
     effective_model_dir(config).join(".opengpu")
+}
+
+fn model_cache_dir(config: &Config, name: &str) -> PathBuf {
+    effective_model_dir(config).join(sanitize_model_name(name))
+}
+
+fn source_filename(source_url: &str) -> String {
+    let without_query = source_url.split('?').next().unwrap_or(source_url);
+    Path::new(without_query)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("model.safetensors")
+        .to_string()
+}
+
+fn model_file_path(config: &Config, name: &str, option: &ModelOption) -> PathBuf {
+    model_cache_dir(config, name).join(source_filename(&option.source_url))
+}
+
+fn download_model_if_available(config: &Config, name: &str) -> io::Result<bool> {
+    let Some(option) = lookup_model(name) else {
+        return Ok(false);
+    };
+
+    download_model_from_option(config, name, &option)
+}
+
+fn download_model_from_option(
+    config: &Config,
+    name: &str,
+    option: &ModelOption,
+) -> io::Result<bool> {
+    if option.source_kind != "huggingface-open" {
+        return Ok(false);
+    }
+
+    let dest = model_file_path(config, name, &option);
+    if dest.exists() {
+        return Ok(false);
+    }
+
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let tmp = dest.with_extension("downloading");
+    if tmp.exists() {
+        let _ = fs::remove_file(&tmp);
+    }
+
+    if option.source_url.starts_with("file://") {
+        let source_path = option.source_url.trim_start_matches("file://");
+        fs::copy(source_path, &tmp)?;
+    } else {
+        let status = Command::new("curl")
+            .args([
+                "-fL",
+                "--retry",
+                "3",
+                "--continue-at",
+                "-",
+                "--silent",
+                "--show-error",
+                "--output",
+            ])
+            .arg(&tmp)
+            .arg(&option.source_url)
+            .status()?;
+
+        if !status.success() {
+            let _ = fs::remove_file(&tmp);
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("failed to download model from {}", option.source_url),
+            ));
+        }
+    }
+
+    if !option.sha256.trim().is_empty() {
+        verify_sha256(&tmp, &option.sha256)?;
+    }
+
+    if dest.exists() {
+        let _ = fs::remove_file(&dest);
+    }
+    fs::rename(&tmp, &dest)?;
+    Ok(true)
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
+    if let Ok(output) = Command::new("shasum").args(["-a", "256"]).arg(path).output() {
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            let digest = raw.split_whitespace().next().unwrap_or("").trim();
+            if digest.eq_ignore_ascii_case(expected) {
+                return Ok(());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("checksum mismatch for {}", path.display()),
+            ));
+        }
+    }
+
+    if let Ok(output) = Command::new("sha256sum").arg(path).output() {
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            let digest = raw.split_whitespace().next().unwrap_or("").trim();
+            if digest.eq_ignore_ascii_case(expected) {
+                return Ok(());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("checksum mismatch for {}", path.display()),
+            ));
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "could not verify checksum: shasum or sha256sum not available",
+    ))
 }
 
 fn now_unix_seconds() -> String {
@@ -282,6 +414,14 @@ fn remove_manifest_dir_if_empty(config: &Config) -> io::Result<()> {
     Ok(())
 }
 
+fn remove_model_dir(config: &Config, name: &str) -> io::Result<()> {
+    let dir = model_cache_dir(config, name);
+    if dir.exists() {
+        fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +470,33 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "llama3.1:8b");
         assert!(models[0].active);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn downloads_local_file_source_for_open_model() {
+        let (config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let source_path = temp_dir.join("source.safetensors");
+        fs::write(&source_path, b"model-bytes").expect("write source");
+
+        let option = crate::model_catalog::ModelOption {
+            name: "Test/OpenModel".to_string(),
+            label: "Test Open Model".to_string(),
+            notes: "local test source".to_string(),
+            source_kind: "huggingface-open".to_string(),
+            source_url: format!("file://{}", source_path.display()),
+            sha256: String::new(),
+        };
+
+        let downloaded = download_model_from_option(&config, &option.name, &option)
+            .expect("download");
+        assert!(downloaded);
+
+        let dest = model_file_path(&config, &option.name, &option);
+        assert!(dest.exists());
+        assert_eq!(fs::read(&dest).expect("dest"), b"model-bytes");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

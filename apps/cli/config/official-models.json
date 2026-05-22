@@ -6,14 +6,20 @@
       "min_memory_gb": 0,
       "max_memory_gb": 999,
       "lighter": {
-        "name": "llama3.2:1b",
-        "label": "Llama 3.2 1B",
-        "notes": "lighter, works on lower-spec machines"
+        "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "label": "SmolLM2 135M",
+        "notes": "light open starter model for quick local pulls",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors",
+        "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
       },
       "recommended": {
-        "name": "llama3.2:3b",
-        "label": "Llama 3.2 3B",
-        "notes": "recommended for your hardware"
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B",
+        "notes": "balanced open starter model",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
       }
     },
     {
@@ -21,14 +27,20 @@
       "min_memory_gb": 0,
       "max_memory_gb": 11,
       "lighter": {
-        "name": "llama3.2:1b",
-        "label": "Llama 3.2 1B",
-        "notes": "lower memory footprint for tiny machines"
+        "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "label": "SmolLM2 135M",
+        "notes": "light open starter model for small Apple Silicon nodes",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors",
+        "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
       },
       "recommended": {
-        "name": "llama3.2:3b",
-        "label": "Llama 3.2 3B",
-        "notes": "balanced Apple Silicon starter"
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B",
+        "notes": "safe Apple Silicon starter",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
       }
     },
     {
@@ -36,44 +48,41 @@
       "min_memory_gb": 12,
       "max_memory_gb": 23,
       "lighter": {
-        "name": "llama3.2:3b",
-        "label": "Llama 3.2 3B",
-        "notes": "safer default for mid-range Apple Silicon"
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B",
+        "notes": "balanced Apple Silicon starter",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
       },
       "recommended": {
-        "name": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "notes": "balanced Apple Silicon choice"
+        "name": "Qwen/Qwen2.5-1.5B-Instruct",
+        "label": "Qwen 2.5 1.5B",
+        "notes": "recommended Apple Silicon open model",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
       }
     },
     {
       "backend": "m",
       "min_memory_gb": 24,
-      "max_memory_gb": 47,
-      "lighter": {
-        "name": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "notes": "strong local model for larger unified memory"
-      },
-      "recommended": {
-        "name": "llama3.1:8b-q4",
-        "label": "Llama 3.1 8B Q4",
-        "notes": "compressed recommended preset for Mac contributors"
-      }
-    },
-    {
-      "backend": "m",
-      "min_memory_gb": 48,
       "max_memory_gb": 999,
       "lighter": {
-        "name": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "notes": "lighter fallback for very large memory Macs"
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B",
+        "notes": "lighter fallback for larger Apple Silicon nodes",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
       },
       "recommended": {
-        "name": "llama3.3:70b-q4",
-        "label": "Llama 3.3 70B Q4",
-        "notes": "high-capacity Mac preset"
+        "name": "Qwen/Qwen2.5-1.5B-Instruct",
+        "label": "Qwen 2.5 1.5B",
+        "notes": "recommended Apple Silicon open model",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
       }
     },
     {
@@ -81,59 +90,41 @@
       "min_memory_gb": 0,
       "max_memory_gb": 7,
       "lighter": {
-        "name": "llama3.2:1b",
-        "label": "Llama 3.2 1B",
-        "notes": "small GPU-friendly starter"
+        "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "label": "SmolLM2 135M",
+        "notes": "tiny open starter model for small VRAM nodes",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors",
+        "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
       },
       "recommended": {
-        "name": "llama3.2:3b",
-        "label": "Llama 3.2 3B",
-        "notes": "balanced CUDA starter"
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B",
+        "notes": "balanced CUDA open model",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
       }
     },
     {
       "backend": "cuda",
       "min_memory_gb": 8,
-      "max_memory_gb": 15,
-      "lighter": {
-        "name": "llama3.2:3b",
-        "label": "Llama 3.2 3B",
-        "notes": "safer starter for modest VRAM"
-      },
-      "recommended": {
-        "name": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "notes": "balanced CUDA choice"
-      }
-    },
-    {
-      "backend": "cuda",
-      "min_memory_gb": 16,
-      "max_memory_gb": 31,
-      "lighter": {
-        "name": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "notes": "strong local model for larger VRAM"
-      },
-      "recommended": {
-        "name": "llama3.1:8b-q4",
-        "label": "Llama 3.1 8B Q4",
-        "notes": "compressed CUDA recommendation"
-      }
-    },
-    {
-      "backend": "cuda",
-      "min_memory_gb": 32,
       "max_memory_gb": 999,
       "lighter": {
-        "name": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "notes": "lighter fallback for big GPUs"
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B",
+        "notes": "lighter CUDA fallback",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
       },
       "recommended": {
-        "name": "llama3.3:70b-q4",
-        "label": "Llama 3.3 70B Q4",
-        "notes": "high-capacity CUDA preset"
+        "name": "Qwen/Qwen2.5-1.5B-Instruct",
+        "label": "Qwen 2.5 1.5B",
+        "notes": "recommended CUDA open model",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/model.safetensors",
+        "sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
       }
     }
   ]

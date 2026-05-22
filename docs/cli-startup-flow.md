@@ -67,7 +67,8 @@ the CLI:
    - press `Ctrl-C` to abort the active `opengpu start` session cleanly and roll back to disconnected/paused
 7. If no active model is saved yet, caches a local model entry and marks it active.
    - the starter model presets come from `apps/cli/config/official-models.json`
-   - the current CLI still does not fetch real model weights from a remote registry
+   - the starter presets point at public Hugging Face model files, so no account is required for the default path
+   - if the selected model is missing, the CLI downloads the public file and verifies the checksum when one is present in the catalog
 8. Prints a startup summary with:
    - device ID
    - public key
@@ -103,6 +104,7 @@ the CLI:
 3. Reuses the active model cache if one already exists.
 4. Prepares the machine to participate in routing once the control plane is online.
 5. Reuses the active local model entry if it is already configured.
+   - if the selected open model is missing, it is downloaded before being marked active
 
 ## Exit
 
