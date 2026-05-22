@@ -1,14 +1,12 @@
 use crate::contracts::{Backend, WorkerLaunchRequest, WorkerLaunchResponse};
 use clap::Parser;
-use serde::Serialize;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::env;
 use std::path::PathBuf;
 use std::path::Path;
 use std::process::Command;
-
-const METAL_RUNNER_SWIFT: &str = include_str!("metal_runner.swift");
+use std::io;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -48,151 +46,204 @@ fn resolved_backend(backend: Backend) -> Backend {
                 }
             }
 
-            if std::env::var_os("NVIDIA_VISIBLE_DEVICES").is_some()
-                || std::env::var_os("CUDA_VISIBLE_DEVICES").is_some()
-            {
-                return Backend::Cuda;
-            }
-
             Backend::Auto
         }
         other => other,
     }
 }
 
-fn normalize_token(token: &str) -> String {
-    token
-        .trim_matches(|ch: char| !ch.is_alphanumeric())
-        .to_lowercase()
+#[derive(Debug, Deserialize)]
+struct CachedModelRecord {
+    name: String,
+    active: bool,
 }
 
-fn backend_compute_budget(backend: Backend) -> usize {
-    match backend {
-        Backend::M => 50_000,
-        Backend::Cuda => 100_000,
-        Backend::Auto => 25_000,
+fn sanitize_model_name(name: &str) -> String {
+    let mut output = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+        } else {
+            output.push('_');
+        }
+    }
+
+    let trimmed = output.trim_matches('_');
+    if trimmed.is_empty() {
+        "model".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
-fn execute_request_deterministic(request: &WorkerLaunchRequest, backend: Backend) -> WorkerLaunchResponse {
-    let worker_id = format!("worker-{}", uuid::Uuid::new_v4().simple());
-    let model_name = request.model.clone().unwrap_or_else(|| "default".to_string());
-    let budget = backend_compute_budget(backend);
-    let tokens: Vec<String> = request
-        .prompt
-        .split_whitespace()
-        .map(normalize_token)
-        .filter(|token| !token.is_empty())
-        .collect();
-    let mut frequencies: BTreeMap<String, usize> = BTreeMap::new();
-    for token in &tokens {
-        *frequencies.entry(token.clone()).or_insert(0) += 1;
-    }
-
-    let mut checksum: u64 = 0;
-    for iteration in 0..budget {
-        for token in &tokens {
-            for byte in token.as_bytes() {
-                checksum = checksum
-                    .wrapping_mul(31)
-                    .wrapping_add((*byte as u64) + iteration as u64 + model_name.len() as u64);
+fn active_model_name_from_cache(model_dir: &Path) -> Option<String> {
+    let manifest_dir = model_dir.join(".opengpu");
+    let entries = fs::read_dir(manifest_dir).ok()?;
+    for entry in entries.flatten() {
+        if entry.file_type().ok()?.is_file()
+            && entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+        {
+            let raw = fs::read_to_string(entry.path()).ok()?;
+            if let Ok(record) = serde_json::from_str::<CachedModelRecord>(&raw) {
+                if record.active {
+                    return Some(record.name);
+                }
             }
         }
     }
-
-    let unique_tokens = frequencies.len();
-    let token_count = tokens.len();
-    let top_token = frequencies
-        .iter()
-        .max_by_key(|(_, count)| *count)
-        .map(|(token, count)| format!("{token} ({count})"))
-        .unwrap_or_else(|| "none".to_string());
-
-    let output = format!(
-        "backend={backend}; model={model_name}; tokens={token_count}; unique={unique_tokens}; top={top_token}; checksum={checksum}"
-    );
-
-    WorkerLaunchResponse {
-        job_id: request.job_id.clone(),
-        worker_id,
-        status: "completed".to_string(),
-        output,
-        error: None,
-        backend,
-        node_id: request.node_id.clone(),
-    }
+    None
 }
 
-fn script_temp_path() -> Result<PathBuf, String> {
-    let temp_dir = env::temp_dir();
-    let path = temp_dir.join(format!(
-        "opengpu-metal-{}.swift",
-        uuid::Uuid::new_v4().simple()
-    ));
-    Ok(path)
-}
-
-fn run_metal_request(request: &WorkerLaunchRequest, backend: Backend) -> Option<WorkerLaunchResponse> {
-    if backend != Backend::M {
-        return None;
+fn collect_gguf_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = request;
-        return None;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let script_path = match script_temp_path() {
-            Ok(path) => path,
-            Err(_) => return None,
-        };
-
-        if fs::write(&script_path, METAL_RUNNER_SWIFT).is_err() {
-            return None;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_gguf_files(&path, files)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("gguf") {
+            files.push(path);
         }
-
-        let model_name = request.model.clone().unwrap_or_else(|| "default".to_string());
-        let output = Command::new("xcrun")
-            .arg("swift")
-            .arg(&script_path)
-            .arg("--job-id")
-            .arg(&request.job_id)
-            .arg("--node-id")
-            .arg(&request.node_id)
-            .arg("--prompt")
-            .arg(&request.prompt)
-            .arg("--model")
-            .arg(&model_name)
-            .arg("--backend")
-            .arg(backend.as_str())
-            .output();
-
-        let _ = fs::remove_file(&script_path);
-
-        let output = match output {
-            Ok(output) if output.status.success() => output,
-            _ => return None,
-        };
-
-        let stdout = match String::from_utf8(output.stdout) {
-            Ok(text) => text,
-            Err(_) => return None,
-        };
-
-        serde_json::from_str(stdout.trim()).ok()
     }
+
+    Ok(())
+}
+
+fn resolve_model_path(model_dir: &Path, model_name: Option<&str>) -> io::Result<PathBuf> {
+    let mut search_dirs = Vec::new();
+    if let Some(name) = model_name {
+        search_dirs.push(model_dir.join(sanitize_model_name(name)));
+    }
+    if let Some(active_name) = active_model_name_from_cache(model_dir) {
+        let active_dir = model_dir.join(sanitize_model_name(&active_name));
+        if !search_dirs.iter().any(|dir| dir == &active_dir) {
+            search_dirs.push(active_dir);
+        }
+    }
+    search_dirs.push(model_dir.to_path_buf());
+
+    let mut files = Vec::new();
+    for dir in search_dirs {
+        collect_gguf_files(&dir, &mut files)?;
+        if !files.is_empty() {
+            break;
+        }
+    }
+
+    files.sort();
+    files
+        .into_iter()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no cached GGUF model found"))
+}
+
+fn run_llama_command(
+    model_path: &Path,
+    prompt: &str,
+) -> Result<(String, String), String> {
+    let mut command = Command::new("llama-cli");
+    command
+        .arg("-m")
+        .arg(model_path)
+        .arg("--device")
+        .arg("BLAS")
+        .arg("--simple-io")
+        .arg("--single-turn")
+        .arg("--no-display-prompt")
+        .arg("--color")
+        .arg("off")
+        .arg("-p")
+        .arg(prompt)
+        .arg("-n")
+        .arg("64")
+        .arg("--temp")
+        .arg("0.2")
+        .arg("--seed")
+        .arg("42");
+
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to launch llama-cli: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "llama-cli exited {} — {}",
+            output.status.code().unwrap_or(-1),
+            stderr.lines().next().unwrap_or("no stderr")
+        ));
+    }
+
+    let generated = String::from_utf8(output.stdout)
+        .map_err(|error| error.to_string())?
+        .trim()
+        .to_string();
+
+    Ok((generated, "blas".to_string()))
+}
+
+fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchResponse, String> {
+    let model_dir = env::var_os("OPENGPU_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(".opengpu/models")
+        });
+    let model_path = resolve_model_path(&model_dir, request.model.as_deref())
+        .map_err(|error| error.to_string())?;
+
+    let model_name = request
+        .model
+        .clone()
+        .or_else(|| active_model_name_from_cache(&model_dir))
+        .unwrap_or_else(|| "active".to_string());
+
+    let (generated, runtime_mode) = run_llama_command(&model_path, &request.prompt)?;
+
+    Ok(WorkerLaunchResponse {
+        job_id: request.job_id.clone(),
+        worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+        status: "completed".to_string(),
+        output: format!(
+            "llama.cpp mode={runtime_mode}; model={model_name}; path={}; response={generated}",
+            model_path.display()
+        ),
+        error: None,
+        backend: Backend::M,
+        node_id: request.node_id.clone(),
+    })
 }
 
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
-    if let Some(response) = run_metal_request(request, backend) {
-        return response;
+    if backend == Backend::M {
+        return match run_llama_request(request) {
+            Ok(response) => response,
+            Err(error) => WorkerLaunchResponse {
+                job_id: request.job_id.clone(),
+                worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                status: "failed".to_string(),
+                output: String::new(),
+                error: Some(error),
+                backend,
+                node_id: request.node_id.clone(),
+            },
+        };
     }
 
-    execute_request_deterministic(request, backend)
+    WorkerLaunchResponse {
+        job_id: request.job_id.clone(),
+        worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+        status: "failed".to_string(),
+        output: String::new(),
+        error: Some(format!("backend {backend} is not enabled in the Mac M-only worker")),
+        backend,
+        node_id: request.node_id.clone(),
+    }
 }
 
 pub fn worker_main(cli: WorkerCli) {

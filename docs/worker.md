@@ -33,12 +33,12 @@ In the current scaffold, the worker runs as a subcommand of the node agent binar
 
 The prototype worker:
 
-- performs deterministic local prompt analysis and compute
-- returns a completed response
-- chooses a concrete backend when `auto` is passed
-- on macOS `M`, prefers a native Swift/Metal compute path
+- performs real local inference on macOS `M` by calling `llama.cpp` against the cached GGUF model
+- runs in single-turn batch mode via `llama-cli --device BLAS`
+- returns the generated text from the local model
+- chooses the Mac `M` path when `auto` is passed on Apple Silicon
 - is normally launched by the node agent, not run directly by users
 
 ## Next Step
 
-Replace the remaining deterministic fallback with a model-aware Apple Silicon inference path.
+Add health checks and policy controls around the Mac model runner.

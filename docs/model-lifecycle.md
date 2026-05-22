@@ -24,8 +24,8 @@ The official starter model presets are defined in:
 
 That file is the reviewable source of truth for the default `start` / `connect` model choices on the CLI.
 
-Those starter presets now point at public Hugging Face model files, so the default path does **not** need a Hugging Face account.
-If a model is missing, the CLI downloads the public model file, verifies the checksum when one is provided, and then caches it locally.
+Those starter presets now point at public Hugging Face GGUF model files compatible with the local Mac runtime, so the default path does **not** need a Hugging Face account.
+If a model is missing, the CLI downloads the public GGUF file, verifies the checksum when one is provided, and then caches it locally.
 
 The CLI now has working local cache commands that operate on a manifest directory inside the model cache:
 

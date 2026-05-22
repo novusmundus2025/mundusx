@@ -65,7 +65,7 @@ For a provider machine, the user should install:
 1. `opengpu` CLI
 2. node agent service
 3. backend runtime support for the machine:
-   - `Metal` for `M` series
+   - `llama.cpp` with `BLAS` / `Accelerate` on Mac
 4. optional monitoring / telemetry exporter if we bundle it locally later
 
 The contribution percent is a **cap**, not full ownership of the machine:

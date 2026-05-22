@@ -57,6 +57,8 @@ The worker should return:
 - worker ID
 - status
 - optional error text
+ 
+When running on Mac `M`, the worker uses the cached GGUF model with `llama.cpp` in single-turn batch mode via `llama-cli --device BLAS`.
 
 ## Job Queue And Completion
 
@@ -76,7 +78,7 @@ The current prototype adds one small control-plane queue:
 2. Control plane queues the job.
 3. Agent claims the job when it is ready.
 4. Agent launches the worker locally.
-5. Worker runs on `M` series.
+5. Worker runs on `M` series using the local Mac runtime.
 6. Worker returns output to the agent.
 7. Agent forwards the result upstream.
 
@@ -101,5 +103,4 @@ The transport and service implementations are partially in place, including:
 - control-plane job queue submission and claim flow
 - local worker launch from the agent
 
-The next gap is replacing the simulated worker output with real execution.
-The current worker already performs deterministic local compute; the next gap is a model-aware `M` inference kernel or model execution path.
+The next gap is adding health checks and policy controls around the real `M` model runner.

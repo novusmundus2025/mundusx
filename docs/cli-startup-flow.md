@@ -66,8 +66,8 @@ the CLI:
    - press `Ctrl-C` to abort the active `opengpu start` session cleanly and roll back to disconnected/paused
 7. If no active model is saved yet, caches a local model entry and marks it active.
    - the starter model presets come from `apps/cli/config/official-models.json`
-   - the starter presets point at public Hugging Face model files, so no account is required for the default path
-   - if the selected model is missing, the CLI downloads the public file and verifies the checksum when one is present in the catalog
+   - the starter presets point at public Hugging Face GGUF files compatible with the local Mac runtime, so no account is required for the default path
+   - if the selected model is missing, the CLI downloads the public GGUF file and verifies the checksum when one is present in the catalog
 8. Prints a startup summary with:
    - device ID
    - public key

@@ -8,18 +8,18 @@
       "lighter": {
         "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
         "label": "SmolLM2 135M",
-        "notes": "light open starter model for quick local pulls",
+        "notes": "light open starter model for quick local pulls on Mac",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors",
-        "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
+        "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
+        "sha256": ""
       },
       "recommended": {
         "name": "Qwen/Qwen2.5-0.5B-Instruct",
         "label": "Qwen 2.5 0.5B",
-        "notes": "balanced open starter model",
+        "notes": "balanced open starter model for Mac inference",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
+        "sha256": ""
       }
     },
     {
@@ -31,16 +31,16 @@
         "label": "SmolLM2 135M",
         "notes": "light open starter model for small Apple Silicon nodes",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors",
-        "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
+        "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
+        "sha256": ""
       },
       "recommended": {
         "name": "Qwen/Qwen2.5-0.5B-Instruct",
         "label": "Qwen 2.5 0.5B",
         "notes": "safe Apple Silicon starter",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
+        "sha256": ""
       }
     },
     {
@@ -52,16 +52,16 @@
         "label": "Qwen 2.5 0.5B",
         "notes": "balanced Apple Silicon starter",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
+        "sha256": ""
       },
       "recommended": {
         "name": "Qwen/Qwen2.5-1.5B-Instruct",
         "label": "Qwen 2.5 1.5B",
         "notes": "recommended Apple Silicon open model",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
+        "sha256": ""
       }
     },
     {
@@ -71,18 +71,18 @@
       "lighter": {
         "name": "Qwen/Qwen2.5-0.5B-Instruct",
         "label": "Qwen 2.5 0.5B",
-        "notes": "lighter fallback for larger Apple Silicon nodes",
+        "notes": "lighter option for larger Apple Silicon nodes",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
+        "sha256": ""
       },
       "recommended": {
         "name": "Qwen/Qwen2.5-1.5B-Instruct",
         "label": "Qwen 2.5 1.5B",
         "notes": "recommended Apple Silicon open model",
         "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
+        "sha256": ""
       }
     }
   ]

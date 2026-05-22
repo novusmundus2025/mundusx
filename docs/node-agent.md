@@ -45,7 +45,7 @@ The prototype agent:
 
 ## Next Step
 
-The next step is to replace the simulated worker output with real `M` execution.
+The next step is to add health checks and policy controls around the real `M` model runner.
 
 ## Local Development URL
 
