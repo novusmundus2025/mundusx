@@ -6,8 +6,6 @@ pub struct ModelOption {
     pub name: String,
     pub label: String,
     pub notes: String,
-    pub source_kind: String,
-    pub source_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,15 +63,11 @@ pub fn selection_for(backend: Backend, memory_gb: u64) -> ModelSelection {
                 name: "llama3.2:1b".to_string(),
                 label: "Llama 3.2 1B".to_string(),
                 notes: "fallback lighter preset".to_string(),
-                source_kind: "repo-file".to_string(),
-                source_path: "model-artifacts/llama3.2-1b.asset".to_string(),
             },
             recommended: ModelOption {
                 name: "llama3.2:3b".to_string(),
                 label: "Llama 3.2 3B".to_string(),
                 notes: "fallback recommended preset".to_string(),
-                source_kind: "repo-file".to_string(),
-                source_path: "model-artifacts/llama3.2-3b.asset".to_string(),
             },
         });
 
@@ -94,19 +88,6 @@ pub fn lookup_model(name: &str) -> Option<ModelOption> {
         .find(|option| option.name == name)
 }
 
-pub fn artifact_bytes_for(source_path: &str) -> Option<&'static [u8]> {
-    match source_path {
-        "model-artifacts/llama3.2-1b.asset" => Some(include_bytes!("../model-artifacts/llama3.2-1b.asset")),
-        "model-artifacts/llama3.2-3b.asset" => Some(include_bytes!("../model-artifacts/llama3.2-3b.asset")),
-        "model-artifacts/llama3.1-8b.asset" => Some(include_bytes!("../model-artifacts/llama3.1-8b.asset")),
-        "model-artifacts/llama3.1-8b-q4.asset" => Some(include_bytes!("../model-artifacts/llama3.1-8b-q4.asset")),
-        "model-artifacts/llama3.3-70b-q4.asset" => {
-            Some(include_bytes!("../model-artifacts/llama3.3-70b-q4.asset"))
-        }
-        _ => None,
-    }
-}
-
 fn fallback_catalog() -> ModelCatalog {
     ModelCatalog {
         version: 1,
@@ -118,15 +99,11 @@ fn fallback_catalog() -> ModelCatalog {
                 name: "llama3.2:1b".to_string(),
                 label: "Llama 3.2 1B".to_string(),
                 notes: "fallback lighter preset".to_string(),
-                source_kind: "repo-file".to_string(),
-                source_path: "model-artifacts/llama3.2-1b.asset".to_string(),
             },
             recommended: ModelOption {
                 name: "llama3.2:3b".to_string(),
                 label: "Llama 3.2 3B".to_string(),
                 notes: "fallback recommended preset".to_string(),
-                source_kind: "repo-file".to_string(),
-                source_path: "model-artifacts/llama3.2-3b.asset".to_string(),
             },
         }],
     }
@@ -153,12 +130,5 @@ mod tests {
     fn looks_up_catalog_model() {
         let model = lookup_model("llama3.1:8b").expect("model");
         assert_eq!(model.name, "llama3.1:8b");
-        assert_eq!(model.source_kind, "repo-file");
-    }
-
-    #[test]
-    fn resolves_artifact_bytes() {
-        let bytes = artifact_bytes_for("model-artifacts/llama3.1-8b.asset").expect("bytes");
-        assert!(!bytes.is_empty());
     }
 }

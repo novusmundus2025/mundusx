@@ -1,5 +1,4 @@
 use crate::config::{config_dir, Config};
-use crate::model_catalog::{artifact_bytes_for, lookup_model};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -12,12 +11,6 @@ pub struct ModelRecord {
     pub active: bool,
     pub cached_at: String,
     pub model_dir: String,
-    #[serde(default)]
-    pub source_kind: String,
-    #[serde(default)]
-    pub source_path: String,
-    #[serde(default)]
-    pub artifact_path: String,
 }
 
 pub fn effective_model_dir(config: &Config) -> PathBuf {
@@ -111,7 +104,6 @@ pub fn remove_model(config: &mut Config, name: &str, force: bool) -> io::Result<
     sync_config_models(config, &models);
     if models.is_empty() {
         remove_manifest_dir_if_empty(config)?;
-        remove_artifact_dir_if_empty(config)?;
     } else {
         write_models(config, &models)?;
     }
@@ -133,7 +125,6 @@ pub fn prune_models(config: &mut Config) -> io::Result<usize> {
     let removed = before.saturating_sub(models.len());
     if models.is_empty() {
         remove_manifest_dir_if_empty(config)?;
-        remove_artifact_dir_if_empty(config)?;
     } else {
         write_models(config, &models)?;
     }
@@ -166,10 +157,6 @@ fn now_unix_seconds() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-fn artifact_dir(config: &Config) -> PathBuf {
-    manifest_dir(config).join("artifacts")
-}
-
 fn sanitize_model_name(name: &str) -> String {
     let mut output = String::with_capacity(name.len());
     for ch in name.chars() {
@@ -191,32 +178,6 @@ fn manifest_path(config: &Config, name: &str) -> PathBuf {
     manifest_dir(config).join(format!("{}.json", sanitize_model_name(name)))
 }
 
-fn artifact_path(config: &Config, name: &str) -> PathBuf {
-    artifact_dir(config).join(format!("{}.asset", sanitize_model_name(name)))
-}
-
-fn generated_model_pack_bytes(name: &str) -> Vec<u8> {
-    format!(
-        "OpenGPU starter model pack\nname: {name}\nsource_kind: generated\nsource_path: generated://{name}\n\nThis local artifact stands in for a remote registry until the remote download backend lands.\n"
-    )
-    .into_bytes()
-}
-
-fn resolve_model_source(name: &str) -> (String, String, Vec<u8>) {
-    if let Some(option) = lookup_model(name) {
-        let bytes = artifact_bytes_for(&option.source_path)
-            .map(|bytes| bytes.to_vec())
-            .unwrap_or_else(|| generated_model_pack_bytes(name));
-        return (option.source_kind, option.source_path, bytes);
-    }
-
-    (
-        "generated".to_string(),
-        format!("generated://{}", sanitize_model_name(name)),
-        generated_model_pack_bytes(name),
-    )
-}
-
 fn sync_config_models(config: &mut Config, models: &[ModelRecord]) {
     config.models = models.iter().map(|model| model.name.clone()).collect();
     config.active_model = models
@@ -231,23 +192,6 @@ fn ensure_manifest_dir(config: &Config) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn ensure_artifact_dir(config: &Config) -> io::Result<PathBuf> {
-    let dir = artifact_dir(config);
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-fn materialize_model_artifact(
-    config: &Config,
-    name: &str,
-) -> io::Result<(String, String, PathBuf)> {
-    let (source_kind, source_path, bytes) = resolve_model_source(name);
-    let _ = ensure_artifact_dir(config)?;
-    let path = artifact_path(config, name);
-    fs::write(&path, bytes)?;
-    Ok((source_kind, source_path, path))
-}
-
 fn upsert_model(
     config: &mut Config,
     models: &mut Vec<ModelRecord>,
@@ -257,7 +201,6 @@ fn upsert_model(
     ensure_manifest_dir(config)?;
     let model_dir = effective_model_dir(config).display().to_string();
     let now = now_unix_seconds();
-    let (source_kind, source_path, artifact_path) = materialize_model_artifact(config, name)?;
 
     for model in models.iter_mut() {
         if model.name == name {
@@ -267,9 +210,6 @@ fn upsert_model(
             }
             model.cached_at = now.clone();
             model.model_dir = model_dir.clone();
-            model.source_kind = source_kind.clone();
-            model.source_path = source_path.clone();
-            model.artifact_path = artifact_path.display().to_string();
         } else if active {
             model.active = false;
         }
@@ -281,9 +221,6 @@ fn upsert_model(
             active,
             cached_at: now,
             model_dir,
-            source_kind,
-            source_path,
-            artifact_path: artifact_path.display().to_string(),
         });
     }
 
@@ -307,7 +244,6 @@ fn upsert_model(
 
 fn write_models(config: &Config, models: &[ModelRecord]) -> io::Result<()> {
     let dir = ensure_manifest_dir(config)?;
-    let artifact_root = ensure_artifact_dir(config)?;
 
     for model in models {
         let path = manifest_path(config, &model.name);
@@ -331,43 +267,11 @@ fn write_models(config: &Config, models: &[ModelRecord]) -> io::Result<()> {
         }
     }
 
-    let expected_artifacts = models
-        .iter()
-        .map(|model| artifact_path(config, &model.name))
-        .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
-        .collect::<Vec<_>>();
-
-    for entry in fs::read_dir(&artifact_root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            let current_name = entry.file_name();
-            if !expected_artifacts.iter().any(|item| item == &current_name) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
-
-    if fs::read_dir(&artifact_root)?.next().is_none() {
-        let _ = fs::remove_dir(&artifact_root);
-    }
-
     Ok(())
 }
 
 fn remove_manifest_dir_if_empty(config: &Config) -> io::Result<()> {
     let dir = manifest_dir(config);
-    if !dir.exists() {
-        return Ok(());
-    }
-
-    if fs::read_dir(&dir)?.next().is_none() {
-        let _ = fs::remove_dir(&dir);
-    }
-    Ok(())
-}
-
-fn remove_artifact_dir_if_empty(config: &Config) -> io::Result<()> {
-    let dir = artifact_dir(config);
     if !dir.exists() {
         return Ok(());
     }
@@ -410,8 +314,6 @@ mod tests {
 
         let added_path = manifest_path(&config, "llama3.1:8b");
         assert!(added_path.exists());
-        let artifact_path = artifact_path(&config, "llama3.1:8b");
-        assert!(artifact_path.exists());
 
         let active = use_model(&mut config, "llama3.1:8b").expect("use model");
         assert_eq!(active.name, "llama3.1:8b");

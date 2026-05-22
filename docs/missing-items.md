@@ -46,8 +46,7 @@ This document tracks what is still missing before OpenGPU becomes a full product
 
 - [x] Local worker launch path scaffold
 - [x] Contributor model cache manifest and switch commands
-- [x] Starter model pack materialization backend
-- [ ] Remote model registry download backend
+- [ ] Real contributor model download backend
 - [x] `M` worker adapter
 - [ ] `CUDA` worker adapter
 - [ ] Real execution payloads

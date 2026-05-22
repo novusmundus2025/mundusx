@@ -576,9 +576,9 @@ fn run_init() -> Config {
                 std::process::exit(1);
             }
             print_model_event(
-                "MODEL MATERIALIZED",
+                "MODEL SELECTED",
                 &model.name,
-                "starter pack copied into local cache",
+                "starter model recorded in local cache",
                 Color::Cyan,
                 &config,
             );
