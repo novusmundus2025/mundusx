@@ -66,6 +66,7 @@ the CLI:
    - use the arrow keys and press Enter to confirm
    - press `Ctrl-C` to abort the active `opengpu start` session cleanly and roll back to disconnected/paused
 7. If no active model is saved yet, caches a local model entry and marks it active.
+   - the starter model presets come from `apps/cli/config/official-models.json`
 8. Prints a startup summary with:
    - device ID
    - public key

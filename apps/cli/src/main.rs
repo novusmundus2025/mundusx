@@ -1,6 +1,7 @@
 mod config;
 mod identity;
 mod model;
+mod model_catalog;
 mod routing;
 mod types;
 
@@ -22,6 +23,7 @@ use model::{
     active_model_name, add_model, configured_model_dir_string, ensure_effective_model_dir,
     list_models, prune_models, remove_model, use_model, ModelRecord,
 };
+use model_catalog::{selection_for, ModelOption};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -37,6 +39,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Start the OpenGPU network
+    Start,
     /// Join the OpenGPU network (runs init on first use)
     Connect,
     /// Leave the OpenGPU network
@@ -461,60 +465,41 @@ fn detect_memory_gb() -> u64 {
     8 // safe fallback
 }
 
-fn recommended_models(backend: Backend) -> (&'static str, &'static str) {
-    // returns (lighter_model, recommended_model) based on actual detected memory
-    let gb = detect_memory_gb();
-    match backend {
-        Backend::M => match gb {
-            0..=11  => ("llama3.2:1b",  "llama3.2:3b"),
-            12..=23 => ("llama3.2:3b",  "llama3.1:8b"),
-            24..=47 => ("llama3.1:8b",  "llama3.1:8b-q4"),
-            _       => ("llama3.1:8b",  "llama3.3:70b-q4"),
-        },
-        Backend::Cuda => match gb {
-            0..=7  => ("llama3.2:1b", "llama3.2:3b"),
-            8..=15 => ("llama3.2:3b", "llama3.1:8b"),
-            16..=31 => ("llama3.1:8b", "llama3.1:8b-q4"),
-            _      => ("llama3.1:8b", "llama3.3:70b-q4"),
-        },
-        Backend::Auto => ("llama3.2:1b", "llama3.2:3b"),
-    }
-}
-
 enum ModelChoice {
-    Model(String),
+    Model(ModelOption),
     LocalPath(String),
 }
 
 fn prompt_model_selection(backend: Backend) -> ModelChoice {
-    let (lighter, recommended) = recommended_models(backend);
     let gb = detect_memory_gb();
+    let selection = selection_for(backend, gb);
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return ModelChoice::Model(recommended.to_string());
+        return ModelChoice::Model(selection.recommended);
     }
 
     const LOCAL_OPT: usize = 2;
-    let options: &[&str] = &[lighter, recommended, "I already have models locally"];
+    let options = [selection.lighter.clone(), selection.recommended.clone()];
     let mut selected: usize = 1; // start on recommended
 
     if enable_raw_mode().is_err() {
-        return ModelChoice::Model(recommended.to_string());
+        return ModelChoice::Model(selection.recommended);
     }
 
     let render = |selected: usize| {
         print!("\x1b[2J\x1b[H");
         println!("Which model should this node run?");
-        println!("detected: {} / {}GB memory", backend, gb);
+        println!("detected: {} / {}GB memory", selection.backend, selection.memory_gb);
         println!("----------------------------------");
-        for (i, label) in options.iter().enumerate() {
+        for (i, option) in options.iter().enumerate() {
             let marker = if i == selected { ">>" } else { "  " };
-            let tag = match i {
-                0 => "  – lighter, works on lower-spec machines",
-                1 => "  (recommended for your hardware)",
-                _ => "",
-            };
-            println!("{marker} {}. {}{}", i + 1, label, tag);
+            println!(
+                "{marker} {}. {} [{}] — {}",
+                i + 1,
+                option.label,
+                option.name,
+                option.notes
+            );
         }
         println!();
         println!("Use ↑/↓ and Enter — you must choose one");
@@ -561,12 +546,12 @@ fn prompt_model_selection(backend: Backend) -> ModelChoice {
         let path = path.trim().to_string();
         if path.is_empty() {
             // still can't skip — fall back to recommended
-            ModelChoice::Model(recommended.to_string())
+            ModelChoice::Model(selection.recommended)
         } else {
             ModelChoice::LocalPath(path)
         }
     } else {
-        ModelChoice::Model(options[result].to_string())
+        ModelChoice::Model(options[result].clone())
     }
 }
 
@@ -586,8 +571,8 @@ fn run_init() -> Config {
     match prompt_model_selection(config.backend_preference) {
         ModelChoice::Model(model) => {
             ensure_effective_model_dir(&mut config);
-            if let Err(error) = use_model(&mut config, &model) {
-                eprintln!("failed to cache model `{model}`: {error}");
+            if let Err(error) = use_model(&mut config, &model.name) {
+                eprintln!("failed to cache model `{}`: {error}", model.name);
                 std::process::exit(1);
             }
         }
@@ -632,7 +617,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Connect => {
+        Commands::Start | Commands::Connect => {
             // auto-init on first run
             if !config_exists() {
                 run_init();

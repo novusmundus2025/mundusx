@@ -14,6 +14,7 @@ This document tracks what is still missing before OpenGPU becomes a full product
 - [x] Device identity keypair reuse
 - [x] Start-first onboarding flow
 - [x] Friendly exit command
+- [x] Reviewable official model catalog config
 - [ ] Signed release binaries published from tags
 - [ ] Public install endpoint behind `novusx.ai`
 - [ ] Packaging checks on macOS and Linux release artifacts

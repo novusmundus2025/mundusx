@@ -18,6 +18,12 @@ The current config already carries:
 
 On the node agent side, the worker already reads an effective model directory from config.
 
+The official starter model presets are defined in:
+
+- [apps/cli/config/official-models.json](/Users/DBATALL/Documents/aigrid/apps/cli/config/official-models.json)
+
+That file is the reviewable source of truth for the default `start` / `connect` model choices on the CLI.
+
 The CLI now has working local cache commands that operate on a manifest directory inside the model cache:
 
 - `opengpu model list`
