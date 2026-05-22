@@ -15,6 +15,10 @@ pub struct Config {
     pub backend_preference: Backend,
     pub contribution_percent: u8,
     pub control_plane_url: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub model_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -30,6 +34,8 @@ impl Default for Config {
             backend_preference: Backend::Auto,
             contribution_percent: 0,
             control_plane_url: "https://api.novusx.ai".to_string(),
+            models: vec![],
+            model_dir: None,
         }
     }
 }

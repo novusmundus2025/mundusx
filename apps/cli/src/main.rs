@@ -1,30 +1,22 @@
 mod config;
 mod identity;
-mod nodes;
 mod routing;
 mod types;
 
 use clap::{Parser, Subcommand};
 use crossterm::event::{read, Event, KeyCode, KeyModifiers};
+use crossterm::style::{style, Color, Stylize};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::Serialize;
 use std::env;
-use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::PathBuf;
 use std::thread;
-use types::{Backend, JobRequest};
+use types::Backend;
 
-use config::{
-    config_dir, config_exists, config_path, load_config, remove_config_files, resolved_config_path,
-    save_config, Config,
-};
+use config::{config_exists, load_config, resolved_config_path, save_config, Config};
 use identity::{
     device_id_for_identity, ensure_identity, load_identity, load_or_create_identity,
-    resolved_identity_path,
 };
-use nodes::{live_nodes, sample_nodes};
-use routing::select_best_node;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,83 +32,29 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Init {
-        #[arg(long)]
-        force: bool,
-    },
-    Start {
-        #[arg(long)]
-        m: bool,
-        #[arg(long)]
-        cuda: bool,
-        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
-        percent: Option<u8>,
-    },
-    Login {
-        #[arg(long)]
-        token: Option<String>,
-        #[arg(long)]
-        name: Option<String>,
-    },
-    Logout,
+    /// Join the OpenGPU network (runs init on first use)
     Connect,
+    /// Leave the OpenGPU network
     Disconnect,
-    Exit,
+    /// Show current node status
     Status {
         #[arg(long)]
         json: bool,
     },
-    Nodes {
-        #[arg(long)]
-        json: bool,
-    },
-    Pause,
-    Resume,
-    Config {
-        #[command(subcommand)]
-        command: ConfigCommands,
-    },
-    Doctor,
-    Logs,
+    /// Update the OpenGPU binary
     Update,
-}
-
-#[derive(Subcommand, Debug)]
-enum ConfigCommands {
-    Path,
-    Show {
-        #[arg(long)]
-        json: bool,
-    },
-    Set {
-        key: ConfigKey,
-        value: String,
-    },
-    Reset {
-        #[arg(long)]
-        yes: bool,
-    },
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-enum ConfigKey {
-    ControlPlaneUrl,
-    ProfileName,
-    Backend,
-    DeviceId,
-    ContributionPercent,
-}
-
-fn default_job_request(preferred_backend: Backend) -> JobRequest {
-    JobRequest {
-        request_id: format!("local-{}", uuid::Uuid::new_v4().simple()),
-        prompt: "status".to_string(),
-        preferred_backend,
-    }
 }
 
 fn current_config_or_default() -> Config {
     load_config().ok().flatten().unwrap_or_default()
+}
+
+fn resolved_backend(config: &Config) -> Backend {
+    if config.backend_preference.is_auto() {
+        detect_backend()
+    } else {
+        config.backend_preference
+    }
 }
 
 fn display_public_key_fingerprint(config: &Config) -> String {
@@ -164,7 +102,17 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn colored_state(value: bool, active_color: Color, active_text: &str, inactive_text: &str) -> String {
+    if value {
+        style(active_text).with(active_color).to_string()
+    } else {
+        style(inactive_text).with(Color::DarkGrey).to_string()
+    }
+}
+
 fn print_config_summary(config: &Config, path: &std::path::Path) {
+    let detected_backend = resolved_backend(config);
+    let provider_count = if config.connected && !config.paused { 1 } else { 0 };
     println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
     println!("publicKey: {}", display_public_key_hex(config));
@@ -184,9 +132,22 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
             "no"
         }
     );
-    println!("connected: {}", if config.connected { "yes" } else { "no" });
-    println!("paused: {}", if config.paused { "yes" } else { "no" });
+    println!(
+        "connected: {}",
+        colored_state(config.connected, Color::Green, "yes", "no")
+    );
+    println!(
+        "paused: {}",
+        colored_state(
+            config.paused,
+            Color::AnsiValue(208),
+            "yes",
+            "no"
+        )
+    );
     println!("backendPreference: {}", config.backend_preference);
+    println!("detectedBackend: {}", detected_backend);
+    println!("providerCount: {}", provider_count);
     println!(
         "contributionPercent: {}",
         if config.contribution_percent == 0 {
@@ -198,25 +159,8 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("controlPlaneUrl: {}", config.control_plane_url);
 }
 
-fn print_nodes_table() {
-    let nodes = sample_nodes();
-    let live_count = live_nodes().len();
-    println!("liveNodes: {live_count}");
-    println!("totalNodes: {}", nodes.len());
-    for node in nodes {
-        println!(
-            "- {} | {} | {} | {} MB | {}% | {}",
-            node.node_id,
-            node.backend,
-            node.state,
-            node.available_memory_mb,
-            node.available_gpu_percent,
-            node.label
-        );
-    }
-}
-
 fn print_startup_summary(config: &Config, path: &std::path::Path) {
+    let detected_backend = resolved_backend(config);
     let cores = thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1);
@@ -230,6 +174,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     println!("platform: {}-{}", env::consts::OS, env::consts::ARCH);
     println!("cpuCores: {}", cores);
     println!("backendPreference: {}", config.backend_preference);
+    println!("detectedBackend: {}", detected_backend);
     println!(
         "contributionPercent: {}",
         if config.contribution_percent == 0 {
@@ -238,8 +183,11 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
             format!("{}%", config.contribution_percent)
         }
     );
-    println!("connected: yes");
-    println!("paused: no");
+    println!("connected: {}", colored_state(true, Color::Green, "yes", "no"));
+    println!(
+        "paused: {}",
+        colored_state(false, Color::AnsiValue(208), "yes", "no")
+    );
     println!("configPath: {}", path.display());
 }
 
@@ -351,219 +299,211 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
     }
 }
 
-fn print_doctor() -> Result<(), String> {
-    let primary_dir = config_dir();
-    let fallback_dir = PathBuf::from(".opengpu");
-    let primary_writable = probe_directory(&primary_dir);
-    let fallback_writable = probe_directory(&fallback_dir);
-
-    if !primary_writable && !fallback_writable {
-        return Err(format!(
-            "cannot write to {} or {}",
-            primary_dir.display(),
-            fallback_dir.display()
-        ));
-    }
-
-    println!("configDir: {}", primary_dir.display());
-    println!("identityPath: {}", resolved_identity_path().display());
-    println!("effectiveConfigPath: {}", resolved_config_path().display());
-    println!(
-        "fallbackConfigPath: {}",
-        config::local_config_path().display()
-    );
-    println!(
-        "primaryWritable: {}",
-        if primary_writable { "yes" } else { "no" }
-    );
-    println!(
-        "fallbackWritable: {}",
-        if fallback_writable { "yes" } else { "no" }
-    );
-    match identity::load_identity() {
-        Ok(Some(identity)) => {
-            println!("deviceIdentity: reused");
-            println!("publicKeyFingerprint: {}", identity.fingerprint);
+fn detect_memory_gb() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        // sysctl hw.memsize returns total unified memory in bytes
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output();
+        if let Ok(out) = output {
+            if let Ok(s) = std::str::from_utf8(&out.stdout) {
+                if let Ok(bytes) = s.trim().parse::<u64>() {
+                    return bytes / (1024 * 1024 * 1024);
+                }
+            }
         }
-        Ok(None) => println!("deviceIdentity: missing"),
-        Err(error) => println!("deviceIdentityError: {error}"),
     }
-    println!("installer: https://novusx.ai/install");
-    println!("releaseChannel: cli-v*");
-    println!("binaryName: opengpu");
-    println!("cliVersion: {}", env!("CARGO_PKG_VERSION"));
-    Ok(())
+    #[cfg(target_os = "linux")]
+    {
+        // /proc/meminfo MemTotal in kB
+        if let Ok(contents) = std::fs::read_to_string("/proc/meminfo") {
+            for line in contents.lines() {
+                if line.starts_with("MemTotal:") {
+                    let kb: u64 = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    return kb / (1024 * 1024);
+                }
+            }
+        }
+    }
+    8 // safe fallback
 }
 
-fn probe_directory(dir: &std::path::Path) -> bool {
-    if fs::create_dir_all(dir).is_err() {
-        return false;
+fn recommended_models(backend: Backend) -> (&'static str, &'static str) {
+    // returns (lighter_model, recommended_model) based on actual detected memory
+    let gb = detect_memory_gb();
+    match backend {
+        Backend::M => match gb {
+            0..=11  => ("llama3.2:1b",  "llama3.2:3b"),
+            12..=23 => ("llama3.2:3b",  "llama3.1:8b"),
+            24..=47 => ("llama3.1:8b",  "llama3.1:8b-q4"),
+            _       => ("llama3.1:8b",  "llama3.3:70b-q4"),
+        },
+        Backend::Cuda => match gb {
+            0..=7  => ("llama3.2:1b", "llama3.2:3b"),
+            8..=15 => ("llama3.2:3b", "llama3.1:8b"),
+            16..=31 => ("llama3.1:8b", "llama3.1:8b-q4"),
+            _      => ("llama3.1:8b", "llama3.3:70b-q4"),
+        },
+        Backend::Auto => ("llama3.2:1b", "llama3.2:3b"),
+    }
+}
+
+enum ModelChoice {
+    Model(String),
+    LocalPath(String),
+}
+
+fn prompt_model_selection(backend: Backend) -> ModelChoice {
+    let (lighter, recommended) = recommended_models(backend);
+    let gb = detect_memory_gb();
+
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return ModelChoice::Model(recommended.to_string());
     }
 
-    let probe = dir.join(".write-test");
-    let writable = fs::write(&probe, "ok").is_ok();
-    let _ = fs::remove_file(&probe);
-    writable
+    const LOCAL_OPT: usize = 2;
+    let options: &[&str] = &[lighter, recommended, "I already have models locally"];
+    let mut selected: usize = 1; // start on recommended
+
+    if enable_raw_mode().is_err() {
+        return ModelChoice::Model(recommended.to_string());
+    }
+
+    let render = |selected: usize| {
+        print!("\x1b[2J\x1b[H");
+        println!("Which model should this node run?");
+        println!("detected: {} / {}GB memory", backend, gb);
+        println!("----------------------------------");
+        for (i, label) in options.iter().enumerate() {
+            let marker = if i == selected { ">>" } else { "  " };
+            let tag = match i {
+                0 => "  – lighter, works on lower-spec machines",
+                1 => "  (recommended for your hardware)",
+                _ => "",
+            };
+            println!("{marker} {}. {}{}", i + 1, label, tag);
+        }
+        println!();
+        println!("Use ↑/↓ and Enter — you must choose one");
+        let _ = io::stdout().flush();
+    };
+
+    render(selected);
+
+    let result = loop {
+        match read() {
+            Ok(Event::Key(key)) => match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = disable_raw_mode();
+                    println!();
+                    eprintln!("cancelled");
+                    std::process::exit(130);
+                }
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    render(selected);
+                }
+                KeyCode::Down => {
+                    if selected + 1 < options.len() {
+                        selected += 1;
+                    }
+                    render(selected);
+                }
+                KeyCode::Enter => break selected,
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break 1,
+        }
+    };
+
+    let _ = disable_raw_mode();
+
+    if result == LOCAL_OPT {
+        print!("\x1b[2J\x1b[H");
+        print!("Path to your models directory: ");
+        let _ = io::stdout().flush();
+        let mut path = String::new();
+        let _ = io::stdin().read_line(&mut path);
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            // still can't skip — fall back to recommended
+            ModelChoice::Model(recommended.to_string())
+        } else {
+            ModelChoice::LocalPath(path)
+        }
+    } else {
+        ModelChoice::Model(options[result].to_string())
+    }
+}
+
+fn run_init() -> Config {
+    let (identity, created, identity_path) = match ensure_identity() {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("failed to initialize identity: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut config = config_from_identity(&identity);
+    config.backend_preference = detect_backend();
+
+    // model selection — mandatory, no skip
+    match prompt_model_selection(config.backend_preference) {
+        ModelChoice::Model(model) => {
+            config.models = vec![model];
+            config.model_dir = None;
+        }
+        ModelChoice::LocalPath(path) => {
+            config.model_dir = Some(path);
+            config.models = vec![];
+        }
+    }
+
+    if config.contribution_percent == 0 {
+        match prompt_contribution_percent(30) {
+            PromptOutcome::Selected(percent) => {
+                config.contribution_percent = percent;
+            }
+            PromptOutcome::Cancelled => {
+                eprintln!("cancelled");
+                std::process::exit(130);
+            }
+        }
+    }
+
+    match save_config(&config) {
+        Ok(path) => {
+            if created {
+                println!("generated device identity at {}", identity_path.display());
+            } else {
+                println!("reused device identity at {}", identity_path.display());
+            }
+            println!("initialized {}", path.display());
+        }
+        Err(error) => {
+            eprintln!("failed to initialize config: {error}");
+            std::process::exit(1);
+        }
+    }
+
+    config
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { force } => {
-            let (identity, created, identity_path) = match ensure_identity() {
-                Ok(result) => result,
-                Err(error) => {
-                    eprintln!("failed to initialize identity: {error}");
-                    std::process::exit(1);
-                }
-            };
-
-            if config_exists() && !force {
-                if created {
-                    println!("generated device identity at {}", identity_path.display());
-                } else {
-                    println!("reused device identity at {}", identity_path.display());
-                }
-                println!("config already exists at {}", config_path().display());
-                return;
-            }
-
-            let config = config_from_identity(&identity);
-            match save_config(&config) {
-                Ok(path) => {
-                    if created {
-                        println!("generated device identity at {}", identity_path.display());
-                    } else {
-                        println!("reused device identity at {}", identity_path.display());
-                    }
-                    println!("initialized {}", path.display());
-                }
-                Err(error) => {
-                    eprintln!("failed to initialize config: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Commands::Start { m, cuda, percent } => {
-            let (identity, created, identity_path) = match ensure_identity() {
-                Ok(result) => result,
-                Err(error) => {
-                    eprintln!("failed to prepare device identity: {error}");
-                    std::process::exit(1);
-                }
-            };
-
-            if !config_exists() {
-                let config = config_from_identity(&identity);
-                match save_config(&config) {
-                    Ok(path) => {
-                        if created {
-                            println!("generated device identity at {}", identity_path.display());
-                        } else {
-                            println!("reused device identity at {}", identity_path.display());
-                        }
-                        println!("initialized {}", path.display());
-                    }
-                    Err(error) => {
-                        eprintln!("failed to initialize config: {error}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-
-            let mut config = current_config_or_default();
-            config.device_id = device_id_for_identity(&identity);
-            config.public_key_fingerprint = Some(identity.fingerprint.clone());
-            config.connected = true;
-            config.paused = false;
-
-            if config.backend_preference.is_auto() {
-                config.backend_preference = detect_backend();
-            }
-
-            if m && cuda {
-                eprintln!("choose only one backend: --m or --cuda");
-                std::process::exit(1);
-            }
-
-            if m {
-                config.backend_preference = Backend::M;
-            } else if cuda {
-                config.backend_preference = Backend::Cuda;
-            }
-
-            if let Some(percent) = percent {
-                config.contribution_percent = percent;
-            } else if config.contribution_percent == 0 {
-                match prompt_contribution_percent(30) {
-                    PromptOutcome::Selected(percent) => {
-                        config.contribution_percent = percent;
-                    }
-                    PromptOutcome::Cancelled => {
-                        config.connected = false;
-                        config.paused = true;
-                        if let Err(error) = save_config(&config) {
-                            eprintln!("failed to save config after cancel: {error}");
-                        }
-                        eprintln!("cancelled");
-                        std::process::exit(130);
-                    }
-                }
-            }
-
-            match save_config(&config) {
-                Ok(path) => {
-                    print_startup_summary(&config, &path);
-                    println!(
-                        "contributionMeaning: {}",
-                        contribution_semantics(config.backend_preference)
-                    );
-                    println!("config saved at {}", path.display());
-                }
-                Err(error) => {
-                    eprintln!("failed to save config: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Commands::Login { token, name } => {
-            let mut config = current_config_or_default();
-            config.profile_name = name.or(config.profile_name);
-            config.auth_token =
-                Some(token.unwrap_or_else(|| format!("dev-{}", uuid::Uuid::new_v4().simple())));
-
-            match save_config(&config) {
-                Ok(path) => {
-                    println!(
-                        "authenticated profile {}",
-                        config.profile_name.as_deref().unwrap_or("local-user")
-                    );
-                    println!("config saved at {}", path.display());
-                }
-                Err(error) => {
-                    eprintln!("failed to save config: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Commands::Logout => {
-            let mut config = current_config_or_default();
-            config.auth_token = None;
-            config.connected = false;
-
-            match save_config(&config) {
-                Ok(path) => println!("logged out and saved config at {}", path.display()),
-                Err(error) => {
-                    eprintln!("failed to save config: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
         Commands::Connect => {
+            // auto-init on first run
             if !config_exists() {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
+                run_init();
             }
 
             let mut config = current_config_or_default();
@@ -575,11 +515,13 @@ fn main() {
             config.paused = false;
 
             match save_config(&config) {
-                Ok(path) => println!(
-                    "connected device {} (config: {})",
-                    config.device_id,
-                    path.display()
-                ),
+                Ok(_) => {
+                    print_startup_summary(&config, &resolved_config_path());
+                    println!(
+                        "contributionMeaning: {}",
+                        contribution_semantics(config.backend_preference)
+                    );
+                }
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
                     std::process::exit(1);
@@ -588,41 +530,18 @@ fn main() {
         }
         Commands::Disconnect => {
             if !config_exists() {
-                eprintln!("run \"opengpu init\" first");
+                eprintln!("not connected");
                 std::process::exit(1);
             }
 
             let mut config = current_config_or_default();
             config.connected = false;
+            config.paused = false;
 
             match save_config(&config) {
-                Ok(path) => println!(
-                    "disconnected device {} (config: {})",
-                    config.device_id,
-                    path.display()
-                ),
-                Err(error) => {
-                    eprintln!("failed to save config: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Commands::Exit => {
-            if !config_exists() {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
-            }
-
-            let mut config = current_config_or_default();
-            config.connected = false;
-            config.paused = true;
-
-            match save_config(&config) {
-                Ok(path) => {
-                    println!("exited local contribution mode");
+                Ok(_) => {
+                    println!("disconnected {}", config.device_id);
                     println!("connected: no");
-                    println!("paused: yes");
-                    println!("config saved at {}", path.display());
                 }
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
@@ -631,21 +550,17 @@ fn main() {
             }
         }
         Commands::Status { json } => {
-            if !config_exists() {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
-            }
-
             let config = current_config_or_default();
-            let nodes = live_nodes();
-            let request = default_job_request(config.backend_preference);
-            let decision = select_best_node(&nodes, &request);
+            let preferred_backend = resolved_backend(&config);
+            let provider_count = if config.connected && !config.paused { 1 } else { 0 };
 
             if json {
                 let payload = serde_json::json!({
                     "config": config,
-                    "live_nodes": nodes,
-                    "decision": decision,
+                    "detected_backend": preferred_backend,
+                    "provider_count": provider_count,
+                    "routing_mode": "local-only",
+                    "selected_provider": if provider_count == 1 { "self" } else { "none" },
                 });
                 if let Err(error) = print_json(&payload) {
                     eprintln!("failed to print json: {error}");
@@ -655,163 +570,10 @@ fn main() {
             }
 
             print_config_summary(&config, &resolved_config_path());
-            println!("liveNodes: {}", nodes.len());
-            println!("routingDecision: {}", decision.reason);
+            println!("routingMode: local-only");
             println!(
-                "bestLiveNode: {}",
-                decision
-                    .selected_node_id
-                    .unwrap_or_else(|| "none".to_string())
-            );
-        }
-        Commands::Nodes { json } => {
-            let nodes = sample_nodes();
-            if json {
-                if let Err(error) = print_json(&nodes) {
-                    eprintln!("failed to print json: {error}");
-                    std::process::exit(1);
-                }
-                return;
-            }
-
-            print_nodes_table();
-        }
-        Commands::Pause => {
-            if !config_exists() {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
-            }
-
-            let mut config = current_config_or_default();
-            config.paused = true;
-
-            if let Err(error) = save_config(&config) {
-                eprintln!("failed to save config: {error}");
-                std::process::exit(1);
-            }
-            println!("paused contribution");
-        }
-        Commands::Resume => {
-            if !config_exists() {
-                eprintln!("run \"opengpu init\" first");
-                std::process::exit(1);
-            }
-
-            let mut config = current_config_or_default();
-            config.paused = false;
-
-            if let Err(error) = save_config(&config) {
-                eprintln!("failed to save config: {error}");
-                std::process::exit(1);
-            }
-            println!("resumed contribution");
-        }
-        Commands::Config { command } => match command {
-            ConfigCommands::Path => {
-                println!("{}", resolved_config_path().display());
-            }
-            ConfigCommands::Show { json } => {
-                let config = current_config_or_default();
-                if json {
-                    if let Err(error) = print_json(&config) {
-                        eprintln!("failed to print json: {error}");
-                        std::process::exit(1);
-                    }
-                } else {
-                    print_config_summary(&config, &resolved_config_path());
-                }
-            }
-            ConfigCommands::Set { key, value } => {
-                if !config_exists() {
-                    eprintln!("run \"opengpu init\" first");
-                    std::process::exit(1);
-                }
-
-                let mut config = current_config_or_default();
-                let result = match key {
-                    ConfigKey::ControlPlaneUrl => {
-                        config.control_plane_url = value;
-                        Ok("control plane URL updated".to_string())
-                    }
-                    ConfigKey::ProfileName => {
-                        config.profile_name = if value.trim().is_empty() {
-                            None
-                        } else {
-                            Some(value)
-                        };
-                        Ok("profile name updated".to_string())
-                    }
-                    ConfigKey::Backend => match value.parse::<Backend>() {
-                        Ok(backend) => {
-                            config.backend_preference = backend;
-                            Ok(format!("backend preference updated to {backend}"))
-                        }
-                        Err(error) => Err(error),
-                    },
-                    ConfigKey::DeviceId => {
-                        if value.trim().is_empty() {
-                            Err("device id cannot be empty".to_string())
-                        } else {
-                            config.device_id = value;
-                            Ok("device id updated".to_string())
-                        }
-                    }
-                    ConfigKey::ContributionPercent => match value.parse::<u8>() {
-                        Ok(percent) if (1..=100).contains(&percent) => {
-                            config.contribution_percent = percent;
-                            Ok(format!("contribution percent updated to {percent}%"))
-                        }
-                        Ok(_) => Err("contribution percent must be between 1 and 100".to_string()),
-                        Err(_) => Err("contribution percent must be a number".to_string()),
-                    },
-                };
-
-                match result {
-                    Ok(message) => match save_config(&config) {
-                        Ok(path) => {
-                            println!("{message}");
-                            println!("config saved at {}", path.display());
-                        }
-                        Err(error) => {
-                            eprintln!("failed to save config: {error}");
-                            std::process::exit(1);
-                        }
-                    },
-                    Err(error) => {
-                        eprintln!("{error}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            ConfigCommands::Reset { yes } => {
-                if !yes {
-                    eprintln!("refusing to reset without --yes");
-                    std::process::exit(1);
-                }
-
-                match remove_config_files() {
-                    Ok(()) => println!("reset local config"),
-                    Err(error) => {
-                        eprintln!("failed to reset config: {error}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-        },
-        Commands::Doctor => {
-            if let Err(error) = print_doctor() {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        }
-        Commands::Logs => {
-            let config = current_config_or_default();
-            println!("logSource: local cli state");
-            println!("configPath: {}", resolved_config_path().display());
-            println!("connected: {}", if config.connected { "yes" } else { "no" });
-            println!("paused: {}", if config.paused { "yes" } else { "no" });
-            println!(
-                "note: worker and control-plane logs will appear once those services are online"
+                "selectedProvider: {}",
+                if provider_count == 1 { "self" } else { "none" }
             );
         }
         Commands::Update => {

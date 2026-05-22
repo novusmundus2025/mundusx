@@ -39,11 +39,12 @@ Release builds for the CLI are published from GitHub Actions on `cli-v*` tags.
 
 - `apps/cli/src/main.rs` for the Rust CLI entrypoint
 - `apps/cli/src/routing.rs` for local selection scoring
+- `agents/node/src/main.rs` for the Rust node agent entrypoint
+- `agents/node/src/worker.rs` for the local worker subprocess scaffold
+- `apps/control-plane/src/main.rs` for the Rust control-plane entrypoint
 - `install.sh` for one-click binary installation
 - `packages/shared/src/index.ts` for cross-package types
 - `packages/proto/schema/opengpu.proto` for the wire contract
-- `apps/control-plane/src/main.js` for the service skeleton
-- `agents/node/src/main.js` for the local node daemon skeleton
 
 ## MVP Goal
 
@@ -55,21 +56,10 @@ The CLI now supports local setup, node inspection, and preference management:
 
 ```bash
 opengpu start
-opengpu login
-opengpu logout
 opengpu init
 opengpu status
-opengpu nodes
 opengpu exit
-opengpu pause
-opengpu resume
 opengpu doctor
-opengpu config path
-opengpu config show
-opengpu config set control-plane-url https://api.novusx.ai
-opengpu config set profile-name novus
-opengpu config set backend cuda
-opengpu config reset --yes
 opengpu logs
 opengpu update
 ```
@@ -80,5 +70,15 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 
 ## Docs
 
+- [LICENSE](/Users/DBATALL/Documents/aigrid/LICENSE) for the Apache-2.0 licensed portions of the repo
+- [apps/control-plane/PROPRIETARY_LICENSE.md](/Users/DBATALL/Documents/aigrid/apps/control-plane/PROPRIETARY_LICENSE.md) for the private control-plane subtree
 - [docs/cli-commands.md](/Users/DBATALL/Documents/aigrid/docs/cli-commands.md) for the current CLI command reference
 - [docs/missing-items.md](/Users/DBATALL/Documents/aigrid/docs/missing-items.md) for the work that is still missing
+- [docs/heartbeat-flow.md](/Users/DBATALL/Documents/aigrid/docs/heartbeat-flow.md) for the proposed node heartbeat timing and offline thresholds
+- [docs/system-flow.md](/Users/DBATALL/Documents/aigrid/docs/system-flow.md) for the living end-to-end architecture diagram
+- [docs/runtime-transport.md](/Users/DBATALL/Documents/aigrid/docs/runtime-transport.md) for the local-process versus HTTP-server map
+- [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the cross-platform distribution plan
+- [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
+- [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files
+- [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints
+- [docs/worker.md](/Users/DBATALL/Documents/aigrid/docs/worker.md) for the current worker prototype and launch contract

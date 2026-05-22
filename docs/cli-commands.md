@@ -6,21 +6,23 @@ This is the current command surface for the Rust CLI.
 
 - `opengpu start` - create local state if needed, auto-detect the backend, connect locally, ask for contribution level in a vertical arrow-key menu, and print a startup summary with the public key
 - `opengpu init` - create the local config and device identity
-- `opengpu login` - store local auth state
-- `opengpu logout` - clear local auth state
-- `opengpu connect` - mark the machine as ready
-- `opengpu disconnect` - mark the machine as disconnected
+- `opengpu status` - show local state, detected backend, and local provider status
 - `opengpu exit` - leave local contribution mode and pause the machine
-- `opengpu status` - show local state and routing decision
-- `opengpu nodes` - show the current sample node inventory
-- `opengpu pause` - pause contribution
-- `opengpu resume` - resume contribution
 - `opengpu doctor` - inspect config paths and writability
 - `opengpu logs` - show local log source information
 - `opengpu update` - show update channel information
 
-## Config Commands
+## Advanced Commands
 
+These remain available, but they are hidden from the default `--help` output so the main CLI feels smaller and easier to learn:
+
+- `opengpu login` - store local auth state
+- `opengpu logout` - clear local auth state
+- `opengpu connect` - mark the machine as ready
+- `opengpu disconnect` - mark the machine as disconnected
+- `opengpu nodes` - show the current sample node inventory
+- `opengpu pause` - pause contribution
+- `opengpu resume` - resume contribution
 - `opengpu config path` - print the active config path
 - `opengpu config show` - print the current config
 - `opengpu config show --json` - print the config as JSON
@@ -36,3 +38,5 @@ This is the current command surface for the Rust CLI.
 - The CLI currently operates on local state only.
 - Real control-plane calls and node registration will come later.
 - The active `opengpu start` session can be aborted with `Ctrl-C`, which rolls local state back to disconnected and paused.
+- When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected.
+- `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/cli",
+    "agents/node",
+    "apps/control-plane",
 ]
 resolver = "2"
-

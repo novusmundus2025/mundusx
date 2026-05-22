@@ -1,0 +1,138 @@
+# Install Strategy
+
+This page defines the recommended way to distribute `opengpu` across macOS, Windows, and Linux.
+
+## Guiding Principle
+
+- Ship a signed native binary.
+- Keep Rust as the build tool, not a user dependency.
+- Make the first install path one command wherever possible.
+
+## Recommended Distribution Layers
+
+### 1. Primary Channel
+
+Use your own installer that downloads the correct release binary from GitHub Releases.
+
+Recommended flow:
+
+- macOS and Linux: `curl -fsSL https://novusx.ai/install | bash`
+- Windows: a PowerShell bootstrapper with the same release assets
+
+This should be the source of truth for release artifacts and checksums.
+
+### 2. macOS Convenience
+
+Add a Homebrew tap or formula for users who prefer `brew`.
+
+Why:
+
+- familiar on macOS
+- easy to update
+- good developer UX
+
+### 3. Windows Convenience
+
+Add WinGet support first for mainstream Windows distribution.
+
+Why:
+
+- built into modern Windows workflows
+- good fit for CLI tooling
+- easier for non-developer users than manual downloads
+
+### 4. Linux Convenience
+
+Keep the shell installer as the main Linux path.
+
+Optional later:
+
+- `.deb`
+- `.rpm`
+
+## What Not To Use
+
+- `npm` is not a good fit for a native systems CLI.
+- Cargo install should remain a developer-only path.
+- Users should not need Rust, Node, or a manual toolchain setup.
+
+## Release Matrix
+
+Recommended release targets:
+
+- `macos-aarch64`
+- `macos-x86_64` if you want Intel support
+- `windows-x86_64`
+- `linux-x86_64`
+- `linux-aarch64` later if needed
+
+## Release Checklist
+
+### Shared Requirements
+
+Before shipping any platform release:
+
+- build from a clean tagged commit
+- embed the CLI version in the binary
+- generate checksums for every artifact
+- sign every artifact or release manifest
+- publish release notes with the exact tag
+- verify the installer can fetch the matching asset
+- verify the binary starts without extra dependencies
+- verify `opengpu start` and `opengpu status` work after install
+
+### macOS Checklist
+
+Ship when all of these are true:
+
+- `macos-aarch64` binary builds and runs on Apple Silicon
+- optionally `macos-x86_64` binary builds if Intel support is required
+- the shell installer works on macOS
+- the binary is notarized or otherwise signed according to release policy
+- Homebrew tap or formula can install the same version
+- `opengpu` is available in `PATH` after install
+
+### Windows Checklist
+
+Ship when all of these are true:
+
+- `windows-x86_64` binary builds and runs on Windows
+- PowerShell bootstrapper downloads the correct release asset
+- installer handles `.exe` placement and PATH setup
+- WinGet package installs the same release version
+- binary starts from a normal PowerShell or Terminal session
+- version output matches the tagged release
+
+### Linux Checklist
+
+Ship when all of these are true:
+
+- `linux-x86_64` binary builds and runs on mainstream Linux
+- shell installer works on common distros
+- binary is executable after install
+- optional `.deb` or `.rpm` packages are ready if you choose to publish them
+- checksum verification works from the installer
+- version output matches the tagged release
+
+## Publishing Model
+
+1. Build binaries in GitHub Actions.
+2. Attach them to a tagged release.
+3. Publish checksums and signatures.
+4. Let the installer and package managers fetch from the release channel.
+
+## Definition Of Done
+
+The install strategy is complete when:
+
+- users can install on macOS, Windows, and Linux without a manual toolchain
+- each platform has one recommended path and one convenience path where possible
+- release assets are signed, versioned, and documented
+- the docs point to a single source of truth for downloads and update behavior
+- the install path is simple enough that a new user can get to `opengpu start` in one step
+
+## Product Positioning
+
+- `opengpu` remains the CLI name.
+- `novusx.ai` is the public install entrypoint.
+- GitHub Releases are the artifact source.

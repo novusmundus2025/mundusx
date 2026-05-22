@@ -1,0 +1,102 @@
+# Control Plane
+
+The control plane is the source of truth for node registration and heartbeat state.
+
+For the current prototype, it listens on:
+
+```text
+http://127.0.0.1:8787
+```
+
+The root URL (`/`) now returns a small HTML health dashboard for browser checks.
+
+## Prototype Endpoints
+
+- `GET /` - browser-friendly health and status page
+- `GET /health` - health check
+- `GET /v1/status` - return a snapshot of the current registry
+- `GET /v1/nodes` - return the live node list
+- `GET /v1/jobs` - return all known jobs
+- `GET /v1/jobs/next?node_id=...` - claim the next queued job for a node
+- `POST /v1/register` - register an agent
+- `POST /v1/heartbeat` - update a node heartbeat
+- `POST /v1/jobs` - submit a job request
+- `POST /v1/jobs/complete` - complete a claimed job
+
+## Submitting A Job
+
+A client, SDK, or dashboard sends the request to the control plane:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "request_id": "job-001",
+    "prompt": "Summarize this paragraph",
+    "preferred_backend": "auto",
+    "model": null
+  }'
+```
+
+Then an active node agent claims it with:
+
+```text
+GET /v1/jobs/next?node_id=...
+```
+
+The agent launches the worker locally, then posts the result to:
+
+```text
+POST /v1/jobs/complete
+```
+
+## Current Storage Model
+
+The prototype keeps its state in a local JSON file:
+
+- `~/.opengpu-control-plane/state.json`
+
+or, if configured:
+
+- `OPENGPU_CONTROL_PLANE_HOME/state.json`
+- `OPENGPU_HOME/state.json`
+
+## What The State Contains
+
+- node ID
+- public key fingerprint
+- backend
+- contribution percent
+- agent version
+- agent state
+- available memory
+- available GPU percent
+- last updated timestamp
+- job ID
+- job request ID
+- queued / assigned / completed / failed job state
+- assigned node
+- worker result and error details
+
+## Current Behavior
+
+- registration inserts or updates a node record
+- heartbeat updates the node record and refreshes the timestamp
+- `POST /v1/jobs` queues a job request in local JSON state
+- `GET /v1/jobs/next?node_id=...` lets a node claim the next queued job
+- `POST /v1/jobs/complete` stores the worker result and marks the job complete or failed
+- status returns a snapshot with:
+  - total nodes
+  - online count
+  - paused count
+  - stopped count
+  - queued jobs
+  - assigned jobs
+  - completed jobs
+  - failed jobs
+
+## What Comes Next
+
+- routing policy
+- auth
+- durable storage

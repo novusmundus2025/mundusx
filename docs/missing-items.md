@@ -17,28 +17,33 @@ This document tracks what is still missing before OpenGPU becomes a full product
 - [ ] Signed release binaries published from tags
 - [ ] Public install endpoint behind `novusx.ai`
 - [ ] Packaging checks on macOS and Linux release artifacts
+- [ ] WinGet package publishing
+- [ ] Homebrew tap or formula publishing
 - [ ] Final CLI help polish and error messaging
 
 ## Control Plane Phase
 
-- [ ] Real control-plane API in Rust
-- [ ] Node registration endpoint
-- [ ] Heartbeat ingestion
-- [ ] Routing API
+- [x] Real control-plane API in Rust
+- [x] Node registration endpoint
+- [x] Heartbeat ingestion
+- [x] Routing API
 - [ ] Auth flow for users and devices
-- [ ] Job submission and tracking
+- [x] Job submission and tracking
 - [ ] Durable state store
+- [x] Agent / worker contract defined in proto and CLI types
 
 ## Node Agent Phase
 
-- [ ] Local daemon in Rust
-- [ ] Heartbeat sender
-- [ ] Capability reporting
-- [ ] Pause/resume integration
+- [x] Local daemon in Rust
+- [x] Heartbeat sender
+- [x] Capability reporting
+- [x] Pause/resume integration
+- [x] Control-plane registration client
 - [ ] Safe throttling and policy enforcement
 
 ## Worker Phase
 
+- [x] Local worker launch path scaffold
 - [ ] `M` worker adapter
 - [ ] `CUDA` worker adapter
 - [ ] Real execution payloads

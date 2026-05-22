@@ -1,4 +1,5 @@
 # Control Plane
 
-Scheduler, routing, auth, node registry, and job orchestration live here.
+Rust HTTP control plane for node registration, heartbeat ingestion, and live node snapshots.
 
+See [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the prototype endpoints and local state model.

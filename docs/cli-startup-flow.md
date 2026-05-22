@@ -72,6 +72,7 @@ the CLI:
    - platform
    - CPU core count
    - backend preference
+   - detected backend when `backend preference` is `auto`
    - contribution percent
    - connection state
    - pause state
@@ -121,10 +122,10 @@ opengpu status
 the CLI:
 
 1. Reads the current local config.
-2. Loads the current sample node inventory.
-3. Filters out offline nodes.
-4. Scores the live nodes.
-5. Prints the best local routing decision.
+2. Resolves the machine backend if `backend preference` is `auto`.
+3. Treats the current machine as the active provider when connected and not paused.
+4. Prints local provider state and the active backend decision.
+5. Keeps sample node inventory out of the main status view for now.
 
 ## What It Does Not Do Yet
 

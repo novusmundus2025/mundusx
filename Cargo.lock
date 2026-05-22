@@ -523,6 +523,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "opengpu-control-plane"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "opengpu-node-agent"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dirs",
+ "hex",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
