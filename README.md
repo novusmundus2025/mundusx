@@ -3,7 +3,6 @@
 OpenGPU is a distributed compute network that routes requests to the best available live node across:
 
 - Apple Silicon `M` series nodes
-- NVIDIA `CUDA` nodes
 
 ## Repo Shape
 
@@ -14,7 +13,6 @@ This repository is a monorepo for the core platform:
 - `apps/dashboard` - web UI for operators and users
 - `agents/node` - local node agent/daemon
 - `workers/m-series` - Apple Silicon execution backend
-- `workers/cuda` - NVIDIA execution backend
 - `packages/shared` - shared utilities and types
 - `packages/proto` - protobuf and RPC contracts
 

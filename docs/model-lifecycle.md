@@ -117,5 +117,4 @@ Behavior:
 ## What To Build Next
 
 - `M` worker adapter
-- `CUDA` worker adapter
-- health checks for worker backends
+- health checks for the Mac worker backend

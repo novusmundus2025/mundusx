@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub enum Backend {
     Auto,
     M,
+    #[value(skip)]
     Cuda,
 }
 
@@ -38,8 +39,7 @@ impl FromStr for Backend {
         match input.trim().to_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "m" => Ok(Self::M),
-            "cuda" => Ok(Self::Cuda),
-            _ => Err("backend must be one of: auto, m, cuda".to_string()),
+            _ => Err("backend must be one of: auto or m".to_string()),
         }
     }
 }

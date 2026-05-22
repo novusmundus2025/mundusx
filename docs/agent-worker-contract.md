@@ -76,7 +76,7 @@ The current prototype adds one small control-plane queue:
 2. Control plane queues the job.
 3. Agent claims the job when it is ready.
 4. Agent launches the worker locally.
-5. Worker runs on `M` or `CUDA`.
+5. Worker runs on `M` series.
 6. Worker returns output to the agent.
 7. Agent forwards the result upstream.
 
@@ -102,4 +102,4 @@ The transport and service implementations are partially in place, including:
 - local worker launch from the agent
 
 The next gap is replacing the simulated worker output with real execution.
-The current worker already performs deterministic local compute; the next gap is backend-specific `M` / `CUDA` inference kernels or model execution.
+The current worker already performs deterministic local compute; the next gap is a model-aware `M` inference kernel or model execution path.

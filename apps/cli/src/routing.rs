@@ -19,7 +19,7 @@ pub fn score_node(node: &NodeStatus, preferred_backend: Backend) -> f64 {
     let gpu_score = node.available_gpu_percent as f64 / 10.0;
     let backend_score = match node.backend {
         Backend::M => 8.0,
-        Backend::Cuda => 10.0,
+        Backend::Cuda => 0.0,
         Backend::Auto => 0.0,
     };
 
@@ -74,7 +74,6 @@ mod tests {
     fn prefers_matching_backend_when_requested() {
         let nodes = vec![
             node("m-1", Backend::M, NodeState::Idle, 12_288, 40),
-            node("cuda-1", Backend::Cuda, NodeState::Online, 49_152, 90),
         ];
         let request = JobRequest {
             request_id: "req-1".to_string(),
@@ -91,8 +90,8 @@ mod tests {
     #[test]
     fn skips_offline_nodes() {
         let nodes = vec![
-            node("offline", Backend::Cuda, NodeState::Offline, 65_536, 100),
-            node("live", Backend::Cuda, NodeState::Online, 32_768, 60),
+            node("offline", Backend::M, NodeState::Offline, 65_536, 100),
+            node("live", Backend::M, NodeState::Online, 32_768, 60),
         ];
         let request = JobRequest {
             request_id: "req-2".to_string(),

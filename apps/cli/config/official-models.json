@@ -84,48 +84,6 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/model.safetensors",
         "sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
       }
-    },
-    {
-      "backend": "cuda",
-      "min_memory_gb": 0,
-      "max_memory_gb": 7,
-      "lighter": {
-        "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
-        "label": "SmolLM2 135M",
-        "notes": "tiny open starter model for small VRAM nodes",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors",
-        "sha256": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
-      },
-      "recommended": {
-        "name": "Qwen/Qwen2.5-0.5B-Instruct",
-        "label": "Qwen 2.5 0.5B",
-        "notes": "balanced CUDA open model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
-      }
-    },
-    {
-      "backend": "cuda",
-      "min_memory_gb": 8,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "Qwen/Qwen2.5-0.5B-Instruct",
-        "label": "Qwen 2.5 0.5B",
-        "notes": "lighter CUDA fallback",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
-      },
-      "recommended": {
-        "name": "Qwen/Qwen2.5-1.5B-Instruct",
-        "label": "Qwen 2.5 1.5B",
-        "notes": "recommended CUDA open model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/model.safetensors",
-        "sha256": "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
-      }
     }
   ]
 }

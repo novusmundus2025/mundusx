@@ -94,7 +94,7 @@ Users contribute their hardware and run code on their machines. For them to trus
 |---|---|
 | **CLI** (`opengpu`) | Runs on the user's machine. They must be able to audit every command — connect, disconnect, what data is sent. |
 | **Node Agent** | Runs persistently in the background. Users need to verify it isn't mining, exfiltrating data, or abusing resources beyond what they agreed to. |
-| **Worker (M-series + CUDA)** | Executes jobs on the user's GPU. Must be auditable to confirm it only runs inference and nothing else. |
+| **Worker (M-series)** | Executes jobs on the user's machine. Must be auditable to confirm it only runs inference and nothing else. |
 | **Install script** | The first thing a user runs. A closed install script is a red flag — must be readable before execution. |
 | **Protobuf / shared contracts** | Defines exactly what data flows between nodes and the control plane. Transparency here builds protocol trust. |
 
@@ -123,7 +123,7 @@ Users contribute their hardware and run code on their machines. For them to trus
 **Use Apache 2.0 for the user-facing and node-executed components** (CLI, agent, workers, contracts, install script).
 
 Why Apache 2.0 over MIT:
-- **Patent grant** — MIT has none. Apache 2.0 explicitly grants users a patent license, which matters when GPU acceleration code touches patented territory (CUDA interop, quantization methods).
+- **Patent grant** — MIT has none. Apache 2.0 explicitly grants users a patent license, which matters when acceleration code touches patented territory.
 - **Enterprise-friendly** — companies running nodes (the target contributors) prefer Apache 2.0 because their legal teams have pre-approved it. It's the standard for infrastructure projects.
 - **Ecosystem alignment** — Kubernetes, TensorFlow, Tokio (the async runtime used here), and most serious Rust infrastructure use Apache 2.0 or dual Apache-2.0/MIT.
 
@@ -133,7 +133,7 @@ For the **control plane**: keep it proprietary for now. That keeps the trust-sen
 |---|---|---|
 | CLI | Apache 2.0 | Runs on user machines, must be auditable |
 | Node Agent | Apache 2.0 | Runs on user machines, must be auditable |
-| Workers (M-series, CUDA) | Apache 2.0 | Runs jobs on user hardware |
+| Workers (M-series) | Apache 2.0 | Runs jobs on user hardware |
 | Install script | Apache 2.0 | First thing a user runs |
 | Protobuf / contracts | Apache 2.0 | Defines the protocol |
 | Control plane | Proprietary | Keep private for now |

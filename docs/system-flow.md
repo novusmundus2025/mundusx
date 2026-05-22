@@ -16,7 +16,7 @@ flowchart TD
     SCH --> A[Node agent on provider machine]
     A --> J[Claim next queued job]
     J --> W[Launch worker locally]
-    W --> X[Run compute on M-series or CUDA]
+    W --> X[Run compute on M-series]
     X --> R[Return result to agent]
     R --> CP2[Forward result to control plane]
     CP2 --> O[Return response to client]
@@ -54,7 +54,7 @@ On a provider machine, the installed pieces should be:
 
 - `opengpu` CLI for setup, control, and visibility
 - node agent for heartbeat, policy, and job launch
-- worker/runtime for the actual `M` or `CUDA` execution path
+- worker/runtime for the actual `M` execution path
 
 The worker does **not** need to sit there idle all the time. It should be started on demand when work arrives, then stopped or reused according to policy.
 
@@ -66,7 +66,6 @@ For a provider machine, the user should install:
 2. node agent service
 3. backend runtime support for the machine:
    - `Metal` for `M` series
-   - `CUDA` for NVIDIA
 4. optional monitoring / telemetry exporter if we bundle it locally later
 
 The contribution percent is a **cap**, not full ownership of the machine:

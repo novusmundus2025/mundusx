@@ -45,7 +45,7 @@ The prototype agent:
 
 ## Next Step
 
-The next step is to replace the simulated worker output with real `M` or `CUDA` execution.
+The next step is to replace the simulated worker output with real `M` execution.
 
 ## Local Development URL
 

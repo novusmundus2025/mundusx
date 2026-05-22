@@ -326,7 +326,7 @@ fn print_retro_panel(title: &str, subtitle: &str, lines: &[String], accent: Colo
 fn contribution_semantics(backend: Backend) -> &'static str {
     match backend {
         Backend::M => "memory-and-compute budget for Apple Silicon M-series",
-        Backend::Cuda => "gpu-utilization budget for CUDA nodes",
+        Backend::Cuda => "automatic routing budget",
         Backend::Auto => "automatic routing budget",
     }
 }
@@ -334,12 +334,6 @@ fn contribution_semantics(backend: Backend) -> &'static str {
 fn detect_backend() -> Backend {
     if env::consts::OS == "macos" && env::consts::ARCH == "aarch64" {
         return Backend::M;
-    }
-
-    if env::var_os("NVIDIA_VISIBLE_DEVICES").is_some()
-        || env::var_os("CUDA_VISIBLE_DEVICES").is_some()
-    {
-        return Backend::Cuda;
     }
 
     Backend::Auto

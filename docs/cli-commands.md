@@ -33,7 +33,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - `opengpu config show --json` - print the config as JSON
 - `opengpu config set control-plane-url <url>` - update the control plane URL
 - `opengpu config set profile-name <name>` - update the local profile name
-- `opengpu config set backend <auto|m|cuda>` - update the backend preference
+- `opengpu config set backend <auto|m>` - update the backend preference
 - `opengpu config set device-id <id>` - override the local device ID
 - `opengpu config set contribution-percent <1-100>` - set the contribution cap
 - `opengpu config reset --yes` - delete local config files

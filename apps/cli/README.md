@@ -18,7 +18,7 @@ opengpu nodes
 opengpu exit
 opengpu doctor
 opengpu config show
-opengpu config set backend cuda
+opengpu config set backend m
 ```
 
 Startup flow:

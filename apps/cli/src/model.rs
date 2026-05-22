@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn sanitizes_model_names_for_cache_files() {
         assert_eq!(sanitize_model_name("llama3.1:8b"), "llama3_1_8b");
-        assert_eq!(sanitize_model_name("CUDA/worker"), "cuda_worker");
+        assert_eq!(sanitize_model_name("model/worker"), "model_worker");
     }
 
     #[test]

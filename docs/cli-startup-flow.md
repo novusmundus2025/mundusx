@@ -55,8 +55,7 @@ the CLI:
 3. Clears the paused state.
 4. Detects the machine backend when possible:
    - Apple Silicon `aarch64` on macOS becomes `M`
-   - CUDA hints in the environment become `CUDA`
-5. Optionally overrides that with `--m` or `--cuda`.
+5. Optionally overrides that with `--m`.
 6. If no contribution cap is saved yet, shows a compact retro vertical selector for:
    - `20%` light
    - `30%` balanced
@@ -86,7 +85,6 @@ the CLI:
 9. Saves the updated config.
 10. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
-   - `CUDA` means a GPU-utilization budget on NVIDIA nodes
 11. Keeps the reused device identity attached to the local config.
 
 ## Connect
