@@ -36,8 +36,9 @@ The prototype worker:
 - performs deterministic local prompt analysis and compute
 - returns a completed response
 - chooses a concrete backend when `auto` is passed
+- on macOS `M`, prefers a native Swift/Metal compute path and falls back to deterministic compute if Metal is unavailable
 - is normally launched by the node agent, not run directly by users
 
 ## Next Step
 
-Replace the deterministic local compute with the actual `M` or `CUDA` execution path for LLM inference or other compute jobs.
+Replace the remaining deterministic fallback with a real `CUDA` execution path and a model-aware Apple Silicon inference path.

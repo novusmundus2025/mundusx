@@ -2,9 +2,13 @@ use crate::contracts::{Backend, WorkerLaunchRequest, WorkerLaunchResponse};
 use clap::Parser;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::fs;
 use std::env;
+use std::path::PathBuf;
 use std::path::Path;
 use std::process::Command;
+
+const METAL_RUNNER_SWIFT: &str = include_str!("metal_runner.swift");
 
 #[derive(Parser, Debug)]
 #[command(
@@ -70,10 +74,9 @@ fn backend_compute_budget(backend: Backend) -> usize {
     }
 }
 
-fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
+fn execute_request_deterministic(request: &WorkerLaunchRequest, backend: Backend) -> WorkerLaunchResponse {
     let worker_id = format!("worker-{}", uuid::Uuid::new_v4().simple());
     let model_name = request.model.clone().unwrap_or_else(|| "default".to_string());
-    let backend = resolved_backend(request.backend);
     let budget = backend_compute_budget(backend);
     let tokens: Vec<String> = request
         .prompt
@@ -118,6 +121,78 @@ fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
         backend,
         node_id: request.node_id.clone(),
     }
+}
+
+fn script_temp_path() -> Result<PathBuf, String> {
+    let temp_dir = env::temp_dir();
+    let path = temp_dir.join(format!(
+        "opengpu-metal-{}.swift",
+        uuid::Uuid::new_v4().simple()
+    ));
+    Ok(path)
+}
+
+fn run_metal_request(request: &WorkerLaunchRequest, backend: Backend) -> Option<WorkerLaunchResponse> {
+    if backend != Backend::M {
+        return None;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = request;
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script_path = match script_temp_path() {
+            Ok(path) => path,
+            Err(_) => return None,
+        };
+
+        if fs::write(&script_path, METAL_RUNNER_SWIFT).is_err() {
+            return None;
+        }
+
+        let model_name = request.model.clone().unwrap_or_else(|| "default".to_string());
+        let output = Command::new("xcrun")
+            .arg("swift")
+            .arg(&script_path)
+            .arg("--job-id")
+            .arg(&request.job_id)
+            .arg("--node-id")
+            .arg(&request.node_id)
+            .arg("--prompt")
+            .arg(&request.prompt)
+            .arg("--model")
+            .arg(&model_name)
+            .arg("--backend")
+            .arg(backend.as_str())
+            .output();
+
+        let _ = fs::remove_file(&script_path);
+
+        let output = match output {
+            Ok(output) if output.status.success() => output,
+            _ => return None,
+        };
+
+        let stdout = match String::from_utf8(output.stdout) {
+            Ok(text) => text,
+            Err(_) => return None,
+        };
+
+        serde_json::from_str(stdout.trim()).ok()
+    }
+}
+
+fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
+    let backend = resolved_backend(request.backend);
+    if let Some(response) = run_metal_request(request, backend) {
+        return response;
+    }
+
+    execute_request_deterministic(request, backend)
 }
 
 pub fn worker_main(cli: WorkerCli) {

@@ -311,14 +311,29 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
 
     match launch_worker_process(config, request, json) {
         Ok(response) => {
+            let is_completed = response.status == "completed";
             let completion = JobCompletion {
                 job_id: response.job_id.clone(),
                 node_id: response.node_id.clone(),
                 worker_id: response.worker_id.clone(),
                 backend: response.backend,
-                status: contracts::JobStatus::Completed,
-                output: Some(response.output),
-                error: response.error,
+                status: if is_completed {
+                    contracts::JobStatus::Completed
+                } else {
+                    contracts::JobStatus::Failed
+                },
+                output: if is_completed {
+                    Some(response.output)
+                } else {
+                    None
+                },
+                error: if is_completed {
+                    response.error
+                } else {
+                    response
+                        .error
+                        .or_else(|| Some("worker returned failed status".to_string()))
+                },
             };
             complete_job(config, &completion);
         }
