@@ -259,21 +259,64 @@ fn print_model_inventory(config: &Config, models: &[ModelRecord], json: bool) {
         return;
     }
 
-    println!("modelDir: {}", configured_model_dir_string(config));
-    println!(
-        "activeModel: {}",
-        active_model_name(config).unwrap_or_else(|| "unset".to_string())
-    );
+    let active_model = active_model_name(config).unwrap_or_else(|| "unset".to_string());
+    let subtitle = format!("active model: {}", active_model);
+    let mut body = vec![
+        format!("model dir: {}", configured_model_dir_string(config)),
+        format!("cache size: {} model(s)", models.len()),
+    ];
+
     if models.is_empty() {
-        println!("models: none");
-        return;
+        body.push("models: none cached".to_string());
+    } else {
+        body.push("cached models:".to_string());
+        for model in models {
+            let state = if model.active { "ACTIVE" } else { "cached" };
+            let prefix = if model.active { ">>" } else { "  " };
+            body.push(format!("{prefix} {:<28} [{state}]", model.name));
+        }
     }
 
-    println!("models:");
-    for model in models {
-        let marker = if model.active { "*" } else { " " };
-        println!("  {marker} {}", model.name);
+    print_retro_panel("MODEL CACHE", &subtitle, &body, Color::Cyan);
+}
+
+fn print_model_event(title: &str, model_name: &str, detail: &str, accent: Color, config: &Config) {
+    let body = vec![
+        format!("model: {}", model_name),
+        format!("detail: {}", detail),
+        format!("model dir: {}", configured_model_dir_string(config)),
+        format!(
+            "active model: {}",
+            active_model_name(config).unwrap_or_else(|| "unset".to_string())
+        ),
+    ];
+    print_retro_panel(title, "local cache updated", &body, accent);
+}
+
+fn print_retro_panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
+    let mut width = title.chars().count().max(subtitle.chars().count());
+    for line in lines {
+        width = width.max(line.chars().count());
     }
+    let inner_width = width + 2;
+    let top = format!("╭{}╮", "─".repeat(inner_width));
+    let bottom = format!("╰{}╯", "─".repeat(inner_width));
+    println!("{}", style(top).with(Color::DarkGrey));
+    println!(
+        "{}",
+        style(format!("│ {:<width$} │", title.to_uppercase(), width = width))
+            .with(accent)
+            .bold()
+    );
+    println!(
+        "{}",
+        style(format!("│ {:<width$} │", subtitle, width = width)).with(Color::DarkGrey)
+    );
+    println!("{}", style(format!("├{}┤", "─".repeat(inner_width))).with(Color::DarkGrey));
+    for line in lines {
+        println!("│ {:<width$} │", line, width = width);
+    }
+    println!("{}", style(bottom).with(Color::DarkGrey));
 }
 
 fn contribution_semantics(backend: Backend) -> &'static str {
@@ -687,8 +730,13 @@ fn main() {
                         eprintln!("failed to save config: {error}");
                         std::process::exit(1);
                     }
-                    println!("active model: {}", name);
-                    println!("modelDir: {}", configured_model_dir_string(&config));
+                    print_model_event(
+                        "MODEL SWITCHED",
+                        &name,
+                        "activated and ready for worker launch",
+                        Color::Green,
+                        &config,
+                    );
                 }
                 ModelCommands::Add { name } => {
                     if let Err(error) = add_model(&mut config, &name) {
@@ -699,8 +747,13 @@ fn main() {
                         eprintln!("failed to save config: {error}");
                         std::process::exit(1);
                     }
-                    println!("cached model: {}", name);
-                    println!("modelDir: {}", configured_model_dir_string(&config));
+                    print_model_event(
+                        "MODEL CACHED",
+                        &name,
+                        "added to local cache without switching",
+                        Color::Cyan,
+                        &config,
+                    );
                 }
                 ModelCommands::Remove { name, force } => {
                     match remove_model(&mut config, &name, force) {
@@ -709,8 +762,13 @@ fn main() {
                                 eprintln!("failed to save config: {error}");
                                 std::process::exit(1);
                             }
-                            println!("removed model: {}", name);
-                            println!("modelDir: {}", configured_model_dir_string(&config));
+                            print_model_event(
+                                "MODEL REMOVED",
+                                &name,
+                                "cache entry deleted",
+                                Color::DarkYellow,
+                                &config,
+                            );
                         }
                         Ok(false) => {
                             eprintln!("model not found: {name}");
@@ -733,8 +791,13 @@ fn main() {
                                 eprintln!("failed to save config: {error}");
                                 std::process::exit(1);
                             }
-                            println!("pruned models: {removed}");
-                            println!("modelDir: {}", configured_model_dir_string(&config));
+                            print_model_event(
+                                "MODEL PRUNED",
+                                &format!("{removed} removed"),
+                                "inactive cache entries cleared",
+                                Color::DarkYellow,
+                                &config,
+                            );
                         }
                         Err(error) => {
                             eprintln!("failed to prune models: {error}");

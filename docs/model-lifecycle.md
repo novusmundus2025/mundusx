@@ -26,6 +26,8 @@ The CLI now has working local cache commands that operate on a manifest director
 - `opengpu model remove <name>`
 - `opengpu model prune --yes`
 
+The terminal output for these commands is intentionally styled like a compact retro operator panel so the active model and cache state are easy to scan quickly.
+
 ## Recommended Contributor Flow
 
 ### First run
