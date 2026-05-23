@@ -81,6 +81,34 @@ flowchart TD
 - The CLI stores that token locally with `opengpu login` and clears it with `opengpu logout`.
 - If the token is not configured on the control plane, the prototype keeps those routes open for local development.
 
+## How The Control Plane Checks Requests
+
+### Job submission
+
+1. A client, SDK, or dashboard sends `POST /v1/jobs`.
+2. If `OPENGPU_OPERATOR_TOKEN` is configured, the control plane checks the bearer token first.
+3. If the token is valid, the control plane stores the job as `queued`.
+4. The job remains queued until a compatible live node claims it.
+
+### Job claim
+
+1. A node agent sends `GET /v1/jobs/next?node_id=...`.
+2. The control plane checks the device signature on the request.
+3. The control plane loads the node record and makes sure:
+   - the node exists
+   - the node is ready or busy
+   - policy allows it to work
+4. The control plane scans queued jobs and picks the first one whose preferred backend matches the node backend, or is `auto`.
+5. The control plane marks the job as `assigned` and marks the node as `busy`.
+
+### Job completion
+
+1. The node agent sends `POST /v1/jobs/complete`.
+2. The control plane checks the device signature again.
+3. The control plane confirms the job was actually assigned to that node.
+4. If the job matches, it is stored as `completed` or `failed`.
+5. The node is returned to `ready` if it was busy.
+
 ## Provider Machine Layout
 
 On a provider machine, the installed pieces should be:
