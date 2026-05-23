@@ -8,6 +8,7 @@ This page sketches the company-side database schema for the OpenGPU control plan
 - Control plane: Supabase Postgres, Auth, and server-side policy / billing / audit data
 
 Supabase is a good fit here because it gives us managed Postgres plus Auth, and its docs recommend using Row Level Security for database access control. The service role key must stay server-side only.
+The control plane mirrors registration, heartbeat, job, and completion events into Supabase when `DATABASE_URL` is present and the local `psql` client is available.
 
 ## Local Development Env
 
@@ -18,6 +19,7 @@ DATABASE_URL=postgresql://postgres.yjlvhhouncxhjkghnwyj:[YOUR-PASSWORD]@aws-1-eu
 ```
 
 The control plane reads `DATABASE_URL` at startup and reports whether it is configured, so you can verify the env is loaded before we wire the actual Supabase client.
+If `psql` is not installed locally, the control plane keeps using local JSON as a fallback and logs the Supabase sync skip.
 
 ## Core Tables
 

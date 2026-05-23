@@ -1,8 +1,10 @@
 mod contracts;
 mod state;
+mod supabase;
 
 use contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRequest};
 use state::{load_state, save_state, ControlPlaneState};
+use supabase::SupabaseMirror;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -71,16 +73,6 @@ fn load_local_env() {
         if !current.pop() {
             return;
         }
-    }
-}
-
-fn database_config_status() -> &'static str {
-    match std::env::var("DATABASE_URL") {
-        Ok(value) if value.contains("[YOUR-PASSWORD]") || value.contains("YOUR-PASSWORD") => {
-            "placeholder"
-        }
-        Ok(_) => "configured",
-        Err(_) => "not configured",
     }
 }
 
@@ -400,7 +392,11 @@ fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
     None
 }
 
-fn handle_connection(mut stream: TcpStream, state: Arc<Mutex<ControlPlaneState>>) {
+fn handle_connection(
+    mut stream: TcpStream,
+    state: Arc<Mutex<ControlPlaneState>>,
+    supabase: Option<&SupabaseMirror>,
+) {
     let mut buffer = vec![0; 16 * 1024];
     let read_result = stream.read(&mut buffer);
     let bytes_read = match read_result {
@@ -447,10 +443,16 @@ fn handle_connection(mut stream: TcpStream, state: Arc<Mutex<ControlPlaneState>>
         }
         ("POST", "/v1/register") => match serde_json::from_str::<AgentRegistration>(&body) {
             Ok(registration) => {
+                let registration_clone = registration.clone();
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.register(registration);
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
+                }
+                if let Some(db) = supabase.as_ref() {
+                    if let Err(error) = db.record_registration(&registration_clone) {
+                        eprintln!("database registration sync skipped: {error}");
+                    }
                 }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
             }
@@ -461,10 +463,16 @@ fn handle_connection(mut stream: TcpStream, state: Arc<Mutex<ControlPlaneState>>
         },
         ("POST", "/v1/heartbeat") => match serde_json::from_str::<Heartbeat>(&body) {
             Ok(heartbeat) => {
+                let heartbeat_clone = heartbeat.clone();
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.heartbeat(heartbeat, now_unix_seconds());
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
+                }
+                if let Some(db) = supabase.as_ref() {
+                    if let Err(error) = db.record_heartbeat(&heartbeat_clone) {
+                        eprintln!("database heartbeat sync skipped: {error}");
+                    }
                 }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
             }
@@ -480,6 +488,11 @@ fn handle_connection(mut stream: TcpStream, state: Arc<Mutex<ControlPlaneState>>
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
                 }
+                if let Some(db) = supabase.as_ref() {
+                    if let Err(error) = db.record_job(&record) {
+                        eprintln!("database job sync skipped: {error}");
+                    }
+                }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
             }
             Err(error) => json_response(
@@ -489,10 +502,18 @@ fn handle_connection(mut stream: TcpStream, state: Arc<Mutex<ControlPlaneState>>
         },
         ("POST", "/v1/jobs/complete") => match serde_json::from_str::<JobCompletion>(&body) {
             Ok(completion) => {
+                let completion_clone = completion.clone();
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.complete_job(completion, now_unix_seconds());
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
+                }
+                if let Some(db) = supabase.as_ref() {
+                    if let Some(job) = record.as_ref() {
+                        if let Err(error) = db.record_job_completion(&completion_clone, job) {
+                            eprintln!("database completion sync skipped: {error}");
+                        }
+                    }
                 }
                 match record {
                     Some(record) => {
@@ -517,11 +538,17 @@ fn handle_connection(mut stream: TcpStream, state: Arc<Mutex<ControlPlaneState>>
 
 fn main() {
     load_local_env();
+    let supabase = SupabaseMirror::from_env();
+    if let Some(db) = supabase.as_ref() {
+        if let Err(error) = db.ensure_schema() {
+            eprintln!("database schema sync skipped: {error}");
+        }
+    }
     let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
     let state = Arc::new(Mutex::new(load_state().ok().flatten().unwrap_or_default()));
 
     println!("OpenGPU control plane listening on http://127.0.0.1:8787");
-    println!("database: {}", database_config_status());
+    println!("database: {}", SupabaseMirror::startup_status());
     println!("home: GET /");
     println!("health: GET /health");
     println!("status: GET /v1/status");
@@ -537,7 +564,7 @@ fn main() {
         match incoming {
             Ok(stream) => {
                 let state = Arc::clone(&state);
-                handle_connection(stream, state);
+                handle_connection(stream, state, supabase.as_ref());
             }
             Err(error) => eprintln!("incoming connection error: {error}"),
         }

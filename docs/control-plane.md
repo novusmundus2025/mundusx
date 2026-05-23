@@ -53,7 +53,7 @@ POST /v1/jobs/complete
 
 ## Current Storage Model
 
-The prototype keeps its state in a local JSON file:
+The prototype keeps its state in a local JSON file, and mirrors the same events into Supabase when `DATABASE_URL` is configured and the local `psql` client is available:
 
 - `~/.opengpu-control-plane/state.json`
 
@@ -61,6 +61,8 @@ or, if configured:
 
 - `OPENGPU_CONTROL_PLANE_HOME/state.json`
 - `OPENGPU_HOME/state.json`
+
+If Supabase is not available, the local JSON state remains the fallback.
 
 ## What The State Contains
 
@@ -92,6 +94,7 @@ or, if configured:
 - `GET /v1/jobs/next?node_id=...` lets a node claim the next queued job
 - nodes with `policyAllowed: false` are not eligible for job claims
 - `POST /v1/jobs/complete` stores the worker result and marks the job complete or failed
+- the control plane mirrors registration, heartbeat, job, and completion events into Supabase when configured
 - status returns a snapshot with:
   - total nodes
   - online count
