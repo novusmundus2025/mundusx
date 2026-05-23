@@ -1,6 +1,7 @@
 use crate::contracts::{
     AgentRegistration, AgentState, Backend, ControlPlaneSnapshot, Heartbeat, JobClaimResponse,
     JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodeRecord,
+    CreditsLedgerRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -12,6 +13,7 @@ pub struct ControlPlaneState {
     pub nodes: BTreeMap<String, NodeRecord>,
     pub jobs: BTreeMap<String, JobRecord>,
     pub job_events: Vec<JobEventRecord>,
+    pub credits_ledger: Vec<CreditsLedgerRecord>,
 }
 
 impl ControlPlaneState {
@@ -19,6 +21,9 @@ impl ControlPlaneState {
         let nodes: Vec<NodeRecord> = self.nodes.values().cloned().collect();
         let jobs: Vec<JobRecord> = self.jobs.values().cloned().collect();
         let job_events = self.job_events.len();
+        let credits_ledger = self.credits_ledger.len();
+        let credits_total = self.credits_total();
+        let credits_by_node = self.credits_by_node();
         let online_count = nodes
             .iter()
             .filter(|node| node.state == AgentState::Ready || node.state == AgentState::Busy)
@@ -56,6 +61,9 @@ impl ControlPlaneState {
             nodes,
             jobs,
             job_events,
+            credits_ledger,
+            credits_total,
+            credits_by_node,
             storage_source: storage_source.to_string(),
             online_count,
             paused_count,
@@ -83,6 +91,14 @@ impl ControlPlaneState {
         serde_json::to_value(self.job_events.clone()).expect("job events json")
     }
 
+    pub fn credits_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ledger": self.credits_ledger.clone(),
+            "total": self.credits_total(),
+            "by_node": self.credits_by_node(),
+        })
+    }
+
     pub fn record_job_event(
         &mut self,
         node_id: Option<String>,
@@ -101,6 +117,87 @@ impl ControlPlaneState {
         };
         self.job_events.push(record.clone());
         record
+    }
+
+    pub fn record_credit_award(
+        &mut self,
+        device_id: Option<String>,
+        job_id: Option<String>,
+        amount: f64,
+        currency: &str,
+        metadata: serde_json::Value,
+        created_at: String,
+    ) -> Option<CreditsLedgerRecord> {
+        let job_id_ref = job_id.as_deref();
+        if self
+            .credits_ledger
+            .iter()
+            .any(|entry| entry.entry_type == "job_reward" && entry.job_id.as_deref() == job_id_ref)
+        {
+            return None;
+        }
+
+        let record = CreditsLedgerRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: None,
+            device_id,
+            job_id,
+            entry_type: "job_reward".to_string(),
+            amount,
+            currency: currency.to_string(),
+            metadata,
+            created_at,
+        };
+        self.credits_ledger.push(record.clone());
+        Some(record)
+    }
+
+    pub fn credits_total(&self) -> f64 {
+        let total = self.credits_ledger.iter().map(|entry| entry.amount).sum::<f64>();
+        normalize_amount(total)
+    }
+
+    pub fn credits_by_node(&self) -> BTreeMap<String, f64> {
+        let mut by_node = BTreeMap::new();
+        for entry in &self.credits_ledger {
+            if let Some(device_id) = entry.device_id.as_ref() {
+                *by_node.entry(device_id.clone()).or_insert(0.0) += entry.amount;
+            }
+        }
+        for value in by_node.values_mut() {
+            *value = normalize_amount(*value);
+        }
+        by_node
+    }
+
+    pub fn award_job_reward(
+        &mut self,
+        job: &JobRecord,
+        completed_at: String,
+    ) -> Option<CreditsLedgerRecord> {
+        let node_id = job.assigned_node_id.clone()?;
+        let node = self.nodes.get(&node_id)?;
+        let prompt_chars = job.prompt.chars().count() as f64;
+        let output_chars = job.output.as_ref().map(|output| output.chars().count() as f64).unwrap_or(0.0);
+        let work_units = ((prompt_chars + output_chars) / 400.0).ceil().max(1.0);
+        let contribution_multiplier = 1.0 + (node.contribution_percent as f64 / 100.0);
+        let amount = ((work_units * contribution_multiplier) * 100.0).round() / 100.0;
+        let metadata = serde_json::json!({
+            "formula": "ceil((prompt_chars + output_chars) / 400) * (1 + contribution_percent / 100)",
+            "prompt_chars": prompt_chars,
+            "output_chars": output_chars,
+            "contribution_percent": node.contribution_percent,
+            "backend": node.backend,
+            "job_status": job.status,
+        });
+        self.record_credit_award(
+            Some(node_id),
+            Some(job.job_id.clone()),
+            amount,
+            "credits",
+            metadata,
+            completed_at,
+        )
     }
 
     pub fn register(&mut self, registration: AgentRegistration) -> NodeRecord {
@@ -269,6 +366,15 @@ impl ControlPlaneState {
 
         self.nodes.insert(heartbeat.node_id, record.clone());
         record
+    }
+}
+
+fn normalize_amount(value: f64) -> f64 {
+    let rounded = (value * 100.0).round() / 100.0;
+    if rounded.abs() < 0.005 {
+        0.0
+    } else {
+        rounded
     }
 }
 

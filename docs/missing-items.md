@@ -62,7 +62,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 ## Product Phase
 
 - [x] Dashboard for node and job visibility
-- [ ] Credits / accounting model
+- [x] Credits / accounting model
 - [ ] Onboarding flow
 - [ ] Public docs site
 - [ ] Branding and naming cleanup

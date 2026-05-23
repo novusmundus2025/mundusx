@@ -225,6 +225,8 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
     let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
     let policy_blocked = snapshot["policy_blocked_count"].as_u64().unwrap_or(0);
     let job_events = snapshot["job_events"].as_u64().unwrap_or(0);
+    let credits_ledger = snapshot["credits_ledger"].as_u64().unwrap_or(0);
+    let credits_total = snapshot["credits_total"].as_f64().unwrap_or(0.0);
     let queued = snapshot["queued_job_count"].as_u64().unwrap_or(0);
     let assigned = snapshot["assigned_job_count"].as_u64().unwrap_or(0);
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
@@ -385,6 +387,8 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
         <div class="stat"><span>Paused nodes</span><strong>{paused}</strong></div>
         <div class="stat"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
         <div class="stat"><span>Job events</span><strong>{job_events}</strong></div>
+        <div class="stat"><span>Credits ledger</span><strong>{credits_ledger}</strong></div>
+        <div class="stat"><span>Total credits</span><strong>{credits_total:.2}</strong></div>
         <div class="stat"><span>Queued jobs</span><strong>{queued}</strong></div>
         <div class="stat"><span>Assigned jobs</span><strong>{assigned}</strong></div>
         <div class="stat"><span>Completed jobs</span><strong>{completed}</strong></div>
@@ -392,11 +396,11 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
       </div>
       <div class="note">
         Policy-aware nodes are still visible in the registry, but nodes that should stay quiet are excluded from scheduling.
-        Current startup storage source: <code>{storage_source}</code>.
+        Current startup storage source: <code>{storage_source}</code>. Credits are accrued through the append-only ledger and exposed at <code>/v1/credits</code>.
       </div>
       <h2 class="section-title">Node details</h2>
       {node_rows}
-      <p>Useful endpoints: <a href="/health">/health</a>, <a href="/v1/status">/v1/status</a>, <a href="/v1/nodes">/v1/nodes</a>, <a href="/v1/jobs">/v1/jobs</a></p>
+      <p>Useful endpoints: <a href="/health">/health</a>, <a href="/v1/status">/v1/status</a>, <a href="/v1/nodes">/v1/nodes</a>, <a href="/v1/jobs">/v1/jobs</a>, <a href="/v1/credits">/v1/credits</a></p>
     </main>
   </body>
 </html>"#
@@ -480,6 +484,7 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
             | ("GET", "/v1/nodes")
             | ("GET", "/v1/jobs")
             | ("GET", "/v1/job-events")
+            | ("GET", "/v1/credits")
             | ("POST", "/v1/jobs")
     )
 }
@@ -688,6 +693,10 @@ fn handle_connection(
             let snapshot = state.lock().expect("state lock").job_events_snapshot();
             json_response("200 OK", snapshot)
         }
+        ("GET", "/v1/credits") => {
+            let snapshot = state.lock().expect("state lock").credits_snapshot();
+            json_response("200 OK", snapshot)
+        }
         ("GET", "/v1/jobs/next") => {
             if let Some(node_id) = query_param(query, "node_id") {
                 let mut guard = state.lock().expect("state lock");
@@ -829,6 +838,7 @@ fn handle_connection(
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.complete_job(completion, now_unix_seconds());
                 if let Some(job) = record.as_ref() {
+                    let completed_at = job.completed_at.clone().unwrap_or_else(now_unix_seconds);
                     let event_type = if matches!(job.status, crate::contracts::JobStatus::Completed) {
                         "job_completed"
                     } else {
@@ -841,6 +851,30 @@ fn handle_connection(
                         serde_json::to_value(job).expect("json"),
                         now_unix_seconds(),
                     );
+                    if matches!(job.status, crate::contracts::JobStatus::Completed) {
+                        if let Some(award) = guard.award_job_reward(job, completed_at) {
+                            let award_event = guard.record_job_event(
+                                award.device_id.clone(),
+                                award.job_id.clone(),
+                                "credit_awarded",
+                                serde_json::to_value(&award).expect("json"),
+                                award.created_at.clone(),
+                            );
+                            if let Some(db) = supabase.as_ref() {
+                                if let Err(error) = db.record_credit_award(&award) {
+                                    eprintln!("database credit sync skipped: {error}");
+                                }
+                                if let Err(error) = db.record_job_event(
+                                    award_event.node_id.as_deref(),
+                                    award_event.job_id.as_deref(),
+                                    &award_event.event_type,
+                                    award_event.payload.clone(),
+                                ) {
+                                    eprintln!("database credit event skipped: {error}");
+                                }
+                            }
+                        }
+                    }
                 }
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");

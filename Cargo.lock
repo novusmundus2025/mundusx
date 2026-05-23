@@ -780,6 +780,7 @@ dependencies = [
  "postgres-native-tls",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

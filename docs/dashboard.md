@@ -9,6 +9,7 @@ The dashboard is the local operator UI for the company-side control plane.
 - node health and policy state
 - job counts
 - append-only job event history
+- credits ledger totals, balances by node, and recent rewards
 
 ## How It Works
 
@@ -26,5 +27,6 @@ OPENGPU_CONTROL_PLANE_URL=http://127.0.0.1:8787 PORT=3001 npm run dev
 ## Notes
 
 - This is the first real dashboard pass.
-- Credits and onboarding are still product work for later.
+- The credits panel is backed by the control-plane `\/v1\/credits` snapshot.
+- Onboarding is still product work for later.
 

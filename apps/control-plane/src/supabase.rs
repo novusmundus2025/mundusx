@@ -1,5 +1,6 @@
 use crate::contracts::{
-    AgentRegistration, Heartbeat, JobCompletion, JobEventRecord, JobRecord, NodeRecord,
+    AgentRegistration, CreditsLedgerRecord, Heartbeat, JobCompletion, JobEventRecord, JobRecord,
+    NodeRecord,
 };
 use crate::state::ControlPlaneState;
 use serde_json::json;
@@ -38,6 +39,8 @@ impl SupabaseMirror {
         let devices: Vec<NodeRecord> = self.fetch_json("devices?select=*")?;
         let jobs: Vec<JobRecord> = self.fetch_json("jobs?select=*")?;
         let job_events: Vec<JobEventRecord> = self.fetch_json("job_events?select=*&order=id.asc")?;
+        let credits_ledger: Vec<CreditsLedgerRecord> =
+            self.fetch_json("credits_ledger?select=*&order=created_at.asc")?;
 
         let mut state = ControlPlaneState::default();
         for device in devices {
@@ -47,6 +50,7 @@ impl SupabaseMirror {
             state.jobs.insert(job.job_id.clone(), job);
         }
         state.job_events = job_events;
+        state.credits_ledger = credits_ledger;
         Ok(state)
     }
 
@@ -205,6 +209,27 @@ impl SupabaseMirror {
             Some(&completion.job_id),
             event_type,
             serde_json::to_value(completion).map_err(|error| error.to_string())?,
+        )
+    }
+
+    pub fn record_credit_award(&self, entry: &CreditsLedgerRecord) -> Result<(), String> {
+        let payload = json!({
+            "id": entry.id,
+            "user_id": entry.user_id,
+            "device_id": entry.device_id,
+            "job_id": entry.job_id,
+            "entry_type": entry.entry_type,
+            "amount": entry.amount,
+            "currency": entry.currency,
+            "metadata": entry.metadata,
+            "created_at": entry.created_at,
+        });
+
+        self.post_json(
+            "credits_ledger",
+            Some("id"),
+            "resolution=merge-duplicates,return=minimal",
+            payload,
         )
     }
 

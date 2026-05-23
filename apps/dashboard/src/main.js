@@ -4,6 +4,10 @@ const controlPlaneUrl = process.env.OPENGPU_CONTROL_PLANE_URL ?? "http://127.0.0
 const port = Number(process.env.PORT ?? "3001");
 
 const formatCount = (value) => new Intl.NumberFormat("en-US").format(Number(value ?? 0));
+const formatCredits = (value) => {
+  const normalized = Math.abs(Number(value ?? 0)) < 0.000001 ? 0 : Number(value ?? 0);
+  return normalized.toFixed(2);
+};
 
 const escapeHtml = (input) =>
   String(input ?? "")
@@ -138,7 +142,80 @@ function renderEvents(events = []) {
     </div>`;
 }
 
-function page({ health, status, events, error }) {
+function renderCredits(credits = {}) {
+  const ledger = Array.isArray(credits.ledger) ? credits.ledger : [];
+  const byNode = credits.by_node ?? {};
+  const total = Number(credits.total ?? 0);
+  const balanceRows = Object.entries(byNode);
+
+  const balances = balanceRows.length
+    ? `
+      <div class="balance-grid">
+        ${balanceRows
+          .map(
+            ([nodeId, amount]) => `
+              <div class="balance">
+                <strong>${escapeHtml(nodeId)}</strong>
+                <div class="meta">${formatCount(amount)} credits</div>
+              </div>`,
+          )
+          .join("")}
+      </div>`
+    : `<div class="empty">No contributor balances yet.</div>`;
+
+  const recentEntries = ledger.length
+    ? `
+      <div class="events">
+        ${ledger
+          .slice()
+          .reverse()
+          .slice(0, 12)
+          .map(
+            (entry) => `
+              <div class="event">
+            <div class="event-top">
+                <strong>${escapeHtml(entry.entry_type ?? "credit")}</strong>
+                <span class="meta">${escapeHtml(entry.created_at ?? "unknown")}</span>
+              </div>
+              <div class="meta">
+                device ${escapeHtml(entry.device_id ?? "n/a")} • job ${escapeHtml(entry.job_id ?? "n/a")} •
+                  ${formatCredits(entry.amount ?? 0)} ${escapeHtml(entry.currency ?? "credits")}
+              </div>
+                ${entry.metadata ? `<pre>${escapeHtml(JSON.stringify(entry.metadata, null, 2))}</pre>` : ""}
+              </div>`,
+          )
+          .join("")}
+      </div>`
+    : `<div class="empty">No ledger entries recorded yet.</div>`;
+
+  return `
+    <div class="section">
+      <div class="section-head">
+        <h2 class="section-title">Credits</h2>
+        <div class="meta">${formatCount(ledger.length)} ledger entries</div>
+      </div>
+      <div class="section-body">
+        <div class="grid credits-grid">
+          <div class="card">
+            <div class="card-label">Total credits</div>
+            <div class="card-value">${formatCredits(total)}</div>
+            <div>${badge("ledger live", "green")}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Contributor balances</div>
+            <div class="card-value">${formatCount(balanceRows.length)}</div>
+            <div>${badge(balanceRows.length ? "allocated" : "empty", balanceRows.length ? "blue" : "neutral")}</div>
+          </div>
+        </div>
+        <h3 class="subhead">Balances by node</h3>
+        ${balances}
+        <h3 class="subhead">Recent awards</h3>
+        ${recentEntries}
+      </div>
+    </div>`;
+}
+
+function page({ health, status, events, credits, error }) {
   const snapshot = status ?? health?.snapshot ?? {};
   const storageSource = health?.storage_source ?? snapshot.storage_source ?? "unknown";
   const supabase = health?.supabase ?? "unknown";
@@ -253,6 +330,13 @@ function page({ health, status, events, error }) {
         font-size: 30px;
         font-weight: 700;
       }
+      .subhead {
+        margin: 0 0 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+      }
       .section {
         margin-top: 24px;
         border: 1px solid var(--line);
@@ -311,6 +395,25 @@ function page({ health, status, events, error }) {
       .events {
         display: grid;
         gap: 12px;
+      }
+      .balance-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      .balance {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(10, 13, 18, 0.6);
+        padding: 14px 16px;
+      }
+      .balance strong {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 14px;
+        color: #f4f8ff;
+        overflow-wrap: anywhere;
       }
       .event {
         border: 1px solid var(--line);
@@ -411,19 +514,22 @@ function page({ health, status, events, error }) {
         </div>
         <div class="section-body">${renderEvents(events)}</div>
       </div>
+
+      ${renderCredits(credits ?? {})}
     </div>
   </body>
 </html>`;
 }
 
 async function collectData() {
-  const [health, status, events] = await Promise.all([
+  const [health, status, events, credits] = await Promise.all([
     fetchJson("/health"),
     fetchJson("/v1/status"),
     fetchJson("/v1/job-events"),
+    fetchJson("/v1/credits"),
   ]);
 
-  return { health, status, events, error: null };
+  return { health, status, events, credits, error: null };
 }
 
 createServer(async (_req, res) => {
@@ -435,6 +541,7 @@ createServer(async (_req, res) => {
       health: null,
       status: null,
       events: [],
+      credits: null,
       error: error instanceof Error ? error.message : String(error),
     };
   }

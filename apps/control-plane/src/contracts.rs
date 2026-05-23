@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -149,6 +150,19 @@ pub struct JobEventRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreditsLedgerRecord {
+    pub id: String,
+    pub user_id: Option<String>,
+    pub device_id: Option<String>,
+    pub job_id: Option<String>,
+    pub entry_type: String,
+    pub amount: f64,
+    pub currency: String,
+    pub metadata: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeRecord {
     pub node_id: String,
     pub public_key_fingerprint: String,
@@ -175,6 +189,9 @@ pub struct ControlPlaneSnapshot {
     pub nodes: Vec<NodeRecord>,
     pub jobs: Vec<JobRecord>,
     pub job_events: usize,
+    pub credits_ledger: usize,
+    pub credits_total: f64,
+    pub credits_by_node: BTreeMap<String, f64>,
     pub storage_source: String,
     pub online_count: usize,
     pub paused_count: usize,
