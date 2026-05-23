@@ -9,6 +9,7 @@ http://127.0.0.1:8787
 ```
 
 The root URL (`/`) now returns a small HTML health dashboard for browser checks.
+It includes per-node rows so you can see backend, power, battery, policy state, and policy reason directly in the browser.
 
 ## Prototype Endpoints
 
@@ -101,6 +102,22 @@ or, if configured:
   - assigned jobs
   - completed jobs
   - failed jobs
+
+## Browser Dashboard
+
+The root page (`/`) is a quick operator view, not a full dashboard. It shows:
+
+- summary counts
+- policy-blocked count
+- a per-node table with:
+  - node ID
+  - backend
+  - node state
+  - power source
+  - battery state
+  - policy allowed / blocked
+  - policy reason
+  - last updated timestamp
 
 ## What Comes Next
 

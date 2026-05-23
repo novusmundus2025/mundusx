@@ -47,6 +47,7 @@ flowchart TD
 - `Control Plane` chooses where work goes and keeps the live registry.
 - `Control Plane` queues jobs, lets agents claim them, and keeps the live registry.
 - `Control Plane` also records the node power/policy fields from heartbeats so the dashboard can show why a Mac is paused.
+- The browser page at `/` shows per-node rows with backend, state, power, battery, policy, and policy reason.
 - `Telemetry` is emitted by every layer and shipped separately from the job path.
 
 ## Provider Machine Layout

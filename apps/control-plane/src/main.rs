@@ -40,6 +40,109 @@ fn html_response(status: &str, body: &str) -> String {
     )
 }
 
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn state_badge(state: &str) -> (&'static str, &'static str) {
+    match state {
+        "ready" => ("#12351f", "#8ef0aa"),
+        "busy" => ("#3d2b0f", "#ffd27f"),
+        "paused" => ("#3a2610", "#ffbf7a"),
+        "stopped" => ("#3b1515", "#ff9d9d"),
+        _ => ("#22304c", "#b8c7e8"),
+    }
+}
+
+fn policy_badge(allowed: bool) -> (&'static str, &'static str, &'static str) {
+    if allowed {
+        ("#12351f", "#8ef0aa", "allowed")
+    } else {
+        ("#3b1515", "#ff9d9d", "blocked")
+    }
+}
+
+fn render_nodes(state: &ControlPlaneState) -> String {
+    let nodes: Vec<_> = state.nodes.values().cloned().collect();
+    if nodes.is_empty() {
+        return r#"<div class="empty">No nodes have registered yet.</div>"#.to_string();
+    }
+
+    let mut html = String::from(
+        r#"<div class="table">
+        <div class="thead">
+          <div>Node</div>
+          <div>Backend</div>
+          <div>State</div>
+          <div>Power</div>
+          <div>Policy</div>
+          <div>Updated</div>
+        </div>"#,
+    );
+
+    for node in nodes {
+        let (state_bg, state_fg) = state_badge(node.state.as_str());
+        let (policy_bg, policy_fg, policy_label) = policy_badge(node.policy_allowed);
+        let battery = node
+            .battery_percent
+            .map(|value| format!("{value}%"))
+            .unwrap_or_else(|| "unknown".to_string());
+        let power = format!(
+            "{} • {} • {}",
+            node.power_source,
+            if node.on_battery { "battery" } else { "AC" },
+            battery
+        );
+        let policy_reason = node
+            .policy_reason
+            .as_ref()
+            .map(|reason| format!(r#"<div class="meta">{}</div>"#, escape_html(reason)))
+            .unwrap_or_default();
+
+        html.push_str(&format!(
+            r#"<div class="row">
+              <div>
+                <strong>{}</strong>
+                <div class="meta">cap {}% • {} GPU% free</div>
+              </div>
+              <div>{}</div>
+              <div><span class="pill" style="background:{};color:{};">{}</span></div>
+              <div>
+                <div>{}</div>
+                <div class="meta">{}</div>
+              </div>
+              <div>
+                <span class="pill" style="background:{};color:{};">{}</span>
+                {}
+              </div>
+              <div>{}</div>
+            </div>"#,
+            escape_html(&node.node_id),
+            node.contribution_percent,
+            node.available_gpu_percent,
+            escape_html(&node.backend.to_string()),
+            state_bg,
+            state_fg,
+            escape_html(&node.state.to_string()),
+            escape_html(&power),
+            escape_html(&node.public_key_fingerprint),
+            policy_bg,
+            policy_fg,
+            policy_label,
+            policy_reason,
+            escape_html(&node.updated_at)
+        ));
+    }
+
+    html.push_str("</div>");
+    html
+}
+
 fn control_plane_home(state: &ControlPlaneState) -> String {
     let snapshot = state.snapshot();
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
@@ -117,6 +220,55 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
         font-size: 28px;
         color: #ffffff;
       }}
+      .section-title {{
+        margin: 30px 0 10px;
+        font-size: 18px;
+        color: #f1f6ff;
+      }}
+      .table {{
+        display: grid;
+        gap: 10px;
+        margin-top: 18px;
+      }}
+      .thead,
+      .row {{
+        display: grid;
+        grid-template-columns: 1.6fr 0.8fr 0.8fr 1.4fr 1fr 0.7fr;
+        gap: 12px;
+        align-items: start;
+      }}
+      .thead {{
+        color: #91a6cb;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
+        padding: 0 12px;
+      }}
+      .row {{
+        background: #0d1526;
+        border: 1px solid #23314e;
+        border-radius: 16px;
+        padding: 14px 12px;
+      }}
+      .row strong {{
+        display: block;
+        font-size: 14px;
+        color: #f4f8ff;
+        margin-bottom: 4px;
+      }}
+      .meta {{
+        color: #8ea4ca;
+        font-size: 12px;
+        line-height: 1.45;
+      }}
+      .pill {{
+        display: inline-block;
+        padding: 4px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+      }}
       .note {{
         margin-top: 16px;
         padding: 14px 16px;
@@ -124,6 +276,14 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
         background: #0a1020;
         border: 1px solid #24324f;
         color: #b6c5e4;
+      }}
+      .empty {{
+        margin-top: 18px;
+        padding: 18px;
+        border-radius: 16px;
+        border: 1px dashed #24324f;
+        background: #0a1020;
+        color: #8ea4ca;
       }}
       code {{
         background: #0a1020;
@@ -154,10 +314,14 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
       <div class="note">
         Policy-aware nodes are still visible in the registry, but nodes that should stay quiet are excluded from scheduling.
       </div>
+      <h2 class="section-title">Node details</h2>
+      {node_rows}
       <p>Useful endpoints: <a href="/health">/health</a>, <a href="/v1/status">/v1/status</a>, <a href="/v1/nodes">/v1/nodes</a>, <a href="/v1/jobs">/v1/jobs</a></p>
     </main>
   </body>
 </html>"#
+        ,
+        node_rows = render_nodes(state)
     )
 }
 
