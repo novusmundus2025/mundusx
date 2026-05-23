@@ -24,6 +24,8 @@ It includes per-node rows so you can see backend, power, battery, policy state, 
 - `POST /v1/jobs` - submit a job request
 - `POST /v1/jobs/complete` - complete a claimed job
 
+Agent-only routes are signed with the node's existing device keypair and are verified by the control plane before being accepted.
+
 ## Submitting A Job
 
 A client, SDK, or dashboard sends the request to the control plane:
@@ -91,6 +93,7 @@ The applied SQL schema lives at [supabase/schema.sql](/Users/DBATALL/Documents/a
 
 - registration inserts or updates a node record
 - heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy fields
+- register/heartbeat/claim/complete requests from agents must carry a valid device signature
 - `POST /v1/jobs` queues a job request in local JSON state
 - `GET /v1/jobs/next?node_id=...` lets a node claim the next queued job
 - nodes with `policyAllowed: false` are not eligible for job claims

@@ -1,3 +1,4 @@
+use crate::identity::DeviceIdentity;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{Read, Write};
@@ -93,6 +94,90 @@ pub fn post_json_body<T: Serialize, R: DeserializeOwned>(
     );
     let response = send_request(&endpoint.host, endpoint.port, &request)?;
     parse_json_body(&response)
+}
+
+pub fn signed_post_json<T: Serialize>(
+    control_plane_url: &str,
+    path: &str,
+    node_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<String, String> {
+    signed_request(control_plane_url, "POST", path, node_id, identity, payload)
+}
+
+pub fn signed_get_json<T: DeserializeOwned>(
+    control_plane_url: &str,
+    path: &str,
+    node_id: &str,
+    identity: &DeviceIdentity,
+) -> Result<T, String> {
+    let response = signed_request(control_plane_url, "GET", path, node_id, identity, &serde_json::json!({}))?;
+    parse_json_body(&response)
+}
+
+pub fn signed_post_json_body<T: Serialize, R: DeserializeOwned>(
+    control_plane_url: &str,
+    path: &str,
+    node_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<R, String> {
+    let response = signed_request(control_plane_url, "POST", path, node_id, identity, payload)?;
+    parse_json_body(&response)
+}
+
+fn signed_request<T: Serialize>(
+    control_plane_url: &str,
+    method: &str,
+    path: &str,
+    node_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<String, String> {
+    let endpoint = parse_http_endpoint(control_plane_url, path)?;
+    let body = if method == "GET" {
+        String::new()
+    } else {
+        serde_json::to_string(payload).map_err(|error| error.to_string())?
+    };
+    let timestamp = unix_seconds_string();
+    let message = format!("{method}\n{}\n{timestamp}\n{body}", endpoint.path);
+    let signature = identity.sign_hex(&message).map_err(|error| error.to_string())?;
+    let request = if method == "GET" {
+        format!(
+            "GET {} HTTP/1.1\r\nHost: {}:{}\r\nX-OpenGPU-Node-Id: {}\r\nX-OpenGPU-Public-Key: {}\r\nX-OpenGPU-Timestamp: {}\r\nX-OpenGPU-Signature: {}\r\nConnection: close\r\n\r\n",
+            endpoint.path,
+            endpoint.host,
+            endpoint.port,
+            node_id,
+            identity.public_key_hex,
+            timestamp,
+            signature
+        )
+    } else {
+        format!(
+            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-OpenGPU-Node-Id: {}\r\nX-OpenGPU-Public-Key: {}\r\nX-OpenGPU-Timestamp: {}\r\nX-OpenGPU-Signature: {}\r\nConnection: close\r\n\r\n{}",
+            endpoint.path,
+            endpoint.host,
+            endpoint.port,
+            body.len(),
+            node_id,
+            identity.public_key_hex,
+            timestamp,
+            signature,
+            body
+        )
+    };
+    send_request(&endpoint.host, endpoint.port, &request)
+}
+
+fn unix_seconds_string() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 fn parse_json_body<T: DeserializeOwned>(response: &str) -> Result<T, String> {

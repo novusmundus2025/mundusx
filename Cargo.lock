@@ -527,6 +527,8 @@ name = "opengpu-control-plane"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "ed25519-dalek",
+ "hex",
  "serde",
  "serde_json",
 ]
@@ -537,6 +539,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dirs",
+ "ed25519-dalek",
  "hex",
  "serde",
  "serde_json",

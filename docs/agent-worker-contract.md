@@ -18,6 +18,7 @@ When the agent comes online, it should register with:
 
 - node ID
 - public key fingerprint
+- public key hex
 - resolved backend
 - contribution percent
 - agent version
@@ -100,8 +101,10 @@ The data shapes are now defined in:
 
 The transport and service implementations are partially in place, including:
 
-- agent registration and heartbeat transport to the control plane
+- agent registration and heartbeat transport to the control plane with device signatures
 - control-plane job queue submission and claim flow
 - local worker launch from the agent
+
+The device keypair is now the node identity layer. The control plane verifies the node's signed requests instead of requiring a separate contributor login for the machine itself.
 
 The health check command now verifies the local Mac runner without starting a full job, and it also reports whether the current contribution cap is allowed by the Mac power state. The agent now converts that policy into paused heartbeats so the control plane will not assign work when the Mac should stay quiet.

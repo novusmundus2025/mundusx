@@ -48,6 +48,7 @@ Suggested columns:
 - `node_id` text primary key
 - `user_id` UUID references `users.id`
 - `public_key_fingerprint` text unique
+- `public_key_hex` text unique
 - `backend` text
 - `contribution_percent` integer
 - `power_source` text
@@ -62,6 +63,8 @@ Suggested columns:
 - `last_seen_at_epoch` bigint
 - `created_at` timestamptz
 - `updated_at` timestamptz
+
+The contributor node signs device requests with its local private key. The control plane verifies the signature using the stored `public_key_hex` before accepting register, heartbeat, claim, or completion requests.
 
 ### `heartbeats`
 

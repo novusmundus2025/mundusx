@@ -36,6 +36,7 @@ impl SupabaseMirror {
         let payload = json!({
             "node_id": registration.node_id,
             "public_key_fingerprint": registration.public_key_fingerprint,
+            "public_key_hex": registration.public_key_hex,
             "backend": registration.backend,
             "contribution_percent": registration.contribution_percent,
             "agent_version": registration.agent_version,

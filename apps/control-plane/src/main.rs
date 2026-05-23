@@ -3,8 +3,10 @@ mod state;
 mod supabase;
 
 use contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRequest};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use state::{load_state, save_state, ControlPlaneState};
 use supabase::SupabaseMirror;
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -361,14 +363,35 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
     )
 }
 
-fn parse_request(request: &str) -> (String, String, String) {
+struct RequestParts {
+    method: String,
+    path: String,
+    headers: BTreeMap<String, String>,
+    body: String,
+}
+
+fn parse_request(request: &str) -> RequestParts {
     let mut lines = request.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or_default().to_string();
+    let mut headers = BTreeMap::new();
+    for line in lines.by_ref() {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
     let body = request.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
-    (method, path, body)
+    RequestParts {
+        method,
+        path,
+        headers,
+        body,
+    }
 }
 
 fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
@@ -392,6 +415,93 @@ fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
     None
 }
 
+fn header_value<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    headers.get(&key.to_ascii_lowercase()).map(|value| value.as_str())
+}
+
+fn requires_device_signature(method: &str, path: &str) -> bool {
+    matches!(
+        (method, path),
+        ("POST", "/v1/register")
+            | ("POST", "/v1/heartbeat")
+            | ("GET", "/v1/jobs/next")
+            | ("POST", "/v1/jobs/complete")
+    )
+}
+
+fn node_public_key_hex(state: &Arc<Mutex<ControlPlaneState>>, node_id: &str) -> Option<String> {
+    state
+        .lock()
+        .expect("state lock")
+        .nodes
+        .get(node_id)
+        .map(|node| node.public_key_hex.clone())
+}
+
+fn verify_signature(
+    public_key_hex: &str,
+    method: &str,
+    path: &str,
+    timestamp: &str,
+    body: &str,
+    signature_hex: &str,
+) -> Result<(), String> {
+    let public_bytes = hex::decode(public_key_hex).map_err(|error| error.to_string())?;
+    let public_bytes: [u8; 32] = public_bytes
+        .try_into()
+        .map_err(|_| "public key must be 32 bytes".to_string())?;
+    let verifying_key = VerifyingKey::from_bytes(&public_bytes).map_err(|error| error.to_string())?;
+    let signature_bytes = hex::decode(signature_hex).map_err(|error| error.to_string())?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|error| error.to_string())?;
+    let message = format!("{method}\n{path}\n{timestamp}\n{body}");
+    verifying_key
+        .verify(message.as_bytes(), &signature)
+        .map_err(|error| error.to_string())
+}
+
+fn authorize_device_request(
+    method: &str,
+    route_path: &str,
+    request_path: &str,
+    headers: &BTreeMap<String, String>,
+    body: &str,
+    state: &Arc<Mutex<ControlPlaneState>>,
+) -> Result<(), String> {
+    if !requires_device_signature(method, route_path) {
+        return Ok(());
+    }
+
+    let node_id = header_value(headers, "x-opengpu-node-id")
+        .ok_or_else(|| "missing x-opengpu-node-id".to_string())?;
+    let timestamp = header_value(headers, "x-opengpu-timestamp")
+        .ok_or_else(|| "missing x-opengpu-timestamp".to_string())?;
+    let signature = header_value(headers, "x-opengpu-signature")
+        .ok_or_else(|| "missing x-opengpu-signature".to_string())?;
+
+    let timestamp_value = timestamp
+        .parse::<i64>()
+        .map_err(|_| "invalid x-opengpu-timestamp".to_string())?;
+    let current = now_unix_seconds()
+        .parse::<i64>()
+        .map_err(|_| "invalid current timestamp".to_string())?;
+    if current.abs_diff(timestamp_value) > 300 {
+        return Err("signature timestamp expired".to_string());
+    }
+
+    let public_key_hex = if route_path == "/v1/register" {
+        let registration: AgentRegistration =
+            serde_json::from_str(body).map_err(|error| error.to_string())?;
+        if registration.node_id != node_id {
+            return Err("node id header mismatch".to_string());
+        }
+        registration.public_key_hex
+    } else {
+        node_public_key_hex(state, node_id).ok_or_else(|| "unknown node".to_string())?
+    };
+
+    verify_signature(&public_key_hex, method, request_path, timestamp, body, signature)
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
@@ -408,10 +518,24 @@ fn handle_connection(
     };
 
     let request_text = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
-    let (method, path, body) = parse_request(&request_text);
-    let (clean_path, query) = split_path_and_query(&path);
+    let request = parse_request(&request_text);
+    let (clean_path, query) = split_path_and_query(&request.path);
 
-    let response = match (method.as_str(), clean_path) {
+    if let Err(error) = authorize_device_request(
+        &request.method,
+        clean_path,
+        &request.path,
+        &request.headers,
+        &request.body,
+        &state,
+    ) {
+        let _ = stream.write_all(
+            json_response("401 Unauthorized", serde_json::json!({ "error": error })).as_bytes(),
+        );
+        return;
+    }
+
+    let response = match (request.method.as_str(), clean_path) {
         ("GET", "/") => {
             let snapshot = state.lock().expect("state lock");
             html_response("200 OK", &control_plane_home(&snapshot))
@@ -453,7 +577,7 @@ fn handle_connection(
                 text_response("400 Bad Request", "missing node_id")
             }
         }
-        ("POST", "/v1/register") => match serde_json::from_str::<AgentRegistration>(&body) {
+        ("POST", "/v1/register") => match serde_json::from_str::<AgentRegistration>(&request.body) {
             Ok(registration) => {
                 let registration_clone = registration.clone();
                 let mut guard = state.lock().expect("state lock");
@@ -481,7 +605,7 @@ fn handle_connection(
                 serde_json::json!({ "error": error.to_string() }),
             ),
         },
-        ("POST", "/v1/heartbeat") => match serde_json::from_str::<Heartbeat>(&body) {
+        ("POST", "/v1/heartbeat") => match serde_json::from_str::<Heartbeat>(&request.body) {
             Ok(heartbeat) => {
                 let heartbeat_clone = heartbeat.clone();
                 let mut guard = state.lock().expect("state lock");
@@ -509,7 +633,7 @@ fn handle_connection(
                 serde_json::json!({ "error": error.to_string() }),
             ),
         },
-        ("POST", "/v1/jobs") => match serde_json::from_str::<JobRequest>(&body) {
+        ("POST", "/v1/jobs") => match serde_json::from_str::<JobRequest>(&request.body) {
             Ok(request) => {
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.submit_job(request, now_unix_seconds());
@@ -536,7 +660,7 @@ fn handle_connection(
                 serde_json::json!({ "error": error.to_string() }),
             ),
         },
-        ("POST", "/v1/jobs/complete") => match serde_json::from_str::<JobCompletion>(&body) {
+        ("POST", "/v1/jobs/complete") => match serde_json::from_str::<JobCompletion>(&request.body) {
             Ok(completion) => {
                 let completion_clone = completion.clone();
                 let mut guard = state.lock().expect("state lock");

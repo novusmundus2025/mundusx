@@ -79,6 +79,7 @@ impl ControlPlaneState {
         let record = NodeRecord {
             node_id: registration.node_id.clone(),
             public_key_fingerprint: registration.public_key_fingerprint,
+            public_key_hex: registration.public_key_hex,
             backend: registration.backend,
             contribution_percent: registration.contribution_percent,
             agent_version: registration.agent_version,
@@ -209,6 +210,11 @@ impl ControlPlaneState {
                 .get(&heartbeat.node_id)
                 .map(|node| node.public_key_fingerprint.clone())
                 .unwrap_or_default(),
+            public_key_hex: self
+                .nodes
+                .get(&heartbeat.node_id)
+                .map(|node| node.public_key_hex.clone())
+                .unwrap_or_default(),
             backend: heartbeat.backend,
             contribution_percent: heartbeat.contribution_percent,
             agent_version: self
@@ -273,6 +279,7 @@ mod tests {
         let registration = AgentRegistration {
             node_id: "node-1".to_string(),
             public_key_fingerprint: "fingerprint".to_string(),
+            public_key_hex: "aabbcc".to_string(),
             backend: Backend::M,
             contribution_percent: 50,
             agent_version: "0.1.0".to_string(),

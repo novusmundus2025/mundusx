@@ -30,7 +30,8 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Node registration endpoint
 - [x] Heartbeat ingestion
 - [x] Routing API
-- [ ] Auth flow for users and devices
+- [x] Device signature auth for node registration, heartbeat, claim, and completion requests
+- [ ] Operator auth for control-plane users
 - [x] Job submission and tracking
 - [ ] Durable state store
 - [ ] Supabase schema and RLS rollout

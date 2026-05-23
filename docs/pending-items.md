@@ -7,11 +7,11 @@ This document tracks the next concrete implementation steps after the current Ma
 1. **Finish the Supabase-backed control plane rollout**
    - keep nodes, heartbeats, jobs, and policy state durable in Supabase
    - apply the checked-in schema in the Supabase SQL editor
-   - make Supabase the primary source of truth once auth and RLS are in place
+   - make Supabase the primary source of truth once operator auth and RLS are in place
 
-2. **Add auth for control-plane users and devices**
+2. **Add auth for control-plane users**
    - admin / operator login
-   - device identity verification
+   - server-side service role handling
    - server-side service role handling
 
 3. **Add migrations and RLS**
@@ -24,7 +24,7 @@ This document tracks the next concrete implementation steps after the current Ma
 
 ## Why These Are Pending
 
-- The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with auth and RLS.
+ - The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with operator auth and RLS.
 - We need the Supabase backend to be the primary source of truth before public rollout.
 - Supabase is the chosen path for that durable backend.
 

@@ -32,7 +32,7 @@ The prototype agent:
 - loads the existing provider config
 - resolves the backend
 - emits a registration payload
-- sends registration and heartbeat updates to the control plane
+- sends registration and heartbeat updates to the control plane as signed device requests
 - polls the control plane for queued jobs
 - claims one queued job at a time for the local node
 - launches the local worker as a subprocess when requested
@@ -45,6 +45,7 @@ The prototype agent:
 - treats paused or disconnected state as non-active
 - reports itself as paused to the control plane when the Mac policy says the node should not launch jobs
 - currently speaks plain HTTP to the prototype control plane
+- signs device requests with the existing Ed25519 device keypair
 
 ## Next Step
 
@@ -65,3 +66,4 @@ For contributor-side model switching and cleanup rules, see [docs/model-lifecycl
 ## Policy Controls
 
 The health command now reports a policy result in addition to runtime health. If the model cache is missing, `llama-cli` is unavailable, the Mac worker is on battery with too high a contribution cap, or the contribution cap has not been set yet, the agent will skip job claims and report `policyAllowed: no`.
+The agent also signs `register`, `heartbeat`, `jobs/next`, and `jobs/complete` requests so the control plane can verify the device by signature instead of a separate login flow.

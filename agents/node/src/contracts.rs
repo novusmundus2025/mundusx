@@ -87,6 +87,7 @@ pub enum JobStatus {
 pub struct AgentRegistration {
     pub node_id: String,
     pub public_key_fingerprint: String,
+    pub public_key_hex: String,
     pub backend: Backend,
     pub contribution_percent: u8,
     pub agent_version: String,

@@ -26,6 +26,7 @@ create table if not exists public.devices (
   node_id text primary key,
   user_id uuid references public.users(id),
   public_key_fingerprint text not null unique,
+  public_key_hex text not null unique,
   backend text not null,
   contribution_percent integer not null,
   agent_version text not null,

@@ -9,7 +9,7 @@ use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
     WorkerHealthReport, WorkerLaunchRequest, WorkerPolicyReport,
 };
-use http::{get_json, post_json, post_json_body};
+use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -219,6 +219,7 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
     AgentRegistration {
         node_id: config.device_id.clone(),
         public_key_fingerprint: identity.fingerprint.clone(),
+        public_key_hex: identity.public_key_hex.clone(),
         backend: config.backend_preference,
         contribution_percent: config.contribution_percent,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -257,15 +258,27 @@ fn emit_json_line<T: Serialize>(value: &T) {
     }
 }
 
-fn send_registration(config: &AgentConfig, registration: &AgentRegistration) {
-    match post_json(&config.control_plane_url, "/v1/register", registration) {
+fn send_registration(config: &AgentConfig, identity: &DeviceIdentity, registration: &AgentRegistration) {
+    match http::signed_post_json(
+        &config.control_plane_url,
+        "/v1/register",
+        &config.device_id,
+        identity,
+        registration,
+    ) {
         Ok(response) => println!("controlPlaneRegister: ok ({})", response.lines().next().unwrap_or("no response line")),
         Err(error) => eprintln!("controlPlaneRegister: {error}"),
     }
 }
 
-fn send_heartbeat(config: &AgentConfig, heartbeat: &Heartbeat) {
-    match post_json(&config.control_plane_url, "/v1/heartbeat", heartbeat) {
+fn send_heartbeat(config: &AgentConfig, identity: &DeviceIdentity, heartbeat: &Heartbeat) {
+    match http::signed_post_json(
+        &config.control_plane_url,
+        "/v1/heartbeat",
+        &config.device_id,
+        identity,
+        heartbeat,
+    ) {
         Ok(response) => println!("controlPlaneHeartbeat: ok ({})", response.lines().next().unwrap_or("no response line")),
         Err(error) => eprintln!("controlPlaneHeartbeat: {error}"),
     }
@@ -371,9 +384,9 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
     }
 }
 
-fn claim_next_job(config: &AgentConfig) -> Option<JobRecord> {
+fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<JobRecord> {
     let path = format!("/v1/jobs/next?node_id={}", config.device_id);
-    match get_json::<JobClaimResponse>(&config.control_plane_url, &path) {
+    match signed_get_json::<JobClaimResponse>(&config.control_plane_url, &path, &config.device_id, identity) {
         Ok(response) => response.job,
         Err(error) => {
             eprintln!("controlPlaneClaim: {error}");
@@ -382,14 +395,21 @@ fn claim_next_job(config: &AgentConfig) -> Option<JobRecord> {
     }
 }
 
-fn complete_job(config: &AgentConfig, completion: &JobCompletion) {
-    match post_json_body::<_, JobRecord>(&config.control_plane_url, "/v1/jobs/complete", completion) {
+fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &JobCompletion) {
+    match signed_post_json_body::<_, JobRecord>(
+        &config.control_plane_url,
+        "/v1/jobs/complete",
+        &config.device_id,
+        identity,
+        completion,
+    ) {
         Ok(record) => println!("controlPlaneComplete: ok {}", record.job_id),
         Err(error) => eprintln!("controlPlaneComplete: {error}"),
     }
 }
 
 fn process_pending_job(config: &AgentConfig, json: bool) {
+    let identity = load_identity_or_exit();
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
         println!(
@@ -402,12 +422,12 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
         let policy_heartbeat = build_heartbeat_with_state(config, AgentState::Paused);
         let _ = save_agent_state(&policy_heartbeat);
         let _ = save_heartbeat(&policy_heartbeat);
-        send_heartbeat(config, &policy_heartbeat);
+        send_heartbeat(config, &identity, &policy_heartbeat);
         return;
     }
 
     println!("jobPoll: checking control plane");
-    let Some(job) = claim_next_job(config) else {
+    let Some(job) = claim_next_job(config, &identity) else {
         println!("jobPoll: none");
         return;
     };
@@ -417,7 +437,7 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
     let busy_heartbeat = build_heartbeat_with_state(config, AgentState::Busy);
     let _ = save_agent_state(&busy_heartbeat);
     let _ = save_heartbeat(&busy_heartbeat);
-    send_heartbeat(config, &busy_heartbeat);
+    send_heartbeat(config, &identity, &busy_heartbeat);
 
     let request = WorkerLaunchRequest {
         job_id: job.job_id.clone(),
@@ -453,7 +473,7 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
                         .or_else(|| Some("worker returned failed status".to_string()))
                 },
             };
-            complete_job(config, &completion);
+            complete_job(config, &identity, &completion);
         }
         Err(error) => {
             let completion = JobCompletion {
@@ -465,14 +485,14 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
                 output: None,
                 error: Some(error),
             };
-            complete_job(config, &completion);
+            complete_job(config, &identity, &completion);
         }
     }
 
     let ready_heartbeat = build_heartbeat_with_state(config, resolved_state(config));
     let _ = save_agent_state(&ready_heartbeat);
     let _ = save_heartbeat(&ready_heartbeat);
-    send_heartbeat(config, &ready_heartbeat);
+    send_heartbeat(config, &identity, &ready_heartbeat);
 }
 
 fn print_status(json: bool) {
@@ -559,8 +579,8 @@ fn run_agent(once: bool, json: bool, interval_seconds: u64) {
         std::process::exit(1);
     }
 
-    send_registration(&config, &registration);
-    send_heartbeat(&config, &heartbeat);
+    send_registration(&config, &identity, &registration);
+    send_heartbeat(&config, &identity, &heartbeat);
     process_pending_job(&config, json);
 
     println!("agent ready");
@@ -581,7 +601,7 @@ fn run_agent(once: bool, json: bool, interval_seconds: u64) {
             eprintln!("failed to save heartbeat: {error}");
             break;
         }
-        send_heartbeat(&config, &heartbeat);
+        send_heartbeat(&config, &identity, &heartbeat);
         println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
         process_pending_job(&config, json);
         let _ = io::stdout().flush();
@@ -639,7 +659,8 @@ fn stop_agent() {
         std::process::exit(1);
     }
 
-    send_heartbeat(&config, &heartbeat);
+    let identity = load_identity_or_exit();
+    send_heartbeat(&config, &identity, &heartbeat);
 
     println!("stopped agent for {}", config.device_id);
     println!("connected: no");
