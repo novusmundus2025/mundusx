@@ -1,4 +1,6 @@
-use crate::contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRecord, NodeRecord};
+use crate::contracts::{
+    AgentRegistration, Heartbeat, JobCompletion, JobEventRecord, JobRecord, NodeRecord,
+};
 use crate::state::ControlPlaneState;
 use serde_json::json;
 use std::env;
@@ -35,6 +37,7 @@ impl SupabaseMirror {
     pub fn restore_state(&self) -> Result<ControlPlaneState, String> {
         let devices: Vec<NodeRecord> = self.fetch_json("devices?select=*")?;
         let jobs: Vec<JobRecord> = self.fetch_json("jobs?select=*")?;
+        let job_events: Vec<JobEventRecord> = self.fetch_json("job_events?select=*&order=id.asc")?;
 
         let mut state = ControlPlaneState::default();
         for device in devices {
@@ -43,6 +46,7 @@ impl SupabaseMirror {
         for job in jobs {
             state.jobs.insert(job.job_id.clone(), job);
         }
+        state.job_events = job_events;
         Ok(state)
     }
 

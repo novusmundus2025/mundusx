@@ -1,6 +1,6 @@
 use crate::contracts::{
     AgentRegistration, AgentState, Backend, ControlPlaneSnapshot, Heartbeat, JobClaimResponse,
-    JobCompletion, JobRecord, JobRequest, JobStatus, NodeRecord,
+    JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodeRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -11,12 +11,14 @@ use std::path::PathBuf;
 pub struct ControlPlaneState {
     pub nodes: BTreeMap<String, NodeRecord>,
     pub jobs: BTreeMap<String, JobRecord>,
+    pub job_events: Vec<JobEventRecord>,
 }
 
 impl ControlPlaneState {
     pub fn snapshot(&self, storage_source: &str) -> serde_json::Value {
         let nodes: Vec<NodeRecord> = self.nodes.values().cloned().collect();
         let jobs: Vec<JobRecord> = self.jobs.values().cloned().collect();
+        let job_events = self.job_events.len();
         let online_count = nodes
             .iter()
             .filter(|node| node.state == AgentState::Ready || node.state == AgentState::Busy)
@@ -53,6 +55,7 @@ impl ControlPlaneState {
         serde_json::to_value(ControlPlaneSnapshot {
             nodes,
             jobs,
+            job_events,
             storage_source: storage_source.to_string(),
             online_count,
             paused_count,
@@ -74,6 +77,30 @@ impl ControlPlaneState {
     pub fn jobs_snapshot(&self) -> serde_json::Value {
         serde_json::to_value(self.jobs.values().cloned().collect::<Vec<_>>())
             .expect("jobs json")
+    }
+
+    pub fn job_events_snapshot(&self) -> serde_json::Value {
+        serde_json::to_value(self.job_events.clone()).expect("job events json")
+    }
+
+    pub fn record_job_event(
+        &mut self,
+        node_id: Option<String>,
+        job_id: Option<String>,
+        event_type: impl Into<String>,
+        payload: serde_json::Value,
+        created_at: String,
+    ) -> JobEventRecord {
+        let record = JobEventRecord {
+            id: self.job_events.len() as u64 + 1,
+            node_id,
+            job_id,
+            event_type: event_type.into(),
+            payload,
+            created_at,
+        };
+        self.job_events.push(record.clone());
+        record
     }
 
     pub fn register(&mut self, registration: AgentRegistration) -> NodeRecord {

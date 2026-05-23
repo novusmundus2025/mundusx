@@ -19,6 +19,7 @@ When `OPENGPU_OPERATOR_TOKEN` is configured, the human-facing routes require a m
 - `GET /v1/status` - return a snapshot of the current registry, including the storage source used at boot
 - `GET /v1/nodes` - return the live node list
 - `GET /v1/jobs` - return all known jobs
+- `GET /v1/job-events` - return the append-only audit log for node and job lifecycle changes
 - `GET /v1/jobs/next?node_id=...` - claim the next queued job for a node
 - `POST /v1/register` - register an agent
 - `POST /v1/heartbeat` - update a node heartbeat
@@ -100,6 +101,7 @@ The RLS rollout lives at [supabase/migrations/0001_rls.sql](/Users/DBATALL/Docum
 - heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy fields
 - when Supabase is configured, startup prefers restoring the registry from Supabase before falling back to local JSON
 - the health endpoint and browser dashboard both show whether the live boot restore came from Supabase or the local fallback cache
+- `GET /v1/job-events` returns the durable audit trail for registrations, heartbeats, claims, submissions, and completions
 - register/heartbeat/claim/complete requests from agents must carry a valid device signature
 - if `OPENGPU_OPERATOR_TOKEN` is configured, browser/operator routes require a matching bearer token
 - `POST /v1/jobs` queues a job request in local JSON state
@@ -124,6 +126,7 @@ The root page (`/`) is a quick operator view, not a full dashboard. It shows:
 
 - summary counts
 - storage source used at boot
+- job event count
 - policy-blocked count
 - a per-node table with:
   - node ID
@@ -134,6 +137,7 @@ The root page (`/`) is a quick operator view, not a full dashboard. It shows:
   - policy allowed / blocked
   - policy reason
   - last updated timestamp
+- the control plane also exposes the append-only job event log through `GET /v1/job-events`
 
 ## What Comes Next
 

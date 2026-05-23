@@ -35,6 +35,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Device signature auth for node registration, heartbeat, claim, and completion requests
 - [x] Operator auth for control-plane users
 - [x] Job submission and tracking
+- [x] Durable job event audit trail
 - [ ] Durable state store
 - [ ] Supabase restore path verification and RLS rollout
 - [x] Agent / worker contract defined in proto and CLI types

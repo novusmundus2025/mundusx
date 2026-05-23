@@ -139,6 +139,16 @@ pub struct JobCompletion {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JobEventRecord {
+    pub id: u64,
+    pub node_id: Option<String>,
+    pub job_id: Option<String>,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeRecord {
     pub node_id: String,
     pub public_key_fingerprint: String,
@@ -164,6 +174,7 @@ pub struct NodeRecord {
 pub struct ControlPlaneSnapshot {
     pub nodes: Vec<NodeRecord>,
     pub jobs: Vec<JobRecord>,
+    pub job_events: usize,
     pub storage_source: String,
     pub online_count: usize,
     pub paused_count: usize,

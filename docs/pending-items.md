@@ -4,30 +4,28 @@ This document tracks the next concrete implementation steps after the current Ma
 
 ## Next Up
 
-1. **Finish the Supabase-backed control plane rollout**
+1. **Apply the Supabase schema and RLS in the live project**
+   - run the checked-in schema in the Supabase SQL editor
+   - apply the checked-in RLS migration
+   - confirm the live tables match the repo schema
+
+2. **Verify the Supabase-backed control plane restore path**
    - keep nodes, heartbeats, jobs, and policy state durable in Supabase
-   - apply the checked-in schema in the Supabase SQL editor
-   - make Supabase the primary source of truth once RLS is in place
    - restore control-plane state from Supabase on startup
+   - confirm `/health` reports `storage_source: supabase`
+   - confirm a restart restores the same state
 
-2. **Add Supabase RLS**
-   - lock down row access rules
+3. **Make Supabase the primary source of truth**
+   - keep local JSON only as a dev fallback cache
    - keep service-role access server-side only
+   - stop relying on local JSON for production persistence
 
-3. **Review and apply the migration files**
-   - keep the database schema reviewable and versioned
-   - apply the checked-in RLS migration in Supabase
-
-4. **Add job event auditing**
-   - capture state transitions in `job_events`
-   - preserve a durable history of claims, completions, and failures
-
-5. **Port secure device identity to all platforms**
+4. **Port secure device identity to all platforms**
    - macOS secure storage is in place
    - keep the private key non-exportable on Windows and Linux too
    - preserve the current file-backed prototype only as a dev fallback
 
-6. **Define the federated governance model**
+5. **Define the federated governance model**
    - document the top-level standards / clearing-house org
    - document how operator companies join and certify
    - define settlement, revocation, and protocol versioning rules
@@ -35,10 +33,11 @@ This document tracks the next concrete implementation steps after the current Ma
 
 ## Why These Are Pending
 
-- The local control-plane prototype works, but the durable company-side source of truth still needs the Supabase startup restore path verified live and the RLS migration applied.
+- The local control-plane prototype works, but the durable company-side source of truth still needs the Supabase startup restore path verified live and the RLS migration applied in the real project.
 - We need the Supabase backend to be the primary source of truth before public rollout.
 - Supabase is the chosen path for that durable backend.
 - The federated governance layer is still a design target, not a shipped subsystem.
+- The job event audit trail is implemented now; it should be tracked as complete in the main missing-items list.
 
 ## How To Use This Doc
 

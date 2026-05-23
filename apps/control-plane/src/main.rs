@@ -222,6 +222,7 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
     let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
     let policy_blocked = snapshot["policy_blocked_count"].as_u64().unwrap_or(0);
+    let job_events = snapshot["job_events"].as_u64().unwrap_or(0);
     let queued = snapshot["queued_job_count"].as_u64().unwrap_or(0);
     let assigned = snapshot["assigned_job_count"].as_u64().unwrap_or(0);
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
@@ -381,6 +382,7 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
         <div class="stat"><span>Online nodes</span><strong>{nodes}</strong></div>
         <div class="stat"><span>Paused nodes</span><strong>{paused}</strong></div>
         <div class="stat"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
+        <div class="stat"><span>Job events</span><strong>{job_events}</strong></div>
         <div class="stat"><span>Queued jobs</span><strong>{queued}</strong></div>
         <div class="stat"><span>Assigned jobs</span><strong>{assigned}</strong></div>
         <div class="stat"><span>Completed jobs</span><strong>{completed}</strong></div>
@@ -475,6 +477,7 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
             | ("GET", "/v1/status")
             | ("GET", "/v1/nodes")
             | ("GET", "/v1/jobs")
+            | ("GET", "/v1/job-events")
             | ("POST", "/v1/jobs")
     )
 }
@@ -679,24 +682,35 @@ fn handle_connection(
             let snapshot = state.lock().expect("state lock").jobs_snapshot();
             json_response("200 OK", snapshot)
         }
+        ("GET", "/v1/job-events") => {
+            let snapshot = state.lock().expect("state lock").job_events_snapshot();
+            json_response("200 OK", snapshot)
+        }
         ("GET", "/v1/jobs/next") => {
             if let Some(node_id) = query_param(query, "node_id") {
                 let mut guard = state.lock().expect("state lock");
                 let claim = guard.claim_job(node_id, now_unix_seconds());
-                if let Err(error) = save_state(&guard) {
-                    eprintln!("failed to save control-plane state: {error}");
-                }
-                if let Some(db) = supabase.as_ref() {
-                    if let Some(job) = claim.job.as_ref() {
+                if let Some(job) = claim.job.as_ref() {
+                    let event = guard.record_job_event(
+                        Some(node_id.to_string()),
+                        Some(job.job_id.clone()),
+                        "job_claimed",
+                        serde_json::to_value(job).expect("json"),
+                        now_unix_seconds(),
+                    );
+                    if let Some(db) = supabase.as_ref() {
                         if let Err(error) = db.record_job_event(
-                            Some(node_id),
-                            Some(&job.job_id),
-                            "job_claimed",
-                            serde_json::to_value(job).expect("json"),
+                            event.node_id.as_deref(),
+                            event.job_id.as_deref(),
+                            &event.event_type,
+                            event.payload.clone(),
                         ) {
                             eprintln!("database claim sync skipped: {error}");
                         }
                     }
+                }
+                if let Err(error) = save_state(&guard) {
+                    eprintln!("failed to save control-plane state: {error}");
                 }
                 json_response("200 OK", serde_json::to_value(claim).expect("json"))
             } else {
@@ -708,6 +722,13 @@ fn handle_connection(
                 let registration_clone = registration.clone();
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.register(registration);
+                let event = guard.record_job_event(
+                    Some(record.node_id.clone()),
+                    None,
+                    "registration",
+                    serde_json::to_value(&record).expect("json"),
+                    now_unix_seconds(),
+                );
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
                 }
@@ -716,10 +737,10 @@ fn handle_connection(
                         eprintln!("database registration sync skipped: {error}");
                     }
                     if let Err(error) = db.record_job_event(
-                        Some(&record.node_id),
-                        None,
-                        "registration",
-                        serde_json::to_value(&record).expect("json"),
+                        event.node_id.as_deref(),
+                        event.job_id.as_deref(),
+                        &event.event_type,
+                        event.payload.clone(),
                     ) {
                         eprintln!("database registration event skipped: {error}");
                     }
@@ -736,6 +757,13 @@ fn handle_connection(
                 let heartbeat_clone = heartbeat.clone();
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.heartbeat(heartbeat, now_unix_seconds());
+                let event = guard.record_job_event(
+                    Some(record.node_id.clone()),
+                    None,
+                    "heartbeat",
+                    serde_json::to_value(&record).expect("json"),
+                    now_unix_seconds(),
+                );
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
                 }
@@ -744,10 +772,10 @@ fn handle_connection(
                         eprintln!("database heartbeat sync skipped: {error}");
                     }
                     if let Err(error) = db.record_job_event(
-                        Some(&record.node_id),
-                        None,
-                        "heartbeat",
-                        serde_json::to_value(&record).expect("json"),
+                        event.node_id.as_deref(),
+                        event.job_id.as_deref(),
+                        &event.event_type,
+                        event.payload.clone(),
                     ) {
                         eprintln!("database heartbeat event skipped: {error}");
                     }
@@ -763,6 +791,13 @@ fn handle_connection(
             Ok(request) => {
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.submit_job(request, now_unix_seconds());
+                let event = guard.record_job_event(
+                    None,
+                    Some(record.job_id.clone()),
+                    "job_submitted",
+                    serde_json::to_value(&record).expect("json"),
+                    now_unix_seconds(),
+                );
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
                 }
@@ -771,10 +806,10 @@ fn handle_connection(
                         eprintln!("database job sync skipped: {error}");
                     }
                     if let Err(error) = db.record_job_event(
-                        None,
-                        Some(&record.job_id),
-                        "job_submitted",
-                        serde_json::to_value(&record).expect("json"),
+                        event.node_id.as_deref(),
+                        event.job_id.as_deref(),
+                        &event.event_type,
+                        event.payload.clone(),
                     ) {
                         eprintln!("database job event skipped: {error}");
                     }
@@ -791,6 +826,20 @@ fn handle_connection(
                 let completion_clone = completion.clone();
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.complete_job(completion, now_unix_seconds());
+                if let Some(job) = record.as_ref() {
+                    let event_type = if matches!(job.status, crate::contracts::JobStatus::Completed) {
+                        "job_completed"
+                    } else {
+                        "job_failed"
+                    };
+                    guard.record_job_event(
+                        job.assigned_node_id.clone(),
+                        Some(job.job_id.clone()),
+                        event_type,
+                        serde_json::to_value(job).expect("json"),
+                        now_unix_seconds(),
+                    );
+                }
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
                 }
