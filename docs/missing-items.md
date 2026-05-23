@@ -31,6 +31,7 @@ This document tracks what is still missing before OpenGPU becomes a full product
 - [ ] Auth flow for users and devices
 - [x] Job submission and tracking
 - [ ] Durable state store
+- [ ] Supabase schema and RLS rollout
 - [x] Agent / worker contract defined in proto and CLI types
 
 ## Node Agent Phase

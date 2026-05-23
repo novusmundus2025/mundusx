@@ -85,4 +85,5 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
 - [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files
 - [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints
+- [docs/supabase-schema.md](/Users/DBATALL/Documents/aigrid/docs/supabase-schema.md) for the company-side Supabase schema sketch
 - [docs/worker.md](/Users/DBATALL/Documents/aigrid/docs/worker.md) for the current worker prototype and launch contract
