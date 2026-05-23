@@ -4,13 +4,18 @@ mod supabase;
 
 use contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRequest};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use state::{load_state, save_state, ControlPlaneState};
+use state::{load_state, save_state, state_path, ControlPlaneState};
 use supabase::SupabaseMirror;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(target_os = "macos")]
+#[path = "../../../tools/macos_identity.rs"]
+mod macos_identity;
 
 fn now_unix_seconds() -> String {
     SystemTime::now()
@@ -472,13 +477,33 @@ fn verify_signature(
     signature_hex: &str,
 ) -> Result<(), String> {
     let public_bytes = hex::decode(public_key_hex).map_err(|error| error.to_string())?;
+    let message = format!("{method}\n{path}\n{timestamp}\n{body}");
+
+    #[cfg(target_os = "macos")]
+    if public_bytes.len() == 65 {
+        let storage_dir = state_path()
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".opengpu-control-plane"));
+        let verified = macos_identity::verify_message(
+            &storage_dir,
+            public_key_hex,
+            message.as_bytes(),
+            signature_hex,
+        )
+        .map_err(|error| error.to_string())?;
+        if verified {
+            return Ok(());
+        }
+        return Err("signature verification failed".to_string());
+    }
+
     let public_bytes: [u8; 32] = public_bytes
         .try_into()
-        .map_err(|_| "public key must be 32 bytes".to_string())?;
+        .map_err(|_| "public key must be 32 bytes or macOS secure-enclave public key".to_string())?;
     let verifying_key = VerifyingKey::from_bytes(&public_bytes).map_err(|error| error.to_string())?;
     let signature_bytes = hex::decode(signature_hex).map_err(|error| error.to_string())?;
     let signature = Signature::from_slice(&signature_bytes).map_err(|error| error.to_string())?;
-    let message = format!("{method}\n{path}\n{timestamp}\n{body}");
     verifying_key
         .verify(message.as_bytes(), &signature)
         .map_err(|error| error.to_string())

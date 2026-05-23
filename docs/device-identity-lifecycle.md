@@ -17,26 +17,26 @@ Those components should only be able to ask the local system to sign a request.
 
 Use OS-managed secure storage instead of a plain file:
 
-- macOS: Keychain, and Secure Enclave when available
+- macOS: Secure Enclave-backed signing, with a stable application label for lookup
 - Windows: TPM-backed or CNG / KSP-backed key storage
 - Linux: TPM / PKCS#11 / system keyring when available
 
-The current macOS implementation uses a Keychain-backed helper that only exposes `ensure` and `sign`, while the Rust CLI and agent keep the private key out of their own config files.
+The current macOS implementation uses a helper that only exposes `ensure`, `sign`, and `verify`. The Rust CLI and agent keep the private key out of their own config files, and only persist the public metadata plus the keychain lookup label.
 
-If secure storage is unavailable, the prototype can fall back to file-backed identity for development only.
+The old file-backed prototype remains only for non-macOS development paths.
 
 ## Lifecycle
 
 ### First enrollment
 
 1. The CLI or agent asks the OS to create a non-exportable device key.
-2. The OS returns a public key and a signing handle.
+2. The OS returns a public key, a signing handle, and a stable lookup label.
 3. The control plane stores the public key, fingerprint, hostname, and device metadata.
 4. The device uses the same signing handle for future signed requests.
 
 ### Normal start
 
-1. `opengpu start` or the agent looks for the existing secure-store key.
+1. `opengpu start` or the agent looks for the existing secure-store key using the saved lookup label.
 2. If the key is present, it is reused.
 3. The control plane sees the same contributor identity.
 
@@ -97,6 +97,6 @@ Do not use it as proof of uniqueness or as a payout target.
 
 ## Current Prototype Status
 
-- macOS: Keychain-backed helper is implemented now.
+- macOS: non-exportable secure-store helper is implemented now.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.

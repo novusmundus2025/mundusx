@@ -8,31 +8,52 @@ use std::process::{Command, Stdio};
 struct HelperIdentity {
     public_key_hex: String,
     fingerprint: String,
+    keychain_label_hex: String,
     created: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredIdentity {
+    keychain_label_hex: Option<String>,
 }
 
 pub struct SecureIdentity {
     pub public_key_hex: String,
     pub fingerprint: String,
+    pub keychain_label_hex: String,
     pub created: bool,
 }
 
-const HELPER_SOURCE: &str = include_str!("macos_identity_helper.swift");
+const HELPER_SOURCE: &str = include_str!("macos_identity_helper.c");
 
 pub fn ensure_identity(storage_dir: &Path) -> io::Result<SecureIdentity> {
-    let output = run_helper(storage_dir, "ensure", &[])?;
+    let existing_label = existing_label_hex(storage_dir)?;
+    let mut args = Vec::new();
+    if let Some(label) = existing_label.as_deref() {
+        args.push(label.to_string());
+    }
+    let output = run_helper(storage_dir, "ensure", &args)?;
     let parsed: HelperIdentity = serde_json::from_str(&output)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     Ok(SecureIdentity {
         public_key_hex: parsed.public_key_hex,
         fingerprint: parsed.fingerprint,
+        keychain_label_hex: parsed.keychain_label_hex,
         created: parsed.created,
     })
 }
 
 pub fn sign_message(storage_dir: &Path, message: &[u8]) -> io::Result<String> {
+    let Some(label) = existing_label_hex(storage_dir)? else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "missing keychain label for secure device identity",
+        ));
+    };
+
     let mut command = helper_command(storage_dir)?;
     command.arg("sign");
+    command.arg(label);
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -53,10 +74,52 @@ pub fn sign_message(storage_dir: &Path, message: &[u8]) -> io::Result<String> {
     Ok(signature.trim().to_string())
 }
 
-fn run_helper(storage_dir: &Path, command_name: &str, args: &[&str]) -> io::Result<String> {
+pub fn verify_message(
+    storage_dir: &Path,
+    public_key_hex: &str,
+    message: &[u8],
+    signature_hex: &str,
+) -> io::Result<bool> {
+    let mut command = helper_command(storage_dir)?;
+    command.arg("verify");
+    command.arg(public_key_hex);
+    command.arg(signature_hex);
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(message)?;
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::new(io::ErrorKind::Other, stderr.trim().to_string()));
+    }
+
+    let status = String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(status.trim() == "ok")
+}
+
+fn existing_label_hex(storage_dir: &Path) -> io::Result<Option<String>> {
+    let path = storage_dir.join("identity.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(path)?;
+    let parsed: StoredIdentity = serde_json::from_str(&raw)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(parsed.keychain_label_hex)
+}
+
+fn run_helper(storage_dir: &Path, command_name: &str, args: &[String]) -> io::Result<String> {
     let output = helper_command(storage_dir)?
         .arg(command_name)
-        .args(args)
+        .args(args.iter())
         .output()?;
 
     if !output.status.success() {
@@ -77,7 +140,7 @@ fn helper_command(storage_dir: &Path) -> io::Result<Command> {
 fn ensure_helper_binary(storage_dir: &Path) -> io::Result<PathBuf> {
     let bin_dir = storage_dir.join("bin");
     let binary_path = bin_dir.join("opengpu-device-identity-helper");
-    let source_path = bin_dir.join("opengpu-device-identity-helper.swift");
+    let source_path = bin_dir.join("opengpu-device-identity-helper.c");
 
     if binary_path.exists() {
         return Ok(binary_path);
@@ -88,8 +151,17 @@ fn ensure_helper_binary(storage_dir: &Path) -> io::Result<PathBuf> {
 
     let source_arg = source_path.to_string_lossy().into_owned();
     let binary_arg = binary_path.to_string_lossy().into_owned();
-    let output = Command::new("swiftc")
-        .args(["-O", &source_arg, "-o", &binary_arg])
+    let output = Command::new("clang")
+        .args([
+            "-O2",
+            "-framework",
+            "Security",
+            "-framework",
+            "CoreFoundation",
+            &source_arg,
+            "-o",
+            &binary_arg,
+        ])
         .output()?;
 
     if !output.status.success() {

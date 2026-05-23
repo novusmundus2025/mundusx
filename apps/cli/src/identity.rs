@@ -14,13 +14,14 @@ pub struct DeviceIdentity {
     pub public_key_hex: String,
     pub private_key_hex: String,
     pub fingerprint: String,
+    pub keychain_label_hex: Option<String>,
 }
 
 impl DeviceIdentity {
     pub fn generate() -> Self {
         #[cfg(target_os = "macos")]
-        if let Ok(identity) = macos_secure_identity() {
-            return identity;
+        {
+            return macos_secure_identity().expect("macOS secure identity");
         }
 
         let signing_key = SigningKey::generate(&mut OsRng);
@@ -33,6 +34,7 @@ impl DeviceIdentity {
             public_key_hex,
             private_key_hex,
             fingerprint,
+            keychain_label_hex: None,
         }
     }
 
@@ -68,9 +70,7 @@ impl DeviceIdentity {
     pub fn sign_hex(&self, message: &str) -> std::io::Result<String> {
         #[cfg(target_os = "macos")]
         {
-            if let Ok(signature) = macos_sign_hex(message) {
-                return Ok(signature);
-            }
+            return macos_sign_hex(message);
         }
 
         let signing_key = self.signing_key()?;
@@ -112,10 +112,9 @@ pub fn resolved_identity_path() -> PathBuf {
 pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(identity) = macos_secure_identity() {
-            let _ = save_identity(&identity)?;
-            return Ok(Some(identity));
-        }
+        let identity = macos_secure_identity()?;
+        let _ = save_identity(&identity)?;
+        return Ok(Some(identity));
     }
 
     let path = resolved_identity_path();
@@ -201,6 +200,7 @@ fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
         public_key_hex: secure.public_key_hex,
         private_key_hex: String::new(),
         fingerprint: secure.fingerprint,
+        keychain_label_hex: Some(secure.keychain_label_hex),
     })
 }
 
