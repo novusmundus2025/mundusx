@@ -37,7 +37,8 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Job submission and tracking
 - [x] Durable job event audit trail
 - [ ] Durable state store
-- [ ] Supabase restore path verification and RLS rollout
+- [x] Supabase migration runner and checked-in RLS rollout
+- [ ] Supabase restore path verification in the live project
 - [x] Agent / worker contract defined in proto and CLI types
 
 ## Node Agent Phase

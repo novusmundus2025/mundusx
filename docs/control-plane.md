@@ -70,6 +70,8 @@ or, if configured as a local fallback cache:
 If Supabase is not configured, the local JSON state remains the fallback cache.
 The applied SQL schema lives at [supabase/schema.sql](/Users/DBATALL/Documents/aigrid/supabase/schema.sql).
 The RLS rollout lives at [supabase/migrations/0001_rls.sql](/Users/DBATALL/Documents/aigrid/supabase/migrations/0001_rls.sql).
+The migration runner and apply flow live at [docs/supabase-migrations.md](/Users/DBATALL/Documents/aigrid/docs/supabase-migrations.md).
+The live project has already been updated through `cargo run --manifest-path apps/control-plane/Cargo.toml -- migrate`.
 
 ## What The State Contains
 

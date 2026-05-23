@@ -9,6 +9,7 @@ This page sketches the company-side database schema for the OpenGPU control plan
 
 Supabase is a good fit here because it gives us managed Postgres plus Auth, and its docs recommend using Row Level Security for database access control. The service role key must stay server-side only.
 The control plane now restores its in-memory registry from Supabase first when the Supabase env is configured, then mirrors registration, heartbeat, job, claim, and completion events into Supabase over HTTP. The boot-time health/status endpoints report whether the restore came from Supabase or from the local fallback cache, and the control plane now keeps an append-only local `job_events` log as well.
+The repo also includes a migration runner at [docs/supabase-migrations.md](/Users/DBATALL/Documents/aigrid/docs/supabase-migrations.md) so the schema and RLS can be applied in a versioned way instead of copy/pasting SQL by hand. The live Supabase project has now been updated with that runner.
 
 ## Local Development Env
 

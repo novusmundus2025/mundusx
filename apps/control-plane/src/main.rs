@@ -1,9 +1,11 @@
 mod contracts;
+mod migrations;
 mod state;
 mod supabase;
 
 use contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRequest};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use migrations::{applied_migrations, apply_migrations};
 use state::{load_state, save_state, state_path, ControlPlaneState};
 use supabase::SupabaseMirror;
 use std::collections::BTreeMap;
@@ -873,6 +875,37 @@ fn handle_connection(
 
 fn main() {
     load_local_env();
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|arg| arg.as_str()) == Some("migrate") {
+        match std::env::var("DATABASE_URL") {
+            Ok(database_url) => match apply_migrations(&database_url) {
+                Ok(applied) => {
+                    if applied.is_empty() {
+                        println!("no migrations to apply");
+                    } else {
+                        for migration in applied {
+                            println!(
+                                "applied {}_{} ({})",
+                                migration.version,
+                                migration.name,
+                                migration.path.display()
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("migration failed: {error}");
+                    std::process::exit(1);
+                }
+            },
+            Err(_) => {
+                eprintln!("DATABASE_URL is required for migrate");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let supabase = SupabaseMirror::from_env();
     let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
     let (restored_state, storage_source) = match supabase.as_ref() {
@@ -902,6 +935,12 @@ fn main() {
     println!("OpenGPU control plane listening on http://127.0.0.1:8787");
     println!("supabase: {}", SupabaseMirror::startup_status());
     println!("storage_source: {}", storage_source.as_str());
+    if let Ok(database_url) = std::env::var("DATABASE_URL") {
+        match applied_migrations(&database_url) {
+            Ok(applied) => println!("migrations: {} applied", applied.len()),
+            Err(error) => eprintln!("migration status unavailable: {error}"),
+        }
+    }
     println!(
         "operatorAuth: {}",
         if operator_auth_token().is_some() {
