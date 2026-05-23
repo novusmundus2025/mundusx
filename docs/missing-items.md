@@ -61,7 +61,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 
 ## Product Phase
 
-- [ ] Dashboard for node and job visibility
+- [x] Dashboard for node and job visibility
 - [ ] Credits / accounting model
 - [ ] Onboarding flow
 - [ ] Public docs site
