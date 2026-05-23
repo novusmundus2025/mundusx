@@ -77,6 +77,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [apps/control-plane/PROPRIETARY_LICENSE.md](/Users/DBATALL/Documents/aigrid/apps/control-plane/PROPRIETARY_LICENSE.md) for the private control-plane subtree
 - [docs/cli-commands.md](/Users/DBATALL/Documents/aigrid/docs/cli-commands.md) for the current CLI command reference
 - [docs/missing-items.md](/Users/DBATALL/Documents/aigrid/docs/missing-items.md) for the work that is still missing
+- [docs/pending-items.md](/Users/DBATALL/Documents/aigrid/docs/pending-items.md) for the next concrete implementation steps
 - [docs/heartbeat-flow.md](/Users/DBATALL/Documents/aigrid/docs/heartbeat-flow.md) for the proposed node heartbeat timing and offline thresholds
 - [docs/system-flow.md](/Users/DBATALL/Documents/aigrid/docs/system-flow.md) for the living end-to-end architecture diagram
 - [docs/runtime-transport.md](/Users/DBATALL/Documents/aigrid/docs/runtime-transport.md) for the local-process versus HTTP-server map

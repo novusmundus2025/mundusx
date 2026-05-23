@@ -2,6 +2,8 @@
 
 This document tracks what is still missing before OpenGPU becomes a full product.
 
+For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Documents/aigrid/docs/pending-items.md).
+
 ## CLI Phase
 
 - [x] Rust CLI scaffold
