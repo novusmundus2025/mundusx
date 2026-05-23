@@ -153,12 +153,18 @@ fn run_llama_command(
         .arg("--simple-io")
         .arg("--single-turn")
         .arg("--no-display-prompt")
+        .arg("--no-perf")
+        .arg("--log-disable")
         .arg("--color")
         .arg("off")
+        .arg("--threads")
+        .arg("2")
+        .arg("--threads-batch")
+        .arg("2")
         .arg("-p")
         .arg(prompt)
         .arg("-n")
-        .arg("64")
+        .arg("16")
         .arg("--temp")
         .arg("0.2")
         .arg("--seed")
@@ -177,12 +183,57 @@ fn run_llama_command(
         ));
     }
 
-    let generated = String::from_utf8(output.stdout)
+    let transcript = String::from_utf8(output.stdout)
         .map_err(|error| error.to_string())?
         .trim()
         .to_string();
+    let generated = extract_llama_response(prompt, &transcript);
 
     Ok((generated, "blas".to_string()))
+}
+
+fn extract_llama_response(prompt: &str, transcript: &str) -> String {
+    let mut seen_prompt = false;
+    let mut lines = Vec::new();
+
+    for line in transcript.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed == format!("> {prompt}") {
+            seen_prompt = true;
+            continue;
+        }
+
+        if seen_prompt {
+            if trimmed.starts_with('[')
+                || trimmed.starts_with("Exiting")
+                || trimmed.starts_with("available commands")
+            {
+                break;
+            }
+
+            if trimmed.starts_with('>') {
+                break;
+            }
+
+            lines.push(trimmed.to_string());
+        }
+    }
+
+    if lines.is_empty() {
+        transcript
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('[') && !line.starts_with('>'))
+            .unwrap_or(transcript)
+            .to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchResponse, String> {

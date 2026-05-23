@@ -35,7 +35,11 @@ The prototype worker:
 
 - performs real local inference on macOS `M` by calling `llama.cpp` against the cached GGUF model
 - runs in single-turn batch mode via `llama-cli --device BLAS`
-- returns the generated text from the local model
+- uses conservative defaults to stay quieter on the contributor machine:
+  - lower token count
+  - low thread count
+  - no perf logging
+- returns only the generated answer text from the local model
 - chooses the Mac `M` path when `auto` is passed on Apple Silicon
 - is normally launched by the node agent, not run directly by users
 

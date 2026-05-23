@@ -59,6 +59,7 @@ The worker should return:
 - optional error text
  
 When running on Mac `M`, the worker uses the cached GGUF model with `llama.cpp` in single-turn batch mode via `llama-cli --device BLAS`.
+It should keep the default load modest so the contributor machine stays responsive, and it should return only the final answer text instead of the full runtime transcript.
 
 ## Job Queue And Completion
 
