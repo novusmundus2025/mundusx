@@ -1,5 +1,7 @@
 # OpenGPU Architecture
 
+For the current repo layout and review rules, see [docs/repo-standards.md](/Users/DBATALL/Documents/aigrid/docs/repo-standards.md).
+
 ## Core Principle
 
 Pick the best live node for a request, then execute the full request there.
@@ -36,4 +38,3 @@ Pick the best live node for a request, then execute the full request there.
 - Node health
 - Job history
 - Credits and usage
-
