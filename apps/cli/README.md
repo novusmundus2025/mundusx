@@ -13,6 +13,7 @@ Useful commands:
 ```bash
 opengpu start
 opengpu login
+opengpu logout
 opengpu status
 opengpu nodes
 opengpu exit
@@ -25,7 +26,8 @@ Startup flow:
 
 - `opengpu init` creates local state
 - `opengpu start` creates local state if needed, connects locally, and marks the machine ready
-- `opengpu login` stores auth locally
+- `opengpu login` stores a local operator bearer token
+- `opengpu logout` clears that local token
 - `opengpu connect` marks the machine ready
 - `opengpu status` shows the live local routing decision
 

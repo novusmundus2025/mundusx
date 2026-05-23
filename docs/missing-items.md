@@ -31,7 +31,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Heartbeat ingestion
 - [x] Routing API
 - [x] Device signature auth for node registration, heartbeat, claim, and completion requests
-- [ ] Operator auth for control-plane users
+- [x] Operator auth for control-plane users
 - [x] Job submission and tracking
 - [ ] Durable state store
 - [ ] Supabase schema and RLS rollout

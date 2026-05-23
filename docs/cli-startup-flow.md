@@ -36,9 +36,9 @@ opengpu login
 
 the CLI:
 
-1. Saves an auth token locally.
-2. Optionally stores a profile name.
-3. Keeps the machine ready for future control-plane calls.
+1. Saves an operator bearer token locally.
+2. Keeps the machine ready for future control-plane calls.
+3. Supports either an explicit `--token` value or an interactive prompt.
 
 ## Start
 
@@ -91,6 +91,10 @@ the CLI:
    - `M` means a memory-and-compute budget on Apple Silicon
 11. Prints whether policy currently allows the Mac to accept work, including the power source and battery state.
 11. Keeps the reused device identity attached to the local config.
+
+## Operator Auth
+
+If the control plane starts with `OPENGPU_OPERATOR_TOKEN`, the human-facing API routes and browser health page require a matching bearer token. The CLI stores that token locally with `opengpu login`, and clears it with `opengpu logout`.
 
 ## Connect
 

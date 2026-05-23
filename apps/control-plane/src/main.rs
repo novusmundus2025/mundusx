@@ -443,6 +443,17 @@ fn requires_device_signature(method: &str, path: &str) -> bool {
     )
 }
 
+fn requires_operator_auth(method: &str, path: &str) -> bool {
+    matches!(
+        (method, path),
+        ("GET", "/")
+            | ("GET", "/v1/status")
+            | ("GET", "/v1/nodes")
+            | ("GET", "/v1/jobs")
+            | ("POST", "/v1/jobs")
+    )
+}
+
 fn node_public_key_hex(state: &Arc<Mutex<ControlPlaneState>>, node_id: &str) -> Option<String> {
     state
         .lock()
@@ -516,6 +527,43 @@ fn authorize_device_request(
     verify_signature(&public_key_hex, method, request_path, timestamp, body, signature)
 }
 
+fn operator_auth_token() -> Option<String> {
+    std::env::var("OPENGPU_OPERATOR_TOKEN")
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+fn authorize_operator_request(
+    method: &str,
+    route_path: &str,
+    headers: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if !requires_operator_auth(method, route_path) {
+        return Ok(());
+    }
+
+    let Some(expected_token) = operator_auth_token() else {
+        return Ok(());
+    };
+
+    let authorization = header_value(headers, "authorization")
+        .or_else(|| header_value(headers, "x-opengpu-operator-token"))
+        .ok_or_else(|| "missing operator authorization".to_string())?;
+
+    let presented = authorization
+        .strip_prefix("Bearer ")
+        .or_else(|| authorization.strip_prefix("bearer "))
+        .unwrap_or(authorization)
+        .trim();
+
+    if presented != expected_token {
+        return Err("invalid operator token".to_string());
+    }
+
+    Ok(())
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
@@ -543,6 +591,13 @@ fn handle_connection(
         &request.body,
         &state,
     ) {
+        let _ = stream.write_all(
+            json_response("401 Unauthorized", serde_json::json!({ "error": error })).as_bytes(),
+        );
+        return;
+    }
+
+    if let Err(error) = authorize_operator_request(&request.method, clean_path, &request.headers) {
         let _ = stream.write_all(
             json_response("401 Unauthorized", serde_json::json!({ "error": error })).as_bytes(),
         );
@@ -718,6 +773,14 @@ fn main() {
 
     println!("OpenGPU control plane listening on http://127.0.0.1:8787");
     println!("supabase: {}", SupabaseMirror::startup_status());
+    println!(
+        "operatorAuth: {}",
+        if operator_auth_token().is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
     println!("home: GET /");
     println!("health: GET /health");
     println!("status: GET /v1/status");

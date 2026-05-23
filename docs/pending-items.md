@@ -7,16 +7,15 @@ This document tracks the next concrete implementation steps after the current Ma
 1. **Finish the Supabase-backed control plane rollout**
    - keep nodes, heartbeats, jobs, and policy state durable in Supabase
    - apply the checked-in schema in the Supabase SQL editor
-   - make Supabase the primary source of truth once operator auth and RLS are in place
+   - make Supabase the primary source of truth once RLS is in place
 
-2. **Add auth for control-plane users**
-   - admin / operator login
-   - server-side service role handling
-   - server-side service role handling
+2. **Add Supabase RLS**
+   - lock down row access rules
+   - keep service-role access server-side only
 
 3. **Add migrations and RLS**
    - create the Supabase schema from the sketch
-   - lock down row access rules
+   - keep the database schema reviewable and versioned
 
 4. **Add job event auditing**
    - capture state transitions in `job_events`
@@ -24,7 +23,7 @@ This document tracks the next concrete implementation steps after the current Ma
 
 ## Why These Are Pending
 
- - The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with operator auth and RLS.
+ - The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with RLS and migrations.
 - We need the Supabase backend to be the primary source of truth before public rollout.
 - Supabase is the chosen path for that durable backend.
 

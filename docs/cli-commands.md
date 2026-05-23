@@ -21,8 +21,9 @@ This is the current command surface for the Rust CLI.
 
 These remain available, but they are hidden from the default `--help` output so the main CLI feels smaller and easier to learn:
 
-- `opengpu login` - store local auth state
-- `opengpu logout` - clear local auth state
+- `opengpu login --token <token>` - store local operator auth state
+- `opengpu login` - prompt for and store local operator auth state
+- `opengpu logout` - clear local operator auth state
 - `opengpu connect` - mark the machine as ready
 - `opengpu disconnect` - mark the machine as disconnected
 - `opengpu nodes` - show the current sample node inventory
@@ -46,4 +47,5 @@ These remain available, but they are hidden from the default `--help` output so 
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected and policy allows it.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
 - `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet.
+- `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled.
 - The model commands currently manage the local model cache manifest and active selection; real model downloads are still a future step.

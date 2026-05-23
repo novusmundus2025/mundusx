@@ -10,6 +10,7 @@ http://127.0.0.1:8787
 
 The root URL (`/`) now returns a small HTML health dashboard for browser checks.
 It includes per-node rows so you can see backend, power, battery, policy state, and policy reason directly in the browser.
+When `OPENGPU_OPERATOR_TOKEN` is configured, the human-facing routes require a matching bearer token.
 
 ## Prototype Endpoints
 
@@ -97,6 +98,7 @@ The applied SQL schema lives at [supabase/schema.sql](/Users/DBATALL/Documents/a
 - registration inserts or updates a node record
 - heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy fields
 - register/heartbeat/claim/complete requests from agents must carry a valid device signature
+- if `OPENGPU_OPERATOR_TOKEN` is configured, browser/operator routes require a matching bearer token
 - `POST /v1/jobs` queues a job request in local JSON state
 - `GET /v1/jobs/next?node_id=...` lets a node claim the next queued job
 - nodes with `policyAllowed: false` are not eligible for job claims

@@ -44,6 +44,13 @@ enum Commands {
     Start,
     /// Join the OpenGPU network (runs init on first use)
     Connect,
+    /// Store local operator auth state
+    Login {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Clear local operator auth state
+    Logout,
     /// Leave the OpenGPU network
     Disconnect,
     /// Show current node status
@@ -418,6 +425,24 @@ fn print_model_event(title: &str, model_name: &str, detail: &str, accent: Color,
     print_retro_panel(title, "local cache updated", &body, accent);
 }
 
+fn read_operator_token_from_prompt() -> Result<String, String> {
+    if !io::stdin().is_terminal() {
+        return Err("missing token; pass --token or use an interactive terminal".to_string());
+    }
+
+    print!("Operator token: ");
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    let mut token = String::new();
+    io::stdin()
+        .read_line(&mut token)
+        .map_err(|error| error.to_string())?;
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err("operator token cannot be empty".to_string());
+    }
+    Ok(token)
+}
+
 fn print_retro_panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
     let mut width = title.chars().count().max(subtitle.chars().count());
     for line in lines {
@@ -769,6 +794,46 @@ fn main() {
                 }
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Login { token } => {
+            let mut config = current_config_or_default();
+            let token = match token {
+                Some(token) => token.trim().to_string(),
+                None => read_operator_token_from_prompt().unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }),
+            };
+
+            if token.is_empty() {
+                eprintln!("operator token cannot be empty");
+                std::process::exit(1);
+            }
+
+            config.auth_token = Some(token);
+            match save_config(&config) {
+                Ok(path) => {
+                    println!("authenticated: yes");
+                    println!("authTokenPath: {}", path.display());
+                }
+                Err(error) => {
+                    eprintln!("failed to save auth token: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Logout => {
+            let mut config = current_config_or_default();
+            config.auth_token = None;
+            match save_config(&config) {
+                Ok(_) => {
+                    println!("authenticated: no");
+                }
+                Err(error) => {
+                    eprintln!("failed to clear auth token: {error}");
                     std::process::exit(1);
                 }
             }
