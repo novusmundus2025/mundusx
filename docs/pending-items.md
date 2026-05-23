@@ -26,11 +26,18 @@ This document tracks the next concrete implementation steps after the current Ma
    - keep the private key non-exportable on Windows and Linux too
    - preserve the current file-backed prototype only as a dev fallback
 
+6. **Define the federated governance model**
+   - document the top-level standards / clearing-house org
+   - document how operator companies join and certify
+   - define settlement, revocation, and protocol versioning rules
+   - keep the company control plane separate from the governance layer
+
 ## Why These Are Pending
 
 - The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with RLS and migrations.
 - We need the Supabase backend to be the primary source of truth before public rollout.
 - Supabase is the chosen path for that durable backend.
+- The federated governance layer is still a design target, not a shipped subsystem.
 
 ## How To Use This Doc
 

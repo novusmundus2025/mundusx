@@ -80,6 +80,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/pending-items.md](/Users/DBATALL/Documents/aigrid/docs/pending-items.md) for the next concrete implementation steps
 - [docs/heartbeat-flow.md](/Users/DBATALL/Documents/aigrid/docs/heartbeat-flow.md) for the proposed node heartbeat timing and offline thresholds
 - [docs/system-flow.md](/Users/DBATALL/Documents/aigrid/docs/system-flow.md) for the living end-to-end architecture diagram
+- [docs/governance-model.md](/Users/DBATALL/Documents/aigrid/docs/governance-model.md) for the federated company / standards org trust model
 - [docs/runtime-transport.md](/Users/DBATALL/Documents/aigrid/docs/runtime-transport.md) for the local-process versus HTTP-server map
 - [docs/device-identity-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/device-identity-lifecycle.md) for the recommended secure device key lifecycle
 - [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md) for contributor-side model cache, switch, and prune rules

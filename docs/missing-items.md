@@ -64,3 +64,4 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [ ] Onboarding flow
 - [ ] Public docs site
 - [ ] Branding and naming cleanup
+- [ ] Federated governance / standards org model
