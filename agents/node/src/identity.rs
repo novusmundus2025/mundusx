@@ -1,4 +1,8 @@
-use crate::storage::identity_path;
+#[cfg(target_os = "macos")]
+#[path = "../../../tools/macos_identity.rs"]
+mod macos_identity;
+
+use crate::storage::{config_dir, identity_path};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -13,6 +17,13 @@ pub struct DeviceIdentity {
 
 impl DeviceIdentity {
     pub fn signing_key(&self) -> std::io::Result<SigningKey> {
+        if self.private_key_hex.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "private key is stored in secure storage",
+            ));
+        }
+
         let private_bytes = hex::decode(&self.private_key_hex).map_err(invalid_identity)?;
         let private_bytes: [u8; 32] = private_bytes.try_into().map_err(|_| {
             std::io::Error::new(
@@ -35,6 +46,13 @@ impl DeviceIdentity {
     }
 
     pub fn sign_hex(&self, message: &str) -> std::io::Result<String> {
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(signature) = macos_sign_hex(message) {
+                return Ok(signature);
+            }
+        }
+
         let signing_key = self.signing_key()?;
         let signature: Signature = signing_key.sign(message.as_bytes());
         Ok(hex::encode(signature.to_bytes()))
@@ -42,6 +60,14 @@ impl DeviceIdentity {
 }
 
 pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(identity) = macos_secure_identity() {
+            let _ = persist_identity_metadata(&identity)?;
+            return Ok(Some(identity));
+        }
+    }
+
     let path = resolved_identity_path();
     if !path.exists() {
         return Ok(None);
@@ -51,7 +77,9 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
     let identity: DeviceIdentity = serde_json::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     identity.verifying_key()?;
-    identity.signing_key()?;
+    if !cfg!(target_os = "macos") || !identity.private_key_hex.trim().is_empty() {
+        identity.signing_key()?;
+    }
     Ok(Some(identity))
 }
 
@@ -79,4 +107,52 @@ pub fn local_identity_path() -> PathBuf {
 
 fn invalid_identity(error: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn persist_identity_metadata(identity: &DeviceIdentity) -> std::io::Result<PathBuf> {
+    let data = serde_json::to_string_pretty(identity).expect("identity serialization");
+    if let Some(path) = try_write(&identity_path(), &data)? {
+        return Ok(path);
+    }
+    if let Some(path) = try_write(&local_identity_path(), &data)? {
+        return Ok(path);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "unable to write identity metadata to home or local fallback",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn try_write(path: &std::path::Path, data: &str) -> std::io::Result<Option<PathBuf>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    match fs::write(path, format!("{data}\n")) {
+        Ok(()) => Ok(Some(path.to_path_buf())),
+        Err(error) => {
+            if path == identity_path() {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
+    let secure = macos_identity::ensure_identity(&config_dir())?;
+    Ok(DeviceIdentity {
+        public_key_hex: secure.public_key_hex,
+        private_key_hex: String::new(),
+        fingerprint: secure.fingerprint,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sign_hex(message: &str) -> std::io::Result<String> {
+    macos_identity::sign_message(&config_dir(), message.as_bytes())
 }

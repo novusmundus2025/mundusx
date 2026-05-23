@@ -21,6 +21,8 @@ Use OS-managed secure storage instead of a plain file:
 - Windows: TPM-backed or CNG / KSP-backed key storage
 - Linux: TPM / PKCS#11 / system keyring when available
 
+The current macOS implementation uses a Keychain-backed helper that only exposes `ensure` and `sign`, while the Rust CLI and agent keep the private key out of their own config files.
+
 If secure storage is unavailable, the prototype can fall back to file-backed identity for development only.
 
 ## Lifecycle
@@ -95,5 +97,6 @@ Do not use it as proof of uniqueness or as a payout target.
 
 ## Current Prototype Status
 
-The current repo prototype still uses a file-backed identity for development convenience.
-That is acceptable for the prototype, but the production design should move to non-exportable OS-backed storage.
+- macOS: Keychain-backed helper is implemented now.
+- Other platforms: still use the file-backed prototype for development convenience.
+- The long-term design is still non-exportable OS-backed storage everywhere.

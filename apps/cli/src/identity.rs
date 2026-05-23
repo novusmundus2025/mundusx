@@ -1,5 +1,9 @@
+#[cfg(target_os = "macos")]
+#[path = "../../../tools/macos_identity.rs"]
+mod macos_identity;
+
 use crate::config::config_dir;
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -14,6 +18,11 @@ pub struct DeviceIdentity {
 
 impl DeviceIdentity {
     pub fn generate() -> Self {
+        #[cfg(target_os = "macos")]
+        if let Ok(identity) = macos_secure_identity() {
+            return identity;
+        }
+
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
         let public_key_hex = hex::encode(verifying_key.to_bytes());
@@ -28,6 +37,13 @@ impl DeviceIdentity {
     }
 
     pub fn signing_key(&self) -> std::io::Result<SigningKey> {
+        if self.private_key_hex.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "private key is stored in secure storage",
+            ));
+        }
+
         let private_bytes = hex::decode(&self.private_key_hex).map_err(invalid_identity)?;
         let private_bytes: [u8; 32] = private_bytes.try_into().map_err(|_| {
             std::io::Error::new(
@@ -47,6 +63,19 @@ impl DeviceIdentity {
             )
         })?;
         VerifyingKey::from_bytes(&public_bytes).map_err(invalid_identity)
+    }
+
+    pub fn sign_hex(&self, message: &str) -> std::io::Result<String> {
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(signature) = macos_sign_hex(message) {
+                return Ok(signature);
+            }
+        }
+
+        let signing_key = self.signing_key()?;
+        let signature = signing_key.sign(message.as_bytes());
+        Ok(hex::encode(signature.to_bytes()))
     }
 }
 
@@ -81,6 +110,14 @@ pub fn resolved_identity_path() -> PathBuf {
 }
 
 pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(identity) = macos_secure_identity() {
+            let _ = save_identity(&identity)?;
+            return Ok(Some(identity));
+        }
+    }
+
     let path = resolved_identity_path();
     if !path.exists() {
         return Ok(None);
@@ -90,7 +127,9 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
     let identity: DeviceIdentity = serde_json::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     identity.verifying_key()?;
-    identity.signing_key()?;
+    if !cfg!(target_os = "macos") || !identity.private_key_hex.trim().is_empty() {
+        identity.signing_key()?;
+    }
     Ok(Some(identity))
 }
 
@@ -153,4 +192,19 @@ fn try_write(path: &Path, data: &str) -> std::io::Result<Option<PathBuf>> {
 
 fn invalid_identity(error: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
+    let secure = macos_identity::ensure_identity(&identity_dir())?;
+    Ok(DeviceIdentity {
+        public_key_hex: secure.public_key_hex,
+        private_key_hex: String::new(),
+        fingerprint: secure.fingerprint,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sign_hex(message: &str) -> std::io::Result<String> {
+    macos_identity::sign_message(&identity_dir(), message.as_bytes())
 }
