@@ -1,21 +1,22 @@
 # OpenGPU System Flow
 
-This page is the living end-to-end diagram for how OpenGPU should work.
+This page is the living end-to-end one-pager for how OpenGPU works.
 
 ```mermaid
 flowchart TD
     I[Install CLI] --> S[Run opengpu start]
     S --> D[Detect machine backend]
-    D --> C[Create or reuse identity]
+    D --> C[Create or reuse device identity keypair]
     C --> M[Mark machine connected]
-    M --> H[Send policy-aware heartbeats to control plane]
+    C --> L[Optional opengpu login stores operator token]
+    M --> H[Send signed policy-aware heartbeats to control plane]
 
-    H --> Q[Request arrives from client / SDK / dashboard]
-    Q --> CP[Control plane receives and queues job]
+    J[Client / SDK / dashboard submits job] --> OP[Operator auth gate]
+    OP --> CP[Control plane receives and queues job]
     CP --> SCH[Scheduler chooses or queues for best live node]
     SCH --> A[Node agent on provider machine]
-    A --> J[Claim next queued job]
-    J --> W[Launch worker locally]
+    A --> J2[Claim next queued job with device signature]
+    J2 --> W[Launch worker locally]
     W --> X[Run compute on M-series]
     X --> R[Return result to agent]
     R --> CP2[Forward result to control plane]
@@ -31,6 +32,7 @@ flowchart TD
 
     S -. emits telemetry .-> T
     H -. emits telemetry .-> T
+    OP -. emits telemetry .-> T
     CP -. emits telemetry .-> T
     A -. emits telemetry .-> T
     W -. emits telemetry .-> T
@@ -47,8 +49,37 @@ flowchart TD
 - `Control Plane` chooses where work goes and keeps the live registry.
 - `Control Plane` queues jobs, lets agents claim them, and keeps the live registry.
 - `Control Plane` also records the node power/policy fields from heartbeats so the dashboard can show why a Mac is paused.
+- `Operator auth` protects the human-facing control-plane routes when `OPENGPU_OPERATOR_TOKEN` is configured.
+- `Device signatures` protect contributor-machine routes (`register`, `heartbeat`, `jobs/next`, and `jobs/complete`).
 - The browser page at `/` shows per-node rows with backend, state, power, battery, policy, and policy reason.
 - `Telemetry` is emitted by every layer and shipped separately from the job path.
+
+## Auth And Trust Model
+
+### New contributor machine
+
+1. `opengpu start` or `opengpu connect` auto-inits on first use.
+2. The CLI reuses an existing device keypair, or generates one once if none exists.
+3. The node agent sends a signed `register` request that includes:
+   - node ID
+   - hostname
+   - public key fingerprint
+   - public key
+   - backend
+   - contribution percent
+4. The control plane verifies the signature with the public key in that payload and stores the node record.
+5. After that, the same device keypair signs heartbeat and job-claim/completion requests.
+
+### Contributor requests
+
+- `register`, `heartbeat`, `jobs/next`, and `jobs/complete` are device-authenticated with Ed25519 signatures.
+- The `hostname` is part of the signed contributor identity, so the operator can audit which physical machine is connected.
+
+### Operator requests
+
+- Human-facing control-plane routes use a bearer token when `OPENGPU_OPERATOR_TOKEN` is set.
+- The CLI stores that token locally with `opengpu login` and clears it with `opengpu logout`.
+- If the token is not configured on the control plane, the prototype keeps those routes open for local development.
 
 ## Provider Machine Layout
 
