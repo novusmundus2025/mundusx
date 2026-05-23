@@ -21,7 +21,7 @@ Use OS-managed secure storage instead of a plain file:
 - Windows: TPM-backed or CNG / KSP-backed key storage
 - Linux: TPM / PKCS#11 / system keyring when available
 
-The current macOS implementation uses a helper that only exposes `ensure`, `sign`, and `verify`. The Rust CLI and agent keep the private key out of their own config files, and only persist the public metadata plus the keychain lookup label.
+The current macOS implementation uses a helper that only exposes `ensure`, `sign`, and `verify`. The Rust CLI and agent keep the private key out of their own config files, and only persist the public metadata plus the keychain lookup label. On macOS, the persisted JSON omits the private-key field entirely rather than storing even an empty placeholder.
 
 The old file-backed prototype remains only for non-macOS development paths.
 
@@ -97,6 +97,6 @@ Do not use it as proof of uniqueness or as a payout target.
 
 ## Current Prototype Status
 
-- macOS: non-exportable secure-store helper is implemented now.
+- macOS: non-exportable secure-store helper is implemented now, and the app-visible identity record omits private-key bytes.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.

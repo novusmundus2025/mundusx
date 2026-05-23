@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceIdentity {
     pub public_key_hex: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub private_key_hex: String,
     pub fingerprint: String,
     pub keychain_label_hex: Option<String>,
