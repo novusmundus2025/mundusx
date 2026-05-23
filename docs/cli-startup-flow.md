@@ -82,9 +82,14 @@ the CLI:
    - connection state
    - pause state
    - config path
+   - power source
+   - battery percent
+   - policy allowance
+   - policy reason when the Mac should stay quiet
 9. Saves the updated config.
 10. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
+11. Prints whether policy currently allows the Mac to accept work, including the power source and battery state.
 11. Keeps the reused device identity attached to the local config.
 
 ## Connect

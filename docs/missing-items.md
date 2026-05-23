@@ -40,7 +40,7 @@ This document tracks what is still missing before OpenGPU becomes a full product
 - [x] Capability reporting
 - [x] Pause/resume integration
 - [x] Control-plane registration client
-- [ ] Safe throttling and policy enforcement
+- [x] Safe throttling and policy enforcement
 
 ## Worker Phase
 

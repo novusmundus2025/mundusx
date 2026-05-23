@@ -12,6 +12,7 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::Serialize;
 use std::env;
 use std::io::{self, IsTerminal, Read, Write};
+use std::process::Command;
 use std::thread;
 use types::Backend;
 
@@ -152,9 +153,100 @@ fn colored_state(value: bool, active_color: Color, active_text: &str, inactive_t
     }
 }
 
+#[derive(Clone, Debug)]
+struct PowerState {
+    source: String,
+    on_battery: bool,
+    battery_percent: Option<u8>,
+}
+
+fn probe_power_state() -> PowerState {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("pmset").args(["-g", "batt"]).output() {
+            if let Ok(stdout) = String::from_utf8(output.stdout) {
+                let mut source = "unknown".to_string();
+                let mut on_battery = true;
+                let mut battery_percent = None;
+
+                for line in stdout.lines() {
+                    if line.starts_with("Now drawing from") {
+                        source = line
+                            .split_once('\'')
+                            .map(|(_, rest)| rest.trim_matches('\'').to_string())
+                            .unwrap_or_else(|| line.to_string());
+                        on_battery = !source.to_lowercase().contains("ac power");
+                    }
+
+                    if let Some(percent_text) = line.split('%').next() {
+                        if let Some(token) = percent_text
+                            .split_whitespace()
+                            .rev()
+                            .find(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+                        {
+                            battery_percent = token.parse::<u8>().ok();
+                        }
+                    }
+                }
+
+                return PowerState {
+                    source,
+                    on_battery,
+                    battery_percent,
+                };
+            }
+        }
+    }
+
+    PowerState {
+        source: "unknown".to_string(),
+        on_battery: false,
+        battery_percent: None,
+    }
+}
+
+fn policy_reason(config: &Config, power: &PowerState, active_model: Option<&str>) -> Option<String> {
+    if config.contribution_percent == 0 {
+        return Some("contribution percent is unset".to_string());
+    }
+
+    if active_model.is_none() {
+        return Some("no active model is selected".to_string());
+    }
+
+    if power.on_battery {
+        if config.contribution_percent > 20 {
+            return Some("battery power requires contribution percent <= 20".to_string());
+        }
+
+        if let Some(percent) = power.battery_percent {
+            if percent <= 20 {
+                return Some("battery level is too low to start work safely".to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn policy_allowed(config: &Config, power: &PowerState, active_model: Option<&str>) -> bool {
+    policy_reason(config, power, active_model).is_none()
+}
+
+fn provider_count(config: &Config, power: &PowerState, active_model: Option<&str>) -> usize {
+    if config.connected && !config.paused && policy_allowed(config, power, active_model) {
+        1
+    } else {
+        0
+    }
+}
+
 fn print_config_summary(config: &Config, path: &std::path::Path) {
     let detected_backend = resolved_backend(config);
-    let provider_count = if config.connected && !config.paused { 1 } else { 0 };
+    let power = probe_power_state();
+    let active_model = active_model_name(config);
+    let allowed = policy_allowed(config, &power, active_model.as_deref());
+    let provider_count = provider_count(config, &power, active_model.as_deref());
     println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
     println!("publicKey: {}", display_public_key_hex(config));
@@ -196,7 +288,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     );
     println!(
         "activeModel: {}",
-        active_model_name(config).unwrap_or_else(|| "unset".to_string())
+        active_model.clone().unwrap_or_else(|| "unset".to_string())
     );
     println!(
         "contributionPercent: {}",
@@ -207,6 +299,19 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
         }
     );
     println!("controlPlaneUrl: {}", config.control_plane_url);
+    println!("powerSource: {}", power.source);
+    println!("onBattery: {}", if power.on_battery { "yes" } else { "no" });
+    println!(
+        "batteryPercent: {}",
+        power
+            .battery_percent
+            .map(|value| format!("{value}%"))
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    println!("policyAllowed: {}", if allowed { "yes" } else { "no" });
+    if let Some(reason) = policy_reason(config, &power, active_model.as_deref()) {
+        println!("policyReason: {}", reason);
+    }
 }
 
 fn print_startup_summary(config: &Config, path: &std::path::Path) {
@@ -214,6 +319,9 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     let cores = thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1);
+    let power = probe_power_state();
+    let active_model = active_model_name(config);
+    let allowed = policy_allowed(config, &power, active_model.as_deref());
 
     println!("startup ready for {}", config.device_id);
     println!("publicKey: {}", display_public_key_hex(config));
@@ -231,7 +339,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     );
     println!(
         "activeModel: {}",
-        active_model_name(config).unwrap_or_else(|| "unset".to_string())
+        active_model.clone().unwrap_or_else(|| "unset".to_string())
     );
     println!(
         "contributionPercent: {}",
@@ -247,6 +355,19 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         colored_state(false, Color::AnsiValue(208), "yes", "no")
     );
     println!("configPath: {}", path.display());
+    println!("powerSource: {}", power.source);
+    println!("onBattery: {}", if power.on_battery { "yes" } else { "no" });
+    println!(
+        "batteryPercent: {}",
+        power
+            .battery_percent
+            .map(|value| format!("{value}%"))
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    println!("policyAllowed: {}", if allowed { "yes" } else { "no" });
+    if let Some(reason) = policy_reason(config, &power, active_model.as_deref()) {
+        println!("policyReason: {}", reason);
+    }
 }
 
 fn print_model_inventory(config: &Config, models: &[ModelRecord], json: bool) {
@@ -676,7 +797,14 @@ fn main() {
         Commands::Status { json } => {
             let config = current_config_or_default();
             let preferred_backend = resolved_backend(&config);
-            let provider_count = if config.connected && !config.paused { 1 } else { 0 };
+            let power = probe_power_state();
+            let active_model = active_model_name(&config);
+            let policy_allowed = policy_allowed(&config, &power, active_model.as_deref());
+            let provider_count = if config.connected && !config.paused && policy_allowed {
+                1
+            } else {
+                0
+            };
 
             if json {
                 let payload = serde_json::json!({
@@ -685,6 +813,13 @@ fn main() {
                     "provider_count": provider_count,
                     "routing_mode": "local-only",
                     "selected_provider": if provider_count == 1 { "self" } else { "none" },
+                    "power_state": {
+                        "source": power.source,
+                        "on_battery": power.on_battery,
+                        "battery_percent": power.battery_percent,
+                    },
+                    "policy_allowed": policy_allowed,
+                    "policy_reason": policy_reason(&config, &power, active_model.as_deref()),
                 });
                 if let Err(error) = print_json(&payload) {
                     eprintln!("failed to print json: {error}");
