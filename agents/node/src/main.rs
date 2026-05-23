@@ -137,6 +137,7 @@ fn operational_state(config: &AgentConfig) -> AgentState {
 }
 
 fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> Heartbeat {
+    let (health, policy) = worker_readiness(config);
     Heartbeat {
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
@@ -145,6 +146,11 @@ fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> 
         available_gpu_percent: detect_available_gpu_percent(config),
         updated_at: now_unix_seconds(),
         contribution_percent: config.contribution_percent,
+        power_source: health.power_source,
+        on_battery: health.on_battery,
+        battery_percent: health.battery_percent,
+        policy_allowed: policy.allowed,
+        policy_reason: policy.reason,
     }
 }
 

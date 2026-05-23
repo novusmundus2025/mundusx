@@ -46,6 +46,7 @@ flowchart TD
 - `Worker` is the short-lived local compute process.
 - `Control Plane` chooses where work goes and keeps the live registry.
 - `Control Plane` queues jobs, lets agents claim them, and keeps the live registry.
+- `Control Plane` also records the node power/policy fields from heartbeats so the dashboard can show why a Mac is paused.
 - `Telemetry` is emitted by every layer and shipped separately from the job path.
 
 ## Provider Machine Layout

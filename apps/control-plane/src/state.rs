@@ -25,6 +25,10 @@ impl ControlPlaneState {
             .iter()
             .filter(|node| node.state == AgentState::Paused)
             .count();
+        let policy_blocked_count = nodes
+            .iter()
+            .filter(|node| !node.policy_allowed)
+            .count();
         let stopped_count = nodes
             .iter()
             .filter(|node| node.state == AgentState::Stopped)
@@ -51,6 +55,7 @@ impl ControlPlaneState {
             jobs,
             online_count,
             paused_count,
+            policy_blocked_count,
             stopped_count,
             queued_job_count,
             assigned_job_count,
@@ -80,6 +85,11 @@ impl ControlPlaneState {
             state: AgentState::Starting,
             available_memory_mb: 0,
             available_gpu_percent: 0,
+            power_source: "unknown".to_string(),
+            on_battery: false,
+            battery_percent: None,
+            policy_allowed: false,
+            policy_reason: None,
             updated_at: String::new(),
         };
 
@@ -122,6 +132,10 @@ impl ControlPlaneState {
         };
 
         if !(node.state == AgentState::Ready || node.state == AgentState::Busy) {
+            return JobClaimResponse { job: None };
+        }
+
+        if !node.policy_allowed {
             return JobClaimResponse { job: None };
         }
 
@@ -205,6 +219,11 @@ impl ControlPlaneState {
             state: heartbeat.agent_state,
             available_memory_mb: heartbeat.available_memory_mb,
             available_gpu_percent: heartbeat.available_gpu_percent,
+            power_source: heartbeat.power_source,
+            on_battery: heartbeat.on_battery,
+            battery_percent: heartbeat.battery_percent,
+            policy_allowed: heartbeat.policy_allowed,
+            policy_reason: heartbeat.policy_reason,
             updated_at: updated_at.clone(),
         };
 
@@ -268,6 +287,11 @@ mod tests {
                 available_gpu_percent: 50,
                 updated_at: "1".to_string(),
                 contribution_percent: 50,
+                power_source: "AC Power".to_string(),
+                on_battery: false,
+                battery_percent: Some(90),
+                policy_allowed: true,
+                policy_reason: None,
             },
             "1".to_string(),
         );

@@ -40,6 +40,7 @@ The prototype agent:
 - posts the worker result back to the control plane
 - treats the configured model directory as a local cache, not as something the control plane owns
 - emits policy-aware heartbeats on a loop
+- sends the power source, battery state, and policy allowance with each heartbeat
 - writes the last heartbeat to disk
 - treats paused or disconnected state as non-active
 - reports itself as paused to the control plane when the Mac policy says the node should not launch jobs

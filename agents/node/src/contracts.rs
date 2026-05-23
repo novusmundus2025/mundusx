@@ -101,6 +101,11 @@ pub struct Heartbeat {
     pub available_gpu_percent: u32,
     pub updated_at: String,
     pub contribution_percent: u8,
+    pub power_source: String,
+    pub on_battery: bool,
+    pub battery_percent: Option<u8>,
+    pub policy_allowed: bool,
+    pub policy_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

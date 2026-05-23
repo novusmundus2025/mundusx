@@ -44,6 +44,7 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
     let snapshot = state.snapshot();
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
     let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
+    let policy_blocked = snapshot["policy_blocked_count"].as_u64().unwrap_or(0);
     let queued = snapshot["queued_job_count"].as_u64().unwrap_or(0);
     let assigned = snapshot["assigned_job_count"].as_u64().unwrap_or(0);
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
@@ -116,6 +117,14 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
         font-size: 28px;
         color: #ffffff;
       }}
+      .note {{
+        margin-top: 16px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: #0a1020;
+        border: 1px solid #24324f;
+        color: #b6c5e4;
+      }}
       code {{
         background: #0a1020;
         border: 1px solid #24324f;
@@ -136,10 +145,14 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
       <div class="grid">
         <div class="stat"><span>Online nodes</span><strong>{nodes}</strong></div>
         <div class="stat"><span>Paused nodes</span><strong>{paused}</strong></div>
+        <div class="stat"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
         <div class="stat"><span>Queued jobs</span><strong>{queued}</strong></div>
         <div class="stat"><span>Assigned jobs</span><strong>{assigned}</strong></div>
         <div class="stat"><span>Completed jobs</span><strong>{completed}</strong></div>
         <div class="stat"><span>Failed jobs</span><strong>{failed}</strong></div>
+      </div>
+      <div class="note">
+        Policy-aware nodes are still visible in the registry, but nodes that should stay quiet are excluded from scheduling.
       </div>
       <p>Useful endpoints: <a href="/health">/health</a>, <a href="/v1/status">/v1/status</a>, <a href="/v1/nodes">/v1/nodes</a>, <a href="/v1/jobs">/v1/jobs</a></p>
     </main>

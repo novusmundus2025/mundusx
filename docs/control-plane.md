@@ -71,6 +71,11 @@ or, if configured:
 - agent state
 - available memory
 - available GPU percent
+- power source
+- on-battery state
+- battery percent
+- policy allowed / blocked
+- policy reason
 - last updated timestamp
 - job ID
 - job request ID
@@ -81,14 +86,16 @@ or, if configured:
 ## Current Behavior
 
 - registration inserts or updates a node record
-- heartbeat updates the node record and refreshes the timestamp
+- heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy fields
 - `POST /v1/jobs` queues a job request in local JSON state
 - `GET /v1/jobs/next?node_id=...` lets a node claim the next queued job
+- nodes with `policyAllowed: false` are not eligible for job claims
 - `POST /v1/jobs/complete` stores the worker result and marks the job complete or failed
 - status returns a snapshot with:
   - total nodes
   - online count
   - paused count
+  - policy blocked count
   - stopped count
   - queued jobs
   - assigned jobs
