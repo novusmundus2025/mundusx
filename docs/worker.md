@@ -45,4 +45,4 @@ The prototype worker:
 
 ## Next Step
 
-Add health checks and policy controls around the Mac model runner.
+The worker health check is now available through `opengpu-agent health`. The next step is to add policy controls around the Mac model runner.

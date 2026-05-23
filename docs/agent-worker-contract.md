@@ -104,4 +104,4 @@ The transport and service implementations are partially in place, including:
 - control-plane job queue submission and claim flow
 - local worker launch from the agent
 
-The next gap is adding health checks and policy controls around the real `M` model runner.
+The health check command now verifies the local Mac runner without starting a full job. The next gap is adding policy controls around the real `M` model runner.

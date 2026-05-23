@@ -1,4 +1,4 @@
-use crate::contracts::{Backend, WorkerLaunchRequest, WorkerLaunchResponse};
+use crate::contracts::{Backend, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -50,6 +50,13 @@ fn resolved_backend(backend: Backend) -> Backend {
         }
         other => other,
     }
+}
+
+fn now_unix_seconds() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +147,25 @@ fn resolve_model_path(model_dir: &Path, model_name: Option<&str>) -> io::Result<
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no cached GGUF model found"))
 }
 
+fn probe_llama_cli_devices() -> Result<String, String> {
+    let output = Command::new("llama-cli")
+        .arg("--list-devices")
+        .output()
+        .map_err(|error| format!("failed to launch llama-cli: {error}"))?;
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "llama-cli --list-devices exited {} — {}",
+            output.status.code().unwrap_or(-1),
+            stderr.lines().next().unwrap_or("no stderr")
+        ));
+    }
+
+    Ok(stdout)
+}
+
 fn run_llama_command(
     model_path: &Path,
     prompt: &str,
@@ -190,6 +216,43 @@ fn run_llama_command(
     let generated = extract_llama_response(prompt, &transcript);
 
     Ok((generated, "blas".to_string()))
+}
+
+pub fn probe_worker_health(model_dir: &Path, model_name: Option<&str>) -> WorkerHealthReport {
+    let mut notes = Vec::new();
+    let mut model_path = None;
+    let mut llama_cli_available = false;
+    let mut blas_device_available = false;
+
+    match resolve_model_path(model_dir, model_name) {
+        Ok(path) => model_path = Some(path.display().to_string()),
+        Err(error) => notes.push(format!("model cache missing: {error}")),
+    }
+
+    match probe_llama_cli_devices() {
+        Ok(stdout) => {
+            llama_cli_available = true;
+            blas_device_available = stdout.lines().any(|line| line.contains("BLAS"));
+            if !blas_device_available {
+                notes.push("BLAS device not listed by llama-cli".to_string());
+            }
+        }
+        Err(error) => notes.push(error),
+    }
+
+    let healthy = model_path.is_some() && llama_cli_available && blas_device_available;
+
+    WorkerHealthReport {
+        healthy,
+        model_dir: model_dir.display().to_string(),
+        model_name: model_name.map(|name| name.to_string()),
+        model_path,
+        llama_cli_available,
+        blas_device_available,
+        runtime_mode: "blas".to_string(),
+        checked_at: now_unix_seconds(),
+        notes,
+    }
 }
 
 fn extract_llama_response(prompt: &str, transcript: &str) -> String {

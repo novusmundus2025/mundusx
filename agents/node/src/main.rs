@@ -7,7 +7,7 @@ mod worker;
 use clap::{Parser, Subcommand};
 use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    WorkerLaunchRequest,
+    WorkerHealthReport, WorkerLaunchRequest,
 };
 use http::{get_json, post_json, post_json_body};
 use identity::{load_identity, DeviceIdentity};
@@ -59,6 +59,10 @@ enum Commands {
         prompt: String,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Health {
         #[arg(long)]
         json: bool,
     },
@@ -265,6 +269,46 @@ fn launch_worker_process(config: &AgentConfig, request: WorkerLaunchRequest, jso
             eprintln!("workerLaunch: {error}");
             let _ = save_agent_state(&build_heartbeat(config));
             Err(error)
+        }
+    }
+}
+
+fn print_worker_health(config: &AgentConfig, json: bool) {
+    let health: WorkerHealthReport =
+        worker::probe_worker_health(&config.effective_model_dir(), config.active_model.as_deref());
+
+    if json {
+        emit_json_line(&health);
+        return;
+    }
+
+    println!(
+        "workerHealth: {}",
+        if health.healthy { "healthy" } else { "degraded" }
+    );
+    println!("modelDir: {}", health.model_dir);
+    println!(
+        "modelName: {}",
+        health.model_name.as_deref().unwrap_or("none")
+    );
+    println!(
+        "modelPath: {}",
+        health.model_path.as_deref().unwrap_or("missing")
+    );
+    println!(
+        "llamaCliAvailable: {}",
+        if health.llama_cli_available { "yes" } else { "no" }
+    );
+    println!(
+        "blasDeviceAvailable: {}",
+        if health.blas_device_available { "yes" } else { "no" }
+    );
+    println!("runtimeMode: {}", health.runtime_mode);
+    println!("checkedAt: {}", health.checked_at);
+    if !health.notes.is_empty() {
+        println!("notes:");
+        for note in health.notes {
+            println!("  - {}", note);
         }
     }
 }
@@ -548,6 +592,10 @@ fn main() {
             let config = load_config_or_exit();
             let request = build_worker_launch_request(&config, job_id, prompt, model);
             let _ = launch_worker_process(&config, request, json);
+        }
+        Commands::Health { json } => {
+            let config = load_config_or_exit();
+            print_worker_health(&config, json);
         }
         Commands::Worker(worker_cli) => worker::worker_main(worker_cli),
         Commands::Status { json } => print_status(json),

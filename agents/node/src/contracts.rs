@@ -164,3 +164,16 @@ pub struct WorkerLaunchResponse {
     pub backend: Backend,
     pub node_id: String,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerHealthReport {
+    pub healthy: bool,
+    pub model_dir: String,
+    pub model_name: Option<String>,
+    pub model_path: Option<String>,
+    pub llama_cli_available: bool,
+    pub blas_device_available: bool,
+    pub runtime_mode: String,
+    pub checked_at: String,
+    pub notes: Vec<String>,
+}
