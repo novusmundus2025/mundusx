@@ -40,6 +40,50 @@ fn html_response(status: &str, body: &str) -> String {
     )
 }
 
+fn load_local_env() {
+    let mut current = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(_) => return,
+    };
+
+    loop {
+        let env_path = current.join(".env");
+        if env_path.exists() {
+            if let Ok(raw) = std::fs::read_to_string(&env_path) {
+                for line in raw.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    let Some((key, value)) = trimmed.split_once('=') else {
+                        continue;
+                    };
+                    let key = key.trim();
+                    let value = value.trim().trim_matches('"');
+                    if !key.is_empty() && std::env::var_os(key).is_none() {
+                        std::env::set_var(key, value);
+                    }
+                }
+            }
+            return;
+        }
+
+        if !current.pop() {
+            return;
+        }
+    }
+}
+
+fn database_config_status() -> &'static str {
+    match std::env::var("DATABASE_URL") {
+        Ok(value) if value.contains("[YOUR-PASSWORD]") || value.contains("YOUR-PASSWORD") => {
+            "placeholder"
+        }
+        Ok(_) => "configured",
+        Err(_) => "not configured",
+    }
+}
+
 fn escape_html(input: &str) -> String {
     input
         .replace('&', "&amp;")
@@ -472,10 +516,12 @@ fn handle_connection(mut stream: TcpStream, state: Arc<Mutex<ControlPlaneState>>
 }
 
 fn main() {
+    load_local_env();
     let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
     let state = Arc::new(Mutex::new(load_state().ok().flatten().unwrap_or_default()));
 
     println!("OpenGPU control plane listening on http://127.0.0.1:8787");
+    println!("database: {}", database_config_status());
     println!("home: GET /");
     println!("health: GET /health");
     println!("status: GET /v1/status");

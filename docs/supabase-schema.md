@@ -9,6 +9,16 @@ This page sketches the company-side database schema for the OpenGPU control plan
 
 Supabase is a good fit here because it gives us managed Postgres plus Auth, and its docs recommend using Row Level Security for database access control. The service role key must stay server-side only.
 
+## Local Development Env
+
+Put the connection string in a repo-root `.env` file so the control plane can load it locally:
+
+```bash
+DATABASE_URL=postgresql://postgres.yjlvhhouncxhjkghnwyj:[YOUR-PASSWORD]@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
+```
+
+The control plane reads `DATABASE_URL` at startup and reports whether it is configured, so you can verify the env is loaded before we wire the actual Supabase client.
+
 ## Core Tables
 
 ### `users`
@@ -161,4 +171,3 @@ This schema keeps contributor machines lightweight while giving the company a du
 - policy state
 - audit trail
 - credits and billing
-
