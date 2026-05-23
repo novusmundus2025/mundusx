@@ -17,6 +17,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[path = "../../../tools/macos_identity.rs"]
 mod macos_identity;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageSource {
+    Supabase,
+    LocalJsonFallback,
+    LocalJsonOnly,
+}
+
+impl StorageSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Supabase => "supabase",
+            Self::LocalJsonFallback => "local-json-fallback",
+            Self::LocalJsonOnly => "local-json-only",
+        }
+    }
+}
+
 fn now_unix_seconds() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -200,8 +217,8 @@ fn render_nodes(state: &ControlPlaneState) -> String {
     html
 }
 
-fn control_plane_home(state: &ControlPlaneState) -> String {
-    let snapshot = state.snapshot();
+fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) -> String {
+    let snapshot = state.snapshot(storage_source.as_str());
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
     let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
     let policy_blocked = snapshot["policy_blocked_count"].as_u64().unwrap_or(0);
@@ -360,6 +377,7 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
       <h1>OpenGPU control plane</h1>
       <p>This is the local prototype registry and job queue running at <code>http://127.0.0.1:8787</code>.</p>
       <div class="grid">
+        <div class="stat"><span>Storage source</span><strong>{storage_source}</strong></div>
         <div class="stat"><span>Online nodes</span><strong>{nodes}</strong></div>
         <div class="stat"><span>Paused nodes</span><strong>{paused}</strong></div>
         <div class="stat"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
@@ -370,6 +388,7 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
       </div>
       <div class="note">
         Policy-aware nodes are still visible in the registry, but nodes that should stay quiet are excluded from scheduling.
+        Current startup storage source: <code>{storage_source}</code>.
       </div>
       <h2 class="section-title">Node details</h2>
       {node_rows}
@@ -378,7 +397,8 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
   </body>
 </html>"#
         ,
-        node_rows = render_nodes(state)
+        node_rows = render_nodes(state),
+        storage_source = escape_html(storage_source.as_str())
     )
 }
 
@@ -593,6 +613,7 @@ fn handle_connection(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
     supabase: Option<&SupabaseMirror>,
+    storage_source: StorageSource,
 ) {
     let mut buffer = vec![0; 16 * 1024];
     let read_result = stream.read(&mut buffer);
@@ -632,11 +653,22 @@ fn handle_connection(
     let response = match (request.method.as_str(), clean_path) {
         ("GET", "/") => {
             let snapshot = state.lock().expect("state lock");
-            html_response("200 OK", &control_plane_home(&snapshot))
+            html_response("200 OK", &control_plane_home(&snapshot, storage_source))
         }
-        ("GET", "/health") => text_response("200 OK", "ok"),
+        ("GET", "/health") => {
+            let snapshot = state.lock().expect("state lock").snapshot(storage_source.as_str());
+            json_response(
+                "200 OK",
+                serde_json::json!({
+                    "status": "ok",
+                    "storage_source": storage_source.as_str(),
+                    "supabase": SupabaseMirror::startup_status(),
+                    "snapshot": snapshot,
+                }),
+            )
+        }
         ("GET", "/v1/status") => {
-            let snapshot = state.lock().expect("state lock").snapshot();
+            let snapshot = state.lock().expect("state lock").snapshot(storage_source.as_str());
             json_response("200 OK", snapshot)
         }
         ("GET", "/v1/nodes") => {
@@ -794,26 +826,33 @@ fn main() {
     load_local_env();
     let supabase = SupabaseMirror::from_env();
     let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
-    let restored_state = match supabase.as_ref() {
+    let (restored_state, storage_source) = match supabase.as_ref() {
         Some(db) => match db.restore_state() {
             Ok(state) => {
                 println!("restore: supabase");
-                state
+                (state, StorageSource::Supabase)
             }
             Err(error) => {
                 eprintln!("supabase restore skipped: {error}");
-                load_state().ok().flatten().unwrap_or_default()
+                (
+                    load_state().ok().flatten().unwrap_or_default(),
+                    StorageSource::LocalJsonFallback,
+                )
             }
         },
         None => {
             println!("restore: local-json");
-            load_state().ok().flatten().unwrap_or_default()
+            (
+                load_state().ok().flatten().unwrap_or_default(),
+                StorageSource::LocalJsonOnly,
+            )
         }
     };
     let state = Arc::new(Mutex::new(restored_state));
 
     println!("OpenGPU control plane listening on http://127.0.0.1:8787");
     println!("supabase: {}", SupabaseMirror::startup_status());
+    println!("storage_source: {}", storage_source.as_str());
     println!(
         "operatorAuth: {}",
         if operator_auth_token().is_some() {
@@ -837,7 +876,7 @@ fn main() {
         match incoming {
             Ok(stream) => {
                 let state = Arc::clone(&state);
-                handle_connection(stream, state, supabase.as_ref());
+                handle_connection(stream, state, supabase.as_ref(), storage_source);
             }
             Err(error) => eprintln!("incoming connection error: {error}"),
         }

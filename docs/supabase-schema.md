@@ -8,7 +8,7 @@ This page sketches the company-side database schema for the OpenGPU control plan
 - Control plane: Supabase Postgres, Auth, and server-side policy / billing / audit data
 
 Supabase is a good fit here because it gives us managed Postgres plus Auth, and its docs recommend using Row Level Security for database access control. The service role key must stay server-side only.
-The control plane now restores its in-memory registry from Supabase first when the Supabase env is configured, then mirrors registration, heartbeat, job, claim, and completion events into Supabase over HTTP.
+The control plane now restores its in-memory registry from Supabase first when the Supabase env is configured, then mirrors registration, heartbeat, job, claim, and completion events into Supabase over HTTP. The boot-time health/status endpoints report whether the restore came from Supabase or from the local fallback cache.
 
 ## Local Development Env
 

@@ -14,7 +14,7 @@ pub struct ControlPlaneState {
 }
 
 impl ControlPlaneState {
-    pub fn snapshot(&self) -> serde_json::Value {
+    pub fn snapshot(&self, storage_source: &str) -> serde_json::Value {
         let nodes: Vec<NodeRecord> = self.nodes.values().cloned().collect();
         let jobs: Vec<JobRecord> = self.jobs.values().cloned().collect();
         let online_count = nodes
@@ -53,6 +53,7 @@ impl ControlPlaneState {
         serde_json::to_value(ControlPlaneSnapshot {
             nodes,
             jobs,
+            storage_source: storage_source.to_string(),
             online_count,
             paused_count,
             policy_blocked_count,

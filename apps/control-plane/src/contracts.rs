@@ -164,6 +164,7 @@ pub struct NodeRecord {
 pub struct ControlPlaneSnapshot {
     pub nodes: Vec<NodeRecord>,
     pub jobs: Vec<JobRecord>,
+    pub storage_source: String,
     pub online_count: usize,
     pub paused_count: usize,
     pub policy_blocked_count: usize,

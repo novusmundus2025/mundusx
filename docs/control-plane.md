@@ -9,14 +9,14 @@ http://127.0.0.1:8787
 ```
 
 The root URL (`/`) now returns a small HTML health dashboard for browser checks.
-It includes per-node rows so you can see backend, power, battery, policy state, and policy reason directly in the browser.
+It includes per-node rows so you can see backend, power, battery, policy state, policy reason, and the current storage source directly in the browser.
 When `OPENGPU_OPERATOR_TOKEN` is configured, the human-facing routes require a matching bearer token.
 
 ## Prototype Endpoints
 
 - `GET /` - browser-friendly health and status page
-- `GET /health` - health check
-- `GET /v1/status` - return a snapshot of the current registry
+- `GET /health` - JSON health check with the current storage source and snapshot
+- `GET /v1/status` - return a snapshot of the current registry, including the storage source used at boot
 - `GET /v1/nodes` - return the live node list
 - `GET /v1/jobs` - return all known jobs
 - `GET /v1/jobs/next?node_id=...` - claim the next queued job for a node
@@ -99,6 +99,7 @@ The RLS rollout lives at [supabase/migrations/0001_rls.sql](/Users/DBATALL/Docum
 - registration inserts or updates a node record
 - heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy fields
 - when Supabase is configured, startup prefers restoring the registry from Supabase before falling back to local JSON
+- the health endpoint and browser dashboard both show whether the live boot restore came from Supabase or the local fallback cache
 - register/heartbeat/claim/complete requests from agents must carry a valid device signature
 - if `OPENGPU_OPERATOR_TOKEN` is configured, browser/operator routes require a matching bearer token
 - `POST /v1/jobs` queues a job request in local JSON state
@@ -122,6 +123,7 @@ The RLS rollout lives at [supabase/migrations/0001_rls.sql](/Users/DBATALL/Docum
 The root page (`/`) is a quick operator view, not a full dashboard. It shows:
 
 - summary counts
+- storage source used at boot
 - policy-blocked count
 - a per-node table with:
   - node ID
