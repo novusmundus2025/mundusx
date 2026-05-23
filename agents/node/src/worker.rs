@@ -1,4 +1,6 @@
-use crate::contracts::{Backend, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse};
+use crate::contracts::{
+    Backend, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
+};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -57,6 +59,13 @@ fn now_unix_seconds() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+#[derive(Debug, Clone)]
+struct PowerState {
+    source: String,
+    on_battery: bool,
+    battery_percent: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,6 +175,51 @@ fn probe_llama_cli_devices() -> Result<String, String> {
     Ok(stdout)
 }
 
+fn probe_power_state() -> PowerState {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("pmset").args(["-g", "batt"]).output();
+        if let Ok(output) = output {
+            if let Ok(stdout) = String::from_utf8(output.stdout) {
+                let mut source = "unknown".to_string();
+                let mut on_battery = true;
+                let mut battery_percent = None;
+
+                for line in stdout.lines() {
+                    if line.starts_with("Now drawing from") {
+                        source = line
+                            .split_once('\'')
+                            .map(|(_, rest)| rest.trim_matches('\'').to_string())
+                            .unwrap_or_else(|| line.to_string());
+                        on_battery = !source.to_lowercase().contains("ac power");
+                    }
+                    if let Some(percent_text) = line.split('%').next() {
+                        if let Some(token) = percent_text
+                            .split_whitespace()
+                            .rev()
+                            .find(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+                        {
+                            battery_percent = token.parse::<u8>().ok();
+                        }
+                    }
+                }
+
+                return PowerState {
+                    source,
+                    on_battery,
+                    battery_percent,
+                };
+            }
+        }
+    }
+
+    PowerState {
+        source: "unknown".to_string(),
+        on_battery: false,
+        battery_percent: None,
+    }
+}
+
 fn run_llama_command(
     model_path: &Path,
     prompt: &str,
@@ -223,6 +277,7 @@ pub fn probe_worker_health(model_dir: &Path, model_name: Option<&str>) -> Worker
     let mut model_path = None;
     let mut llama_cli_available = false;
     let mut blas_device_available = false;
+    let power_state = probe_power_state();
 
     match resolve_model_path(model_dir, model_name) {
         Ok(path) => model_path = Some(path.display().to_string()),
@@ -249,7 +304,61 @@ pub fn probe_worker_health(model_dir: &Path, model_name: Option<&str>) -> Worker
         model_path,
         llama_cli_available,
         blas_device_available,
+        power_source: power_state.source,
+        on_battery: power_state.on_battery,
+        battery_percent: power_state.battery_percent,
         runtime_mode: "blas".to_string(),
+        checked_at: now_unix_seconds(),
+        notes,
+    }
+}
+
+pub fn probe_worker_policy(
+    health: &WorkerHealthReport,
+    contribution_percent: u8,
+) -> WorkerPolicyReport {
+    let mut notes = Vec::new();
+    let mut reason = None;
+    let mut allowed = true;
+    let recommended_max_contribution_percent;
+
+    if !health.healthy {
+        allowed = false;
+        reason = Some("worker health is degraded".to_string());
+        notes.push("runner health check failed".to_string());
+    }
+
+    if contribution_percent == 0 {
+        allowed = false;
+        reason = Some("contribution percent is unset".to_string());
+        notes.push("set a contribution cap before enabling jobs".to_string());
+    }
+
+    if health.on_battery {
+        recommended_max_contribution_percent = 20;
+        if contribution_percent > 20 {
+            allowed = false;
+            reason = Some("battery power requires contribution percent <= 20".to_string());
+            notes.push("plug in the Mac or lower the cap to 20% or less".to_string());
+        }
+        if let Some(percent) = health.battery_percent {
+            if percent <= 20 {
+                allowed = false;
+                reason = Some("battery too low for active inference".to_string());
+                notes.push("battery level is too low to start work safely".to_string());
+            }
+        }
+    } else {
+        recommended_max_contribution_percent = 100;
+    }
+
+    WorkerPolicyReport {
+        allowed,
+        reason,
+        power_source: health.power_source.clone(),
+        on_battery: health.on_battery,
+        battery_percent: health.battery_percent,
+        recommended_max_contribution_percent,
         checked_at: now_unix_seconds(),
         notes,
     }

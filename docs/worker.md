@@ -45,4 +45,4 @@ The prototype worker:
 
 ## Next Step
 
-The worker health check is now available through `opengpu-agent health`. The next step is to add policy controls around the Mac model runner.
+The worker health check is now available through `opengpu-agent health`. That command also reports whether the current contribution cap and power state permit launching jobs. The next step is to keep extending policy controls around the Mac model runner.

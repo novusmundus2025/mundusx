@@ -7,7 +7,7 @@ mod worker;
 use clap::{Parser, Subcommand};
 use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    WorkerHealthReport, WorkerLaunchRequest,
+    WorkerHealthReport, WorkerLaunchRequest, WorkerPolicyReport,
 };
 use http::{get_json, post_json, post_json_body};
 use identity::{load_identity, DeviceIdentity};
@@ -251,6 +251,14 @@ fn send_heartbeat(config: &AgentConfig, heartbeat: &Heartbeat) {
 
 fn launch_worker_process(config: &AgentConfig, request: WorkerLaunchRequest, json: bool) -> Result<contracts::WorkerLaunchResponse, String> {
     let model_dir = config.effective_model_dir();
+    let health = worker::probe_worker_health(&model_dir, config.active_model.as_deref());
+    let policy = worker::probe_worker_policy(&health, config.contribution_percent);
+    if !policy.allowed {
+        return Err(policy
+            .reason
+            .unwrap_or_else(|| "worker policy denied launch".to_string()));
+    }
+
     match worker::launch_worker(&request, &model_dir) {
         Ok(response) => {
             if json {
@@ -274,11 +282,17 @@ fn launch_worker_process(config: &AgentConfig, request: WorkerLaunchRequest, jso
 }
 
 fn print_worker_health(config: &AgentConfig, json: bool) {
+    let model_dir = config.effective_model_dir();
     let health: WorkerHealthReport =
-        worker::probe_worker_health(&config.effective_model_dir(), config.active_model.as_deref());
+        worker::probe_worker_health(&model_dir, config.active_model.as_deref());
+    let policy: WorkerPolicyReport = worker::probe_worker_policy(&health, config.contribution_percent);
 
     if json {
-        emit_json_line(&health);
+        let payload = serde_json::json!({
+            "health": health,
+            "policy": policy,
+        });
+        emit_json_line(&payload);
         return;
     }
 
@@ -303,11 +317,37 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
         "blasDeviceAvailable: {}",
         if health.blas_device_available { "yes" } else { "no" }
     );
+    println!("powerSource: {}", health.power_source);
+    println!("onBattery: {}", if health.on_battery { "yes" } else { "no" });
+    println!(
+        "batteryPercent: {}",
+        health
+            .battery_percent
+            .map(|value| format!("{value}%"))
+            .unwrap_or_else(|| "unknown".to_string())
+    );
     println!("runtimeMode: {}", health.runtime_mode);
     println!("checkedAt: {}", health.checked_at);
+    println!(
+        "policyAllowed: {}",
+        if policy.allowed { "yes" } else { "no" }
+    );
+    println!(
+        "policyRecommendedMaxContributionPercent: {}%",
+        policy.recommended_max_contribution_percent
+    );
+    if let Some(reason) = policy.reason.as_ref() {
+        println!("policyReason: {}", reason);
+    }
     if !health.notes.is_empty() {
         println!("notes:");
         for note in health.notes {
+            println!("  - {}", note);
+        }
+    }
+    if !policy.notes.is_empty() {
+        println!("policyNotes:");
+        for note in policy.notes {
             println!("  - {}", note);
         }
     }
@@ -332,6 +372,31 @@ fn complete_job(config: &AgentConfig, completion: &JobCompletion) {
 }
 
 fn process_pending_job(config: &AgentConfig, json: bool) {
+    let model_dir = config.effective_model_dir();
+    let health = worker::probe_worker_health(&model_dir, config.active_model.as_deref());
+    let policy = worker::probe_worker_policy(&health, config.contribution_percent);
+    if !policy.allowed {
+        println!(
+            "jobPoll: skipped ({})",
+            policy
+                .reason
+                .as_deref()
+                .unwrap_or("policy denied launch")
+        );
+        let policy_heartbeat = build_heartbeat_with_state(
+            config,
+            if policy.on_battery {
+                AgentState::Paused
+            } else {
+                resolved_state(config)
+            },
+        );
+        let _ = save_agent_state(&policy_heartbeat);
+        let _ = save_heartbeat(&policy_heartbeat);
+        send_heartbeat(config, &policy_heartbeat);
+        return;
+    }
+
     println!("jobPoll: checking control plane");
     let Some(job) = claim_next_job(config) else {
         println!("jobPoll: none");

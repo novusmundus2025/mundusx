@@ -10,7 +10,7 @@ The node agent is the background service that lives on a provider machine.
 - `opengpu-agent heartbeat` - print one heartbeat payload
 - `opengpu-agent launch-worker` - spawn the local worker process and print its result
 - `opengpu-agent status` - show agent state and the last heartbeat saved locally
-- `opengpu-agent health` - check whether the Mac worker runtime, device list, and cached model are ready
+- `opengpu-agent health` - check whether the Mac worker runtime, device list, cached model, and policy state are ready
 - `opengpu-agent stop` - write a paused/offline state and exit
 
 ## What It Reuses
@@ -46,7 +46,7 @@ The prototype agent:
 
 ## Next Step
 
-The next step is to extend the health check into policy controls around the real `M` model runner.
+The next step is to connect the health check to live contribution limits and any future pause/resume policy.
 
 ## Local Development URL
 
@@ -59,3 +59,7 @@ opengpu config set control-plane-url http://127.0.0.1:8787
 The prototype agent does not speak TLS yet, so `https://` URLs will be rejected with a helpful error.
 
 For contributor-side model switching and cleanup rules, see [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md).
+
+## Policy Controls
+
+The health command now reports a policy result in addition to runtime health. If the model cache is missing, `llama-cli` is unavailable, the Mac worker is on battery with too high a contribution cap, or the contribution cap has not been set yet, the agent will skip job claims and report `policyAllowed: no`.

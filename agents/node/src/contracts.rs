@@ -173,7 +173,22 @@ pub struct WorkerHealthReport {
     pub model_path: Option<String>,
     pub llama_cli_available: bool,
     pub blas_device_available: bool,
+    pub power_source: String,
+    pub on_battery: bool,
+    pub battery_percent: Option<u8>,
     pub runtime_mode: String,
+    pub checked_at: String,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerPolicyReport {
+    pub allowed: bool,
+    pub reason: Option<String>,
+    pub power_source: String,
+    pub on_battery: bool,
+    pub battery_percent: Option<u8>,
+    pub recommended_max_contribution_percent: u8,
     pub checked_at: String,
     pub notes: Vec<String>,
 }
