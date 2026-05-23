@@ -36,7 +36,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Operator auth for control-plane users
 - [x] Job submission and tracking
 - [ ] Durable state store
-- [ ] Supabase schema and RLS rollout
+- [ ] Supabase restore path verification and RLS rollout
 - [x] Agent / worker contract defined in proto and CLI types
 
 ## Node Agent Phase

@@ -794,7 +794,23 @@ fn main() {
     load_local_env();
     let supabase = SupabaseMirror::from_env();
     let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
-    let state = Arc::new(Mutex::new(load_state().ok().flatten().unwrap_or_default()));
+    let restored_state = match supabase.as_ref() {
+        Some(db) => match db.restore_state() {
+            Ok(state) => {
+                println!("restore: supabase");
+                state
+            }
+            Err(error) => {
+                eprintln!("supabase restore skipped: {error}");
+                load_state().ok().flatten().unwrap_or_default()
+            }
+        },
+        None => {
+            println!("restore: local-json");
+            load_state().ok().flatten().unwrap_or_default()
+        }
+    };
+    let state = Arc::new(Mutex::new(restored_state));
 
     println!("OpenGPU control plane listening on http://127.0.0.1:8787");
     println!("supabase: {}", SupabaseMirror::startup_status());

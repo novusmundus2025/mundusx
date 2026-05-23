@@ -90,4 +90,5 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints
 - [docs/supabase-schema.md](/Users/DBATALL/Documents/aigrid/docs/supabase-schema.md) for the company-side Supabase schema sketch
 - [supabase/schema.sql](/Users/DBATALL/Documents/aigrid/supabase/schema.sql) for the SQL you apply in Supabase
+- [supabase/migrations/0001_rls.sql](/Users/DBATALL/Documents/aigrid/supabase/migrations/0001_rls.sql) for the RLS rollout
 - [docs/worker.md](/Users/DBATALL/Documents/aigrid/docs/worker.md) for the current worker prototype and launch contract

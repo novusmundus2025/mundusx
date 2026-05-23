@@ -1,4 +1,5 @@
-use crate::contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRecord};
+use crate::contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRecord, NodeRecord};
+use crate::state::ControlPlaneState;
 use serde_json::json;
 use std::env;
 use std::io::Write;
@@ -29,6 +30,20 @@ impl SupabaseMirror {
             Some(mirror) => format!("enabled ({})", mirror.base_url),
             None => "disabled".to_string(),
         }
+    }
+
+    pub fn restore_state(&self) -> Result<ControlPlaneState, String> {
+        let devices: Vec<NodeRecord> = self.fetch_json("devices?select=*")?;
+        let jobs: Vec<JobRecord> = self.fetch_json("jobs?select=*")?;
+
+        let mut state = ControlPlaneState::default();
+        for device in devices {
+            state.nodes.insert(device.node_id.clone(), device);
+        }
+        for job in jobs {
+            state.jobs.insert(job.job_id.clone(), job);
+        }
+        Ok(state)
     }
 
     pub fn record_registration(&self, registration: &AgentRegistration) -> Result<(), String> {
@@ -303,6 +318,53 @@ impl SupabaseMirror {
         } else {
             format!("supabase sync failed: {details}")
         })
+    }
+
+    fn fetch_json<T>(&self, path: &str) -> Result<T, String>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let mut command = Command::new("curl");
+        command.arg("--silent");
+        command.arg("--show-error");
+        command.arg("--fail");
+        command.arg("--request");
+        command.arg("GET");
+        command.arg("--header");
+        command.arg(format!("apikey: {}", self.api_key));
+        command.arg("--header");
+        command.arg(format!("Authorization: Bearer {}", self.api_key));
+        command.arg("--header");
+        command.arg("Content-Type: application/json");
+        command.arg("--header");
+        command.arg("Accept: application/json");
+        command.arg(format!("{}/rest/v1/{}", self.base_url, path));
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+
+        let output = command
+            .output()
+            .map_err(|error| format!("failed to start curl: {error}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let details = if stderr.is_empty() {
+                stdout
+            } else if stdout.is_empty() {
+                stderr
+            } else {
+                format!("{stderr}: {stdout}")
+            };
+            return Err(if details.is_empty() {
+                "supabase fetch failed".to_string()
+            } else {
+                format!("supabase fetch failed: {details}")
+            });
+        }
+
+        serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("failed to parse supabase response: {error}"))
     }
 }
 

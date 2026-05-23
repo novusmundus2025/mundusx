@@ -57,17 +57,18 @@ POST /v1/jobs/complete
 
 ## Current Storage Model
 
-The prototype keeps its state in a local JSON file, and mirrors the same events into Supabase over HTTP when the Supabase env is configured:
+The prototype restores its in-memory registry from Supabase first when the Supabase env is configured, then mirrors the same events into Supabase over HTTP:
 
 - `~/.opengpu-control-plane/state.json`
 
-or, if configured:
+or, if configured as a local fallback cache:
 
 - `OPENGPU_CONTROL_PLANE_HOME/state.json`
 - `OPENGPU_HOME/state.json`
 
-If Supabase is not configured, the local JSON state remains the fallback.
+If Supabase is not configured, the local JSON state remains the fallback cache.
 The applied SQL schema lives at [supabase/schema.sql](/Users/DBATALL/Documents/aigrid/supabase/schema.sql).
+The RLS rollout lives at [supabase/migrations/0001_rls.sql](/Users/DBATALL/Documents/aigrid/supabase/migrations/0001_rls.sql).
 
 ## What The State Contains
 
@@ -97,6 +98,7 @@ The applied SQL schema lives at [supabase/schema.sql](/Users/DBATALL/Documents/a
 
 - registration inserts or updates a node record
 - heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy fields
+- when Supabase is configured, startup prefers restoring the registry from Supabase before falling back to local JSON
 - register/heartbeat/claim/complete requests from agents must carry a valid device signature
 - if `OPENGPU_OPERATOR_TOKEN` is configured, browser/operator routes require a matching bearer token
 - `POST /v1/jobs` queues a job request in local JSON state

@@ -8,7 +8,7 @@ This page sketches the company-side database schema for the OpenGPU control plan
 - Control plane: Supabase Postgres, Auth, and server-side policy / billing / audit data
 
 Supabase is a good fit here because it gives us managed Postgres plus Auth, and its docs recommend using Row Level Security for database access control. The service role key must stay server-side only.
-The control plane now mirrors registration, heartbeat, job, claim, and completion events into Supabase over HTTP when the Supabase env is configured.
+The control plane now restores its in-memory registry from Supabase first when the Supabase env is configured, then mirrors registration, heartbeat, job, claim, and completion events into Supabase over HTTP.
 
 ## Local Development Env
 
@@ -21,8 +21,9 @@ SUPABASE_SERVICE_ROLE_KEY=[YOUR-SERVICE-ROLE-KEY]
 
 The control plane derives `SUPABASE_URL` from `DATABASE_URL` when needed, or you can set `SUPABASE_URL` directly.
 `DATABASE_URL` is only used as a local helper here. We are not relying on `psql`.
-If Supabase is not configured, the control plane keeps using local JSON as a fallback and logs the sync skip.
+If Supabase is not configured, the control plane keeps using local JSON as a fallback cache and logs the sync skip.
 The executable schema lives in [supabase/schema.sql](/Users/DBATALL/Documents/aigrid/supabase/schema.sql).
+The RLS rollout lives in [supabase/migrations/0001_rls.sql](/Users/DBATALL/Documents/aigrid/supabase/migrations/0001_rls.sql).
 
 ## Core Tables
 
@@ -157,10 +158,10 @@ Suggested columns:
 
 ## RLS Guidance
 
-- Enable Row Level Security on exposed tables when we move beyond the prototype mirror.
-- Use authenticated-user policies for user-owned tables.
+- Enable Row Level Security on all exposed tables.
 - Keep service-role access server-side only.
-- Use the service role for scheduler / agent / billing automation.
+- Do not expose the service role to the browser or contributor machines.
+- Add authenticated-user policies only when the dashboard and billing paths need direct browser access.
 
 ## Suggested MVP Order
 
