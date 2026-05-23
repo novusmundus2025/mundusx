@@ -21,9 +21,14 @@ This document tracks the next concrete implementation steps after the current Ma
    - capture state transitions in `job_events`
    - preserve a durable history of claims, completions, and failures
 
+5. **Move device identity into OS secure storage**
+   - keep the private key non-exportable
+   - reuse the same device identity across reinstall and OS updates
+   - preserve the current file-backed prototype only as a dev fallback
+
 ## Why These Are Pending
 
- - The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with RLS and migrations.
+- The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with RLS and migrations.
 - We need the Supabase backend to be the primary source of truth before public rollout.
 - Supabase is the chosen path for that durable backend.
 

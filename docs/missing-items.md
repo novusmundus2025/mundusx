@@ -14,6 +14,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Config setter commands
 - [x] Contribution cap config
 - [x] Device identity keypair reuse
+- [ ] Non-exportable device key storage in OS secure storage
 - [x] Start-first onboarding flow
 - [x] Friendly exit command
 - [x] Reviewable official model catalog config
