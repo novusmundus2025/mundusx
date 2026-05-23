@@ -436,6 +436,18 @@ fn handle_connection(
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
                 }
+                if let Some(db) = supabase.as_ref() {
+                    if let Some(job) = claim.job.as_ref() {
+                        if let Err(error) = db.record_job_event(
+                            Some(node_id),
+                            Some(&job.job_id),
+                            "job_claimed",
+                            serde_json::to_value(job).expect("json"),
+                        ) {
+                            eprintln!("database claim sync skipped: {error}");
+                        }
+                    }
+                }
                 json_response("200 OK", serde_json::to_value(claim).expect("json"))
             } else {
                 text_response("400 Bad Request", "missing node_id")
@@ -452,6 +464,14 @@ fn handle_connection(
                 if let Some(db) = supabase.as_ref() {
                     if let Err(error) = db.record_registration(&registration_clone) {
                         eprintln!("database registration sync skipped: {error}");
+                    }
+                    if let Err(error) = db.record_job_event(
+                        Some(&record.node_id),
+                        None,
+                        "registration",
+                        serde_json::to_value(&record).expect("json"),
+                    ) {
+                        eprintln!("database registration event skipped: {error}");
                     }
                 }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
@@ -473,6 +493,14 @@ fn handle_connection(
                     if let Err(error) = db.record_heartbeat(&heartbeat_clone) {
                         eprintln!("database heartbeat sync skipped: {error}");
                     }
+                    if let Err(error) = db.record_job_event(
+                        Some(&record.node_id),
+                        None,
+                        "heartbeat",
+                        serde_json::to_value(&record).expect("json"),
+                    ) {
+                        eprintln!("database heartbeat event skipped: {error}");
+                    }
                 }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
             }
@@ -491,6 +519,14 @@ fn handle_connection(
                 if let Some(db) = supabase.as_ref() {
                     if let Err(error) = db.record_job(&record) {
                         eprintln!("database job sync skipped: {error}");
+                    }
+                    if let Err(error) = db.record_job_event(
+                        None,
+                        Some(&record.job_id),
+                        "job_submitted",
+                        serde_json::to_value(&record).expect("json"),
+                    ) {
+                        eprintln!("database job event skipped: {error}");
                     }
                 }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
@@ -539,16 +575,11 @@ fn handle_connection(
 fn main() {
     load_local_env();
     let supabase = SupabaseMirror::from_env();
-    if let Some(db) = supabase.as_ref() {
-        if let Err(error) = db.ensure_schema() {
-            eprintln!("database schema sync skipped: {error}");
-        }
-    }
     let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
     let state = Arc::new(Mutex::new(load_state().ok().flatten().unwrap_or_default()));
 
     println!("OpenGPU control plane listening on http://127.0.0.1:8787");
-    println!("database: {}", SupabaseMirror::startup_status());
+    println!("supabase: {}", SupabaseMirror::startup_status());
     println!("home: GET /");
     println!("health: GET /health");
     println!("status: GET /v1/status");

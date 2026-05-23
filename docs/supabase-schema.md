@@ -8,18 +8,21 @@ This page sketches the company-side database schema for the OpenGPU control plan
 - Control plane: Supabase Postgres, Auth, and server-side policy / billing / audit data
 
 Supabase is a good fit here because it gives us managed Postgres plus Auth, and its docs recommend using Row Level Security for database access control. The service role key must stay server-side only.
-The control plane mirrors registration, heartbeat, job, and completion events into Supabase when `DATABASE_URL` is present and the local `psql` client is available.
+The control plane now mirrors registration, heartbeat, job, claim, and completion events into Supabase over HTTP when the Supabase env is configured.
 
 ## Local Development Env
 
-Put the connection string in a repo-root `.env` file so the control plane can load it locally:
+Put the connection details in a repo-root `.env` file so the control plane can load them locally:
 
 ```bash
 DATABASE_URL=postgresql://postgres.yjlvhhouncxhjkghnwyj:[YOUR-PASSWORD]@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
+SUPABASE_SERVICE_ROLE_KEY=[YOUR-SERVICE-ROLE-KEY]
 ```
 
-The control plane reads `DATABASE_URL` at startup and reports whether it is configured, so you can verify the env is loaded before we wire the actual Supabase client.
-If `psql` is not installed locally, the control plane keeps using local JSON as a fallback and logs the Supabase sync skip.
+The control plane derives `SUPABASE_URL` from `DATABASE_URL` when needed, or you can set `SUPABASE_URL` directly.
+`DATABASE_URL` is only used as a local helper here. We are not relying on `psql`.
+If Supabase is not configured, the control plane keeps using local JSON as a fallback and logs the sync skip.
+The executable schema lives in [supabase/schema.sql](/Users/DBATALL/Documents/aigrid/supabase/schema.sql).
 
 ## Core Tables
 
@@ -42,9 +45,8 @@ One row per contributor machine.
 
 Suggested columns:
 
-- `id` UUID primary key
+- `node_id` text primary key
 - `user_id` UUID references `users.id`
-- `node_id` text unique
 - `public_key_fingerprint` text unique
 - `backend` text
 - `contribution_percent` integer
@@ -55,7 +57,9 @@ Suggested columns:
 - `policy_reason` text nullable
 - `agent_version` text
 - `state` text
-- `last_seen_at` timestamptz
+- `available_memory_mb` integer
+- `available_gpu_percent` integer
+- `last_seen_at_epoch` bigint
 - `created_at` timestamptz
 - `updated_at` timestamptz
 
@@ -65,8 +69,8 @@ Append-only log of agent updates.
 
 Suggested columns:
 
-- `id` UUID primary key
-- `device_id` UUID references `devices.id`
+- `id` bigint identity primary key
+- `node_id` text references `devices.node_id`
 - `backend` text
 - `agent_state` text
 - `available_memory_mb` integer
@@ -77,7 +81,7 @@ Suggested columns:
 - `battery_percent` integer nullable
 - `policy_allowed` boolean
 - `policy_reason` text nullable
-- `updated_at` timestamptz
+- `observed_at_epoch` bigint
 - `created_at` timestamptz
 
 ### `jobs`
@@ -86,32 +90,33 @@ One row per submitted request.
 
 Suggested columns:
 
-- `id` UUID primary key
+- `job_id` text primary key
 - `request_id` text unique
 - `user_id` UUID references `users.id`
 - `prompt` text
 - `preferred_backend` text
 - `model` text nullable
 - `status` text
-- `assigned_device_id` UUID nullable references `devices.id`
+- `assigned_node_id` text nullable references `devices.node_id`
 - `worker_id` text nullable
 - `backend` text nullable
 - `output` text nullable
 - `error` text nullable
-- `submitted_at` timestamptz
-- `assigned_at` timestamptz nullable
-- `completed_at` timestamptz nullable
+- `submitted_at_epoch` bigint
+- `assigned_at_epoch` bigint nullable
+- `completed_at_epoch` bigint nullable
 - `created_at` timestamptz
 - `updated_at` timestamptz
 
 ### `job_events`
 
-Append-only audit trail for job lifecycle changes.
+Append-only audit trail for node and job lifecycle changes.
 
 Suggested columns:
 
-- `id` UUID primary key
-- `job_id` UUID references `jobs.id`
+- `id` bigint identity primary key
+- `node_id` text nullable references `devices.node_id`
+- `job_id` text nullable references `jobs.job_id`
 - `event_type` text
 - `payload` jsonb
 - `created_at` timestamptz
@@ -139,8 +144,8 @@ Suggested columns:
 
 - `id` UUID primary key
 - `user_id` UUID references `users.id`
-- `device_id` UUID nullable references `devices.id`
-- `job_id` UUID nullable references `jobs.id`
+- `device_id` text nullable references `devices.node_id`
+- `job_id` text nullable references `jobs.job_id`
 - `entry_type` text
 - `amount` numeric
 - `currency` text
@@ -149,19 +154,19 @@ Suggested columns:
 
 ## RLS Guidance
 
-- Enable Row Level Security on exposed tables.
+- Enable Row Level Security on exposed tables when we move beyond the prototype mirror.
 - Use authenticated-user policies for user-owned tables.
 - Keep service-role access server-side only.
 - Use the service role for scheduler / agent / billing automation.
 
 ## Suggested MVP Order
 
-1. `users`
-2. `devices`
+1. `devices`
+2. `heartbeats`
 3. `jobs`
-4. `heartbeats`
-5. `job_events`
-6. `policy_rules`
+4. `job_events`
+5. `policy_rules`
+6. `users`
 7. `credits_ledger`
 
 ## What This Is For

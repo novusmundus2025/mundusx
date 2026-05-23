@@ -4,10 +4,10 @@ This document tracks the next concrete implementation steps after the current Ma
 
 ## Next Up
 
-1. **Finish the Supabase-backed control plane migration**
-   - replace the local JSON fallback as the primary source of truth
-   - keep nodes, heartbeats, jobs, and policy state durable in Postgres
-   - add the real Supabase client flow instead of the current mirror path
+1. **Finish the Supabase-backed control plane rollout**
+   - keep nodes, heartbeats, jobs, and policy state durable in Supabase
+   - apply the checked-in schema in the Supabase SQL editor
+   - make Supabase the primary source of truth once auth and RLS are in place
 
 2. **Add auth for control-plane users and devices**
    - admin / operator login
@@ -24,8 +24,8 @@ This document tracks the next concrete implementation steps after the current Ma
 
 ## Why These Are Pending
 
-- The local control-plane prototype works, but it still resets on restart unless Supabase sync is available.
-- We need a durable company-side source of truth before public rollout.
+- The local control-plane prototype works, but the durable company-side source of truth is still not fully locked down with auth and RLS.
+- We need the Supabase backend to be the primary source of truth before public rollout.
 - Supabase is the chosen path for that durable backend.
 
 ## How To Use This Doc

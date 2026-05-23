@@ -1,362 +1,348 @@
-use crate::contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRecord, JobStatus};
-use serde_json::Value;
+use crate::contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRecord};
+use serde_json::json;
 use std::env;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Clone, Debug)]
 pub struct SupabaseMirror {
-    database_url: String,
+    base_url: String,
+    api_key: String,
 }
 
 impl SupabaseMirror {
     pub fn from_env() -> Option<Self> {
-        let database_url = env::var("DATABASE_URL").ok()?;
-        if database_url.contains("[YOUR-PASSWORD]") || database_url.contains("YOUR-PASSWORD") {
-            return None;
+        let api_key = env::var("SUPABASE_SERVICE_ROLE_KEY").ok()?;
+        let base_url = env::var("SUPABASE_URL")
+            .ok()
+            .or_else(|| env::var("DATABASE_URL").ok().and_then(|url| derive_supabase_url(&url)))?;
+
+        Some(Self {
+            base_url: trim_trailing_slash(&base_url),
+            api_key,
+        })
+    }
+
+    pub fn startup_status() -> String {
+        match Self::from_env() {
+            Some(mirror) => format!("enabled ({})", mirror.base_url),
+            None => "disabled".to_string(),
         }
-        Some(Self { database_url })
-    }
-
-    pub fn startup_status() -> &'static str {
-        match env::var("DATABASE_URL") {
-            Ok(value) if value.contains("[YOUR-PASSWORD]") || value.contains("YOUR-PASSWORD") => {
-                "placeholder"
-            }
-            Ok(_) => {
-                if Self::psql_available() {
-                    "configured"
-                } else {
-                    "configured (psql missing)"
-                }
-            }
-            Err(_) => "not configured",
-        }
-    }
-
-    fn psql_available() -> bool {
-        Command::new("sh")
-            .args(["-lc", "command -v psql >/dev/null 2>&1"])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
-
-    fn quote(value: &str) -> String {
-        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
-    }
-
-    fn quote_opt(value: Option<&str>) -> String {
-        value.map(Self::quote).unwrap_or_else(|| "NULL".to_string())
-    }
-
-    fn bool_sql(value: bool) -> &'static str {
-        if value {
-            "TRUE"
-        } else {
-            "FALSE"
-        }
-    }
-
-    fn int_sql<T: ToString>(value: T) -> String {
-        value.to_string()
-    }
-
-    fn ts_expr(epoch: &str) -> String {
-        if epoch.parse::<f64>().is_ok() {
-            format!("to_timestamp({epoch})")
-        } else {
-            "now()".to_string()
-        }
-    }
-
-    fn json_sql(value: &Value) -> String {
-        Self::quote(&value.to_string()) + "::jsonb"
-    }
-
-    fn run_sql(&self, sql: &str) -> Result<(), String> {
-        if !Self::psql_available() {
-            return Err("psql client is not installed".to_string());
-        }
-
-        let mut child = Command::new("psql")
-            .env("DATABASE_URL", &self.database_url)
-            .args(["-v", "ON_ERROR_STOP=1", "-X", "-qAt", "-f", "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| error.to_string())?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(sql.as_bytes())
-                .map_err(|error| error.to_string())?;
-        }
-
-        let output = child.wait_with_output().map_err(|error| error.to_string())?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-        }
-    }
-
-    pub fn ensure_schema(&self) -> Result<(), String> {
-        self.run_sql(
-            r#"
-CREATE TABLE IF NOT EXISTS devices (
-    node_id text PRIMARY KEY,
-    public_key_fingerprint text UNIQUE NOT NULL,
-    user_id text,
-    backend text NOT NULL,
-    contribution_percent integer NOT NULL,
-    power_source text NOT NULL,
-    on_battery boolean NOT NULL,
-    battery_percent integer,
-    policy_allowed boolean NOT NULL,
-    policy_reason text,
-    agent_version text NOT NULL,
-    state text NOT NULL,
-    last_seen_at timestamptz NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS heartbeats (
-    id bigserial PRIMARY KEY,
-    node_id text NOT NULL REFERENCES devices(node_id) ON DELETE CASCADE,
-    backend text NOT NULL,
-    agent_state text NOT NULL,
-    available_memory_mb integer NOT NULL,
-    available_gpu_percent integer NOT NULL,
-    contribution_percent integer NOT NULL,
-    power_source text NOT NULL,
-    on_battery boolean NOT NULL,
-    battery_percent integer,
-    policy_allowed boolean NOT NULL,
-    policy_reason text,
-    updated_at timestamptz NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    job_id text PRIMARY KEY,
-    request_id text UNIQUE NOT NULL,
-    user_id text,
-    prompt text NOT NULL,
-    preferred_backend text NOT NULL,
-    model text,
-    status text NOT NULL,
-    assigned_node_id text REFERENCES devices(node_id),
-    worker_id text,
-    backend text,
-    output text,
-    error text,
-    submitted_at timestamptz NOT NULL,
-    assigned_at timestamptz,
-    completed_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS job_events (
-    id bigserial PRIMARY KEY,
-    job_id text NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
-    event_type text NOT NULL,
-    payload jsonb NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS policy_rules (
-    id bigserial PRIMARY KEY,
-    name text UNIQUE NOT NULL,
-    enabled boolean NOT NULL,
-    rule_type text NOT NULL,
-    rule_config jsonb NOT NULL,
-    description text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS credits_ledger (
-    id bigserial PRIMARY KEY,
-    user_id text,
-    device_id text,
-    job_id text,
-    entry_type text NOT NULL,
-    amount numeric NOT NULL,
-    currency text NOT NULL,
-    metadata jsonb NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-"#,
-        )
     }
 
     pub fn record_registration(&self, registration: &AgentRegistration) -> Result<(), String> {
-        let sql = format!(
-            r#"
-INSERT INTO devices (
-    node_id, public_key_fingerprint, backend, contribution_percent, power_source,
-    on_battery, battery_percent, policy_allowed, policy_reason, agent_version,
-    state, last_seen_at, updated_at
-) VALUES (
-    {node_id}, {fingerprint}, {backend}, {contribution}, 'unknown',
-    FALSE, NULL, TRUE, NULL, {version},
-    'starting', now(), now()
-)
-ON CONFLICT (node_id) DO UPDATE SET
-    public_key_fingerprint = EXCLUDED.public_key_fingerprint,
-    backend = EXCLUDED.backend,
-    contribution_percent = EXCLUDED.contribution_percent,
-    agent_version = EXCLUDED.agent_version,
-    state = EXCLUDED.state,
-    updated_at = now();
-"#,
-            node_id = Self::quote(&registration.node_id),
-            fingerprint = Self::quote(&registration.public_key_fingerprint),
-            backend = Self::quote(registration.backend.as_str()),
-            contribution = Self::int_sql(registration.contribution_percent),
-            version = Self::quote(&registration.agent_version),
-        );
-        self.run_sql(&sql)
+        let now = now_epoch();
+        let payload = json!({
+            "node_id": registration.node_id,
+            "public_key_fingerprint": registration.public_key_fingerprint,
+            "backend": registration.backend,
+            "contribution_percent": registration.contribution_percent,
+            "agent_version": registration.agent_version,
+            "state": "starting",
+            "available_memory_mb": 0_u64,
+            "available_gpu_percent": 0_u64,
+            "power_source": "unknown",
+            "on_battery": false,
+            "battery_percent": null,
+            "policy_allowed": false,
+            "policy_reason": null,
+            "last_seen_at_epoch": now,
+            "updated_at_epoch": now,
+        });
+
+        self.post_json(
+            "devices",
+            Some("node_id"),
+            "resolution=merge-duplicates,return=minimal",
+            payload,
+        )
     }
 
     pub fn record_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), String> {
-        let sql = format!(
-            r#"
-INSERT INTO devices (
-    node_id, public_key_fingerprint, backend, contribution_percent, power_source,
-    on_battery, battery_percent, policy_allowed, policy_reason, agent_version,
-    state, last_seen_at, updated_at
-) VALUES (
-    {node_id}, COALESCE((SELECT public_key_fingerprint FROM devices WHERE node_id = {node_id}), ''),
-    {backend}, {contribution}, {power_source},
-    {on_battery}, {battery_percent}, {policy_allowed}, {policy_reason}, COALESCE((SELECT agent_version FROM devices WHERE node_id = {node_id}), '0.1.0'),
-    {agent_state}, {updated_at}, now()
-)
-ON CONFLICT (node_id) DO UPDATE SET
-    backend = EXCLUDED.backend,
-    contribution_percent = EXCLUDED.contribution_percent,
-    power_source = EXCLUDED.power_source,
-    on_battery = EXCLUDED.on_battery,
-    battery_percent = EXCLUDED.battery_percent,
-    policy_allowed = EXCLUDED.policy_allowed,
-    policy_reason = EXCLUDED.policy_reason,
-    state = EXCLUDED.state,
-    last_seen_at = EXCLUDED.last_seen_at,
-    updated_at = now();
+        let now = parse_epoch(&heartbeat.updated_at).unwrap_or_else(now_epoch);
+        let payload = json!({
+            "node_id": heartbeat.node_id,
+            "backend": heartbeat.backend,
+            "state": heartbeat.agent_state,
+            "available_memory_mb": heartbeat.available_memory_mb,
+            "available_gpu_percent": heartbeat.available_gpu_percent,
+            "contribution_percent": heartbeat.contribution_percent,
+            "power_source": heartbeat.power_source,
+            "on_battery": heartbeat.on_battery,
+            "battery_percent": heartbeat.battery_percent,
+            "policy_allowed": heartbeat.policy_allowed,
+            "policy_reason": heartbeat.policy_reason,
+            "last_seen_at_epoch": now,
+            "updated_at_epoch": now,
+        });
 
-INSERT INTO heartbeats (
-    node_id, backend, agent_state, available_memory_mb, available_gpu_percent,
-    contribution_percent, power_source, on_battery, battery_percent,
-    policy_allowed, policy_reason, updated_at
-) VALUES (
-    {node_id}, {backend}, {agent_state}, {available_memory_mb}, {available_gpu_percent},
-    {contribution}, {power_source}, {on_battery}, {battery_percent},
-    {policy_allowed}, {policy_reason}, {updated_at_ts}
-);
-"#,
-            node_id = Self::quote(&heartbeat.node_id),
-            backend = Self::quote(heartbeat.backend.as_str()),
-            contribution = Self::int_sql(heartbeat.contribution_percent),
-            power_source = Self::quote(&heartbeat.power_source),
-            on_battery = Self::bool_sql(heartbeat.on_battery),
-            battery_percent = heartbeat
-                .battery_percent
-                .map(Self::int_sql)
-                .unwrap_or_else(|| "NULL".to_string()),
-            policy_allowed = Self::bool_sql(heartbeat.policy_allowed),
-            policy_reason = Self::quote_opt(heartbeat.policy_reason.as_deref()),
-            agent_state = Self::quote(heartbeat.agent_state.as_str()),
-            available_memory_mb = Self::int_sql(heartbeat.available_memory_mb),
-            available_gpu_percent = Self::int_sql(heartbeat.available_gpu_percent),
-            updated_at = Self::ts_expr(&heartbeat.updated_at),
-            updated_at_ts = Self::ts_expr(&heartbeat.updated_at),
-        );
-        self.run_sql(&sql)
+        self.post_json(
+            "devices",
+            Some("node_id"),
+            "resolution=merge-duplicates,return=minimal",
+            payload,
+        )?;
+
+        let heartbeat_row = json!({
+            "node_id": heartbeat.node_id,
+            "backend": heartbeat.backend,
+            "agent_state": heartbeat.agent_state,
+            "available_memory_mb": heartbeat.available_memory_mb,
+            "available_gpu_percent": heartbeat.available_gpu_percent,
+            "contribution_percent": heartbeat.contribution_percent,
+            "power_source": heartbeat.power_source,
+            "on_battery": heartbeat.on_battery,
+            "battery_percent": heartbeat.battery_percent,
+            "policy_allowed": heartbeat.policy_allowed,
+            "policy_reason": heartbeat.policy_reason,
+            "observed_at_epoch": now,
+        });
+
+        self.post_json(
+            "heartbeats",
+            None,
+            "return=minimal",
+            heartbeat_row,
+        )?;
+
+        let heartbeat_payload = json!({
+            "node_id": heartbeat.node_id,
+            "backend": heartbeat.backend,
+            "agent_state": heartbeat.agent_state,
+            "available_memory_mb": heartbeat.available_memory_mb,
+            "available_gpu_percent": heartbeat.available_gpu_percent,
+            "contribution_percent": heartbeat.contribution_percent,
+            "power_source": heartbeat.power_source,
+            "on_battery": heartbeat.on_battery,
+            "battery_percent": heartbeat.battery_percent,
+            "policy_allowed": heartbeat.policy_allowed,
+            "policy_reason": heartbeat.policy_reason,
+            "observed_at_epoch": now,
+        });
+
+        self.insert_event(Some(&heartbeat.node_id), None, "heartbeat", heartbeat_payload)
     }
 
     pub fn record_job(&self, job: &JobRecord) -> Result<(), String> {
-        let sql = format!(
-            r#"
-INSERT INTO jobs (
-    job_id, request_id, prompt, preferred_backend, model, status,
-    assigned_node_id, worker_id, backend, output, error,
-    submitted_at, assigned_at, completed_at, updated_at
-) VALUES (
-    {job_id}, {request_id}, {prompt}, {preferred_backend}, {model}, {status},
-    {assigned_node_id}, {worker_id}, {backend}, {output}, {error},
-    {submitted_at}, {assigned_at}, {completed_at}, now()
-)
-ON CONFLICT (job_id) DO UPDATE SET
-    request_id = EXCLUDED.request_id,
-    prompt = EXCLUDED.prompt,
-    preferred_backend = EXCLUDED.preferred_backend,
-    model = EXCLUDED.model,
-    status = EXCLUDED.status,
-    assigned_node_id = EXCLUDED.assigned_node_id,
-    worker_id = EXCLUDED.worker_id,
-    backend = EXCLUDED.backend,
-    output = EXCLUDED.output,
-    error = EXCLUDED.error,
-    submitted_at = EXCLUDED.submitted_at,
-    assigned_at = EXCLUDED.assigned_at,
-    completed_at = EXCLUDED.completed_at,
-    updated_at = now();
-"#,
-            job_id = Self::quote(&job.job_id),
-            request_id = Self::quote(&job.request_id),
-            prompt = Self::quote(&job.prompt),
-            preferred_backend = Self::quote(job.preferred_backend.as_str()),
-            model = Self::quote_opt(job.model.as_deref()),
-            status = Self::quote(match job.status {
-                JobStatus::Queued => "queued",
-                JobStatus::Assigned => "assigned",
-                JobStatus::Completed => "completed",
-                JobStatus::Failed => "failed",
-            }),
-            assigned_node_id = Self::quote_opt(job.assigned_node_id.as_deref()),
-            worker_id = Self::quote_opt(job.worker_id.as_deref()),
-            backend = Self::quote_opt(job.backend.map(|backend| backend.as_str())),
-            output = Self::quote_opt(job.output.as_deref()),
-            error = Self::quote_opt(job.error.as_deref()),
-            submitted_at = Self::ts_expr(&job.submitted_at),
-            assigned_at = job
-                .assigned_at
-                .as_deref()
-                .map(Self::ts_expr)
-                .unwrap_or_else(|| "NULL".to_string()),
-            completed_at = job
-                .completed_at
-                .as_deref()
-                .map(Self::ts_expr)
-                .unwrap_or_else(|| "NULL".to_string()),
-        );
-        self.run_sql(&sql)
+        let payload = self.job_payload(job);
+        self.post_json(
+            "jobs",
+            Some("job_id"),
+            "resolution=merge-duplicates,return=minimal",
+            payload,
+        )?;
+
+        self.insert_event(
+            job.assigned_node_id.as_deref(),
+            Some(&job.job_id),
+            "job_submitted",
+            serde_json::to_value(job).map_err(|error| error.to_string())?,
+        )
     }
 
-    pub fn record_job_completion(&self, completion: &JobCompletion, job: &JobRecord) -> Result<(), String> {
-        self.record_job(job)?;
-        let payload = serde_json::to_value(completion).unwrap_or(Value::Null);
-        self.record_job_event(&completion.job_id, "completion", &payload)
+    pub fn record_job_completion(
+        &self,
+        completion: &JobCompletion,
+        job: &JobRecord,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "job_id": job.job_id,
+            "request_id": job.request_id,
+            "prompt": job.prompt,
+            "preferred_backend": job.preferred_backend,
+            "model": job.model,
+            "status": completion.status,
+            "assigned_node_id": job.assigned_node_id,
+            "worker_id": completion.worker_id,
+            "backend": completion.backend,
+            "output": completion.output,
+            "error": completion.error,
+            "submitted_at_epoch": parse_epoch(&job.submitted_at).unwrap_or_else(now_epoch),
+            "assigned_at_epoch": job.assigned_at.as_deref().and_then(parse_epoch),
+            "completed_at_epoch": job.completed_at.as_deref().and_then(parse_epoch),
+            "updated_at_epoch": now_epoch(),
+        });
+
+        self.post_json(
+            "jobs",
+            Some("job_id"),
+            "resolution=merge-duplicates,return=minimal",
+            payload,
+        )?;
+
+        let event_type = if matches!(completion.status, crate::contracts::JobStatus::Completed) {
+            "job_completed"
+        } else {
+            "job_failed"
+        };
+        self.insert_event(
+            Some(&completion.node_id),
+            Some(&completion.job_id),
+            event_type,
+            serde_json::to_value(completion).map_err(|error| error.to_string())?,
+        )
     }
 
     pub fn record_job_event(
         &self,
-        job_id: &str,
+        node_id: Option<&str>,
+        job_id: Option<&str>,
         event_type: &str,
-        payload: &Value,
+        payload: serde_json::Value,
     ) -> Result<(), String> {
-        let sql = format!(
-            r#"
-INSERT INTO job_events (job_id, event_type, payload)
-VALUES ({job_id}, {event_type}, {payload});
-"#,
-            job_id = Self::quote(job_id),
-            event_type = Self::quote(event_type),
-            payload = Self::json_sql(payload),
-        );
-        self.run_sql(&sql)
+        self.insert_event(node_id, job_id, event_type, payload)
+    }
+
+    fn job_payload(&self, job: &JobRecord) -> serde_json::Value {
+        json!({
+            "job_id": job.job_id,
+            "request_id": job.request_id,
+            "prompt": job.prompt,
+            "preferred_backend": job.preferred_backend,
+            "model": job.model,
+            "status": job.status,
+            "assigned_node_id": job.assigned_node_id,
+            "worker_id": job.worker_id,
+            "backend": job.backend,
+            "output": job.output,
+            "error": job.error,
+            "submitted_at_epoch": parse_epoch(&job.submitted_at).unwrap_or_else(now_epoch),
+            "assigned_at_epoch": job.assigned_at.as_deref().and_then(parse_epoch),
+            "completed_at_epoch": job.completed_at.as_deref().and_then(parse_epoch),
+            "updated_at_epoch": now_epoch(),
+        })
+    }
+
+    fn insert_event(
+        &self,
+        node_id: Option<&str>,
+        job_id: Option<&str>,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
+        let body = json!({
+            "node_id": node_id,
+            "job_id": job_id,
+            "event_type": event_type,
+            "payload": payload,
+        });
+
+        self.post_json("job_events", None, "return=minimal", body)
+    }
+
+    fn post_json(
+        &self,
+        table: &str,
+        on_conflict: Option<&str>,
+        prefer: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
+        let mut url = format!("{}/rest/v1/{}", self.base_url, table);
+        if let Some(on_conflict) = on_conflict {
+            url.push_str(&format!("?on_conflict={on_conflict}"));
+        }
+
+        let mut command = Command::new("curl");
+        command.arg("--silent");
+        command.arg("--show-error");
+        command.arg("--fail");
+        command.arg("--request");
+        command.arg("POST");
+        command.arg("--header");
+        command.arg(format!("apikey: {}", self.api_key));
+        command.arg("--header");
+        command.arg(format!("Authorization: Bearer {}", self.api_key));
+        command.arg("--header");
+        command.arg("Content-Type: application/json");
+        command.arg("--header");
+        command.arg(format!("Prefer: {prefer}"));
+        command.arg(url);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("failed to start curl: {error}"))?;
+
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| "curl stdin unavailable".to_string())?;
+            stdin
+                .write_all(payload.to_string().as_bytes())
+                .map_err(|error| format!("failed to send payload to curl: {error}"))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|error| format!("failed waiting for curl: {error}"))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let details = if stderr.is_empty() {
+            stdout
+        } else if stdout.is_empty() {
+            stderr
+        } else {
+            format!("{stderr}: {stdout}")
+        };
+        Err(if details.is_empty() {
+            "supabase sync failed".to_string()
+        } else {
+            format!("supabase sync failed: {details}")
+        })
+    }
+}
+
+fn trim_trailing_slash(input: &str) -> String {
+    input.trim_end_matches('/').to_string()
+}
+
+fn now_epoch() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn parse_epoch(input: &str) -> Option<i64> {
+    input.trim().parse::<i64>().ok()
+}
+
+fn derive_supabase_url(database_url: &str) -> Option<String> {
+    let without_scheme = database_url.split_once("://")?.1;
+    let user_info = without_scheme.split('@').next()?;
+    let username = user_info.split(':').next()?;
+    let project_ref = username.strip_prefix("postgres.")?;
+    if project_ref.is_empty() {
+        return None;
+    }
+
+    Some(format!("https://{project_ref}.supabase.co"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_supabase_url_from_database_url() {
+        let derived = derive_supabase_url(
+            "postgresql://postgres.yjlvhhouncxhjkghnwyj:[YOUR-PASSWORD]@aws-1-eu-central-1.pooler.supabase.com:6543/postgres",
+        )
+        .expect("derived url");
+        assert_eq!(derived, "https://yjlvhhouncxhjkghnwyj.supabase.co");
+    }
+
+    #[test]
+    fn rejects_non_supabase_database_urls() {
+        assert!(derive_supabase_url("postgresql://user:pass@localhost:5432/postgres").is_none());
     }
 }
