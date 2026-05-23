@@ -64,7 +64,7 @@ Suggested columns:
 - `created_at` timestamptz
 - `updated_at` timestamptz
 
-The contributor node signs device requests with its local private key. The control plane verifies the signature using the stored `public_key_hex` before accepting register, heartbeat, claim, or completion requests.
+The contributor node signs device requests with its local private key. The control plane verifies the signature using the stored `public_key_hex` before accepting register, heartbeat, claim, or completion requests. The signed device record also carries the machine hostname so contributor identity is easier to audit and review.
 
 ### `heartbeats`
 

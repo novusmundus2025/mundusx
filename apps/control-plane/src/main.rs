@@ -115,6 +115,7 @@ fn render_nodes(state: &ControlPlaneState) -> String {
         r#"<div class="table">
         <div class="thead">
           <div>Node</div>
+          <div>Host</div>
           <div>Backend</div>
           <div>State</div>
           <div>Power</div>
@@ -146,10 +147,18 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             r#"<div class="row">
               <div>
                 <strong>{}</strong>
+                <div class="meta">fingerprint {}</div>
                 <div class="meta">cap {}% • {} GPU% free</div>
               </div>
-              <div>{}</div>
+              <div>
+                <div>{}</div>
+                <div class="meta">signed device</div>
+              </div>
               <div><span class="pill" style="background:{};color:{};">{}</span></div>
+              <div>
+                <span class="pill" style="background:{};color:{};">{}</span>
+                <div class="meta" style="margin-top:6px;">{}</div>
+              </div>
               <div>
                 <div>{}</div>
                 <div class="meta">{}</div>
@@ -161,9 +170,14 @@ fn render_nodes(state: &ControlPlaneState) -> String {
               <div>{}</div>
             </div>"#,
             escape_html(&node.node_id),
+            escape_html(&node.public_key_fingerprint),
             node.contribution_percent,
             node.available_gpu_percent,
+            escape_html(&node.hostname),
             escape_html(&node.backend.to_string()),
+            state_bg,
+            state_fg,
+            escape_html(&node.state.to_string()),
             state_bg,
             state_fg,
             escape_html(&node.state.to_string()),
@@ -271,7 +285,7 @@ fn control_plane_home(state: &ControlPlaneState) -> String {
       .thead,
       .row {{
         display: grid;
-        grid-template-columns: 1.6fr 0.8fr 0.8fr 1.4fr 1fr 0.7fr;
+        grid-template-columns: 1.4fr 1fr 0.9fr 0.8fr 1.4fr 1fr 0.7fr;
         gap: 12px;
         align-items: start;
       }}

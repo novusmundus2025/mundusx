@@ -17,6 +17,7 @@ Keep the CLI focused on user setup and machine readiness, while the agent handle
 When the agent comes online, it should register with:
 
 - node ID
+- hostname
 - public key fingerprint
 - public key hex
 - resolved backend
@@ -105,6 +106,6 @@ The transport and service implementations are partially in place, including:
 - control-plane job queue submission and claim flow
 - local worker launch from the agent
 
-The device keypair is now the node identity layer. The control plane verifies the node's signed requests instead of requiring a separate contributor login for the machine itself.
+The device keypair is now the node identity layer. The control plane verifies the node's signed requests instead of requiring a separate contributor login for the machine itself. The hostname is part of the signed contributor identity so the operator can see which physical machine is represented without relying on an unauthenticated label.
 
 The health check command now verifies the local Mac runner without starting a full job, and it also reports whether the current contribution cap is allowed by the Mac power state. The agent now converts that policy into paused heartbeats so the control plane will not assign work when the Mac should stay quiet.

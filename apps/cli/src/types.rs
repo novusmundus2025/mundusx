@@ -134,6 +134,7 @@ pub struct RoutingDecision {
 pub struct AgentRegistration {
     pub node_id: String,
     pub public_key_fingerprint: String,
+    pub hostname: String,
     pub backend: Backend,
     pub contribution_percent: u8,
     pub agent_version: String,
@@ -148,6 +149,7 @@ pub struct Heartbeat {
     pub available_gpu_percent: u32,
     pub updated_at: String,
     pub contribution_percent: u8,
+    pub hostname: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

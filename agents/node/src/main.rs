@@ -110,6 +110,35 @@ fn load_config_or_exit() -> AgentConfig {
     }
 }
 
+fn detect_hostname() -> String {
+    if let Ok(value) = std::env::var("HOSTNAME") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    if let Ok(value) = std::env::var("COMPUTERNAME") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    "unknown-host".to_string()
+}
+
 fn resolved_state(config: &AgentConfig) -> AgentState {
     if !config.connected {
         AgentState::Stopped
@@ -146,6 +175,7 @@ fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> 
         available_gpu_percent: detect_available_gpu_percent(config),
         updated_at: now_unix_seconds(),
         contribution_percent: config.contribution_percent,
+        hostname: detect_hostname(),
         power_source: health.power_source,
         on_battery: health.on_battery,
         battery_percent: health.battery_percent,
@@ -220,6 +250,7 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
         node_id: config.device_id.clone(),
         public_key_fingerprint: identity.fingerprint.clone(),
         public_key_hex: identity.public_key_hex.clone(),
+        hostname: detect_hostname(),
         backend: config.backend_preference,
         contribution_percent: config.contribution_percent,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),

@@ -33,6 +33,7 @@ The prototype agent:
 - resolves the backend
 - emits a registration payload
 - sends registration and heartbeat updates to the control plane as signed device requests
+- includes the machine hostname in the signed contributor identity
 - polls the control plane for queued jobs
 - claims one queued job at a time for the local node
 - launches the local worker as a subprocess when requested
@@ -66,4 +67,4 @@ For contributor-side model switching and cleanup rules, see [docs/model-lifecycl
 ## Policy Controls
 
 The health command now reports a policy result in addition to runtime health. If the model cache is missing, `llama-cli` is unavailable, the Mac worker is on battery with too high a contribution cap, or the contribution cap has not been set yet, the agent will skip job claims and report `policyAllowed: no`.
-The agent also signs `register`, `heartbeat`, `jobs/next`, and `jobs/complete` requests so the control plane can verify the device by signature instead of a separate login flow.
+The agent also signs `register`, `heartbeat`, `jobs/next`, and `jobs/complete` requests so the control plane can verify the device by signature instead of a separate login flow. The signed payload includes the node ID, hostname, and device key material that identifies the contributor machine.

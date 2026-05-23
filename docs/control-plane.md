@@ -25,6 +25,7 @@ It includes per-node rows so you can see backend, power, battery, policy state, 
 - `POST /v1/jobs/complete` - complete a claimed job
 
 Agent-only routes are signed with the node's existing device keypair and are verified by the control plane before being accepted.
+The signed contributor identity includes the node ID, hostname, public key fingerprint, and the node's public key.
 
 ## Submitting A Job
 
@@ -70,7 +71,9 @@ The applied SQL schema lives at [supabase/schema.sql](/Users/DBATALL/Documents/a
 ## What The State Contains
 
 - node ID
+- hostname
 - public key fingerprint
+- public key
 - backend
 - contribution percent
 - agent version
