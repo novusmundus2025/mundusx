@@ -8,7 +8,7 @@ flowchart TD
     S --> D[Detect machine backend]
     D --> C[Create or reuse identity]
     C --> M[Mark machine connected]
-    M --> H[Send heartbeats to control plane]
+    M --> H[Send policy-aware heartbeats to control plane]
 
     H --> Q[Request arrives from client / SDK / dashboard]
     Q --> CP[Control plane receives and queues job]
@@ -53,7 +53,7 @@ flowchart TD
 On a provider machine, the installed pieces should be:
 
 - `opengpu` CLI for setup, control, and visibility
-- node agent for heartbeat, policy, and job launch
+- node agent for policy-aware heartbeat, policy, and job launch
 - worker/runtime for the actual `M` execution path
 
 The worker does **not** need to sit there idle all the time. It should be started on demand when work arrives, then stopped or reused according to policy.
@@ -81,6 +81,7 @@ The agent should still enforce:
 - foreground activity
 - memory pressure
 - pause / exit commands
+- policy-aware heartbeats so the control plane sees the node as paused when it should not take work
 
 ## How To Update It
 

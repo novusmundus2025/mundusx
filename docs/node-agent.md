@@ -39,9 +39,10 @@ The prototype agent:
 - sends a busy heartbeat before worker launch and a ready heartbeat after completion
 - posts the worker result back to the control plane
 - treats the configured model directory as a local cache, not as something the control plane owns
-- emits heartbeats on a loop
+- emits policy-aware heartbeats on a loop
 - writes the last heartbeat to disk
 - treats paused or disconnected state as non-active
+- reports itself as paused to the control plane when the Mac policy says the node should not launch jobs
 - currently speaks plain HTTP to the prototype control plane
 
 ## Next Step

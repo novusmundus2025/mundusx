@@ -120,6 +120,22 @@ fn resolved_state(config: &AgentConfig) -> AgentState {
     }
 }
 
+fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyReport) {
+    let model_dir = config.effective_model_dir();
+    let health = worker::probe_worker_health(&model_dir, config.active_model.as_deref());
+    let policy = worker::probe_worker_policy(&health, config.contribution_percent);
+    (health, policy)
+}
+
+fn operational_state(config: &AgentConfig) -> AgentState {
+    let (_, policy) = worker_readiness(config);
+    if !policy.allowed {
+        AgentState::Paused
+    } else {
+        resolved_state(config)
+    }
+}
+
 fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> Heartbeat {
     Heartbeat {
         node_id: config.device_id.clone(),
@@ -204,7 +220,7 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
 }
 
 fn build_heartbeat(config: &AgentConfig) -> Heartbeat {
-    build_heartbeat_with_state(config, resolved_state(config))
+    build_heartbeat_with_state(config, operational_state(config))
 }
 
 fn build_worker_launch_request(
@@ -251,8 +267,7 @@ fn send_heartbeat(config: &AgentConfig, heartbeat: &Heartbeat) {
 
 fn launch_worker_process(config: &AgentConfig, request: WorkerLaunchRequest, json: bool) -> Result<contracts::WorkerLaunchResponse, String> {
     let model_dir = config.effective_model_dir();
-    let health = worker::probe_worker_health(&model_dir, config.active_model.as_deref());
-    let policy = worker::probe_worker_policy(&health, config.contribution_percent);
+    let (_, policy) = worker_readiness(config);
     if !policy.allowed {
         return Err(policy
             .reason
@@ -282,10 +297,7 @@ fn launch_worker_process(config: &AgentConfig, request: WorkerLaunchRequest, jso
 }
 
 fn print_worker_health(config: &AgentConfig, json: bool) {
-    let model_dir = config.effective_model_dir();
-    let health: WorkerHealthReport =
-        worker::probe_worker_health(&model_dir, config.active_model.as_deref());
-    let policy: WorkerPolicyReport = worker::probe_worker_policy(&health, config.contribution_percent);
+    let (health, policy) = worker_readiness(config);
 
     if json {
         let payload = serde_json::json!({
@@ -372,9 +384,7 @@ fn complete_job(config: &AgentConfig, completion: &JobCompletion) {
 }
 
 fn process_pending_job(config: &AgentConfig, json: bool) {
-    let model_dir = config.effective_model_dir();
-    let health = worker::probe_worker_health(&model_dir, config.active_model.as_deref());
-    let policy = worker::probe_worker_policy(&health, config.contribution_percent);
+    let (_, policy) = worker_readiness(config);
     if !policy.allowed {
         println!(
             "jobPoll: skipped ({})",
@@ -383,14 +393,7 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
                 .as_deref()
                 .unwrap_or("policy denied launch")
         );
-        let policy_heartbeat = build_heartbeat_with_state(
-            config,
-            if policy.on_battery {
-                AgentState::Paused
-            } else {
-                resolved_state(config)
-            },
-        );
+        let policy_heartbeat = build_heartbeat_with_state(config, AgentState::Paused);
         let _ = save_agent_state(&policy_heartbeat);
         let _ = save_heartbeat(&policy_heartbeat);
         send_heartbeat(config, &policy_heartbeat);

@@ -104,4 +104,4 @@ The transport and service implementations are partially in place, including:
 - control-plane job queue submission and claim flow
 - local worker launch from the agent
 
-The health check command now verifies the local Mac runner without starting a full job, and it also reports whether the current contribution cap is allowed by the Mac power state. The next gap is extending that policy as we add more safety rules.
+The health check command now verifies the local Mac runner without starting a full job, and it also reports whether the current contribution cap is allowed by the Mac power state. The agent now converts that policy into paused heartbeats so the control plane will not assign work when the Mac should stay quiet.
