@@ -10,10 +10,10 @@ Use this document as the single working list:
 
 ## Current Focus
 
-1. **Public install endpoint behind `novusx.ai`**
-   - make the public install page the canonical first touch
+1. **Local install surface and release preview**
+   - keep the localhost install page, docs, and control-plane root aligned
    - keep the install command, checksum wording, and release links in sync
-   - verify the local preview and public copy stay identical
+   - verify the localhost install page and local release source stay identical
 
 ## Remaining Work
 

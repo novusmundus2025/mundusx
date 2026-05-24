@@ -4,7 +4,7 @@ OpenGPU is a distributed compute network that routes requests to the best availa
 
 - Apple Silicon `M` series nodes
 
-OpenGPU is the product name. NovusX is the company and the install domain behind `novusx.ai`.
+OpenGPU is the product name. NovusX is the company name for the future public install domain, but the current flow is localhost-only.
 
 ## Repo Shape
 
@@ -25,15 +25,15 @@ Rust workspace:
 
 ## One-Click Install
 
-Users should install the CLI from the public install page and never need Rust locally:
+Users should install the CLI from the localhost release preview and never need Rust locally:
 
 ```bash
-curl -fsSL https://novusx.ai/install | bash
+RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
-That installer will download the matching release binary for the user's operating system and CPU architecture, with the current public release channel focused on Apple Silicon Macs, then verify the checksum when available.
+That installer will download the matching release binary for the user's operating system and CPU architecture from the local release preview, with the current release channel focused on Apple Silicon Macs, then verify the checksum when available.
 
-See [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the public-facing wording and [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the distribution plan.
+See [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the distribution plan.
 
 Release builds for the CLI are published from GitHub Actions on `cli-v*` tags.
 
@@ -91,7 +91,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/device-identity-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/device-identity-lifecycle.md) for the recommended secure device key lifecycle
 - [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md) for contributor-side model cache, switch, and prune rules
 - [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the cross-platform distribution plan
-- [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the public install page copy and flow
+- [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the local install page copy and flow
 - [docs/public-docs-site.md](/Users/DBATALL/Documents/aigrid/docs/public-docs-site.md) for the local docs site preview at `http://127.0.0.1:<port>/docs`
 - [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
 - [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files

@@ -1,6 +1,6 @@
 # Install Strategy
 
-This page defines the recommended way to distribute `opengpu`, starting with the Mac-first public install page and binary installer, then expanding later.
+This page defines the recommended way to distribute `opengpu`, starting with the Mac-first localhost install page and binary installer, then expanding later.
 
 ## Guiding Principle
 
@@ -12,11 +12,11 @@ This page defines the recommended way to distribute `opengpu`, starting with the
 
 ### 1. Primary Channel
 
-Use your own installer that downloads the correct release binary from GitHub Releases.
+Use your own installer that downloads the correct release binary from the local release preview during development, then GitHub Releases later.
 
 Recommended flow:
 
-- macOS (current focus): the public install page at `https://novusx.ai/install` should show `curl -fsSL https://novusx.ai/install | bash`
+- macOS (current focus): the local install page at `http://127.0.0.1:<port>/install` should show `RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh`
 - Linux and Windows: follow later, once the Mac release path is stable
 
 This should be the source of truth for release artifacts and checksums.
@@ -136,7 +136,7 @@ The install strategy is complete when:
 ## Product Positioning
 
 - `opengpu` remains the CLI name.
-- `novusx.ai` is the public install entrypoint.
-- The public install page should be the same command the installer docs use.
+- `novusx.ai` remains a future public install entrypoint.
+- The local install page should be the same command the installer docs use.
 - GitHub Releases are the artifact source.
-- The public docs site should mirror the install, identity, onboarding, credits, and release pages in a local preview before it is wired to the public domain.
+- The local docs site mirrors the install, identity, onboarding, credits, and release pages before anything is wired to the public domain.

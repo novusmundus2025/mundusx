@@ -1,6 +1,6 @@
-# Public Install Page
+# Local Install Page Preview
 
-This page defines the public-facing first touch for `opengpu`.
+This page defines the localhost-first touch for `opengpu` while we keep the public domain for later.
 
 ## Purpose
 
@@ -8,20 +8,20 @@ The install page should do one thing well:
 
 - explain that `opengpu` is installed with one command
 - show the exact copy-paste install command
-- set expectations that the installer downloads a signed Mac-first release binary
+- set expectations that the installer downloads a signed Mac-first release binary from localhost during development
 - point users to release notes and checksums
 
 ## Canonical Copy
 
-The public page should present this command:
+The local page should present this command:
 
 ```bash
-curl -fsSL https://novusx.ai/install | bash
+RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
 ## What The Page Is
 
-- A simple public landing page behind `https://novusx.ai/install`
+- A simple local landing page behind `http://127.0.0.1:<port>/install`
 - The source of truth for the current install command
 - The place users land before they ever see the CLI
 
@@ -34,7 +34,7 @@ During development, the same copy is available from the dashboard server at:
 The local dashboard typically runs on `3001`, but you can override `PORT` during review.
 
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
-The broader public docs copy is previewable locally from the dashboard at `http://127.0.0.1:<port>/docs`.
+The broader docs copy is previewable locally from the dashboard at `http://127.0.0.1:<port>/docs`.
 
 For end-to-end localhost testing, point `install.sh` at a local release source with:
 
@@ -69,7 +69,7 @@ RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download
 
 ## Review Rule
 
-Any change to the public install page must be reviewed against:
+Any change to the local install page must be reviewed against:
 
 - `install.sh`
 - `docs/install-strategy.md`

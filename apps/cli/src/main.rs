@@ -710,7 +710,7 @@ fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool
             contribution_semantics(resolved_backend(config))
         ),
         "supported caps: 20 / 30 / 50 / 75 / 90".to_string(),
-        "install page: localhost preview or https://novusx.ai/install".to_string(),
+        "install page: localhost preview at http://127.0.0.1:3002/install".to_string(),
         "next step: run `opengpu start` after saving a cap".to_string(),
         format!(
             "state: {}",
@@ -1281,7 +1281,7 @@ fn main() {
         Commands::Update => {
             println!("updateChannel: GitHub Releases");
             println!("tagPattern: cli-v*");
-            println!("installer: https://novusx.ai/install");
+            println!("installer: http://127.0.0.1:3002/install");
         }
     }
 }

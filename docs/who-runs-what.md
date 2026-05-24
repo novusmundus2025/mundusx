@@ -5,7 +5,7 @@
 You install one thing and run one command:
 
 ```
-curl -fsSL https://novusx.ai/install | bash
+RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 opengpu connect
 ```
 
@@ -42,8 +42,8 @@ You run and maintain the shared infrastructure that all nodes connect to.
 |---|---|---|
 | **Control Plane** | Rust (HTTP API) | Node registry, heartbeat ingestion, job queue, routing decisions, job tracking |
 | **Dashboard** | Node.js | Live view of network health, node status, job history, credits. Local preview exists now; public rollout follows later. |
-| **Install endpoint** | Static/CDN | `https://novusx.ai/install` — public landing page and install command for the signed binary |
-| **Release pipeline** | GitHub Actions | Builds, verifies checksums, and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today) |
+| **Install endpoint** | Local dashboard preview | `http://127.0.0.1:<port>/install` — current landing page and install command for the signed binary preview |
+| **Release pipeline** | GitHub Actions + localhost preview | Builds, verifies checksums, and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today), while the current preview uses a localhost release source |
 | **Auth service** | Local bearer token + signed device requests | Issues operator tokens locally for the prototype and verifies device signatures |
 | **Credits ledger** | Supabase-backed ledger | Tracks contribution and usage accounting per node |
 | **Durable state store** | Supabase / Postgres | Persistent DB behind the control plane, with the local JSON cache kept only as a fallback |
@@ -57,8 +57,8 @@ You run and maintain the shared infrastructure that all nodes connect to.
 - Migrate from in-memory state to a real DB (top priority)
 
 **Install endpoint**
-- Serve the public install page reliably — this is the user's first touch point
-- Keep the install command, checksums, and release links in sync with the current Mac-first release
+- Serve the local install page reliably — this is the user's first touch point during development
+- Keep the install command, checksums, and release links in sync with the current Mac-first localhost preview
 
 **Release pipeline**
 - Tag `cli-v*` triggers a Mac-first release build today

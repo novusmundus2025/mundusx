@@ -1,12 +1,12 @@
-# Public Docs Site
+# Local Docs Site Preview
 
-This page describes the local preview for the public docs site.
+This page describes the local preview for the docs site while the public domain stays future-only.
 
-OpenGPU is the product. NovusX is the company and install domain.
+OpenGPU is the product. NovusX is the company and future install domain.
 
 ## Purpose
 
-The docs site should be the public-facing home for:
+The docs site should be the future public-facing home for:
 
 - install
 - device identity
@@ -14,7 +14,7 @@ The docs site should be the public-facing home for:
 - credits
 - releases
 
-The current public-facing copy is Mac-first, so the preview should keep that framing until the release channel expands.
+The current preview copy is Mac-first, so the local preview should keep that framing until the release channel expands.
 
 ## Local Preview
 
@@ -22,7 +22,7 @@ The dashboard app serves a local docs preview at:
 
 - `http://127.0.0.1:<port>/docs`
 
-Use that preview to review the public copy before wiring the public domain.
+Use that preview to review the copy before wiring the public domain.
 
 ## Review Rule
 

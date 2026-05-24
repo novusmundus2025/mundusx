@@ -476,11 +476,11 @@ function renderInstallPage() {
           </div>
         </div>
 
-        <div class="install-card" id="command">
+          <div class="install-card" id="command">
           <div class="label">Install command</div>
           <div class="command">
-            <code>curl -fsSL https://novusx.ai/install | bash</code>
-            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
+            <code>RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh</code>
+            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
           </div>
           <div class="label" style="margin-top: 18px;">Install flow</div>
           <div class="install-list">
@@ -1051,7 +1051,7 @@ function docsShell({ title, subtitle, active, body }) {
     <div class="wrap">
       <div class="topbar">
         <div class="brand"><span class="brand-mark"></span> OpenGPU Docs</div>
-        <div class="badge">localhost preview • public layout</div>
+        <div class="badge">localhost preview • local layout</div>
       </div>
       <div class="layout">
         <aside class="sidebar">
@@ -1065,7 +1065,7 @@ function docsShell({ title, subtitle, active, body }) {
               .join("")}
           </div>
           <div class="footer">
-            This local site mirrors the public docs shape before the public domain is wired.
+            This local site mirrors the release docs shape while the flow stays localhost-only.
           </div>
         </aside>
         <main class="content">
@@ -1124,7 +1124,7 @@ function renderDocsHome() {
         <div class="card">
           <h2>Releases</h2>
           <p>
-            Mac-first public install flow, signed artifacts, and how the release page maps to
+            Mac-first localhost install flow, signed artifacts, and how the release page maps to
             the installer.
           </p>
           <p><a href="/docs/releases">Open releases page</a></p>
@@ -1146,14 +1146,14 @@ function renderDocsInstall() {
   return docsShell({
     title: "Install OpenGPU",
     subtitle:
-      "The install page is the first touch for contributors. It stays Mac-first, keeps the command identical everywhere, and points to onboarding and cap selection immediately after install.",
+      "The install page is the first touch for contributors. For now it stays localhost-only, keeps the command identical everywhere, and points to onboarding and cap selection immediately after install.",
     active: "install",
     body: `
       <div class="cards">
         <div class="card">
           <h2>Canonical command</h2>
-          <p><code>curl -fsSL https://novusx.ai/install | bash</code></p>
-          <p>That command should match the installer script, the docs, and the public page.</p>
+          <p><code>RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh</code></p>
+          <p>That command should match the installer script, the docs, and the localhost preview.</p>
         </div>
         <div class="card">
           <h2>Expected flow</h2>
@@ -1255,13 +1255,13 @@ function renderDocsReleases() {
   return docsShell({
     title: "Releases",
     subtitle:
-      "The public release surface stays Mac-first for now. The public install page, installer script, and signed binary artifacts should always agree on the same release source.",
+      "The release surface stays Mac-first and localhost-only for now. The install page, installer script, and signed binary artifacts should always agree on the same release source.",
     active: "releases",
     body: `
       <div class="cards">
         <div class="card">
           <h2>Source of truth</h2>
-          <p>The install command, checksum, and release asset must point at the same Mac-first build.</p>
+          <p>The install command, checksum, and release asset must point at the same Mac-first localhost build.</p>
         </div>
         <div class="card">
           <h2>Review rule</h2>
