@@ -2,6 +2,8 @@
 
 This document tracks the next concrete implementation steps after the current Mac-first prototype.
 
+For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/Documents/aigrid/docs/master-checklist.md).
+
 ## Next Up
 
 1. **Port secure device identity to all platforms**

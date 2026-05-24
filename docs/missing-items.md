@@ -2,7 +2,8 @@
 
 This document tracks what is still missing before OpenGPU becomes a full product.
 
-For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Documents/aigrid/docs/pending-items.md).
+For the active working list, see [docs/master-checklist.md](/Users/DBATALL/Documents/aigrid/docs/master-checklist.md).
+For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Documents/aigrid/docs/pending-items.md).
 
 ## CLI Phase
 
@@ -39,7 +40,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Durable job event audit trail
 - [x] Durable state store
 - [x] Supabase migration runner and checked-in RLS rollout
-- [ ] Supabase restore path verification in the live project
+- [x] Supabase restore path verification in the live project
 - [x] Agent / worker contract defined in proto and CLI types
 
 ## Node Agent Phase
