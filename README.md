@@ -34,7 +34,7 @@ RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 That installer will download the matching release binary for the user's operating system and CPU architecture from the local release preview, with the current release channel focused on Apple Silicon Macs, then verify the checksum when available.
 
 See [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the distribution plan.
-The local install page also exposes a machine-readable manifest at `http://127.0.0.1:3002/install.json` for tooling and future public rollout work.
+The local install page also exposes a machine-readable manifest at `http://127.0.0.1:3002/install.json` for tooling and future public rollout work. The matching local release preview is also manifest-driven and serves `release-manifest.json` from `http://127.0.0.1:8788/releases/latest/download/`.
 
 Release builds for the CLI are published from GitHub Actions on `cli-v*` tags with checksums and a signed manifest attached to each release artifact set.
 

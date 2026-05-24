@@ -19,6 +19,7 @@ Recommended flow:
 - macOS (current focus): the local install page at `http://127.0.0.1:<port>/install` should show `RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh`
 - during localhost review, `scripts/local-release-preview.sh up` should build and serve the repo-managed preview that backs that command
 - the same local page should expose a machine-readable manifest at `http://127.0.0.1:<port>/install.json`
+- the matching localhost release preview should expose a machine-readable manifest at `http://127.0.0.1:8788/releases/latest/download/release-manifest.json`
 - Linux and Windows: follow later, once the Mac release path is stable
 
 This should be the source of truth for release artifacts and checksums.
