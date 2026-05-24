@@ -273,9 +273,9 @@ function renderInstallPage() {
         opacity: 0.45;
       }
       .wrap {
-        max-width: 1200px;
+        max-width: 1240px;
         margin: 0 auto;
-        padding: 28px 20px 56px;
+        padding: 24px 20px 56px;
       }
       .topbar {
         display: flex;
@@ -294,6 +294,32 @@ function renderInstallPage() {
         font-weight: 700;
         letter-spacing: 0.12em;
       }
+      .topbar-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--green);
+        box-shadow: 0 0 24px rgba(142, 240, 170, 0.7);
+      }
+      .topbar-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
       .hero {
         position: relative;
         overflow: hidden;
@@ -301,8 +327,8 @@ function renderInstallPage() {
         background:
           linear-gradient(180deg, rgba(17, 24, 43, 0.92), rgba(9, 13, 23, 0.96)),
           linear-gradient(135deg, rgba(92, 126, 255, 0.12), rgba(123, 235, 255, 0.04));
-        border-radius: 28px;
-        padding: 30px;
+        border-radius: 32px;
+        padding: 28px;
         box-shadow: var(--shadow);
         backdrop-filter: blur(16px);
       }
@@ -317,25 +343,25 @@ function renderInstallPage() {
       }
       h1 {
         margin: 0;
-        max-width: 11ch;
-        font-size: clamp(44px, 6vw, 76px);
-        line-height: 0.95;
-        letter-spacing: -0.06em;
+        max-width: 12ch;
+        font-size: clamp(56px, 7vw, 92px);
+        line-height: 0.92;
+        letter-spacing: -0.08em;
         text-transform: uppercase;
       }
       .sub {
-        margin-top: 16px;
+        margin-top: 18px;
         color: var(--muted);
-        line-height: 1.7;
-        max-width: 62ch;
-        font-size: 16px;
+        line-height: 1.75;
+        max-width: 60ch;
+        font-size: 17px;
       }
       .hero-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-        gap: 22px;
+        grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+        gap: 24px;
         align-items: start;
-        margin-top: 28px;
+        margin-top: 30px;
       }
       .stack {
         display: grid;
@@ -344,7 +370,7 @@ function renderInstallPage() {
       }
       .panel {
         border: 1px solid var(--line);
-        border-radius: 20px;
+        border-radius: 24px;
         background: rgba(8, 12, 21, 0.72);
         padding: 18px;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -361,9 +387,10 @@ function renderInstallPage() {
         align-items: center;
         justify-content: space-between;
         gap: 14px;
-        padding: 18px 18px;
-        border-radius: 18px;
-        background: linear-gradient(180deg, rgba(9, 13, 22, 0.98), rgba(5, 8, 16, 0.98));
+        padding: 20px;
+        border-radius: 22px;
+        background:
+          linear-gradient(180deg, rgba(6, 10, 18, 0.98), rgba(5, 8, 16, 0.98));
         border: 1px solid var(--line-strong);
         font-size: 15px;
         overflow-x: auto;
@@ -393,8 +420,8 @@ function renderInstallPage() {
       }
       .card {
         border: 1px solid var(--line);
-        border-radius: 18px;
-        background: linear-gradient(180deg, rgba(16, 23, 39, 0.82), rgba(9, 13, 22, 0.78));
+        border-radius: 22px;
+        background: linear-gradient(180deg, rgba(16, 23, 39, 0.88), rgba(9, 13, 22, 0.8));
         padding: 18px;
       }
       .card strong {
@@ -435,7 +462,7 @@ function renderInstallPage() {
         gap: 14px;
         padding: 14px 16px;
         border: 1px solid var(--line);
-        border-radius: 16px;
+        border-radius: 18px;
         background: rgba(7, 11, 18, 0.68);
       }
       .step-num {
@@ -485,6 +512,93 @@ function renderInstallPage() {
         font-size: 12px;
         margin-top: 8px;
       }
+      .split {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.82fr);
+        gap: 18px;
+        align-items: stretch;
+      }
+      .hero-copy {
+        padding-right: 6px;
+      }
+      .hero-metrics {
+        display: grid;
+        gap: 12px;
+      }
+      .metric {
+        border: 1px solid var(--line);
+        background: rgba(7, 11, 18, 0.6);
+        border-radius: 20px;
+        padding: 16px;
+      }
+      .metric .k {
+        display: block;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
+        margin-bottom: 8px;
+      }
+      .metric .v {
+        font-size: 18px;
+        color: var(--text);
+        line-height: 1.45;
+      }
+      .hero-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 22px;
+      }
+      .hero-badges .pill {
+        padding: 8px 12px;
+      }
+      .right-card {
+        padding: 18px;
+        border-radius: 24px;
+        border: 1px solid var(--line);
+        background:
+          radial-gradient(circle at top right, rgba(123, 235, 255, 0.08), transparent 24%),
+          linear-gradient(180deg, rgba(16, 23, 39, 0.9), rgba(7, 11, 18, 0.88));
+        display: grid;
+        gap: 14px;
+      }
+      .release-badge {
+        width: fit-content;
+        padding: 7px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(123, 235, 255, 0.26);
+        color: var(--cyan);
+        background: rgba(123, 235, 255, 0.08);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-size: 11px;
+      }
+      .release-stack {
+        display: grid;
+        gap: 10px;
+      }
+      .release-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(7, 11, 18, 0.6);
+      }
+      .release-line .left {
+        display: grid;
+        gap: 3px;
+      }
+      .release-line .left strong {
+        font-size: 14px;
+      }
+      .release-line .left span {
+        color: var(--muted);
+        font-size: 12px;
+      }
       .eyebrow {
         display: inline-flex;
         align-items: center;
@@ -504,6 +618,7 @@ function renderInstallPage() {
         .command-actions { width: 100%; justify-content: space-between; }
         .hero-grid { grid-template-columns: 1fr; }
         h1 { max-width: none; }
+        .split { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -512,27 +627,24 @@ function renderInstallPage() {
       <div class="hero">
         <div class="topbar">
           <div class="brand">OpenGPU Install</div>
-          <div class="eyebrow">Mac-first release channel • localhost preview</div>
+          <div class="topbar-right">
+            <div class="topbar-chip"><span class="dot"></span> localhost preview</div>
+            <div class="topbar-chip">Mac-first release channel</div>
+          </div>
         </div>
-        <h1>Install OpenGPU on your Mac</h1>
-        <div class="sub">
-          Fast, local-first installation for Apple Silicon. The installer fetches the signed
-          release binary, verifies checksums when available, and sets you up for
-          <code>opengpu onboarding</code> and <code>opengpu start</code>.
-        </div>
-
-        <div class="hero-grid">
-          <div class="stack">
-            <div class="panel">
-              <div class="label">Copy the install command</div>
-              <div class="command">
-                <code>curl -fsSL https://novusx.ai/install | bash</code>
-                <div class="command-actions">
-                  <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'copied'; }).catch(() => {});">Copy</button>
-                  <span class="pill">one command</span>
-                </div>
-              </div>
-              <div class="micro" id="copy-status">local preview only</div>
+        <div class="split">
+          <div class="hero-copy">
+            <h1>Install OpenGPU on your Mac</h1>
+            <div class="sub">
+              Fast, local-first installation for Apple Silicon. The installer fetches the signed
+              release binary, verifies checksums when available, and sets you up for
+              <code>opengpu onboarding</code> and <code>opengpu start</code>.
+            </div>
+            <div class="hero-badges">
+              <span class="pill">Apple Silicon first</span>
+              <span class="pill">signed binary</span>
+              <span class="pill">checksum verified</span>
+              <span class="pill">localhost preview</span>
             </div>
 
             <div class="grid">
@@ -544,80 +656,55 @@ function renderInstallPage() {
                 </p>
               </div>
               <div class="card">
-                <strong>What this page is</strong>
-                <p>
-                  A public-facing landing page for first-time users. It is not the installer
-                  itself, and it does not replace the release artifacts.
-                </p>
-              </div>
-              <div class="card">
                 <strong>After install</strong>
                 <p>
-                  Run <code>opengpu onboarding</code> to review the contributor checklist, then
-                  <code>opengpu cap</code> to choose the contribution budget, and finally
-                  <code>opengpu start</code> to bring the machine online.
-                </p>
-              </div>
-              <div class="card">
-                <strong>Release discipline</strong>
-                <p>
-                  The command, checksum, and release asset should always point to the same signed
-                  Mac-first release.
+                  Run <code>opengpu onboarding</code>, then <code>opengpu cap</code>, then
+                  <code>opengpu start</code>.
                 </p>
               </div>
             </div>
           </div>
 
-          <div class="stack">
-            <div class="panel">
-              <div class="label">How it works</div>
-              <div class="steps">
-                <div class="step">
-                  <div class="step-num">1</div>
-                  <div>
-                    <strong>Download</strong>
-                    <p>The installer fetches the signed release binary for Apple Silicon.</p>
-                  </div>
-                </div>
-                <div class="step">
-                  <div class="step-num">2</div>
-                  <div>
-                    <strong>Verify</strong>
-                    <p>When a checksum is published, the installer verifies it before install.</p>
-                  </div>
-                </div>
-                <div class="step">
-                  <div class="step-num">3</div>
-                  <div>
-                    <strong>Set cap</strong>
-                    <p>Use <code>opengpu cap</code> to choose the contribution budget before starting.</p>
-                  </div>
-                </div>
-                <div class="step">
-                  <div class="step-num">4</div>
-                  <div>
-                    <strong>Start</strong>
-                    <p>Use onboarding to review the contributor setup, then bring the node online.</p>
-                  </div>
-                </div>
+          <div class="right-card">
+            <div class="release-badge">one command</div>
+            <div class="label">Copy the install command</div>
+            <div class="command">
+              <code>curl -fsSL https://novusx.ai/install | bash</code>
+              <div class="command-actions">
+                <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'copied'; }).catch(() => {});">Copy</button>
               </div>
             </div>
+            <div class="micro" id="copy-status">local preview only</div>
 
-            <div class="panel">
-              <div class="label">Mac-first checklist</div>
-              <ul>
-                <li>The installer command should stay identical everywhere.</li>
-                <li>The public page should always match the release assets.</li>
-                <li>Checksum verification should stay visible to users.</li>
-              </ul>
+            <div class="release-stack">
+              <div class="release-line">
+                <div class="left">
+                  <strong>Download</strong>
+                  <span>Signed Mac release binary</span>
+                </div>
+                <div class="pill">step 1</div>
+              </div>
+              <div class="release-line">
+                <div class="left">
+                  <strong>Verify</strong>
+                  <span>Checksum when published</span>
+                </div>
+                <div class="pill">step 2</div>
+              </div>
+              <div class="release-line">
+                <div class="left">
+                  <strong>Start</strong>
+                  <span>Onboarding, cap, then connect</span>
+                </div>
+                <div class="pill">step 3</div>
+              </div>
             </div>
           </div>
         </div>
 
         <div class="footer">
           Local preview URL: <code>${escapeHtml(appUrl)}/install</code> •
-          Docs preview: <code>${escapeHtml(appUrl)}/docs</code> •
-          release copy lives in the repository alongside the installer and release workflow.
+          Docs preview: <code>${escapeHtml(appUrl)}/docs</code>
         </div>
       </div>
     </div>
