@@ -467,7 +467,8 @@ function renderInstallPage() {
                 <strong>After install</strong>
                 <p>
                   Run <code>opengpu onboarding</code> to review the contributor checklist, then
-                  <code>opengpu start</code> to bring the machine online.
+                  <code>opengpu start</code> to bring the machine online and choose a contribution
+                  cap if one is not already saved.
                 </p>
               </div>
               <div class="card">

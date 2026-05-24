@@ -50,6 +50,9 @@ This keeps the install page reviewable on localhost before the public endpoint i
 4. The installer verifies the checksum when available.
 5. The user runs `opengpu start` or `opengpu onboarding` next.
 
+If the contributor has not saved a contribution cap yet, `opengpu start` will prompt for one
+before the machine is treated as ready for routing.
+
 ## Page Requirements
 
 - Keep the page short and readable.
