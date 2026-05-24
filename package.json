@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "lint": "echo \"lint not configured yet\"",
-    "test": "echo \"test not configured yet\""
+    "test": "echo \"test not configured yet\"",
+    "smoke:local": "./scripts/localhost-smoke.sh"
   }
 }
-
