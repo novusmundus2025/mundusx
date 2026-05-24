@@ -15,6 +15,10 @@ pub struct DeviceIdentity {
     pub private_key_hex: String,
     pub fingerprint: String,
     pub keychain_label_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encrypted_private_key_hex: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nonce_hex: String,
 }
 
 impl DeviceIdentity {
@@ -149,6 +153,8 @@ fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
         private_key_hex: String::new(),
         fingerprint: secure.fingerprint,
         keychain_label_hex: Some(secure.keychain_label_hex),
+        encrypted_private_key_hex: secure.encrypted_private_key_hex,
+        nonce_hex: secure.nonce_hex,
     })
 }
 
