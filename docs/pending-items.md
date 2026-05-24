@@ -9,18 +9,13 @@ This document tracks the next concrete implementation steps after the current Ma
    - keep the private key non-exportable on Windows and Linux too
    - preserve the current file-backed prototype only as a dev fallback
 
-2. **Polish contributor onboarding**
-   - show the secure device identity and hostname clearly on first run
-   - explain the contribution cap and quiet policy
-   - make the dashboard and CLI tell a consistent story
-
-3. **Define the federated governance model**
+2. **Define the federated governance model**
    - document the top-level standards / clearing-house org
    - document how operator companies join and certify
    - define settlement, revocation, and protocol versioning rules
    - keep the company control plane separate from the governance layer
 
-4. **Public install and release rollout**
+3. **Public install and release rollout**
    - signed release binaries
    - public install endpoint
    - packaging checks for macOS and Linux release artifacts

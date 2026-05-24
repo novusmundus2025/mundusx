@@ -86,11 +86,20 @@ the CLI:
    - battery percent
    - policy allowance
    - policy reason when the Mac should stay quiet
-9. Saves the updated config.
-10. Prints how the contribution cap should be interpreted:
+9. Prints the contributor onboarding checklist until it is marked complete:
+   - device identity
+   - hostname
+   - backend
+   - active model
+   - contribution cap
+   - policy state
+   - credits link
+   - dashboard link
+10. Saves the updated config.
+11. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
-11. Prints whether policy currently allows the Mac to accept work, including the power source and battery state.
-11. Keeps the reused device identity attached to the local config.
+12. Prints whether policy currently allows the Mac to accept work, including the power source and battery state.
+13. Keeps the reused device identity attached to the local config.
 
 ## Operator Auth
 
@@ -152,4 +161,14 @@ At this stage, the CLI does **not**:
 3. Register the machine with a server.
 4. Dispatch real jobs to remote nodes.
 
-Those behaviors will come later when the control plane and node agent are online.
+## Onboarding
+
+When onboarding has not been completed yet, `opengpu start` and `opengpu connect` print a dedicated checklist panel and a hint to run:
+
+```bash
+opengpu onboarding --complete
+```
+
+The onboarding command only marks the review step as complete; it does not change the device identity or control-plane state.
+
+Those deeper network behaviors will come later when the control plane and node agent are online.

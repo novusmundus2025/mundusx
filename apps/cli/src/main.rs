@@ -51,6 +51,13 @@ enum Commands {
     },
     /// Clear local operator auth state
     Logout,
+    /// Review or complete contributor onboarding
+    Onboarding {
+        #[arg(long)]
+        complete: bool,
+        #[arg(long)]
+        reset: bool,
+    },
     /// Leave the OpenGPU network
     Disconnect,
     /// Show current node status
@@ -319,6 +326,10 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     if let Some(reason) = policy_reason(config, &power, active_model.as_deref()) {
         println!("policyReason: {}", reason);
     }
+    println!(
+        "onboardingCompleted: {}",
+        if config.onboarding_completed { "yes" } else { "no" }
+    );
 }
 
 fn print_startup_summary(config: &Config, path: &std::path::Path) {
@@ -375,6 +386,56 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     if let Some(reason) = policy_reason(config, &power, active_model.as_deref()) {
         println!("policyReason: {}", reason);
     }
+    println!(
+        "onboardingCompleted: {}",
+        if config.onboarding_completed { "yes" } else { "no" }
+    );
+}
+
+fn current_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn print_onboarding_checklist(config: &Config, path: &std::path::Path, completed: bool) {
+    let detected_backend = resolved_backend(config);
+    let power = probe_power_state();
+    let active_model = active_model_name(config);
+    let allowed = policy_allowed(config, &power, active_model.as_deref());
+    let body = vec![
+        format!("device id: {}", config.device_id),
+        format!("device key: {}", display_public_key_fingerprint(config)),
+        format!("hostname: {}", current_hostname()),
+        format!("backend: {}", detected_backend),
+        format!(
+            "active model: {}",
+            active_model.clone().unwrap_or_else(|| "unset".to_string())
+        ),
+        format!(
+            "contribution cap: {}",
+            if config.contribution_percent == 0 {
+                "unset".to_string()
+            } else {
+                format!("{}%", config.contribution_percent)
+            }
+        ),
+        format!("policy: {}", if allowed { "allowed" } else { "blocked" }),
+        format!("credits: /v1/credits"),
+        format!("dashboard: http://127.0.0.1:3001"),
+        format!("config: {}", path.display()),
+        format!("state: {}", if completed { "complete" } else { "review needed" }),
+    ];
+    print_retro_panel(
+        "CONTRIBUTOR ONBOARDING",
+        "review the trust, model, policy, and credits setup",
+        &body,
+        if completed { Color::Green } else { Color::Cyan },
+    );
 }
 
 fn print_model_inventory(config: &Config, models: &[ModelRecord], json: bool) {
@@ -791,6 +852,10 @@ fn main() {
                         "contributionMeaning: {}",
                         contribution_semantics(config.backend_preference)
                     );
+                    if !config.onboarding_completed {
+                        print_onboarding_checklist(&config, &resolved_config_path(), false);
+                        println!("onboardingHint: run `opengpu onboarding --complete` after you review the checklist");
+                    }
                 }
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
@@ -836,6 +901,35 @@ fn main() {
                     eprintln!("failed to clear auth token: {error}");
                     std::process::exit(1);
                 }
+            }
+        }
+        Commands::Onboarding { complete, reset } => {
+            let mut config = current_config_or_default();
+            if complete && reset {
+                eprintln!("choose either --complete or --reset, not both");
+                std::process::exit(1);
+            }
+
+            if reset {
+                config.onboarding_completed = false;
+            } else if complete {
+                config.onboarding_completed = true;
+            }
+
+            if let Err(error) = save_config(&config) {
+                eprintln!("failed to save onboarding state: {error}");
+                std::process::exit(1);
+            }
+
+            print_onboarding_checklist(&config, &resolved_config_path(), config.onboarding_completed);
+            println!(
+                "onboardingCompleted: {}",
+                if config.onboarding_completed { "yes" } else { "no" }
+            );
+            if config.onboarding_completed {
+                println!("onboardingHint: the machine is ready for contributor use");
+            } else {
+                println!("onboardingHint: rerun with --complete once the checklist looks good");
             }
         }
         Commands::Disconnect => {

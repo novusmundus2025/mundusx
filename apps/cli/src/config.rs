@@ -21,6 +21,8 @@ pub struct Config {
     pub models: Vec<String>,
     #[serde(default)]
     pub model_dir: Option<String>,
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for Config {
@@ -39,6 +41,7 @@ impl Default for Config {
             active_model: None,
             models: vec![],
             model_dir: None,
+            onboarding_completed: false,
         }
     }
 }
@@ -64,16 +67,27 @@ pub fn resolved_config_path() -> PathBuf {
     }
 
     let home = config_path();
-    if home.exists() {
-        return home;
-    }
-
     let local = local_config_path();
-    if local.exists() {
-        return local;
+    match (home.exists(), local.exists()) {
+        (true, true) => {
+            let home_modified = fs::metadata(&home).and_then(|meta| meta.modified()).ok();
+            let local_modified = fs::metadata(&local).and_then(|meta| meta.modified()).ok();
+            match (home_modified, local_modified) {
+                (Some(home_time), Some(local_time)) => {
+                    if local_time > home_time {
+                        local
+                    } else {
+                        home
+                    }
+                }
+                (None, Some(_)) => local,
+                _ => home,
+            }
+        }
+        (true, false) => home,
+        (false, true) => local,
+        (false, false) => home,
     }
-
-    home
 }
 
 pub fn load_config() -> std::io::Result<Option<Config>> {
@@ -90,19 +104,29 @@ pub fn load_config() -> std::io::Result<Option<Config>> {
 
 pub fn save_config(config: &Config) -> std::io::Result<PathBuf> {
     let data = serde_json::to_string_pretty(config).expect("config serialization");
+    let mut last_success = None;
+    let mut last_error = None;
 
-    if let Some(path) = try_write(&config_path(), &data)? {
+    match try_write(&config_path(), &data) {
+        Ok(path) => last_success = path.or(last_success),
+        Err(error) => last_error = Some(error),
+    }
+
+    match try_write(&local_config_path(), &data) {
+        Ok(path) => last_success = path.or(last_success),
+        Err(error) => last_error = Some(error),
+    }
+
+    if let Some(path) = last_success {
         return Ok(path);
     }
 
-    if let Some(path) = try_write(&local_config_path(), &data)? {
-        return Ok(path);
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::PermissionDenied,
-        "unable to write config to home or local fallback",
-    ))
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "unable to write config to home or local fallback",
+        )
+    }))
 }
 
 pub fn remove_config_files() -> std::io::Result<()> {

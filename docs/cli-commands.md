@@ -6,6 +6,9 @@ This is the current command surface for the Rust CLI.
 
 - `opengpu start` - create local state if needed, auto-detect the backend, connect locally, ask for contribution level in a vertical arrow-key menu, and print a startup summary with the public key
 - `opengpu init` - create the local config and device identity
+- `opengpu onboarding` - review the contributor onboarding checklist
+- `opengpu onboarding --complete` - mark onboarding complete after review
+- `opengpu onboarding --reset` - reopen the onboarding checklist
 - `opengpu status` - show local state, detected backend, local provider status, and local policy readiness
 - `opengpu exit` - leave local contribution mode and pause the machine
 - `opengpu model list` - show the local model cache and active model
@@ -29,15 +32,6 @@ These remain available, but they are hidden from the default `--help` output so 
 - `opengpu nodes` - show the current sample node inventory
 - `opengpu pause` - pause contribution
 - `opengpu resume` - resume contribution
-- `opengpu config path` - print the active config path
-- `opengpu config show` - print the current config
-- `opengpu config show --json` - print the config as JSON
-- `opengpu config set control-plane-url <url>` - update the control plane URL
-- `opengpu config set profile-name <name>` - update the local profile name
-- `opengpu config set backend <auto|m>` - update the backend preference
-- `opengpu config set device-id <id>` - override the local device ID
-- `opengpu config set contribution-percent <1-100>` - set the contribution cap
-- `opengpu config reset --yes` - delete local config files
 
 ## Notes
 
@@ -49,3 +43,5 @@ These remain available, but they are hidden from the default `--help` output so 
 - `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet.
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled.
 - The model commands currently manage the local model cache manifest and active selection; real model downloads are still a future step.
+- `onboarding` is a local contributor review step that summarizes the secure device identity, hostname, model, policy, and credits setup; `start` prints it automatically until it is marked complete.
+- Config inspection now happens through `status` and `doctor`; dedicated `config` subcommands are not part of the current CLI surface.

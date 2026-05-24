@@ -63,7 +63,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 
 - [x] Dashboard for node and job visibility
 - [x] Credits / accounting model
-- [ ] Onboarding flow
+- [x] Onboarding flow
 - [ ] Public docs site
 - [ ] Branding and naming cleanup
 - [ ] Federated governance / standards org model

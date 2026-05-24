@@ -91,6 +91,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints
 - [docs/dashboard.md](/Users/DBATALL/Documents/aigrid/docs/dashboard.md) for the local operator dashboard
 - [docs/credits-model.md](/Users/DBATALL/Documents/aigrid/docs/credits-model.md) for the append-only credits ledger and reward rule
+- [docs/onboarding.md](/Users/DBATALL/Documents/aigrid/docs/onboarding.md) for the contributor onboarding checklist and state
 - [docs/supabase-schema.md](/Users/DBATALL/Documents/aigrid/docs/supabase-schema.md) for the company-side Supabase schema sketch
 - [docs/supabase-migrations.md](/Users/DBATALL/Documents/aigrid/docs/supabase-migrations.md) for the migration runner and apply flow
 - [supabase/schema.sql](/Users/DBATALL/Documents/aigrid/supabase/schema.sql) for the SQL you apply in Supabase
