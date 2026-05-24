@@ -3,6 +3,9 @@ import { createServer } from "node:http";
 const controlPlaneUrl = process.env.OPENGPU_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
 const port = Number(process.env.PORT ?? "3001");
 const appUrl = `http://127.0.0.1:${port}`;
+const installReleaseBaseUrl =
+  process.env.OPENGPU_INSTALL_RELEASE_BASE_URL ?? "http://127.0.0.1:8788/releases/latest/download";
+const installCommand = `RELEASE_BASE_URL=${installReleaseBaseUrl} bash install.sh`;
 
 const formatCount = (value) => new Intl.NumberFormat("en-US").format(Number(value ?? 0));
 const formatCredits = (value) => {
@@ -40,6 +43,24 @@ async function fetchJson(path) {
 
 function badge(label, tone = "neutral") {
   return `<span class="pill pill-${tone}">${escapeHtml(label)}</span>`;
+}
+
+function installManifest() {
+  return {
+    kind: "install-manifest",
+    app: "opengpu",
+    environment: "localhost-preview",
+    release_base_url: installReleaseBaseUrl,
+    install_command: installCommand,
+    binary_name: "opengpu-aarch64-apple-darwin",
+    checksum_name: "opengpu-aarch64-apple-darwin.sha256",
+    landing_page: `${appUrl}/install`,
+    docs_page: `${appUrl}/docs/install`,
+    onboarding_command: "opengpu onboarding",
+    cap_command: "opengpu cap",
+    start_command: "opengpu start",
+    preview_note: "local preview only; public domain comes later",
+  };
 }
 
 function renderCounts(snapshot = {}) {
@@ -479,8 +500,8 @@ function renderInstallPage() {
           <div class="install-card" id="command">
           <div class="label">Install command</div>
           <div class="command">
-            <code>RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh</code>
-            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
+            <code>${escapeHtml(installCommand)}</code>
+            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('${escapeHtml(installCommand)}').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
           </div>
           <div class="label" style="margin-top: 18px;">Install flow</div>
           <div class="install-list">
@@ -1152,8 +1173,8 @@ function renderDocsInstall() {
       <div class="cards">
         <div class="card">
           <h2>Canonical command</h2>
-          <p><code>RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh</code></p>
-          <p>That command should match the installer script, the docs, and the localhost preview.</p>
+            <p><code>${escapeHtml(installCommand)}</code></p>
+            <p>That command should match the installer script, the docs, and the localhost preview.</p>
         </div>
         <div class="card">
           <h2>Expected flow</h2>
@@ -1255,13 +1276,13 @@ function renderDocsReleases() {
   return docsShell({
     title: "Releases",
     subtitle:
-      "The release surface stays Mac-first and localhost-only for now. The install page, installer script, and signed binary artifacts should always agree on the same release source.",
+      "The release surface stays Mac-first and localhost-only for now. The install page, installer script, manifest endpoint, and signed binary artifacts should always agree on the same release source.",
     active: "releases",
     body: `
       <div class="cards">
         <div class="card">
           <h2>Source of truth</h2>
-          <p>The install command, checksum, and release asset must point at the same Mac-first localhost build.</p>
+          <p>The install command, checksum, manifest, and release asset must point at the same Mac-first localhost build.</p>
         </div>
         <div class="card">
           <h2>Review rule</h2>
@@ -1288,6 +1309,12 @@ createServer(async (req, res) => {
   if (requestUrl.pathname === "/install") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderInstallPage());
+    return;
+  }
+
+  if (requestUrl.pathname === "/install.json") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(installManifest(), null, 2));
     return;
   }
 

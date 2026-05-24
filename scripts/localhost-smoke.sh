@@ -26,6 +26,8 @@ check_contains() {
 echo "Checking dashboard pages..."
 check_contains "${dashboard_url}/install" "Install OpenGPU on your Mac" "install page hero"
 check_contains "${dashboard_url}/install" "RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh" "install command"
+check_contains "${dashboard_url}/install.json" "\"kind\": \"install-manifest\"" "install manifest kind"
+check_contains "${dashboard_url}/install.json" "\"install_command\": \"RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh\"" "install manifest command"
 check_contains "${dashboard_url}/docs" "OpenGPU Docs" "docs home"
 
 echo "Checking control-plane root..."
