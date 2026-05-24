@@ -847,45 +847,53 @@ function docsShell({ title, subtitle, active, body }) {
     <title>${escapeHtml(title)}</title>
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #071017;
-        --panel: #101826;
-        --panel-2: #151f30;
-        --line: #243145;
-        --text: #ecf3ff;
-        --muted: #97a7c0;
-        --green: #8ef0aa;
-        --blue: #a6c8ff;
-        --amber: #ffd27f;
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #fbfcff;
+        --surface-2: #f5f7fb;
+        --line: rgba(15, 23, 42, 0.09);
+        --line-strong: rgba(15, 23, 42, 0.14);
+        --text: #0f172a;
+        --muted: #5f6b85;
+        --blue: #3452ff;
+        --green: #0f9d58;
+        --amber: #c47f1b;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100vh;
         background:
-          radial-gradient(circle at top left, rgba(86, 125, 255, 0.16), transparent 28%),
-          radial-gradient(circle at top right, rgba(90, 255, 180, 0.08), transparent 24%),
-          linear-gradient(180deg, #071017 0%, #090d14 100%);
+          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
+          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
         color: var(--text);
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }
       .wrap {
-        max-width: 1300px;
+        max-width: 1240px;
         margin: 0 auto;
-        padding: 28px 20px 48px;
+        padding: 22px 20px 48px;
       }
       .topbar {
         display: flex;
-        align-items: center;
         justify-content: space-between;
-        gap: 16px;
+        align-items: center;
+        gap: 12px;
         flex-wrap: wrap;
-        margin-bottom: 18px;
+        margin-bottom: 28px;
       }
       .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
         font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+      .brand-mark {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: linear-gradient(135deg, var(--blue), #5a79ff);
       }
       .badge {
         display: inline-flex;
@@ -893,11 +901,11 @@ function docsShell({ title, subtitle, active, body }) {
         padding: 6px 10px;
         border-radius: 999px;
         font-size: 12px;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.04em;
         text-transform: uppercase;
-        border: 1px solid rgba(166, 200, 255, 0.22);
-        color: var(--blue);
-        background: rgba(166, 200, 255, 0.1);
+        border: 1px solid var(--line);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.8);
       }
       .layout {
         display: grid;
@@ -907,8 +915,9 @@ function docsShell({ title, subtitle, active, body }) {
       .sidebar,
       .content {
         border: 1px solid var(--line);
-        border-radius: 18px;
-        background: rgba(17, 24, 38, 0.78);
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.06);
       }
       .sidebar {
         padding: 18px;
@@ -918,7 +927,6 @@ function docsShell({ title, subtitle, active, body }) {
       }
       .content {
         padding: 24px;
-        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
       }
       .nav {
         display: grid;
@@ -932,37 +940,38 @@ function docsShell({ title, subtitle, active, body }) {
         color: var(--text);
         text-decoration: none;
         border: 1px solid transparent;
-        background: rgba(7, 12, 18, 0.45);
+        background: var(--surface);
       }
       .nav a:hover {
-        border-color: rgba(166, 200, 255, 0.22);
+        border-color: var(--line-strong);
       }
       .nav a.active {
-        border-color: rgba(142, 240, 170, 0.3);
-        background: rgba(142, 240, 170, 0.09);
+        border-color: rgba(52, 82, 255, 0.18);
+        background: rgba(52, 82, 255, 0.06);
       }
       h1 {
         margin: 0;
-        font-size: 34px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
+        max-width: 12ch;
+        font-size: clamp(42px, 5vw, 68px);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
       }
       .subtitle {
-        margin-top: 10px;
+        margin-top: 14px;
         color: var(--muted);
-        line-height: 1.6;
-        max-width: 74ch;
+        line-height: 1.7;
+        max-width: 70ch;
       }
       .cards {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 16px;
-        margin-top: 20px;
+        margin-top: 22px;
       }
       .card {
         border: 1px solid var(--line);
-        border-radius: 16px;
-        background: rgba(9, 13, 20, 0.74);
+        border-radius: 18px;
+        background: var(--surface);
         padding: 18px;
       }
       .card h2,
@@ -984,17 +993,20 @@ function docsShell({ title, subtitle, active, body }) {
         padding-left: 18px;
       }
       .mono {
-        color: #f4f8ff;
+        color: var(--text);
         white-space: nowrap;
       }
       a {
-        color: var(--green);
+        color: var(--blue);
         text-decoration: none;
       }
       a:hover { text-decoration: underline; }
       code {
-        color: #f7fbff;
+        color: var(--text);
         white-space: nowrap;
+        background: rgba(52, 82, 255, 0.06);
+        padding: 0 4px;
+        border-radius: 4px;
       }
       .footer {
         margin-top: 18px;
@@ -1012,7 +1024,7 @@ function docsShell({ title, subtitle, active, body }) {
   <body>
     <div class="wrap">
       <div class="topbar">
-        <div class="brand">OpenGPU Docs</div>
+        <div class="brand"><span class="brand-mark"></span> OpenGPU Docs</div>
         <div class="badge">localhost preview • public layout</div>
       </div>
       <div class="layout">
