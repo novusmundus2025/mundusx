@@ -44,6 +44,10 @@ jobs:
         run: |
           shasum -a 256 ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
 
+      - name: Verify checksum
+        run: |
+          shasum -a 256 -c ${{ matrix.binary_name }}.sha256
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -61,6 +65,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+
+      - name: Verify downloaded artifacts
+        run: |
+          find dist -name '*.sha256' -print0 | while IFS= read -r -d '' checksum_file; do
+            artifact_dir="$(dirname "$checksum_file")"
+            (cd "$artifact_dir" && shasum -a 256 -c "$(basename "$checksum_file")")
+          done
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2

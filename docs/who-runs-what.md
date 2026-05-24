@@ -43,7 +43,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 | **Control Plane** | Rust (HTTP API) | Node registry, heartbeat ingestion, job queue, routing decisions, job tracking |
 | **Dashboard** | Node.js | Live view of network health, node status, job history, credits. Local preview exists now; public rollout follows later. |
 | **Install endpoint** | Static/CDN | `https://novusx.ai/install` — public landing page and install command for the signed binary |
-| **Release pipeline** | GitHub Actions | Builds and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today) |
+| **Release pipeline** | GitHub Actions | Builds, verifies checksums, and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today) |
 | **Auth service** | Local bearer token + signed device requests | Issues operator tokens locally for the prototype and verifies device signatures |
 | **Credits ledger** | Supabase-backed ledger | Tracks contribution and usage accounting per node |
 | **Durable state store** | Supabase / Postgres | Persistent DB behind the control plane, with the local JSON cache kept only as a fallback |
@@ -63,7 +63,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 **Release pipeline**
 - Tag `cli-v*` triggers a Mac-first release build today
 - Current release channel targets Apple Silicon macOS binaries
-- Binaries must be verified before the install script points to them
+- Binaries are checksum-verified in CI before the install script points to them
 
 **Dashboard**
 - Local preview exists now — needed before public launch for trust/transparency

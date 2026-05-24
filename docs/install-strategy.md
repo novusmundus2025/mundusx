@@ -75,6 +75,7 @@ Before shipping any platform release:
 - build from a clean tagged commit
 - embed the CLI version in the binary
 - generate checksums for every artifact
+- verify checksums in CI before publishing the release assets
 - sign every artifact or release manifest
 - publish release notes with the exact tag
 - verify the installer can fetch the matching asset
@@ -117,9 +118,10 @@ Ship when all of these are true:
 ## Publishing Model
 
 1. Build binaries in GitHub Actions.
-2. Attach them to a tagged release.
-3. Publish checksums and signatures.
-4. Let the installer and package managers fetch from the release channel.
+2. Verify the generated checksums in CI.
+3. Attach the verified artifacts to a tagged release.
+4. Publish checksums and signatures.
+5. Let the installer and package managers fetch from the release channel.
 
 ## Definition Of Done
 
