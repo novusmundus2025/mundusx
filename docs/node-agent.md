@@ -10,7 +10,7 @@ The node agent is the background service that lives on a provider machine.
 - `opengpu-agent heartbeat` - print one heartbeat payload
 - `opengpu-agent launch-worker` - spawn the local worker process and print its result
 - `opengpu-agent status` - show agent state and the last heartbeat saved locally
-- `opengpu-agent health` - check whether the Mac worker runtime, device list, cached model, and policy state are ready
+- `opengpu-agent health` - check whether the Mac worker runtime, device list, cached model, power state, and policy state are ready
 - `opengpu-agent stop` - write a paused/offline state and exit
 
 ## What It Reuses
@@ -39,6 +39,7 @@ The prototype agent:
 - launches the local worker as a subprocess when requested
 - sends a busy heartbeat before worker launch and a ready heartbeat after completion
 - posts the worker result back to the control plane
+- includes the worker health snapshot in heartbeats so the control plane can surface backend readiness
 - treats the configured model directory as a local cache, not as something the control plane owns
 - emits policy-aware heartbeats on a loop
 - sends the power source, battery state, and policy allowance with each heartbeat
@@ -50,7 +51,7 @@ The prototype agent:
 
 ## Next Step
 
-The next step is to connect the health check to live contribution limits and any future pause/resume policy.
+The health check is already connected to live contribution limits and pause policy. The worker backend health snapshot is now carried through to the control plane and browser views, so the remaining work is mostly additional runtimes and richer execution metrics.
 
 ## Local Development URL
 

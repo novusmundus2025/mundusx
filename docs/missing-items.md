@@ -59,7 +59,7 @@ For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Docume
 - [x] Real contributor model download backend
 - [x] `M` worker adapter
 - [ ] Real execution payloads
-- [ ] Health checks for worker backends
+- [x] Health checks for worker backends
 
 ## Product Phase
 

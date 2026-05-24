@@ -1,7 +1,7 @@
 use crate::contracts::{
     AgentRegistration, AgentState, Backend, ControlPlaneSnapshot, Heartbeat, JobClaimResponse,
     JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodeRecord,
-    CreditsLedgerRecord,
+    CreditsLedgerRecord, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -217,6 +217,7 @@ impl ControlPlaneState {
             battery_percent: None,
             policy_allowed: false,
             policy_reason: None,
+            worker_health: None,
             updated_at: String::new(),
         };
 
@@ -361,6 +362,7 @@ impl ControlPlaneState {
             battery_percent: heartbeat.battery_percent,
             policy_allowed: heartbeat.policy_allowed,
             policy_reason: heartbeat.policy_reason,
+            worker_health: Some(heartbeat.worker_health),
             updated_at: updated_at.clone(),
         };
 
@@ -441,6 +443,20 @@ mod tests {
                 battery_percent: Some(90),
                 policy_allowed: true,
                 policy_reason: None,
+                worker_health: WorkerHealthReport {
+                    healthy: true,
+                    model_dir: "/tmp/models".to_string(),
+                    model_name: Some("demo".to_string()),
+                    model_path: Some("/tmp/models/demo.gguf".to_string()),
+                    llama_cli_available: true,
+                    blas_device_available: true,
+                    power_source: "AC Power".to_string(),
+                    on_battery: false,
+                    battery_percent: Some(90),
+                    runtime_mode: "batch".to_string(),
+                    checked_at: "1".to_string(),
+                    notes: vec![],
+                },
             },
             "1".to_string(),
         );
@@ -465,6 +481,18 @@ mod tests {
         assert_eq!(job.job_id, "job-1");
         assert_eq!(job.status, JobStatus::Assigned);
         assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
+    }
+
+    #[test]
+    fn stores_worker_health_snapshot_on_heartbeat() {
+        let state = ready_state();
+        let node = state.nodes.get("node-1").expect("node exists");
+        let worker_health = node.worker_health.as_ref().expect("worker health present");
+        assert!(worker_health.healthy);
+        assert_eq!(worker_health.model_name.as_deref(), Some("demo"));
+        assert_eq!(worker_health.model_path.as_deref(), Some("/tmp/models/demo.gguf"));
+        assert!(worker_health.llama_cli_available);
+        assert!(worker_health.blas_device_available);
     }
 
     #[test]

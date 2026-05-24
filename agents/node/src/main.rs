@@ -176,11 +176,12 @@ fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> 
         updated_at: now_unix_seconds(),
         contribution_percent: config.contribution_percent,
         hostname: detect_hostname(),
-        power_source: health.power_source,
+        power_source: health.power_source.clone(),
         on_battery: health.on_battery,
         battery_percent: health.battery_percent,
         policy_allowed: policy.allowed,
         policy_reason: policy.reason,
+        worker_health: health.clone(),
     }
 }
 

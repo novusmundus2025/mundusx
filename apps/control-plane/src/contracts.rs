@@ -95,6 +95,7 @@ pub struct Heartbeat {
     pub battery_percent: Option<u8>,
     pub policy_allowed: bool,
     pub policy_reason: Option<String>,
+    pub worker_health: WorkerHealthReport,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -140,6 +141,22 @@ pub struct JobCompletion {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerHealthReport {
+    pub healthy: bool,
+    pub model_dir: String,
+    pub model_name: Option<String>,
+    pub model_path: Option<String>,
+    pub llama_cli_available: bool,
+    pub blas_device_available: bool,
+    pub power_source: String,
+    pub on_battery: bool,
+    pub battery_percent: Option<u8>,
+    pub runtime_mode: String,
+    pub checked_at: String,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobEventRecord {
     pub id: u64,
     pub node_id: Option<String>,
@@ -181,6 +198,7 @@ pub struct NodeRecord {
     pub battery_percent: Option<u8>,
     pub policy_allowed: bool,
     pub policy_reason: Option<String>,
+    pub worker_health: Option<WorkerHealthReport>,
     pub updated_at: String,
 }
 

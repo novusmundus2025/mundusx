@@ -9,7 +9,7 @@ http://127.0.0.1:8787
 ```
 
 The root URL (`/`) now returns a small HTML health dashboard for browser checks.
-It includes per-node rows so you can see backend, power, battery, policy state, policy reason, and the current storage source directly in the browser.
+It includes per-node rows so you can see backend, worker health, power, battery, policy state, policy reason, and the current storage source directly in the browser.
 When `OPENGPU_OPERATOR_TOKEN` is configured, the human-facing routes require a matching bearer token.
 
 ## Prototype Endpoints
@@ -90,6 +90,7 @@ The live project has already been updated through `cargo run --manifest-path app
 - battery percent
 - policy allowed / blocked
 - policy reason
+- worker health snapshot
 - last updated timestamp
 - job ID
 - job request ID
@@ -100,7 +101,7 @@ The live project has already been updated through `cargo run --manifest-path app
 ## Current Behavior
 
 - registration inserts or updates a node record
-- heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy fields
+- heartbeat updates the node record, refreshes the timestamp, and stores the Mac policy and worker health fields
 - when Supabase is configured, startup prefers restoring the registry from Supabase before falling back to local JSON
 - the health endpoint and browser dashboard both show whether the live boot restore came from Supabase or the local fallback cache
 - `GET /v1/job-events` returns the durable audit trail for registrations, heartbeats, claims, submissions, and completions
@@ -111,6 +112,7 @@ The live project has already been updated through `cargo run --manifest-path app
 - nodes with `policyAllowed: false` are not eligible for job claims
 - `POST /v1/jobs/complete` stores the worker result and marks the job complete or failed
 - the control plane mirrors registration, heartbeat, claim, job, and completion events into Supabase when configured
+- the control plane stores the worker backend health snapshot inside each node record so the browser dashboard can show readiness before work is assigned
 - status returns a snapshot with:
   - total nodes
   - online count
@@ -134,6 +136,7 @@ The root page (`/`) is a quick operator view, not a full dashboard. It shows:
   - node ID
   - backend
   - node state
+  - worker health summary
   - power source
   - battery state
   - policy allowed / blocked

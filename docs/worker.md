@@ -42,7 +42,17 @@ The prototype worker:
 - returns only the generated answer text from the local model
 - chooses the Mac `M` path when `auto` is passed on Apple Silicon
 - is normally launched by the node agent, not run directly by users
+- reports its own readiness probe through `opengpu-agent health`
+- carries that worker health snapshot through agent heartbeats so the control plane and dashboard can show backend readiness for each node
 
-## Next Step
+## What The Health Check Covers
 
-The worker health check is now available through `opengpu-agent health`. That command also reports whether the current contribution cap and power state permit launching jobs. The next step is to keep extending policy controls around the Mac model runner.
+`opengpu-agent health` now reports:
+
+- whether the cached model exists
+- whether `llama-cli` is available
+- whether the `BLAS` device is available
+- the current power source and battery state
+- the runtime mode and collected notes
+
+That probe is also attached to the signed heartbeat payload so the browser view can show worker readiness alongside the node state.

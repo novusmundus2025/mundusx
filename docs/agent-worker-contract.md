@@ -34,6 +34,7 @@ The agent should periodically send a heartbeat that includes:
 - available memory
 - available GPU percent
 - contribution percent
+- worker health snapshot
 - timestamp
 
 The control plane uses that heartbeat to decide whether the node is:
@@ -108,4 +109,4 @@ The transport and service implementations are partially in place, including:
 
 The device keypair is now the node identity layer. The control plane verifies the node's signed requests instead of requiring a separate contributor login for the machine itself. The hostname is part of the signed contributor identity so the operator can see which physical machine is represented without relying on an unauthenticated label.
 
-The health check command now verifies the local Mac runner without starting a full job, and it also reports whether the current contribution cap is allowed by the Mac power state. The agent now converts that policy into paused heartbeats so the control plane will not assign work when the Mac should stay quiet.
+The health check command now verifies the local Mac runner without starting a full job, and it also reports whether the current contribution cap is allowed by the Mac power state. The agent now converts that policy into paused heartbeats so the control plane will not assign work when the Mac should stay quiet. The same heartbeat also carries the worker health snapshot so the control plane can show readiness before it assigns work.

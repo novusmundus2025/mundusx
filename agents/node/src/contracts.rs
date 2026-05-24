@@ -109,6 +109,7 @@ pub struct Heartbeat {
     pub battery_percent: Option<u8>,
     pub policy_allowed: bool,
     pub policy_reason: Option<String>,
+    pub worker_health: WorkerHealthReport,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

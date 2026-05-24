@@ -39,7 +39,7 @@ Use this document as the single working list:
 ### Worker
 
 - [ ] Real execution payloads
-- [ ] Health checks for worker backends
+- [x] Health checks for worker backends
 
 ### Product Surface
 

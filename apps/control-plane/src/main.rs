@@ -161,6 +161,28 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             if node.on_battery { "battery" } else { "AC" },
             battery
         );
+        let worker_health = node
+            .worker_health
+            .as_ref()
+            .map(|health| {
+                let model_name = health.model_name.as_deref().unwrap_or("none");
+                let model_path = health.model_path.as_deref().unwrap_or("missing");
+                let notes = if health.notes.is_empty() {
+                    "no notes".to_string()
+                } else {
+                    health.notes.join(" • ")
+                };
+                format!(
+                    r#"<div class="meta">worker: {} • model {} • {} • llama-cli {} • BLAS {}</div><div class="meta">{}</div>"#,
+                    if health.healthy { "healthy" } else { "degraded" },
+                    escape_html(model_name),
+                    escape_html(model_path),
+                    if health.llama_cli_available { "yes" } else { "no" },
+                    if health.blas_device_available { "yes" } else { "no" },
+                    escape_html(&notes)
+                )
+            })
+            .unwrap_or_else(|| r#"<div class="meta">worker: unknown</div>"#.to_string());
         let policy_reason = node
             .policy_reason
             .as_ref()
@@ -186,6 +208,7 @@ fn render_nodes(state: &ControlPlaneState) -> String {
               <div>
                 <div>{}</div>
                 <div class="meta">{}</div>
+                {}
               </div>
               <div>
                 <span class="pill" style="background:{};color:{};">{}</span>
@@ -207,6 +230,7 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             escape_html(&node.state.to_string()),
             escape_html(&power),
             escape_html(&node.public_key_fingerprint),
+            worker_health,
             policy_bg,
             policy_fg,
             policy_label,

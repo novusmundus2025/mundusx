@@ -107,6 +107,10 @@ function renderNodes(nodes = []) {
         .map((node) => {
           const battery = node.battery_percent == null ? "unknown" : `${node.battery_percent}%`;
           const power = `${node.power_source ?? "unknown"} • ${node.on_battery ? "battery" : "AC"} • ${battery}`;
+          const workerHealth = node.worker_health ?? null;
+          const workerLine = workerHealth
+            ? `<div class="meta">worker: ${escapeHtml(workerHealth.healthy ? "healthy" : "degraded")} • model ${escapeHtml(workerHealth.model_name ?? "none")} • ${escapeHtml(workerHealth.model_path ?? "missing")} • llama-cli ${workerHealth.llama_cli_available ? "yes" : "no"} • BLAS ${workerHealth.blas_device_available ? "yes" : "no"}</div><div class="meta">${escapeHtml((workerHealth.notes ?? []).length ? workerHealth.notes.join(" • ") : "no notes")}</div>`
+            : `<div class="meta">worker: unknown</div>`;
           const policyTone = node.policy_allowed ? "green" : "red";
           const stateTone =
             node.state === "ready" ? "green" : node.state === "busy" ? "amber" : node.state === "paused" ? "orange" : "red";
@@ -130,6 +134,7 @@ function renderNodes(nodes = []) {
               <div>
                 <div>${escapeHtml(power)}</div>
                 <div class="meta">${escapeHtml(node.available_memory_mb ?? 0)} MB free • ${escapeHtml(node.available_gpu_percent ?? 0)}% GPU free</div>
+                ${workerLine}
               </div>
               <div>${escapeHtml(node.updated_at ?? "unknown")}</div>
             </div>`;

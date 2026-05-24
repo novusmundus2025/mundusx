@@ -9,7 +9,7 @@ flowchart TD
     D --> C[Create or reuse device identity keypair]
     C --> M[Mark machine connected]
     C --> L[Optional opengpu login stores operator token]
-    M --> H[Send signed policy-aware heartbeats to control plane]
+    M --> H[Send signed policy-aware heartbeats with worker health to control plane]
 
     J[Client / SDK / dashboard submits job] --> OP[Operator auth gate]
     OP --> CP[Control plane receives and queues job]
@@ -49,6 +49,7 @@ flowchart TD
 - `Control Plane` chooses where work goes and keeps the live registry.
 - `Control Plane` queues jobs, lets agents claim them, and keeps the live registry.
 - `Control Plane` also records the node power/policy fields from heartbeats so the dashboard can show why a Mac is paused.
+- `Control Plane` also records the worker health snapshot from heartbeats so the dashboard can show backend readiness before it assigns work.
 - `Operator auth` protects the human-facing control-plane routes when `OPENGPU_OPERATOR_TOKEN` is configured.
 - `Device signatures` protect contributor-machine routes (`register`, `heartbeat`, `jobs/next`, and `jobs/complete`).
 - The browser page at `/` shows per-node rows with backend, state, power, battery, policy, and policy reason.
@@ -74,6 +75,7 @@ flowchart TD
 
 - `register`, `heartbeat`, `jobs/next`, and `jobs/complete` are device-authenticated with Ed25519 signatures.
 - The `hostname` is part of the signed contributor identity, so the operator can audit which physical machine is connected.
+- The `worker health snapshot` travels with the signed heartbeat, so the control plane and dashboard can show whether the local runtime is actually ready.
 
 ### Operator requests
 
