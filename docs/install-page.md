@@ -36,6 +36,12 @@ The local dashboard typically runs on `3001`, but you can override `PORT` during
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
 The broader public docs copy is previewable locally from the dashboard at `http://127.0.0.1:<port>/docs`.
 
+For end-to-end localhost testing, point `install.sh` at a local release source with:
+
+```bash
+RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download
+```
+
 ## What The Page Is Not
 
 - Not the installer itself

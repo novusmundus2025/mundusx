@@ -226,31 +226,56 @@ function renderInstallPage() {
     <style>
       :root {
         color-scheme: dark;
-        --bg: #070b11;
-        --panel: #111a28;
-        --panel-2: #151f30;
-        --line: #283649;
-        --text: #e8eefc;
-        --muted: #95a5bc;
-        --green: #89e8a4;
+        --bg: #050816;
+        --bg-2: #0a1030;
+        --panel: rgba(10, 15, 34, 0.72);
+        --panel-2: rgba(17, 24, 46, 0.84);
+        --line: rgba(163, 184, 255, 0.18);
+        --line-strong: rgba(163, 184, 255, 0.32);
+        --text: #eff4ff;
+        --muted: #9caaca;
+        --muted-2: #7180a0;
+        --green: #8ef0aa;
         --blue: #a9c8ff;
+        --cyan: #89e7ff;
         --amber: #ffd58d;
+        --violet: #c7a7ff;
+        --shadow: 0 28px 100px rgba(0, 0, 0, 0.45);
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100vh;
         background:
-          radial-gradient(circle at top left, rgba(100, 140, 255, 0.18), transparent 30%),
-          radial-gradient(circle at top right, rgba(120, 255, 195, 0.08), transparent 28%),
-          linear-gradient(180deg, #070b11 0%, #090d14 100%);
+          radial-gradient(circle at 15% 15%, rgba(105, 123, 255, 0.34), transparent 0 30%),
+          radial-gradient(circle at 85% 18%, rgba(77, 233, 255, 0.18), transparent 0 24%),
+          radial-gradient(circle at 60% 78%, rgba(176, 126, 255, 0.14), transparent 0 28%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
         color: var(--text);
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-family:
+          "SF Pro Display",
+          "SF Pro Text",
+          "Segoe UI",
+          "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+        background-size: 72px 72px;
+        mask-image: radial-gradient(circle at center, black 45%, transparent 88%);
+        opacity: 0.45;
       }
       .wrap {
-        max-width: 1120px;
+        max-width: 1200px;
         margin: 0 auto;
-        padding: 32px 20px 56px;
+        padding: 28px 20px 56px;
       }
       .topbar {
         display: flex;
@@ -258,7 +283,7 @@ function renderInstallPage() {
         justify-content: space-between;
         gap: 16px;
         flex-wrap: wrap;
-        margin-bottom: 16px;
+        margin-bottom: 18px;
         color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.08em;
@@ -267,32 +292,50 @@ function renderInstallPage() {
       .brand {
         color: var(--text);
         font-weight: 700;
+        letter-spacing: 0.12em;
       }
       .hero {
+        position: relative;
+        overflow: hidden;
         border: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(21, 31, 48, 0.95), rgba(12, 17, 27, 0.95));
-        border-radius: 22px;
-        padding: 28px;
-        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+        background:
+          linear-gradient(180deg, rgba(17, 24, 43, 0.92), rgba(9, 13, 23, 0.96)),
+          linear-gradient(135deg, rgba(92, 126, 255, 0.12), rgba(123, 235, 255, 0.04));
+        border-radius: 28px;
+        padding: 30px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at 20% 10%, rgba(120, 143, 255, 0.12), transparent 28%),
+          radial-gradient(circle at 86% 16%, rgba(123, 235, 255, 0.11), transparent 22%);
+        pointer-events: none;
       }
       h1 {
         margin: 0;
-        font-size: 34px;
-        letter-spacing: 0.1em;
+        max-width: 11ch;
+        font-size: clamp(44px, 6vw, 76px);
+        line-height: 0.95;
+        letter-spacing: -0.06em;
         text-transform: uppercase;
       }
       .sub {
-        margin-top: 12px;
+        margin-top: 16px;
         color: var(--muted);
-        line-height: 1.6;
-        max-width: 72ch;
+        line-height: 1.7;
+        max-width: 62ch;
+        font-size: 16px;
       }
       .hero-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
-        gap: 18px;
+        grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+        gap: 22px;
         align-items: start;
-        margin-top: 24px;
+        margin-top: 28px;
       }
       .stack {
         display: grid;
@@ -301,32 +344,34 @@ function renderInstallPage() {
       }
       .panel {
         border: 1px solid var(--line);
-        border-radius: 18px;
-        background: rgba(10, 15, 24, 0.72);
-        padding: 18px 20px;
+        border-radius: 20px;
+        background: rgba(8, 12, 21, 0.72);
+        padding: 18px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       .label {
         color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.08em;
         font-size: 12px;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
       }
       .command {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 14px;
-        padding: 16px 18px;
-        border-radius: 14px;
-        background: rgba(6, 10, 16, 0.9);
-        border: 1px solid rgba(169, 200, 255, 0.22);
-        font-size: 16px;
+        padding: 18px 18px;
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(9, 13, 22, 0.98), rgba(5, 8, 16, 0.98));
+        border: 1px solid var(--line-strong);
+        font-size: 15px;
         overflow-x: auto;
       }
       code {
         color: #f7fbff;
         white-space: nowrap;
+        font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
       }
       .pill {
         display: inline-flex;
@@ -338,31 +383,31 @@ function renderInstallPage() {
         text-transform: uppercase;
         border: 1px solid rgba(169, 200, 255, 0.22);
         color: var(--blue);
-        background: rgba(169, 200, 255, 0.1);
+        background: rgba(169, 200, 255, 0.08);
       }
       .grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 16px;
-        margin-top: 22px;
+        margin-top: 18px;
       }
       .card {
         border: 1px solid var(--line);
-        border-radius: 16px;
-        background: rgba(17, 26, 40, 0.75);
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(16, 23, 39, 0.82), rgba(9, 13, 22, 0.78));
         padding: 18px;
       }
       .card strong {
         display: block;
-        margin-bottom: 8px;
-        font-size: 14px;
+        margin-bottom: 10px;
+        font-size: 13px;
         text-transform: uppercase;
         letter-spacing: 0.08em;
       }
       .card p {
         margin: 0;
         color: var(--muted);
-        line-height: 1.6;
+        line-height: 1.7;
       }
       ul {
         margin: 0;
@@ -390,8 +435,8 @@ function renderInstallPage() {
         gap: 14px;
         padding: 14px 16px;
         border: 1px solid var(--line);
-        border-radius: 14px;
-        background: rgba(6, 10, 16, 0.64);
+        border-radius: 16px;
+        background: rgba(7, 11, 18, 0.68);
       }
       .step-num {
         width: 30px;
@@ -416,10 +461,49 @@ function renderInstallPage() {
         color: var(--muted);
         line-height: 1.6;
       }
+      .command-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        flex: 0 0 auto;
+      }
+      .copy-btn {
+        border: 1px solid rgba(169, 200, 255, 0.22);
+        background: rgba(169, 200, 255, 0.1);
+        color: var(--text);
+        border-radius: 12px;
+        padding: 10px 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+      .copy-btn:hover {
+        border-color: rgba(169, 200, 255, 0.42);
+        background: rgba(169, 200, 255, 0.14);
+      }
+      .micro {
+        color: var(--muted-2);
+        font-size: 12px;
+        margin-top: 8px;
+      }
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(143, 161, 210, 0.2);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.02);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
       @media (max-width: 760px) {
         .grid { grid-template-columns: 1fr; }
         .command { align-items: flex-start; flex-direction: column; }
+        .command-actions { width: 100%; justify-content: space-between; }
         .hero-grid { grid-template-columns: 1fr; }
+        h1 { max-width: none; }
       }
     </style>
   </head>
@@ -428,12 +512,11 @@ function renderInstallPage() {
       <div class="hero">
         <div class="topbar">
           <div class="brand">OpenGPU Install</div>
-          <div>Mac-first release channel</div>
+          <div class="eyebrow">Mac-first release channel • localhost preview</div>
         </div>
-        <div class="pill">localhost preview • mirrors the future public page</div>
         <h1>Install OpenGPU on your Mac</h1>
         <div class="sub">
-          Get the Mac-first OpenGPU CLI with one command. The installer downloads the signed
+          Fast, local-first installation for Apple Silicon. The installer fetches the signed
           release binary, verifies checksums when available, and sets you up for
           <code>opengpu onboarding</code> and <code>opengpu start</code>.
         </div>
@@ -444,8 +527,12 @@ function renderInstallPage() {
               <div class="label">Copy the install command</div>
               <div class="command">
                 <code>curl -fsSL https://novusx.ai/install | bash</code>
-                <span class="pill">one command</span>
+                <div class="command-actions">
+                  <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'copied'; }).catch(() => {});">Copy</button>
+                  <span class="pill">one command</span>
+                </div>
               </div>
+              <div class="micro" id="copy-status">local preview only</div>
             </div>
 
             <div class="grid">
