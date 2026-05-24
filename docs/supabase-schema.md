@@ -51,8 +51,10 @@ Suggested columns:
 - `user_id` UUID references `users.id`
 - `public_key_fingerprint` text unique
 - `public_key_hex` text unique
+- `identity_trust_path` text
 - `backend` text
 - `contribution_percent` integer
+- `identity_trust_path` text
 - `power_source` text
 - `on_battery` boolean
 - `battery_percent` integer nullable
@@ -66,7 +68,7 @@ Suggested columns:
 - `created_at` timestamptz
 - `updated_at` timestamptz
 
-The contributor node signs device requests with its local private key. The control plane verifies the signature using the stored `public_key_hex` before accepting register, heartbeat, claim, or completion requests. The signed device record also carries the machine hostname so contributor identity is easier to audit and review.
+The contributor node signs device requests with its local private key. The control plane verifies the signature using the stored `public_key_hex` before accepting register, heartbeat, claim, or completion requests. The signed device record also carries the machine hostname and `identity_trust_path` so contributor identity is easier to audit and review.
 
 ### `heartbeats`
 

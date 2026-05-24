@@ -27,7 +27,7 @@ When `OPENGPU_OPERATOR_TOKEN` is configured, the human-facing routes require a m
 - `POST /v1/jobs/complete` - complete a claimed job
 
 Agent-only routes are signed with the node's existing device keypair and are verified by the control plane before being accepted.
-The signed contributor identity includes the node ID, hostname, public key fingerprint, and the node's public key.
+The signed contributor identity includes the node ID, hostname, `identityTrustPath`, public key fingerprint, and the node's public key.
 
 ## Submitting A Job
 
@@ -82,6 +82,7 @@ The live project has already been updated through `cargo run --manifest-path app
 
 - node ID
 - hostname
+- identityTrustPath
 - public key fingerprint
 - public key
 - backend

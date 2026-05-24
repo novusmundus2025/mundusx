@@ -206,6 +206,7 @@ impl ControlPlaneState {
             public_key_fingerprint: registration.public_key_fingerprint,
             public_key_hex: registration.public_key_hex,
             hostname: registration.hostname,
+            identity_trust_path: registration.identity_trust_path,
             backend: registration.backend,
             contribution_percent: registration.contribution_percent,
             agent_version: registration.agent_version,
@@ -352,6 +353,7 @@ impl ControlPlaneState {
                 .get(&heartbeat.node_id)
                 .map(|node| node.hostname.clone())
                 .unwrap_or_default(),
+            identity_trust_path: heartbeat.identity_trust_path.clone(),
             backend: heartbeat.backend,
             contribution_percent: heartbeat.contribution_percent,
             agent_version: self
@@ -429,6 +431,7 @@ mod tests {
             public_key_fingerprint: "fingerprint".to_string(),
             public_key_hex: "aabbcc".to_string(),
             hostname: "host-1".to_string(),
+            identity_trust_path: "local-encrypted-fallback".to_string(),
             backend: Backend::M,
             contribution_percent: 50,
             agent_version: "0.1.0".to_string(),
@@ -444,6 +447,7 @@ mod tests {
                 updated_at: "1".to_string(),
                 contribution_percent: 50,
                 hostname: "host-1".to_string(),
+                identity_trust_path: "local-encrypted-fallback".to_string(),
                 power_source: "AC Power".to_string(),
                 on_battery: false,
                 battery_percent: Some(90),

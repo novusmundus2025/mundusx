@@ -17,6 +17,12 @@ The control plane now includes a small migration runner so the schema is no long
 1. `supabase/migrations/0001_rls.sql`
    - enables RLS and revokes direct access from `anon` and `authenticated`
 
+2. `supabase/migrations/0002_job_execution_payload.sql`
+   - adds execution profile fields to jobs
+
+3. `supabase/migrations/0003_identity_trust_path.sql`
+   - stores the node identity trust path on devices and heartbeats
+
 ## How To Run
 
 From the repo root:
@@ -31,5 +37,6 @@ The command uses `DATABASE_URL` from `/.env`.
 
 - the live Supabase project must have the schema applied
 - the live Supabase project must have the RLS rollout applied
+- the live Supabase project must have the execution payload and identity trust path migrations applied
 - the control plane must restart and report `storage_source: supabase`
 - the browser dashboard must show restored state from Supabase

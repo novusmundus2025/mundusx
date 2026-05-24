@@ -33,7 +33,7 @@ The old plain file-backed prototype remains only for non-macOS development paths
 
 1. The CLI or agent creates a device key locally and immediately stores it in encrypted-at-rest form.
 2. The app records the public key, fingerprint, hostname, and a stable machine label.
-3. The control plane stores the public key, fingerprint, hostname, and device metadata.
+3. The control plane stores the public key, fingerprint, hostname, `identityTrustPath`, and device metadata.
 4. The device uses the same encrypted identity record for future signed requests.
 
 ### Normal start

@@ -68,6 +68,20 @@ impl DeviceIdentity {
     }
 }
 
+pub fn trust_path() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        return macos_identity::trust_path(&macos_storage_dir())
+            .unwrap_or("local-encrypted-fallback")
+            .to_string();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "legacy-file".to_string()
+    }
+}
+
 pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
     #[cfg(target_os = "macos")]
     {

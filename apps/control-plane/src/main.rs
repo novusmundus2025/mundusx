@@ -140,6 +140,7 @@ fn render_nodes(state: &ControlPlaneState) -> String {
         <div class="thead">
           <div>Node</div>
           <div>Host</div>
+          <div>Trust</div>
           <div>Backend</div>
           <div>State</div>
           <div>Power</div>
@@ -200,6 +201,10 @@ fn render_nodes(state: &ControlPlaneState) -> String {
                 <div>{}</div>
                 <div class="meta">signed device</div>
               </div>
+              <div>
+                <div>{}</div>
+                <div class="meta">identity path</div>
+              </div>
               <div><span class="pill" style="background:{};color:{};">{}</span></div>
               <div>
                 <span class="pill" style="background:{};color:{};">{}</span>
@@ -221,6 +226,7 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             node.contribution_percent,
             node.available_gpu_percent,
             escape_html(&node.hostname),
+            escape_html(&node.identity_trust_path),
             escape_html(&node.backend.to_string()),
             state_bg,
             state_fg,
