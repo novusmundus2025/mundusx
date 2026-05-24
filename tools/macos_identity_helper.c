@@ -102,18 +102,136 @@ static void print_cf_error(CFErrorRef error) {
     }
 }
 
-static CFDataRef application_label_from_key(SecKeyRef key) {
-    CFDictionaryRef attributes = SecKeyCopyAttributes(key);
-    if (attributes == NULL) {
+static SecKeyRef create_private_key(CFDataRef app_tag, bool secure_enclave, CFErrorRef *error) {
+    CFNumberRef key_size = NULL;
+    int key_bits = 256;
+    key_size = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &key_bits);
+    if (key_size == NULL) {
         return NULL;
     }
 
-    CFDataRef label = (CFDataRef)CFDictionaryGetValue(attributes, kSecAttrApplicationLabel);
-    if (label != NULL) {
-        CFRetain(label);
+    CFDictionaryRef attrs = NULL;
+    if (secure_enclave) {
+        CFErrorRef access_error = NULL;
+        SecAccessControlRef access_control = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAccessControlPrivateKeyUsage,
+            &access_error
+        );
+        if (access_control == NULL) {
+            print_cf_error(access_error);
+            if (access_error != NULL) {
+                CFRelease(access_error);
+            }
+            CFRelease(key_size);
+            return NULL;
+        }
+
+        const void *private_attrs_keys[] = {
+            kSecAttrIsPermanent,
+            kSecAttrApplicationTag,
+            kSecAttrAccessControl,
+        };
+        const void *private_attrs_values[] = {
+            kCFBooleanTrue,
+            app_tag,
+            access_control,
+        };
+        CFDictionaryRef private_attrs = CFDictionaryCreate(
+            kCFAllocatorDefault,
+            private_attrs_keys,
+            private_attrs_values,
+            3,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks
+        );
+        CFRelease(access_control);
+        if (private_attrs == NULL) {
+            CFRelease(key_size);
+            return NULL;
+        }
+
+        const void *attrs_keys[] = {
+            kSecAttrKeyType,
+            kSecAttrKeySizeInBits,
+            kSecAttrTokenID,
+            kSecPrivateKeyAttrs,
+        };
+        const void *attrs_values[] = {
+            kSecAttrKeyTypeECSECPrimeRandom,
+            key_size,
+            kSecAttrTokenIDSecureEnclave,
+            private_attrs,
+        };
+        attrs = CFDictionaryCreate(
+            kCFAllocatorDefault,
+            attrs_keys,
+            attrs_values,
+            4,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks
+        );
+        CFRelease(private_attrs);
+    } else {
+        const void *private_attrs_keys[] = {
+            kSecAttrIsPermanent,
+            kSecAttrApplicationTag,
+        };
+        const void *private_attrs_values[] = {
+            kCFBooleanTrue,
+            app_tag,
+        };
+        CFDictionaryRef private_attrs = CFDictionaryCreate(
+            kCFAllocatorDefault,
+            private_attrs_keys,
+            private_attrs_values,
+            2,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks
+        );
+        if (private_attrs == NULL) {
+            CFRelease(key_size);
+            return NULL;
+        }
+
+        const void *attrs_keys[] = {
+            kSecAttrKeyType,
+            kSecAttrKeySizeInBits,
+            kSecPrivateKeyAttrs,
+        };
+        const void *attrs_values[] = {
+            kSecAttrKeyTypeECSECPrimeRandom,
+            key_size,
+            private_attrs,
+        };
+        attrs = CFDictionaryCreate(
+            kCFAllocatorDefault,
+            attrs_keys,
+            attrs_values,
+            3,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks
+        );
+        CFRelease(private_attrs);
     }
-    CFRelease(attributes);
-    return label;
+    CFRelease(key_size);
+    if (attrs == NULL) {
+        return NULL;
+    }
+
+    CFErrorRef create_error = NULL;
+    SecKeyRef private_key = SecKeyCreateRandomKey(attrs, &create_error);
+    CFRelease(attrs);
+    if (private_key == NULL) {
+        if (error != NULL) {
+            *error = create_error;
+        } else if (create_error != NULL) {
+            CFRelease(create_error);
+        }
+        return NULL;
+    }
+    return private_key;
 }
 
 static CFDataRef public_key_data_from_key(SecKeyRef key, CFErrorRef *error) {
@@ -139,13 +257,15 @@ static SecKeyRef load_private_key(const char *label_hex, bool allow_create, bool
 
         const void *query_keys[] = {
             kSecClass,
-            kSecAttrApplicationLabel,
+            kSecAttrApplicationTag,
+            kSecAttrKeyType,
             kSecReturnRef,
             kSecMatchLimit,
         };
         const void *query_values[] = {
             kSecClassKey,
             label_data,
+            kSecAttrKeyTypeECSECPrimeRandom,
             kCFBooleanTrue,
             kSecMatchLimitOne,
         };
@@ -198,99 +318,40 @@ static SecKeyRef load_private_key(const char *label_hex, bool allow_create, bool
         return NULL;
     }
 
-    CFNumberRef key_size = NULL;
-    int key_bits = 256;
-    key_size = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &key_bits);
-    if (key_size == NULL) {
-        if (created != NULL) {
-            *created = false;
-        }
-        return NULL;
-    }
-
-    CFStringRef label = CFStringCreateWithCString(kCFAllocatorDefault, kService, kCFStringEncodingUTF8);
-    if (label == NULL) {
-        CFRelease(key_size);
-        if (created != NULL) {
-            *created = false;
-        }
-        return NULL;
-    }
-
-    const void *attrs_keys[] = {
-        kSecAttrKeyType,
-        kSecAttrKeySizeInBits,
-        kSecAttrIsPermanent,
-        kSecAttrTokenID,
-        kSecAttrLabel,
-        kSecAttrAccessControl,
-    };
-
-    CFErrorRef access_error = NULL;
-    SecAccessControlRef access_control = SecAccessControlCreateWithFlags(
+    CFDataRef app_tag = CFDataCreate(
         kCFAllocatorDefault,
-        kSecAttrAccessibleWhenUnlocked,
-        kSecAccessControlPrivateKeyUsage,
-        &access_error
+        (const UInt8 *)kService,
+        (CFIndex)strlen(kService)
     );
-    if (access_control == NULL) {
-        print_cf_error(access_error);
-        if (access_error != NULL) {
-            CFRelease(access_error);
-        }
-        CFRelease(key_size);
-        CFRelease(label);
+    if (app_tag == NULL) {
         if (created != NULL) {
             *created = false;
         }
         return NULL;
     }
 
-    const void *attrs_values[] = {
-        kSecAttrKeyTypeEC,
-        key_size,
-        kCFBooleanTrue,
-        kSecAttrTokenIDSecureEnclave,
-        label,
-        access_control,
-    };
-
-    CFDictionaryRef attrs = CFDictionaryCreate(
-        kCFAllocatorDefault,
-        attrs_keys,
-        attrs_values,
-        5,
-        &kCFTypeDictionaryKeyCallBacks,
-        &kCFTypeDictionaryValueCallBacks
-    );
-    CFRelease(key_size);
-    CFRelease(label);
-    CFRelease(access_control);
-    if (attrs == NULL) {
-        if (created != NULL) {
-            *created = false;
+    CFErrorRef create_error = NULL;
+    SecKeyRef private_key = create_private_key(app_tag, true, &create_error);
+    if (private_key == NULL) {
+        if (create_error != NULL) {
+            CFRelease(create_error);
+            create_error = NULL;
         }
-        return NULL;
-    }
-
-    SecKeyRef private_key = NULL;
-    SecKeyRef public_key = NULL;
-    OSStatus status = SecKeyGeneratePair(attrs, &public_key, &private_key);
-    CFRelease(attrs);
-    if (public_key != NULL) {
-        CFRelease(public_key);
-    }
-    if (status != errSecSuccess || private_key == NULL) {
-        fprintf(stderr, "key creation failed with status %d\n", (int)status);
-        if (created != NULL) {
-            *created = false;
+        private_key = create_private_key(app_tag, false, &create_error);
+        if (private_key == NULL) {
+            print_cf_error(create_error);
+            if (create_error != NULL) {
+                CFRelease(create_error);
+            }
+            CFRelease(app_tag);
+            if (created != NULL) {
+                *created = false;
+            }
+            return NULL;
         }
-        return NULL;
     }
 
-    if (created != NULL) {
-        *created = true;
-    }
+    CFRelease(app_tag);
     return private_key;
 }
 
@@ -348,32 +409,22 @@ static int ensure_identity(const char *label_hex) {
         return 1;
     }
 
-    CFDataRef app_label = application_label_from_key(private_key);
-    if (app_label == NULL) {
-        fprintf(stderr, "failed to read application label\n");
-        CFRelease(public_data);
-        CFRelease(private_key);
-        return 1;
-    }
-
     const UInt8 *public_bytes = CFDataGetBytePtr(public_data);
     CFIndex public_length = CFDataGetLength(public_data);
     char *public_hex = hex_encode(public_bytes, (size_t)public_length);
     if (public_hex == NULL) {
         fprintf(stderr, "failed to encode public key\n");
-        CFRelease(app_label);
         CFRelease(public_data);
         CFRelease(private_key);
         return 1;
     }
 
-    const UInt8 *label_bytes = CFDataGetBytePtr(app_label);
-    CFIndex label_length = CFDataGetLength(app_label);
+    const UInt8 *label_bytes = (const UInt8 *)kService;
+    CFIndex label_length = (CFIndex)strlen(kService);
     char *label_hex_output = hex_encode(label_bytes, (size_t)label_length);
     if (label_hex_output == NULL) {
-        fprintf(stderr, "failed to encode application label\n");
+        fprintf(stderr, "failed to encode application tag\n");
         free(public_hex);
-        CFRelease(app_label);
         CFRelease(public_data);
         CFRelease(private_key);
         return 1;
@@ -386,7 +437,6 @@ static int ensure_identity(const char *label_hex) {
             fprintf(stderr, "failed to compute fingerprint\n");
             free(public_hex);
             free(label_hex_output);
-            CFRelease(app_label);
             CFRelease(public_data);
             CFRelease(private_key);
             return 1;
@@ -419,7 +469,6 @@ static int ensure_identity(const char *label_hex) {
     if (fingerprint_ref != NULL) {
         CFRelease(fingerprint_ref);
     }
-    CFRelease(app_label);
     CFRelease(public_data);
     CFRelease(private_key);
     return 0;

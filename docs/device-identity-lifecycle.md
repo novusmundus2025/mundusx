@@ -17,11 +17,11 @@ Those components should only be able to ask the local system to sign a request.
 
 Use OS-managed secure storage instead of a plain file:
 
-- macOS: Secure Enclave-backed signing, with a stable application label for lookup
+- macOS: Secure Enclave-backed signing when available, with a stable application tag for lookup and a simpler keychain-backed fallback when needed
 - Windows: TPM-backed or CNG / KSP-backed key storage
 - Linux: TPM / PKCS#11 / system keyring when available
 
-The current macOS implementation uses a helper that only exposes `ensure`, `sign`, and `verify`. The Rust CLI and agent keep the private key out of their own config files, and only persist the public metadata plus the keychain lookup label. On macOS, the persisted JSON omits the private-key field entirely rather than storing even an empty placeholder.
+The current macOS implementation uses a helper that only exposes `ensure`, `sign`, and `verify`. The Rust CLI and agent keep the private key out of their own config files, and only persist the public metadata plus the keychain lookup tag. On macOS, the persisted JSON omits the private-key field entirely rather than storing even an empty placeholder.
 
 The old file-backed prototype remains only for non-macOS development paths.
 
@@ -30,13 +30,13 @@ The old file-backed prototype remains only for non-macOS development paths.
 ### First enrollment
 
 1. The CLI or agent asks the OS to create a non-exportable device key.
-2. The OS returns a public key, a signing handle, and a stable lookup label.
+2. The OS returns a public key, a signing handle, and a stable lookup tag.
 3. The control plane stores the public key, fingerprint, hostname, and device metadata.
 4. The device uses the same signing handle for future signed requests.
 
 ### Normal start
 
-1. `opengpu start` or the agent looks for the existing secure-store key using the saved lookup label.
+1. `opengpu start` or the agent looks for the existing secure-store key using the saved lookup tag.
 2. If the key is present, it is reused.
 3. The control plane sees the same contributor identity.
 
