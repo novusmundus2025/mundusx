@@ -36,7 +36,7 @@ For the matching localhost release source, run `scripts/local-release-preview.sh
 
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
 The broader docs copy is previewable locally from the dashboard at `http://127.0.0.1:<port>/docs`.
-The same page also exposes a machine-readable manifest at `http://127.0.0.1:<port>/install.json` so future public install tooling can consume the same command and release-source metadata.
+The install page itself is now a shell that loads its command and release metadata from the machine-readable manifest at `http://127.0.0.1:<port>/install.json` so the HTML, installer, and release source stay in sync.
 For a one-shot local verification pass, run `scripts/localhost-smoke.sh`.
 
 For end-to-end localhost testing, point `install.sh` at a local release source with:

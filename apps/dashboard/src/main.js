@@ -394,6 +394,11 @@ function renderInstallPage() {
         background: #fff;
         overflow-x: auto;
       }
+      .command-shell {
+        min-height: 54px;
+        display: flex;
+        align-items: center;
+      }
       code {
         font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
         font-size: 14px;
@@ -454,6 +459,22 @@ function renderInstallPage() {
       .footer code {
         font-size: 12px;
       }
+      .manifest-note {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .manifest-note strong {
+        color: var(--text);
+      }
+      .manifest-status {
+        margin-top: 12px;
+        color: var(--blue);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
       @media (max-width: 900px) {
         .hero {
           grid-template-columns: 1fr;
@@ -500,8 +521,8 @@ function renderInstallPage() {
           <div class="install-card" id="command">
           <div class="label">Install command</div>
           <div class="command">
-            <code>${escapeHtml(installCommand)}</code>
-            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('${escapeHtml(installCommand)}').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
+            <div class="command-shell"><code id="install-command">Loading install manifest...</code></div>
+            <button class="copy-btn" id="copy-button" type="button" disabled>Copy</button>
           </div>
           <div class="label" style="margin-top: 18px;">Install flow</div>
           <div class="install-list">
@@ -527,6 +548,12 @@ function renderInstallPage() {
               </div>
             </div>
           </div>
+          <div class="manifest-status" id="manifest-status">Fetching /install.json…</div>
+          <div class="manifest-note">
+            The install page is now a shell that reads the command and release metadata from
+            <strong>/install.json</strong> so the HTML, installer, and release preview stay in
+            sync.
+          </div>
           <div class="footer" id="copy-status">
             Local preview only. Public domain comes later.
           </div>
@@ -538,6 +565,76 @@ function renderInstallPage() {
         <code>${escapeHtml(appUrl)}/docs</code>
       </div>
     </div>
+    <script>
+      (async () => {
+        const statusEl = document.getElementById("manifest-status");
+        const commandEl = document.getElementById("install-command");
+        const copyButton = document.getElementById("copy-button");
+        const copyStatus = document.getElementById("copy-status");
+
+        try {
+          const response = await fetch("/install.json", { headers: { Accept: "application/json" } });
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+
+          const manifest = await response.json();
+          const installCommand = String(manifest.install_command ?? "");
+          const docsPage = String(manifest.docs_page ?? "/docs/install");
+          const releaseBaseUrl = String(manifest.release_base_url ?? "");
+          const onboardingCommand = String(manifest.onboarding_command ?? "opengpu onboarding");
+          const capCommand = String(manifest.cap_command ?? "opengpu cap");
+          const startCommand = String(manifest.start_command ?? "opengpu start");
+
+          if (commandEl) {
+            commandEl.textContent = installCommand;
+          }
+          if (copyButton) {
+            copyButton.disabled = false;
+            copyButton.addEventListener("click", async () => {
+              try {
+                await navigator.clipboard.writeText(installCommand);
+                if (copyStatus) {
+                  copyStatus.textContent = "Copied to clipboard";
+                }
+              } catch (_) {
+                if (copyStatus) {
+                  copyStatus.textContent = "Copy failed; select and copy the command manually";
+                }
+              }
+            });
+          }
+          if (statusEl) {
+            statusEl.textContent = "Manifest loaded from /install.json";
+          }
+
+          const footer = document.querySelector(".manifest-note");
+          if (footer) {
+            footer.innerHTML =
+              "The install page is now a shell that reads the command and release metadata from " +
+              "<strong>/install.json</strong> so the HTML, installer, and release preview stay in sync. " +
+              "Follow up with <code>" +
+              onboardingCommand +
+              "</code>, <code>" +
+              capCommand +
+              "</code>, then <code>" +
+              startCommand +
+              "</code>. Docs preview: <code>" +
+              docsPage +
+              "</code>. Release source: <code>" +
+              releaseBaseUrl +
+              "</code>.";
+          }
+        } catch (error) {
+          if (statusEl) {
+            statusEl.textContent = "Manifest load failed";
+          }
+          if (commandEl) {
+            commandEl.textContent = "Unable to load install manifest";
+          }
+        }
+      })();
+    </script>
   </body>
 </html>`;
 }
