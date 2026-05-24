@@ -35,6 +35,7 @@ The local dashboard typically runs on `3001`, but you can override `PORT` during
 
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
 The broader docs copy is previewable locally from the dashboard at `http://127.0.0.1:<port>/docs`.
+For a one-shot local verification pass, run `scripts/localhost-smoke.sh`.
 
 For end-to-end localhost testing, point `install.sh` at a local release source with:
 
