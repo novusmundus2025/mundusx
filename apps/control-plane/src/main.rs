@@ -10,13 +10,13 @@ use contracts::{
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::{applied_migrations, apply_migrations};
 use state::{load_state, save_state, state_path, ControlPlaneState};
-use supabase::SupabaseMirror;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use supabase::SupabaseMirror;
 use uuid::Uuid;
 
 #[cfg(target_os = "macos")]
@@ -634,8 +634,7 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
       </div>
     </div>
   </body>
-</html>"#
-        ,
+</html>"#,
         node_rows = render_nodes(state),
         storage_source = escape_html(storage_source.as_str())
     )
@@ -663,7 +662,11 @@ fn parse_request(request: &str) -> RequestParts {
             headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
         }
     }
-    let body = request.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+    let body = request
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
     RequestParts {
         method,
         path,
@@ -694,7 +697,9 @@ fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
 }
 
 fn header_value<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
-    headers.get(&key.to_ascii_lowercase()).map(|value| value.as_str())
+    headers
+        .get(&key.to_ascii_lowercase())
+        .map(|value| value.as_str())
 }
 
 fn requires_device_signature(method: &str, path: &str) -> bool {
@@ -708,9 +713,9 @@ fn requires_device_signature(method: &str, path: &str) -> bool {
 }
 
 fn requires_operator_auth(method: &str, path: &str) -> bool {
-        matches!(
-            (method, path),
-            ("GET", "/")
+    matches!(
+        (method, path),
+        ("GET", "/")
             | ("GET", "/v1/status")
             | ("GET", "/v1/nodes")
             | ("GET", "/v1/jobs")
@@ -760,10 +765,11 @@ fn verify_signature(
         return Err("signature verification failed".to_string());
     }
 
-    let public_bytes: [u8; 32] = public_bytes
-        .try_into()
-        .map_err(|_| "public key must be 32 bytes or macOS secure-enclave public key".to_string())?;
-    let verifying_key = VerifyingKey::from_bytes(&public_bytes).map_err(|error| error.to_string())?;
+    let public_bytes: [u8; 32] = public_bytes.try_into().map_err(|_| {
+        "public key must be 32 bytes or macOS secure-enclave public key".to_string()
+    })?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&public_bytes).map_err(|error| error.to_string())?;
     let signature_bytes = hex::decode(signature_hex).map_err(|error| error.to_string())?;
     let signature = Signature::from_slice(&signature_bytes).map_err(|error| error.to_string())?;
     verifying_key
@@ -811,7 +817,14 @@ fn authorize_device_request(
         node_public_key_hex(state, node_id).ok_or_else(|| "unknown node".to_string())?
     };
 
-    verify_signature(&public_key_hex, method, request_path, timestamp, body, signature)
+    verify_signature(
+        &public_key_hex,
+        method,
+        request_path,
+        timestamp,
+        body,
+        signature,
+    )
 }
 
 fn operator_auth_token() -> Option<String> {
@@ -862,7 +875,8 @@ fn handle_connection(
     let bytes_read = match read_result {
         Ok(bytes) => bytes,
         Err(error) => {
-            let _ = stream.write_all(text_response("400 Bad Request", &error.to_string()).as_bytes());
+            let _ =
+                stream.write_all(text_response("400 Bad Request", &error.to_string()).as_bytes());
             return;
         }
     };
@@ -898,7 +912,10 @@ fn handle_connection(
             html_response("200 OK", &control_plane_home(&snapshot, storage_source))
         }
         ("GET", "/health") => {
-            let snapshot = state.lock().expect("state lock").snapshot(storage_source.as_str());
+            let snapshot = state
+                .lock()
+                .expect("state lock")
+                .snapshot(storage_source.as_str());
             json_response(
                 "200 OK",
                 serde_json::json!({
@@ -910,7 +927,10 @@ fn handle_connection(
             )
         }
         ("GET", "/v1/status") => {
-            let snapshot = state.lock().expect("state lock").snapshot(storage_source.as_str());
+            let snapshot = state
+                .lock()
+                .expect("state lock")
+                .snapshot(storage_source.as_str());
             json_response("200 OK", snapshot)
         }
         ("GET", "/v1/nodes") => {
@@ -960,41 +980,43 @@ fn handle_connection(
                 text_response("400 Bad Request", "missing node_id")
             }
         }
-        ("POST", "/v1/register") => match serde_json::from_str::<AgentRegistration>(&request.body) {
-            Ok(registration) => {
-                let registration_clone = registration.clone();
-                let mut guard = state.lock().expect("state lock");
-                let record = guard.register(registration);
-                let event = guard.record_job_event(
-                    Some(record.node_id.clone()),
-                    None,
-                    "registration",
-                    serde_json::to_value(&record).expect("json"),
-                    now_unix_seconds(),
-                );
-                if let Err(error) = save_state(&guard) {
-                    eprintln!("failed to save control-plane state: {error}");
-                }
-                if let Some(db) = supabase.as_ref() {
-                    if let Err(error) = db.record_registration(&registration_clone) {
-                        eprintln!("database registration sync skipped: {error}");
+        ("POST", "/v1/register") => {
+            match serde_json::from_str::<AgentRegistration>(&request.body) {
+                Ok(registration) => {
+                    let registration_clone = registration.clone();
+                    let mut guard = state.lock().expect("state lock");
+                    let record = guard.register(registration);
+                    let event = guard.record_job_event(
+                        Some(record.node_id.clone()),
+                        None,
+                        "registration",
+                        serde_json::to_value(&record).expect("json"),
+                        now_unix_seconds(),
+                    );
+                    if let Err(error) = save_state(&guard) {
+                        eprintln!("failed to save control-plane state: {error}");
                     }
-                    if let Err(error) = db.record_job_event(
-                        event.node_id.as_deref(),
-                        event.job_id.as_deref(),
-                        &event.event_type,
-                        event.payload.clone(),
-                    ) {
-                        eprintln!("database registration event skipped: {error}");
+                    if let Some(db) = supabase.as_ref() {
+                        if let Err(error) = db.record_registration(&registration_clone) {
+                            eprintln!("database registration sync skipped: {error}");
+                        }
+                        if let Err(error) = db.record_job_event(
+                            event.node_id.as_deref(),
+                            event.job_id.as_deref(),
+                            &event.event_type,
+                            event.payload.clone(),
+                        ) {
+                            eprintln!("database registration event skipped: {error}");
+                        }
                     }
+                    json_response("200 OK", serde_json::to_value(record).expect("json"))
                 }
-                json_response("200 OK", serde_json::to_value(record).expect("json"))
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
             }
-            Err(error) => json_response(
-                "400 Bad Request",
-                serde_json::json!({ "error": error.to_string() }),
-            ),
-        },
+        }
         ("POST", "/v1/heartbeat") => match serde_json::from_str::<Heartbeat>(&request.body) {
             Ok(heartbeat) => {
                 let heartbeat_clone = heartbeat.clone();
@@ -1149,14 +1171,16 @@ fn handle_connection(
                 ),
             }
         }
-        ("POST", "/v1/jobs/complete") => match serde_json::from_str::<JobCompletion>(&request.body) {
+        ("POST", "/v1/jobs/complete") => match serde_json::from_str::<JobCompletion>(&request.body)
+        {
             Ok(completion) => {
                 let completion_clone = completion.clone();
                 let mut guard = state.lock().expect("state lock");
                 let record = guard.complete_job(completion, now_unix_seconds());
                 if let Some(job) = record.as_ref() {
                     let completed_at = job.completed_at.clone().unwrap_or_else(now_unix_seconds);
-                    let event_type = if matches!(job.status, crate::contracts::JobStatus::Completed) {
+                    let event_type = if matches!(job.status, crate::contracts::JobStatus::Completed)
+                    {
                         "job_completed"
                     } else {
                         "job_failed"
