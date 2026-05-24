@@ -76,6 +76,7 @@ Before shipping any platform release:
 - build from a clean tagged commit
 - embed the CLI version in the binary
 - generate checksums for every artifact
+- validate the artifact shape with `scripts/verify-release-packaging.sh` and the localhost smoke test
 - verify checksums in CI before publishing the release assets
 - sign every artifact or release manifest
 - publish release notes with the exact tag

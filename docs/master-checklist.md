@@ -10,10 +10,10 @@ Use this document as the single working list:
 
 ## Current Focus
 
-1. **Packaging checks on macOS and Linux release artifacts**
-   - keep the local release preview helper validating the Mac packaging shape
-   - keep the release artifact names, checksums, and install expectations in sync
-   - keep the smoke check proving the preview tree and installer still agree
+1. **Signed release binaries published from tags**
+   - keep the release workflow building, verifying, and publishing from tagged commits
+   - keep the artifact names, checksums, and install expectations in sync
+   - keep the local smoke check proving the preview tree and installer still agree
 
 ## Remaining Work
 
@@ -21,7 +21,7 @@ Use this document as the single working list:
 
 - [ ] Public install endpoint behind `novusx.ai`
 - [ ] Signed release binaries published from tags
-- [ ] Packaging checks on macOS and Linux release artifacts
+- [x] Packaging checks on macOS and Linux release artifacts
 - [ ] Homebrew tap or formula publishing
 - [ ] WinGet package publishing
 - [x] Final CLI help polish and error messaging
@@ -66,6 +66,7 @@ The following major pieces are already in place and should stay marked complete:
 - Release workflow
 - Local install page preview
 - Local release preview helper and CLI help polish
+- Packaging checks on macOS and Linux release artifacts
 
 ## Tracking Rule
 

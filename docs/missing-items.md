@@ -23,7 +23,7 @@ For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Docume
 - [x] Reviewable official model catalog config
 - [ ] Signed release binaries published from tags
 - [ ] Public install endpoint behind `novusx.ai`
-- [ ] Packaging checks on macOS and Linux release artifacts
+- [x] Packaging checks on macOS and Linux release artifacts
 - [ ] WinGet package publishing
 - [ ] Homebrew tap or formula publishing
 - [x] Final CLI help polish and error messaging

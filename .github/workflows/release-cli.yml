@@ -48,6 +48,10 @@ jobs:
         run: |
           shasum -a 256 -c ${{ matrix.binary_name }}.sha256
 
+      - name: Verify packaging
+        run: |
+          ./scripts/verify-release-packaging.sh . ${{ matrix.binary_name }}
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -70,7 +74,8 @@ jobs:
         run: |
           find dist -name '*.sha256' -print0 | while IFS= read -r -d '' checksum_file; do
             artifact_dir="$(dirname "$checksum_file")"
-            (cd "$artifact_dir" && shasum -a 256 -c "$(basename "$checksum_file")")
+            binary_name="$(basename "${checksum_file%.sha256}")"
+            ./scripts/verify-release-packaging.sh "$artifact_dir" "$binary_name"
           done
 
       - name: Publish GitHub release

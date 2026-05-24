@@ -291,16 +291,7 @@ verify_preview() {
   [ -f "$checksum_path" ] || die "missing checksum file: $checksum_path"
   [ -f "$index_path" ] || die "missing release landing page: $index_path"
 
-  if command -v shasum >/dev/null 2>&1; then
-    (cd "$asset_dir" && shasum -a 256 -c "$(basename "$checksum_path")")
-  elif command -v sha256sum >/dev/null 2>&1; then
-    (cd "$asset_dir" && sha256sum -c "$(basename "$checksum_path")")
-  else
-    die "checksum tooling not found (need shasum or sha256sum)"
-  fi
-
-  rg -q "OpenGPU Local Release Preview" "$index_path" || die "release landing page title missing"
-  rg -q "localhost only" "$index_path" || die "release landing page badge missing"
+  "$repo_root/scripts/verify-release-packaging.sh" "$asset_dir" "$asset_name"
 
   echo "Verified local release preview:"
   echo "  asset: $asset_name"
