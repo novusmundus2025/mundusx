@@ -91,6 +91,13 @@ flowchart TD
 2. If `OPENGPU_OPERATOR_TOKEN` is configured, the control plane checks the bearer token first.
 3. If the token is valid, the control plane stores the job as `queued`.
 4. The job remains queued until a compatible live node claims it.
+5. The queued job keeps its execution profile too:
+   - prompt
+   - optional system prompt
+   - optional max tokens
+   - optional temperature
+   - optional top-p
+   - optional seed
 
 ### Job claim
 

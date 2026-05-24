@@ -101,6 +101,11 @@ Suggested columns:
 - `prompt` text
 - `preferred_backend` text
 - `model` text nullable
+- `system_prompt` text nullable
+- `max_tokens` integer nullable
+- `temperature` numeric nullable
+- `top_p` numeric nullable
+- `seed` bigint nullable
 - `status` text
 - `assigned_node_id` text nullable references `devices.node_id`
 - `worker_id` text nullable

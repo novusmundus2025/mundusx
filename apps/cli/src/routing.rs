@@ -79,6 +79,12 @@ mod tests {
             request_id: "req-1".to_string(),
             prompt: "hello".to_string(),
             preferred_backend: Backend::M,
+            model: None,
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
         };
 
         let decision = select_best_node(&nodes, &request);
@@ -97,6 +103,12 @@ mod tests {
             request_id: "req-2".to_string(),
             prompt: "status".to_string(),
             preferred_backend: Backend::Auto,
+            model: None,
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
         };
 
         let decision = select_best_node(&nodes, &request);

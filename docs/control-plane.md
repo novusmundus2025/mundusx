@@ -40,7 +40,12 @@ curl -X POST http://127.0.0.1:8787/v1/jobs \
     "request_id": "job-001",
     "prompt": "Summarize this paragraph",
     "preferred_backend": "auto",
-    "model": null
+    "model": null,
+    "system_prompt": "You are a concise assistant.",
+    "max_tokens": 128,
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "seed": 42
   }'
 ```
 
@@ -94,6 +99,12 @@ The live project has already been updated through `cargo run --manifest-path app
 - last updated timestamp
 - job ID
 - job request ID
+- prompt execution profile:
+  - system prompt
+  - max tokens
+  - temperature
+  - top-p
+  - seed
 - queued / assigned / completed / failed job state
 - assigned node
 - worker result and error details
@@ -107,7 +118,13 @@ The live project has already been updated through `cargo run --manifest-path app
 - `GET /v1/job-events` returns the durable audit trail for registrations, heartbeats, claims, submissions, and completions
 - register/heartbeat/claim/complete requests from agents must carry a valid device signature
 - if `OPENGPU_OPERATOR_TOKEN` is configured, browser/operator routes require a matching bearer token
-- `POST /v1/jobs` queues a job request in local JSON state
+- `POST /v1/jobs` queues a job request in local JSON state and stores the execution profile with it
+- `POST /v1/jobs` now stores the job execution profile too:
+  - system prompt
+  - max tokens
+  - temperature
+  - top-p
+  - seed
 - `GET /v1/jobs/next?node_id=...` lets a node claim the next queued job
 - nodes with `policyAllowed: false` are not eligible for job claims
 - `POST /v1/jobs/complete` stores the worker result and marks the job complete or failed

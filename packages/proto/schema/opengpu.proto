@@ -41,6 +41,11 @@ message JobRequest {
   Backend preferred_backend = 3;
   string model = 4;
   string conversation_id = 5;
+  string system_prompt = 6;
+  uint32 max_tokens = 7;
+  float temperature = 8;
+  float top_p = 9;
+  uint64 seed = 10;
 }
 
 message JobResponse {
@@ -95,6 +100,11 @@ message WorkerLaunchRequest {
   Backend backend = 3;
   string prompt = 4;
   string model = 5;
+  string system_prompt = 6;
+  uint32 max_tokens = 7;
+  float temperature = 8;
+  float top_p = 9;
+  uint64 seed = 10;
 }
 
 message WorkerLaunchResponse {

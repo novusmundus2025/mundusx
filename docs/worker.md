@@ -18,6 +18,11 @@ In the current scaffold, the worker runs as a subcommand of the node agent binar
 - backend
 - prompt
 - optional model
+- optional system prompt
+- optional max token count
+- optional temperature
+- optional top-p
+- optional seed
 
 ## Worker Output
 
@@ -39,6 +44,10 @@ The prototype worker:
   - lower token count
   - low thread count
   - no perf logging
+- honors the execution profile from the job payload when it is present:
+  - system prompt is prepended to the prompt
+  - max tokens maps to the generation length
+  - temperature, top-p, and seed flow through to `llama-cli`
 - returns only the generated answer text from the local model
 - chooses the Mac `M` path when `auto` is passed on Apple Silicon
 - is normally launched by the node agent, not run directly by users

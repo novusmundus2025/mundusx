@@ -104,6 +104,11 @@ pub struct JobRequest {
     pub prompt: String,
     pub preferred_backend: Backend,
     pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub seed: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,6 +118,11 @@ pub struct JobRecord {
     pub prompt: String,
     pub preferred_backend: Backend,
     pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub seed: Option<u64>,
     pub status: JobStatus,
     pub submitted_at: String,
     pub assigned_node_id: Option<String>,

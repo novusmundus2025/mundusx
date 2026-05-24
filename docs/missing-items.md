@@ -58,7 +58,7 @@ For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Docume
 - [x] Contributor model cache manifest and switch commands
 - [x] Real contributor model download backend
 - [x] `M` worker adapter
-- [ ] Real execution payloads
+- [x] Real execution payloads
 - [x] Health checks for worker backends
 
 ## Product Phase

@@ -20,6 +20,12 @@ export interface JobRequest {
   requestId: string;
   prompt: string;
   preferredBackend?: NodeBackend;
+  model?: string | null;
+  systemPrompt?: string | null;
+  maxTokens?: number | null;
+  temperature?: number | null;
+  topP?: number | null;
+  seed?: number | null;
 }
 
 export interface NodeStatus extends NodeHeartbeat {

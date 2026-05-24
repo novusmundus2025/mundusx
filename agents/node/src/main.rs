@@ -60,6 +60,16 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
         #[arg(long)]
+        system_prompt: Option<String>,
+        #[arg(long)]
+        max_tokens: Option<u32>,
+        #[arg(long)]
+        temperature: Option<f32>,
+        #[arg(long)]
+        top_p: Option<f32>,
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
         json: bool,
     },
     Health {
@@ -267,6 +277,11 @@ fn build_worker_launch_request(
     job_id: String,
     prompt: String,
     model: Option<String>,
+    system_prompt: Option<String>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    seed: Option<u64>,
 ) -> WorkerLaunchRequest {
     WorkerLaunchRequest {
         job_id,
@@ -274,6 +289,11 @@ fn build_worker_launch_request(
         backend: resolved_backend(config),
         prompt,
         model,
+        system_prompt,
+        max_tokens,
+        temperature,
+        top_p,
+        seed,
     }
 }
 
@@ -477,6 +497,11 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
         backend: job.backend.unwrap_or_else(|| resolved_backend(config)),
         prompt: job.prompt.clone(),
         model: job.model.clone(),
+        system_prompt: job.system_prompt.clone(),
+        max_tokens: job.max_tokens,
+        temperature: job.temperature,
+        top_p: job.top_p,
+        seed: job.seed,
     };
 
     match launch_worker_process(config, request, json) {
@@ -714,10 +739,25 @@ fn main() {
             job_id,
             prompt,
             model,
+            system_prompt,
+            max_tokens,
+            temperature,
+            top_p,
+            seed,
             json,
         } => {
             let config = load_config_or_exit();
-            let request = build_worker_launch_request(&config, job_id, prompt, model);
+            let request = build_worker_launch_request(
+                &config,
+                job_id,
+                prompt,
+                model,
+                system_prompt,
+                max_tokens,
+                temperature,
+                top_p,
+                seed,
+            );
             let _ = launch_worker_process(&config, request, json);
         }
         Commands::Health { json } => {

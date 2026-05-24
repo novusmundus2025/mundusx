@@ -27,6 +27,16 @@ pub struct WorkerCli {
     #[arg(long)]
     pub model: Option<String>,
     #[arg(long)]
+    pub system_prompt: Option<String>,
+    #[arg(long)]
+    pub max_tokens: Option<u32>,
+    #[arg(long)]
+    pub temperature: Option<f32>,
+    #[arg(long)]
+    pub top_p: Option<f32>,
+    #[arg(long)]
+    pub seed: Option<u64>,
+    #[arg(long)]
     pub backend: Backend,
     #[arg(long)]
     pub json: bool,
@@ -223,6 +233,10 @@ fn probe_power_state() -> PowerState {
 fn run_llama_command(
     model_path: &Path,
     prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    seed: u64,
 ) -> Result<(String, String), String> {
     let mut command = Command::new("llama-cli");
     command
@@ -244,11 +258,13 @@ fn run_llama_command(
         .arg("-p")
         .arg(prompt)
         .arg("-n")
-        .arg("16")
+        .arg(max_tokens.to_string())
         .arg("--temp")
-        .arg("0.2")
+        .arg(temperature.to_string())
+        .arg("--top-p")
+        .arg(top_p.to_string())
         .arg("--seed")
-        .arg("42");
+        .arg(seed.to_string());
 
     let output = command
         .output()
@@ -425,15 +441,27 @@ fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespon
         .or_else(|| active_model_name_from_cache(&model_dir))
         .unwrap_or_else(|| "active".to_string());
 
-    let (generated, runtime_mode) = run_llama_command(&model_path, &request.prompt)?;
+    let system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
+    let prompt = if system_prompt.is_empty() {
+        request.prompt.clone()
+    } else {
+        format!("System:\n{system_prompt}\n\nUser:\n{}", request.prompt)
+    };
+    let max_tokens = request.max_tokens.unwrap_or(16).max(1);
+    let temperature = request.temperature.unwrap_or(0.2).max(0.0);
+    let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
+    let seed = request.seed.unwrap_or(42);
+
+    let (generated, runtime_mode) =
+        run_llama_command(&model_path, &prompt, max_tokens, temperature, top_p, seed)?;
 
     Ok(WorkerLaunchResponse {
         job_id: request.job_id.clone(),
         worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
         status: "completed".to_string(),
         output: format!(
-            "llama.cpp mode={runtime_mode}; model={model_name}; path={}; response={generated}",
-            model_path.display()
+            "llama.cpp mode={runtime_mode}; model={model_name}; path={}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}; response={generated}",
+            model_path.display(),
         ),
         error: None,
         backend: Backend::M,
@@ -476,6 +504,11 @@ pub fn worker_main(cli: WorkerCli) {
         backend: cli.backend,
         prompt: cli.prompt,
         model: cli.model,
+        system_prompt: cli.system_prompt,
+        max_tokens: cli.max_tokens,
+        temperature: cli.temperature,
+        top_p: cli.top_p,
+        seed: cli.seed,
     };
 
     let response = execute_request(&request);
@@ -516,6 +549,21 @@ pub fn launch_worker(
 
     if let Some(model) = request.model.as_ref() {
         command.arg("--model").arg(model);
+    }
+    if let Some(system_prompt) = request.system_prompt.as_ref() {
+        command.arg("--system-prompt").arg(system_prompt);
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        command.arg("--max-tokens").arg(max_tokens.to_string());
+    }
+    if let Some(temperature) = request.temperature {
+        command.arg("--temperature").arg(temperature.to_string());
+    }
+    if let Some(top_p) = request.top_p {
+        command.arg("--top-p").arg(top_p.to_string());
+    }
+    if let Some(seed) = request.seed {
+        command.arg("--seed").arg(seed.to_string());
     }
 
     let output = command
