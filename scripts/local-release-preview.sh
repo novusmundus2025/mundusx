@@ -70,13 +70,14 @@ preview_url() {
 }
 
 build_preview() {
-  local target asset_name binary_source binary_path checksum_path index_path checksum
+  local target asset_name binary_source binary_path checksum_path index_path checksum release_url
   target="$(target_triplet)"
   asset_name="${bin_name}-${target}"
   binary_source="$repo_root/target/release/$bin_name"
   binary_path="$asset_dir/$asset_name"
   checksum_path="$binary_path.sha256"
   index_path="$asset_dir/index.html"
+  release_url="$(preview_url)"
 
   mkdir -p "$asset_dir"
 
@@ -195,6 +196,29 @@ build_preview() {
         font-size: 18px;
         word-break: break-word;
       }
+      .shell {
+        margin-top: 18px;
+        padding: 16px 18px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+      }
+      .shell-line {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+        font-size: 13px;
+      }
+      .shell-line strong {
+        color: var(--text);
+      }
+      .manifest-state {
+        margin-top: 14px;
+        color: var(--blue);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
       .actions {
         display: flex;
         gap: 12px;
@@ -265,11 +289,71 @@ build_preview() {
           </div>
         </div>
 
+        <div class="shell">
+          <p class="shell-line"><strong>Manifest-driven preview</strong></p>
+          <p class="shell-line">This release page loads its details from <code>/release-manifest.json</code>.</p>
+          <p class="shell-line">That keeps the visible release surface in sync with the signed artifact metadata.</p>
+        </div>
+
+        <div class="manifest-state" id="manifest-state">Loading /release-manifest.json…</div>
+
         <div class="footer">
-          Use this preview with <code>RELEASE_BASE_URL=$(preview_url) bash install.sh</code>.
+          Use this preview with <code>RELEASE_BASE_URL=$release_url bash install.sh</code>.
         </div>
       </div>
     </div>
+    <script>
+      (async () => {
+        const state = document.getElementById("manifest-state");
+        try {
+          const response = await fetch("/release-manifest.json", { headers: { Accept: "application/json" } });
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+
+          const manifest = await response.json();
+          const binaryName = String(manifest.binary_name ?? "$asset_name");
+          const checksum = String(manifest.checksum_sha256 ?? "");
+          const version = String(manifest.version ?? "0.1.0");
+          const tag = String(manifest.tag ?? "local-preview");
+
+          document.querySelectorAll("code").forEach((node) => {
+            if (node.textContent === "$asset_name") {
+              node.textContent = binaryName;
+            } else if (node.textContent === "$asset_name.sha256") {
+              node.textContent = binaryName + ".sha256";
+            }
+          });
+
+          const primary = document.querySelector(".primary");
+          const secondary = document.querySelector(".secondary");
+          if (primary) {
+            primary.setAttribute("href", "./" + binaryName);
+          }
+          if (secondary) {
+            secondary.setAttribute("href", "./" + binaryName + ".sha256");
+          }
+
+          if (state) {
+            state.textContent = "Manifest loaded from /release-manifest.json • " + tag + " • " + version;
+          }
+
+          const footer = document.querySelector(".footer");
+          if (footer) {
+            const checksumText = checksum || (binaryName + ".sha256");
+            footer.innerHTML =
+              "Use this preview with <code>RELEASE_BASE_URL=$release_url bash install.sh</code>. " +
+              "Checksum: <code>" +
+              checksumText +
+              "</code>.";
+          }
+        } catch (_) {
+          if (state) {
+            state.textContent = "Manifest load failed";
+          }
+        }
+      })();
+    </script>
   </body>
 </html>
 EOF
@@ -292,6 +376,7 @@ verify_preview() {
   [ -x "$binary_path" ] || die "release binary is not executable: $binary_path"
   [ -f "$checksum_path" ] || die "missing checksum file: $checksum_path"
   [ -f "$index_path" ] || die "missing release landing page: $index_path"
+  [ -f "$asset_dir/release-manifest.json" ] || die "missing release manifest: $asset_dir/release-manifest.json"
 
   "$repo_root/scripts/verify-release-packaging.sh" "$asset_dir" "$asset_name"
   "$repo_root/scripts/release-signing.sh" verify "$asset_dir" "$asset_name"

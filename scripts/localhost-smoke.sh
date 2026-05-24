@@ -42,6 +42,8 @@ echo "Preparing local release preview..."
 echo "Checking release source..."
 check_contains "${release_base_url}/" "OpenGPU Local Release Preview" "release landing page"
 check_contains "${release_base_url}/" "localhost only" "release landing page badge"
+check_contains "${release_base_url}/" "Manifest loaded from /release-manifest.json" "release landing page manifest state"
+check_contains "${release_base_url}/release-manifest.json" "\"artifact_kind\": \"release-binary\"" "release manifest kind"
 check_contains "${release_base_url}/opengpu-aarch64-apple-darwin.sha256" "opengpu-aarch64-apple-darwin" "release checksum"
 
 echo "Running installer..."
