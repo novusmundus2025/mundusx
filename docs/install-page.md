@@ -35,6 +35,7 @@ The local dashboard typically runs on `3001`, but you can override `PORT` during
 For the matching localhost release source, run `scripts/local-release-preview.sh up` to build and serve the repo-managed preview on `http://127.0.0.1:8788/releases/latest/download/`.
 
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
+The same manifest-driven shell is also mirrored at `http://127.0.0.1:<port>/public/install` so the future public endpoint shape stays local for now.
 The broader docs copy is previewable locally from the dashboard at `http://127.0.0.1:<port>/docs`.
 The install page itself is now a shell that loads its command and release metadata from the machine-readable manifest at `http://127.0.0.1:<port>/install.json` so the HTML, installer, and release source stay in sync.
 The matching localhost release preview is also manifest-driven and loads its visible release details from `http://127.0.0.1:8788/releases/latest/download/release-manifest.json`.

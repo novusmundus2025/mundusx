@@ -45,7 +45,7 @@ function badge(label, tone = "neutral") {
   return `<span class="pill pill-${tone}">${escapeHtml(label)}</span>`;
 }
 
-function installManifest() {
+function installManifest(installPath = "/install") {
   return {
     kind: "install-manifest",
     app: "opengpu",
@@ -54,7 +54,7 @@ function installManifest() {
     install_command: installCommand,
     binary_name: "opengpu-aarch64-apple-darwin",
     checksum_name: "opengpu-aarch64-apple-darwin.sha256",
-    landing_page: `${appUrl}/install`,
+    landing_page: `${appUrl}${installPath}`,
     docs_page: `${appUrl}/docs/install`,
     onboarding_command: "opengpu onboarding",
     cap_command: "opengpu cap",
@@ -237,7 +237,7 @@ function renderCredits(credits = {}) {
     </div>`;
 }
 
-function renderInstallPage() {
+function renderInstallPage(installPath = "/install") {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -548,10 +548,10 @@ function renderInstallPage() {
               </div>
             </div>
           </div>
-          <div class="manifest-status" id="manifest-status">Fetching /install.json…</div>
+          <div class="manifest-status" id="manifest-status">Fetching ./install.json…</div>
           <div class="manifest-note">
             The install page is now a shell that reads the command and release metadata from
-            <strong>/install.json</strong> so the HTML, installer, and release preview stay in
+            <strong>./install.json</strong> so the HTML, installer, and release preview stay in
             sync.
           </div>
           <div class="footer" id="copy-status">
@@ -561,7 +561,7 @@ function renderInstallPage() {
       </div>
 
       <div class="footer" style="margin-top: 22px;">
-        Local preview URL: <code>${escapeHtml(appUrl)}/install</code> • Docs preview:
+        Local preview URL: <code>${escapeHtml(appUrl)}${escapeHtml(installPath)}</code> • Docs preview:
         <code>${escapeHtml(appUrl)}/docs</code>
       </div>
     </div>
@@ -571,9 +571,10 @@ function renderInstallPage() {
         const commandEl = document.getElementById("install-command");
         const copyButton = document.getElementById("copy-button");
         const copyStatus = document.getElementById("copy-status");
+        const manifestUrl = new URL("./install.json", window.location.href);
 
         try {
-          const response = await fetch("/install.json", { headers: { Accept: "application/json" } });
+          const response = await fetch(manifestUrl, { headers: { Accept: "application/json" } });
           if (!response.ok) {
             throw new Error("HTTP " + response.status);
           }
@@ -605,14 +606,14 @@ function renderInstallPage() {
             });
           }
           if (statusEl) {
-            statusEl.textContent = "Manifest loaded from /install.json";
+            statusEl.textContent = "Manifest loaded from ./install.json";
           }
 
           const footer = document.querySelector(".manifest-note");
           if (footer) {
             footer.innerHTML =
               "The install page is now a shell that reads the command and release metadata from " +
-              "<strong>/install.json</strong> so the HTML, installer, and release preview stay in sync. " +
+              "<strong>./install.json</strong> so the HTML, installer, and release preview stay in sync. " +
               "Follow up with <code>" +
               onboardingCommand +
               "</code>, <code>" +
@@ -1405,13 +1406,25 @@ createServer(async (req, res) => {
   const requestUrl = new URL(req.url ?? "/", appUrl);
   if (requestUrl.pathname === "/install") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(renderInstallPage());
+    res.end(renderInstallPage("/install"));
     return;
   }
 
   if (requestUrl.pathname === "/install.json") {
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(installManifest(), null, 2));
+    res.end(JSON.stringify(installManifest("/install"), null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/install") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderInstallPage("/public/install"));
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/install.json") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(installManifest("/public/install"), null, 2));
     return;
   }
 
