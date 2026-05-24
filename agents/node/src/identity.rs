@@ -3,10 +3,12 @@
 mod macos_identity;
 
 use crate::storage::{config_dir, identity_path};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+#[cfg(not(target_os = "macos"))]
+use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceIdentity {
@@ -57,9 +59,12 @@ impl DeviceIdentity {
             return macos_sign_hex(message);
         }
 
+        #[cfg(not(target_os = "macos"))]
+        {
         let signing_key = self.signing_key()?;
         let signature: Signature = signing_key.sign(message.as_bytes());
         Ok(hex::encode(signature.to_bytes()))
+        }
     }
 }
 
@@ -71,6 +76,8 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
         return Ok(Some(identity));
     }
 
+    #[cfg(not(target_os = "macos"))]
+    {
     let path = resolved_identity_path();
     if !path.exists() {
         return Ok(None);
@@ -84,6 +91,7 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
         identity.signing_key()?;
     }
     Ok(Some(identity))
+    }
 }
 
 pub fn resolved_identity_path() -> PathBuf {
@@ -106,6 +114,17 @@ pub fn resolved_identity_path() -> PathBuf {
 
 pub fn local_identity_path() -> PathBuf {
     PathBuf::from(".opengpu").join("identity.json")
+}
+
+fn macos_storage_dir() -> PathBuf {
+    if std::env::var_os("OPENGPU_HOME").is_some() {
+        return config_dir();
+    }
+
+    local_identity_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
 }
 
 fn invalid_identity(error: impl std::fmt::Display) -> std::io::Error {
@@ -147,7 +166,7 @@ fn try_write(path: &std::path::Path, data: &str) -> std::io::Result<Option<PathB
 
 #[cfg(target_os = "macos")]
 fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
-    let secure = macos_identity::ensure_identity(&config_dir())?;
+    let secure = macos_identity::ensure_identity(&macos_storage_dir())?;
     Ok(DeviceIdentity {
         public_key_hex: secure.public_key_hex,
         private_key_hex: String::new(),
@@ -160,5 +179,5 @@ fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
 
 #[cfg(target_os = "macos")]
 fn macos_sign_hex(message: &str) -> std::io::Result<String> {
-    macos_identity::sign_message(&config_dir(), message.as_bytes())
+    macos_identity::sign_message(&macos_storage_dir(), message.as_bytes())
 }

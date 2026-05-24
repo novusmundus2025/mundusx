@@ -3,7 +3,10 @@
 mod macos_identity;
 
 use crate::config::config_dir;
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
+#[cfg(not(target_os = "macos"))]
+use ed25519_dalek::Signer;
+#[cfg(not(target_os = "macos"))]
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -29,6 +32,8 @@ impl DeviceIdentity {
             return macos_secure_identity().expect("macOS secure identity");
         }
 
+        #[cfg(not(target_os = "macos"))]
+        {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
         let public_key_hex = hex::encode(verifying_key.to_bytes());
@@ -42,6 +47,7 @@ impl DeviceIdentity {
             keychain_label_hex: None,
             encrypted_private_key_hex: String::new(),
             nonce_hex: String::new(),
+        }
         }
     }
 
@@ -80,9 +86,12 @@ impl DeviceIdentity {
             return macos_sign_hex(message);
         }
 
+        #[cfg(not(target_os = "macos"))]
+        {
         let signing_key = self.signing_key()?;
         let signature = signing_key.sign(message.as_bytes());
         Ok(hex::encode(signature.to_bytes()))
+        }
     }
 }
 
@@ -96,6 +105,17 @@ pub fn identity_path() -> PathBuf {
 
 pub fn local_identity_path() -> PathBuf {
     PathBuf::from(".opengpu").join("identity.json")
+}
+
+fn macos_storage_dir() -> PathBuf {
+    if std::env::var_os("OPENGPU_HOME").is_some() {
+        return identity_dir();
+    }
+
+    local_identity_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
 }
 
 pub fn resolved_identity_path() -> PathBuf {
@@ -124,6 +144,8 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
         return Ok(Some(identity));
     }
 
+    #[cfg(not(target_os = "macos"))]
+    {
     let path = resolved_identity_path();
     if !path.exists() {
         return Ok(None);
@@ -137,6 +159,7 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
         identity.signing_key()?;
     }
     Ok(Some(identity))
+    }
 }
 
 pub fn ensure_identity() -> std::io::Result<(DeviceIdentity, bool, PathBuf)> {
@@ -202,7 +225,7 @@ fn invalid_identity(error: impl std::fmt::Display) -> std::io::Error {
 
 #[cfg(target_os = "macos")]
 fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
-    let secure = macos_identity::ensure_identity(&identity_dir())?;
+    let secure = macos_identity::ensure_identity(&macos_storage_dir())?;
     Ok(DeviceIdentity {
         public_key_hex: secure.public_key_hex,
         private_key_hex: String::new(),
@@ -215,5 +238,5 @@ fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
 
 #[cfg(target_os = "macos")]
 fn macos_sign_hex(message: &str) -> std::io::Result<String> {
-    macos_identity::sign_message(&identity_dir(), message.as_bytes())
+    macos_identity::sign_message(&macos_storage_dir(), message.as_bytes())
 }

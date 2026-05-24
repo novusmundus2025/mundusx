@@ -30,7 +30,7 @@ Use this document as the single working list:
 
 - [ ] macOS non-exportable device key storage in OS secure storage
 - [ ] Windows/Linux non-exportable device key storage in OS secure storage
-   - [x] Verify the live Supabase restore path in the project again after any schema or secret changes
+- [x] Verify the live Supabase restore path in the project again after any schema or secret changes
 
 ### Control Plane
 
@@ -38,7 +38,7 @@ Use this document as the single working list:
 
 ### Worker
 
-  - [x] Real execution payloads
+- [x] Real execution payloads
 - [x] Health checks for worker backends
 
 ### Product Surface

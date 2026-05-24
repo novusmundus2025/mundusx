@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const IDENTITY_SECRET_SALT: &str = "com.opengpu.device.identity.secret";
 
@@ -168,19 +168,102 @@ fn identity_path(storage_dir: &Path) -> PathBuf {
 }
 
 fn machine_secret_key() -> io::Result<[u8; 32]> {
+    if let Some(secret) = load_machine_secret_from_keychain()? {
+        return Ok(secret);
+    }
+
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    if store_machine_secret_in_keychain(&key).is_ok() {
+        return Ok(key);
+    }
+
+    fallback_machine_secret_key()
+}
+
+fn keychain_account() -> String {
+    machine_label_hex().unwrap_or_else(|_| "unknown-machine".to_string())
+}
+
+fn load_machine_secret_from_keychain() -> io::Result<Option<[u8; 32]>> {
+    let account = keychain_account();
+    let output = Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            IDENTITY_SECRET_SALT,
+            "-a",
+            &account,
+            "-w",
+        ])
+        .stderr(Stdio::null())
+        .output();
+
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let secret_hex = String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let secret = hex::decode(secret_hex.trim()).map_err(invalid_identity)?;
+    let secret: [u8; 32] = secret.try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "machine secret must be 32 bytes",
+        )
+    })?;
+    Ok(Some(secret))
+}
+
+fn store_machine_secret_in_keychain(secret: &[u8; 32]) -> io::Result<()> {
+    let account = keychain_account();
+    let secret_hex = hex::encode(secret);
+    let status = Command::new("security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            IDENTITY_SECRET_SALT,
+            "-a",
+            &account,
+            "-w",
+            &secret_hex,
+        ])
+        .stderr(Stdio::null())
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unable to store machine secret in keychain",
+        ))
+    }
+}
+
+fn machine_label_hex() -> io::Result<String> {
     let machine_id = machine_identifier().unwrap_or_else(|_| "unknown-machine".to_string());
+    Ok(hex::encode(machine_id.as_bytes()))
+}
+
+fn fallback_machine_secret_key() -> io::Result<[u8; 32]> {
+    let machine_id = machine_identifier().unwrap_or_else(|_| "unknown-machine".to_string());
+    Ok(fallback_machine_secret_key_from_machine_id(&machine_id))
+}
+
+fn fallback_machine_secret_key_from_machine_id(machine_id: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(IDENTITY_SECRET_SALT.as_bytes());
     hasher.update(machine_id.as_bytes());
     let digest = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&digest);
-    Ok(key)
-}
-
-fn machine_label_hex() -> io::Result<String> {
-    let machine_id = machine_identifier().unwrap_or_else(|_| "unknown-machine".to_string());
-    Ok(hex::encode(machine_id.as_bytes()))
+    key
 }
 
 fn machine_identifier() -> io::Result<String> {
@@ -254,4 +337,20 @@ fn fingerprint_from_public_key(public_key: &[u8]) -> String {
 
 fn invalid_identity(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_machine_secret_key_is_deterministic_per_machine_id() {
+        let first = fallback_machine_secret_key_from_machine_id("machine-a");
+        let second = fallback_machine_secret_key_from_machine_id("machine-a");
+        let other = fallback_machine_secret_key_from_machine_id("machine-b");
+
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+        assert_eq!(first.len(), 32);
+    }
 }

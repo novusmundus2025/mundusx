@@ -15,13 +15,13 @@ Those components should only be able to ask the local system to sign a request.
 
 ## Recommended Storage Model
 
-Use non-exportable storage or an encrypted-at-rest sign-only fallback instead of a plain readable file:
+- Use non-exportable storage or an encrypted-at-rest sign-only fallback instead of a plain readable file:
 
-- macOS: current implementation uses a file-encrypted, sign-only fallback so the app never reads raw private-key bytes
+- macOS: current implementation tries to store the machine secret in Keychain and falls back to a machine-local encrypted secret when keychain access is unavailable; in both cases the private key stays encrypted-at-rest in the local identity record so the app never reads raw private-key bytes
 - Windows: TPM-backed or CNG / KSP-backed key storage
 - Linux: TPM / PKCS#11 / system keyring when available
 
-The current macOS implementation keeps the private key encrypted-at-rest inside the local identity record and only exposes sign operations to the CLI and agent. The Rust CLI and agent persist public metadata plus the encrypted key blob and nonce, but they never persist raw private-key bytes. The machine-derived secret is only used locally to decrypt for signing.
+The current macOS implementation keeps the private key encrypted-at-rest inside the local identity record and only exposes sign operations to the CLI and agent. The Rust CLI and agent persist public metadata plus the encrypted key blob and nonce, but they never persist raw private-key bytes. The secret used to decrypt the key is stored in the macOS Keychain when possible and otherwise derived locally as a fallback so signing continues to work in constrained environments.
 
 The old plain file-backed prototype remains only for non-macOS development paths.
 
@@ -97,7 +97,7 @@ Do not use it as proof of uniqueness or as a payout target.
 
 ## Current Prototype Status
 
-- macOS: file-encrypted sign-only fallback is implemented now, and the app-visible identity record omits raw private-key bytes.
+- macOS: the app-visible identity record omits raw private-key bytes, and the secret uses Keychain when available with a local encrypted fallback when it is not.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.
 

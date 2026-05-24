@@ -7,9 +7,9 @@ For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/
 ## Next Up
 
 1. **Port secure device identity to all platforms**
-   - macOS currently uses a file-encrypted, sign-only fallback
+   - macOS uses encrypted-at-rest device identity metadata and will use Keychain when available, but the long-term goal is still OS-backed secure storage everywhere
    - keep the private key non-exportable on Windows and Linux too
-   - move macOS to OS-backed secure storage when the platform path is ready
+   - reuse the same sign-only identity model on the remaining platforms
 
 2. **Define the federated governance model**
    - document the top-level standards / clearing-house org
@@ -24,7 +24,7 @@ For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/
 ## Why These Are Pending
 
 - The Mac-first core runtime is now working end to end, so the remaining work is mostly platform expansion and productization.
-- Secure device identity is sign-only and non-exportable on macOS in the current fallback path, but the other platforms still need the same treatment.
+- Secure device identity is sign-only and non-exportable on macOS with encrypted-at-rest storage and an optional Keychain secret, but the other platforms still need the same treatment.
 - Onboarding and governance are still design-heavy product layers rather than runtime plumbing.
 - The public install endpoint and package-manager publishing are still required before public rollout.
 
