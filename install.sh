@@ -4,6 +4,7 @@ set -euo pipefail
 REPO="novusmundus2025/opengpu"
 BIN_NAME="opengpu"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -32,7 +33,7 @@ case "$arch" in
 esac
 
 asset_name="${BIN_NAME}-${target}"
-release_url="https://github.com/${REPO}/releases/latest/download/${asset_name}"
+release_url="${RELEASE_BASE_URL%/}/${asset_name}"
 checksum_url="${release_url}.sha256"
 tmp_dir="$(mktemp -d)"
 tmp_bin="${tmp_dir}/${asset_name}"
