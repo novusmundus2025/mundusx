@@ -140,6 +140,15 @@ pub fn verify_message(
     Ok(verifying_key.verify(message, &signature).is_ok())
 }
 
+pub fn trust_path(storage_dir: &Path) -> io::Result<&'static str> {
+    if load_machine_secret_from_keychain()?.is_some() {
+        return Ok("keychain");
+    }
+
+    let _ = storage_dir;
+    Ok("local-encrypted-fallback")
+}
+
 fn load_stored_identity(storage_dir: &Path) -> io::Result<Option<StoredIdentity>> {
     let path = identity_path(storage_dir);
     if !path.exists() {

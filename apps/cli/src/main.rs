@@ -332,6 +332,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     println!("backendPreference: {}", config.backend_preference);
     println!("detectedBackend: {}", detected_backend);
     println!("identityReady: {}", if identity_ready { "yes" } else { "no" });
+    println!("identityTrustPath: {}", identity::trust_path());
     println!("providerCount: {}", provider_count);
     println!(
         "modelDir: {}",
@@ -390,6 +391,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     println!("backendPreference: {}", config.backend_preference);
     println!("detectedBackend: {}", detected_backend);
     println!("identityReady: {}", if identity_ready { "yes" } else { "no" });
+    println!("identityTrustPath: {}", identity::trust_path());
     println!(
         "modelDir: {}",
         configured_model_dir_string(config)
@@ -1157,6 +1159,7 @@ fn main() {
                         "battery_percent": power.battery_percent,
                     },
                     "identity_ready": identity_ready,
+                    "identity_trust_path": identity::trust_path(),
                     "policy_allowed": policy_allowed,
                     "policy_reason": policy_reason(
                         &config,

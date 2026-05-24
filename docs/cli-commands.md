@@ -42,7 +42,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - The active `opengpu start` session can be aborted with `Ctrl-C`, which rolls local state back to disconnected and paused.
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected and policy allows it.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
-- `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet.
+- `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet, and whether it is using Keychain or the local encrypted fallback.
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled.
 - The model commands currently manage the local model cache manifest and active selection; real model downloads are still a future step.
 - `onboarding` is a local contributor review step that summarizes the secure device identity, hostname, model, policy, and credits setup; `start` prints it automatically until it is marked complete.

@@ -80,7 +80,7 @@ impl DeviceIdentity {
         VerifyingKey::from_bytes(&public_bytes).map_err(invalid_identity)
     }
 
-    pub fn sign_hex(&self, message: &str) -> std::io::Result<String> {
+pub fn sign_hex(&self, message: &str) -> std::io::Result<String> {
         #[cfg(target_os = "macos")]
         {
             return macos_sign_hex(message);
@@ -92,6 +92,20 @@ impl DeviceIdentity {
         let signature = signing_key.sign(message.as_bytes());
         Ok(hex::encode(signature.to_bytes()))
         }
+    }
+}
+
+pub fn trust_path() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        return macos_identity::trust_path(&macos_storage_dir())
+            .unwrap_or("local-encrypted-fallback")
+            .to_string();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "legacy-file".to_string()
     }
 }
 

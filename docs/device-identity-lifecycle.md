@@ -23,6 +23,8 @@ Those components should only be able to ask the local system to sign a request.
 
 The current macOS implementation keeps the private key encrypted-at-rest inside the local identity record and only exposes sign operations to the CLI and agent. The Rust CLI and agent persist public metadata plus the encrypted key blob and nonce, but they never persist raw private-key bytes. The secret used to decrypt the key is stored in the macOS Keychain when possible and otherwise derived locally as a fallback so signing continues to work in constrained environments.
 
+`opengpu status` now reports the active `identityTrustPath` so you can see whether the machine is using `keychain` or `local-encrypted-fallback` on the current Mac.
+
 The old plain file-backed prototype remains only for non-macOS development paths.
 
 ## Lifecycle

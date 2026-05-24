@@ -3,7 +3,7 @@
 mod macos_identity;
 
 use crate::storage::{config_dir, identity_path};
-use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 #[cfg(not(target_os = "macos"))]
 use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ impl DeviceIdentity {
         #[cfg(not(target_os = "macos"))]
         {
         let signing_key = self.signing_key()?;
-        let signature: Signature = signing_key.sign(message.as_bytes());
+        let signature = signing_key.sign(message.as_bytes());
         Ok(hex::encode(signature.to_bytes()))
         }
     }
