@@ -29,7 +29,7 @@ Users should install the CLI from the public install page and never need Rust lo
 curl -fsSL https://novusx.ai/install | bash
 ```
 
-That installer will download the prebuilt binary for the user's operating system and CPU architecture, then verify the checksum when available.
+That installer will download the matching release binary for the user's operating system and CPU architecture, with the current public release channel focused on Apple Silicon Macs, then verify the checksum when available.
 
 See [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the public-facing wording and [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the distribution plan.
 

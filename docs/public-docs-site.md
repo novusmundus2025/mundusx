@@ -12,6 +12,8 @@ The docs site should be the public-facing home for:
 - credits
 - releases
 
+The current public-facing copy is Mac-first, so the preview should keep that framing until the release channel expands.
+
 ## Local Preview
 
 The dashboard app serves a local docs preview at:
