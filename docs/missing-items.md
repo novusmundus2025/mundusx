@@ -26,7 +26,7 @@ For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Docume
 - [ ] Packaging checks on macOS and Linux release artifacts
 - [ ] WinGet package publishing
 - [ ] Homebrew tap or formula publishing
-- [ ] Final CLI help polish and error messaging
+- [x] Final CLI help polish and error messaging
 
 ## Control Plane Phase
 

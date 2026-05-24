@@ -5,7 +5,7 @@ Separately installable Rust command-line client for bootstrap, auth, node contro
 Install with:
 
 ```bash
-curl -fsSL https://novusx.ai/install | bash
+RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
 Useful commands:
@@ -27,6 +27,7 @@ Startup flow:
 - `opengpu start` creates local state if needed, connects locally when the secure device identity is available, and marks the machine ready
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu cap` sets the contribution budget explicitly
+- `opengpu update` prints the local install page and release preview URLs
 - `opengpu login` stores a local operator bearer token
 - `opengpu logout` clears that local token
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available

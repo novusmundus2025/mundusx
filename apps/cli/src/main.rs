@@ -42,7 +42,7 @@ struct Cli {
 enum Commands {
     /// Start the OpenGPU network
     Start,
-    /// Join the OpenGPU network (runs init on first use)
+    /// Join the OpenGPU network (boots local state on first use)
     Connect,
     /// Store local operator auth state
     Login {
@@ -1279,9 +1279,10 @@ fn main() {
             }
         }
         Commands::Update => {
-            println!("updateChannel: GitHub Releases");
-            println!("tagPattern: cli-v*");
-            println!("installer: http://127.0.0.1:3002/install");
+            println!("updateChannel: localhost preview");
+            println!("installPage: http://127.0.0.1:3002/install");
+            println!("releasePreview: http://127.0.0.1:8788/releases/latest/download");
+            println!("smokeCheck: npm run smoke:local");
         }
     }
 }

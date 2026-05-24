@@ -34,6 +34,7 @@ check_contains "${control_plane_url}/" "Local operator view" "control plane hero
 
 echo "Preparing local release preview..."
 "$local_release_preview_helper" up
+"$local_release_preview_helper" verify
 
 echo "Checking release source..."
 check_contains "${release_base_url}/" "OpenGPU Local Release Preview" "release landing page"

@@ -20,7 +20,7 @@ This is the current command surface for the Rust CLI.
 - `opengpu model prune --yes` - remove inactive cached models
 - `opengpu doctor` - inspect config paths and writability
 - `opengpu logs` - show local log source information
-- `opengpu update` - show update channel information
+- `opengpu update` - show the local install page and release preview URLs
 
 ## Advanced Commands
 

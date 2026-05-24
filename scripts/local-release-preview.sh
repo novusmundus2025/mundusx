@@ -12,10 +12,11 @@ server_log_file="$preview_root/server.log"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/local-release-preview.sh <build|serve|up|stop|status|clean|url>
+Usage: scripts/local-release-preview.sh <build|verify|serve|up|stop|status|clean|url>
 
 Commands:
   build   Build the release binary and materialize the local release tree.
+  verify  Validate the release tree contents and checksum.
   serve   Build, then start the local HTTP preview in the background.
   up      Alias for serve.
   stop    Stop the background preview server if it is running.
@@ -277,6 +278,35 @@ EOF
   echo "  url:   $(preview_url)"
 }
 
+verify_preview() {
+  local target asset_name binary_path checksum_path index_path
+  target="$(target_triplet)"
+  asset_name="${bin_name}-${target}"
+  binary_path="$asset_dir/$asset_name"
+  checksum_path="$binary_path.sha256"
+  index_path="$asset_dir/index.html"
+
+  [ -f "$binary_path" ] || die "missing release binary: $binary_path"
+  [ -x "$binary_path" ] || die "release binary is not executable: $binary_path"
+  [ -f "$checksum_path" ] || die "missing checksum file: $checksum_path"
+  [ -f "$index_path" ] || die "missing release landing page: $index_path"
+
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "$asset_dir" && shasum -a 256 -c "$(basename "$checksum_path")")
+  elif command -v sha256sum >/dev/null 2>&1; then
+    (cd "$asset_dir" && sha256sum -c "$(basename "$checksum_path")")
+  else
+    die "checksum tooling not found (need shasum or sha256sum)"
+  fi
+
+  rg -q "OpenGPU Local Release Preview" "$index_path" || die "release landing page title missing"
+  rg -q "localhost only" "$index_path" || die "release landing page badge missing"
+
+  echo "Verified local release preview:"
+  echo "  asset: $asset_name"
+  echo "  root:  $preview_root"
+}
+
 server_running() {
   local pid
   [ -f "$server_pid_file" ] || return 1
@@ -358,6 +388,7 @@ clean_preview() {
 
 case "${1:-up}" in
   build) build_preview ;;
+  verify) verify_preview ;;
   serve|up) serve_preview ;;
   stop) stop_preview ;;
   status) status_preview ;;

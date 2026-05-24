@@ -10,10 +10,10 @@ Use this document as the single working list:
 
 ## Current Focus
 
-1. **Local install surface and release preview**
-   - keep the localhost install page, docs, and control-plane root aligned
-   - keep the install command, checksum wording, and release links in sync
-   - verify the localhost install page and local release source stay identical
+1. **Packaging checks on macOS and Linux release artifacts**
+   - keep the local release preview helper validating the Mac packaging shape
+   - keep the release artifact names, checksums, and install expectations in sync
+   - keep the smoke check proving the preview tree and installer still agree
 
 ## Remaining Work
 
@@ -24,7 +24,7 @@ Use this document as the single working list:
 - [ ] Packaging checks on macOS and Linux release artifacts
 - [ ] Homebrew tap or formula publishing
 - [ ] WinGet package publishing
-- [ ] Final CLI help polish and error messaging
+- [x] Final CLI help polish and error messaging
 
 ### Device Identity
 
@@ -65,6 +65,7 @@ The following major pieces are already in place and should stay marked complete:
 - Onboarding flow
 - Release workflow
 - Local install page preview
+- Local release preview helper and CLI help polish
 
 ## Tracking Rule
 
