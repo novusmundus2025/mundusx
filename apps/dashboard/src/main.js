@@ -537,41 +537,41 @@ function page({ health, status, events, credits, error }) {
     <title>${title}</title>
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #0a0d12;
-        --panel: #111620;
-        --panel-2: #151c29;
-        --line: #253040;
-        --text: #e8eefc;
-        --muted: #91a0b8;
-        --green: #8ef0aa;
-        --orange: #ffbf7a;
-        --amber: #ffd27f;
-        --red: #ff9d9d;
-        --blue: #a6c8ff;
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #fbfcff;
+        --surface-2: #f5f7fb;
+        --line: rgba(15, 23, 42, 0.09);
+        --line-strong: rgba(15, 23, 42, 0.14);
+        --text: #0f172a;
+        --muted: #5f6b85;
+        --green: #0f9d58;
+        --orange: #c47f1b;
+        --amber: #d97706;
+        --red: #d14343;
+        --blue: #3452ff;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100vh;
         background:
-          radial-gradient(circle at top left, rgba(80, 120, 255, 0.16), transparent 30%),
-          radial-gradient(circle at top right, rgba(80, 255, 180, 0.08), transparent 25%),
-          linear-gradient(180deg, #0a0d12 0%, #090b10 100%);
+          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 30%),
+          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
         color: var(--text);
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }
       .wrap {
         max-width: 1380px;
         margin: 0 auto;
-        padding: 28px 20px 48px;
+        padding: 22px 20px 48px;
       }
       .hero {
         border: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(21, 28, 41, 0.92), rgba(12, 17, 25, 0.92));
-        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 22px;
         padding: 24px;
-        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.06);
       }
       .topline {
         display: flex;
@@ -582,14 +582,14 @@ function page({ health, status, events, credits, error }) {
       }
       h1 {
         margin: 0;
-        font-size: 30px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
+        font-size: clamp(40px, 5vw, 64px);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
       }
       .sub {
-        margin-top: 10px;
+        margin-top: 12px;
         color: var(--muted);
-        line-height: 1.5;
+        line-height: 1.7;
       }
       .statusline {
         display: flex;
@@ -603,16 +603,16 @@ function page({ health, status, events, credits, error }) {
         padding: 6px 10px;
         border-radius: 999px;
         font-size: 12px;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.04em;
         text-transform: uppercase;
         border: 1px solid transparent;
       }
-      .pill-green { background: rgba(142, 240, 170, 0.12); color: var(--green); border-color: rgba(142, 240, 170, 0.25); }
-      .pill-orange { background: rgba(255, 191, 122, 0.12); color: var(--orange); border-color: rgba(255, 191, 122, 0.25); }
-      .pill-amber { background: rgba(255, 210, 127, 0.12); color: var(--amber); border-color: rgba(255, 210, 127, 0.25); }
-      .pill-red { background: rgba(255, 157, 157, 0.12); color: var(--red); border-color: rgba(255, 157, 157, 0.25); }
-      .pill-blue { background: rgba(166, 200, 255, 0.12); color: var(--blue); border-color: rgba(166, 200, 255, 0.25); }
-      .pill-neutral { background: rgba(145, 160, 184, 0.12); color: var(--muted); border-color: rgba(145, 160, 184, 0.25); }
+      .pill-green { background: rgba(15, 157, 88, 0.08); color: var(--green); border-color: rgba(15, 157, 88, 0.16); }
+      .pill-orange { background: rgba(196, 127, 27, 0.08); color: var(--orange); border-color: rgba(196, 127, 27, 0.16); }
+      .pill-amber { background: rgba(217, 119, 6, 0.08); color: var(--amber); border-color: rgba(217, 119, 6, 0.16); }
+      .pill-red { background: rgba(209, 67, 67, 0.08); color: var(--red); border-color: rgba(209, 67, 67, 0.16); }
+      .pill-blue { background: rgba(52, 82, 255, 0.08); color: var(--blue); border-color: rgba(52, 82, 255, 0.16); }
+      .pill-neutral { background: rgba(95, 107, 133, 0.08); color: var(--muted); border-color: rgba(95, 107, 133, 0.16); }
       .grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -621,8 +621,8 @@ function page({ health, status, events, credits, error }) {
       }
       .card {
         border: 1px solid var(--line);
-        background: rgba(17, 22, 32, 0.85);
-        border-radius: 16px;
+        background: var(--surface);
+        border-radius: 18px;
         padding: 16px;
       }
       .card-label {
@@ -646,9 +646,10 @@ function page({ health, status, events, credits, error }) {
       .section {
         margin-top: 24px;
         border: 1px solid var(--line);
-        background: rgba(17, 22, 32, 0.72);
-        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 22px;
         overflow: hidden;
+        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.05);
       }
       .section-head {
         padding: 16px 20px;
@@ -686,7 +687,7 @@ function page({ health, status, events, credits, error }) {
       }
       .table .row {
         padding: 14px 0;
-        border-bottom: 1px solid rgba(37, 48, 64, 0.65);
+        border-bottom: 1px solid rgba(15, 23, 42, 0.06);
       }
       .table .row:last-child { border-bottom: 0; }
       .meta {
@@ -711,20 +712,20 @@ function page({ health, status, events, credits, error }) {
       .balance {
         border: 1px solid var(--line);
         border-radius: 14px;
-        background: rgba(10, 13, 18, 0.6);
+        background: var(--surface);
         padding: 14px 16px;
       }
       .balance strong {
         display: block;
         margin-bottom: 6px;
         font-size: 14px;
-        color: #f4f8ff;
+        color: var(--text);
         overflow-wrap: anywhere;
       }
       .event {
         border: 1px solid var(--line);
         border-radius: 14px;
-        background: rgba(10, 13, 18, 0.6);
+        background: var(--surface);
         padding: 14px 16px;
       }
       .event-top {
@@ -737,7 +738,7 @@ function page({ health, status, events, credits, error }) {
       pre {
         overflow: auto;
         margin: 12px 0 0;
-        color: #dbe4f5;
+        color: #31415f;
         font-size: 12px;
         line-height: 1.5;
         white-space: pre-wrap;
@@ -745,8 +746,8 @@ function page({ health, status, events, credits, error }) {
       }
       .error {
         margin-top: 18px;
-        border: 1px solid rgba(255, 157, 157, 0.28);
-        background: rgba(255, 157, 157, 0.08);
+        border: 1px solid rgba(209, 67, 67, 0.22);
+        background: rgba(209, 67, 67, 0.06);
         color: var(--red);
         padding: 14px 16px;
         border-radius: 14px;
@@ -761,6 +762,31 @@ function page({ health, status, events, credits, error }) {
         text-decoration: none;
       }
       a:hover { text-decoration: underline; }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .brand-mark {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: linear-gradient(135deg, var(--blue), #5a79ff);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.8);
+      }
       @media (max-width: 1200px) {
         .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .table .thead,
@@ -782,7 +808,7 @@ function page({ health, status, events, credits, error }) {
       <div class="hero">
         <div class="topline">
           <div>
-            <h1>OpenGPU Dashboard</h1>
+            <div class="brand"><span class="brand-mark"></span> OpenGPU Dashboard</div>
             <div class="sub">Live operator view for nodes, jobs, storage source, and audit trail.</div>
             <div class="statusline">
               ${badge(isHealthy ? "healthy" : "degraded", isHealthy ? "green" : "red")}
