@@ -21,7 +21,7 @@ The node agent is the background service that lives on a provider machine.
 ## Local State Files
 
 - `config.json` - user and provider settings
-- `identity.json` - public device metadata, fingerprint, and secure-store label
+- `identity.json` - public device metadata, fingerprint, and encrypted device identity blob
 - `agent-state.json` - last heartbeat snapshot
 - `heartbeat.jsonl` - append-only local heartbeat log
 
@@ -67,4 +67,4 @@ For contributor-side model switching and cleanup rules, see [docs/model-lifecycl
 ## Policy Controls
 
 The health command now reports a policy result in addition to runtime health. If the model cache is missing, `llama-cli` is unavailable, the Mac worker is on battery with too high a contribution cap, or the contribution cap has not been set yet, the agent will skip job claims and report `policyAllowed: no`.
-The agent also signs `register`, `heartbeat`, `jobs/next`, and `jobs/complete` requests so the control plane can verify the device by signature instead of a separate login flow. The signed payload includes the node ID, hostname, and the public device identity that identifies the contributor machine. The private key itself is not readable or exportable from the app path on macOS.
+The agent also signs `register`, `heartbeat`, `jobs/next`, and `jobs/complete` requests so the control plane can verify the device by signature instead of a separate login flow. The signed payload includes the node ID, hostname, and the public device identity that identifies the contributor machine. On macOS, the private key is kept encrypted-at-rest inside the local identity record and is never readable or exportable from the app path.

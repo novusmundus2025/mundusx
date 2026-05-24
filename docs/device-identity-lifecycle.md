@@ -15,42 +15,42 @@ Those components should only be able to ask the local system to sign a request.
 
 ## Recommended Storage Model
 
-Use OS-managed secure storage instead of a plain file:
+Use non-exportable storage or an encrypted-at-rest sign-only fallback instead of a plain readable file:
 
-- macOS: Secure Enclave-backed signing when available, with a stable application tag for lookup and a simpler keychain-backed fallback when needed
+- macOS: current implementation uses a file-encrypted, sign-only fallback so the app never reads raw private-key bytes
 - Windows: TPM-backed or CNG / KSP-backed key storage
 - Linux: TPM / PKCS#11 / system keyring when available
 
-The current macOS implementation uses a helper that only exposes `ensure`, `sign`, and `verify`. The Rust CLI and agent keep the private key out of their own config files, and only persist the public metadata plus the keychain lookup tag. On macOS, the persisted JSON omits the private-key field entirely rather than storing even an empty placeholder.
+The current macOS implementation keeps the private key encrypted-at-rest inside the local identity record and only exposes sign operations to the CLI and agent. The Rust CLI and agent persist public metadata plus the encrypted key blob and nonce, but they never persist raw private-key bytes. The machine-derived secret is only used locally to decrypt for signing.
 
-The old file-backed prototype remains only for non-macOS development paths.
+The old plain file-backed prototype remains only for non-macOS development paths.
 
 ## Lifecycle
 
 ### First enrollment
 
-1. The CLI or agent asks the OS to create a non-exportable device key.
-2. The OS returns a public key, a signing handle, and a stable lookup tag.
+1. The CLI or agent creates a device key locally and immediately stores it in encrypted-at-rest form.
+2. The app records the public key, fingerprint, hostname, and a stable machine label.
 3. The control plane stores the public key, fingerprint, hostname, and device metadata.
-4. The device uses the same signing handle for future signed requests.
+4. The device uses the same encrypted identity record for future signed requests.
 
 ### Normal start
 
-1. `opengpu start` or the agent looks for the existing secure-store key using the saved lookup tag.
-2. If the key is present, it is reused.
+1. `opengpu start` or the agent looks for the existing encrypted identity record using the saved machine label.
+2. If the encrypted key is present, it is decrypted locally for signing.
 3. The control plane sees the same contributor identity.
 
 ### App reinstall
 
 1. The app is removed and installed again.
-2. The OS key remains in secure storage.
+2. The encrypted identity record remains on disk unless the user explicitly removes it.
 3. The CLI and agent reuse the same key on next launch.
 4. The device keeps the same identity.
 
 ### OS update
 
 1. The OS updates.
-2. The secure-store key remains available.
+2. The encrypted identity record remains available.
 3. The agent reuses it on next launch.
 4. No manual re-enrollment is needed.
 
@@ -97,6 +97,6 @@ Do not use it as proof of uniqueness or as a payout target.
 
 ## Current Prototype Status
 
-- macOS: non-exportable secure-store helper is implemented now, and the app-visible identity record omits private-key bytes.
+- macOS: file-encrypted sign-only fallback is implemented now, and the app-visible identity record omits raw private-key bytes.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.

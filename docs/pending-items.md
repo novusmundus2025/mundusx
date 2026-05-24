@@ -5,9 +5,9 @@ This document tracks the next concrete implementation steps after the current Ma
 ## Next Up
 
 1. **Port secure device identity to all platforms**
-   - macOS secure storage is in place
+   - macOS currently uses a file-encrypted, sign-only fallback
    - keep the private key non-exportable on Windows and Linux too
-   - preserve the current file-backed prototype only as a dev fallback
+   - move macOS to OS-backed secure storage when the platform path is ready
 
 2. **Define the federated governance model**
    - document the top-level standards / clearing-house org
@@ -24,7 +24,7 @@ This document tracks the next concrete implementation steps after the current Ma
 ## Why These Are Pending
 
 - The Mac-first core runtime is now working end to end, so the remaining work is mostly platform expansion and productization.
-- Secure device identity is complete on macOS, but the other platforms still need the same non-exportable key treatment.
+- Secure device identity is sign-only and non-exportable on macOS in the current fallback path, but the other platforms still need the same treatment.
 - Onboarding and governance are still design-heavy product layers rather than runtime plumbing.
 - Release packaging is still required before public rollout.
 

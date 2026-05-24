@@ -14,7 +14,8 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Config setter commands
 - [x] Contribution cap config
 - [x] Device identity keypair reuse
-- [x] macOS non-exportable device key storage in OS secure storage
+- [x] macOS non-exportable device identity in encrypted-at-rest sign-only fallback
+- [ ] macOS non-exportable device key storage in OS secure storage
 - [ ] Windows/Linux non-exportable device key storage in OS secure storage
 - [x] Start-first onboarding flow
 - [x] Friendly exit command
@@ -36,7 +37,7 @@ For the next implementation order, see [docs/pending-items.md](/Users/DBATALL/Do
 - [x] Operator auth for control-plane users
 - [x] Job submission and tracking
 - [x] Durable job event audit trail
-- [ ] Durable state store
+- [x] Durable state store
 - [x] Supabase migration runner and checked-in RLS rollout
 - [ ] Supabase restore path verification in the live project
 - [x] Agent / worker contract defined in proto and CLI types
