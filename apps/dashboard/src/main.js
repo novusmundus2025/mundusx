@@ -225,57 +225,41 @@ function renderInstallPage() {
     <title>OpenGPU Install</title>
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #050816;
-        --bg-2: #0a1030;
-        --panel: rgba(10, 15, 34, 0.72);
-        --panel-2: rgba(17, 24, 46, 0.84);
-        --line: rgba(163, 184, 255, 0.18);
-        --line-strong: rgba(163, 184, 255, 0.32);
-        --text: #eff4ff;
-        --muted: #9caaca;
-        --muted-2: #7180a0;
-        --green: #8ef0aa;
-        --blue: #a9c8ff;
-        --cyan: #89e7ff;
-        --amber: #ffd58d;
-        --violet: #c7a7ff;
-        --shadow: 0 28px 100px rgba(0, 0, 0, 0.45);
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --panel: rgba(255, 255, 255, 0.86);
+        --panel-strong: rgba(255, 255, 255, 0.98);
+        --line: rgba(18, 27, 51, 0.08);
+        --line-strong: rgba(18, 27, 51, 0.14);
+        --text: #0f172a;
+        --muted: #5f6b85;
+        --muted-2: #78839b;
+        --blue: #3752ff;
+        --cyan: #0f93d5;
+        --green: #0f9d58;
+        --shadow: 0 24px 80px rgba(15, 23, 42, 0.12);
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100vh;
-        background:
-          radial-gradient(circle at 15% 15%, rgba(105, 123, 255, 0.34), transparent 0 30%),
-          radial-gradient(circle at 85% 18%, rgba(77, 233, 255, 0.18), transparent 0 24%),
-          radial-gradient(circle at 60% 78%, rgba(176, 126, 255, 0.14), transparent 0 28%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
         color: var(--text);
         font-family:
+          "Inter",
           "SF Pro Display",
           "SF Pro Text",
           "Segoe UI",
-          "Avenir Next",
           "Helvetica Neue",
           sans-serif;
-      }
-      body::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        background-image:
-          linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-        background-size: 72px 72px;
-        mask-image: radial-gradient(circle at center, black 45%, transparent 88%);
-        opacity: 0.45;
+        background:
+          radial-gradient(circle at 15% 10%, rgba(55, 82, 255, 0.11), transparent 22%),
+          radial-gradient(circle at 84% 18%, rgba(15, 147, 213, 0.12), transparent 18%),
+          linear-gradient(180deg, #fbfcff 0%, var(--bg) 100%);
       }
       .wrap {
-        max-width: 1240px;
+        max-width: 1200px;
         margin: 0 auto;
-        padding: 24px 20px 56px;
+        padding: 26px 20px 56px;
       }
       .topbar {
         display: flex;
@@ -284,428 +268,328 @@ function renderInstallPage() {
         gap: 16px;
         flex-wrap: wrap;
         margin-bottom: 18px;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-size: 12px;
       }
       .brand {
-        color: var(--text);
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
         font-weight: 700;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.02em;
       }
-      .topbar-right {
+      .brand-mark {
+        width: 16px;
+        height: 16px;
+        border-radius: 5px;
+        background: linear-gradient(135deg, var(--blue), var(--cyan));
+        box-shadow: 0 10px 24px rgba(55, 82, 255, 0.22);
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 13px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.04em;
+      }
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+        gap: 22px;
+        align-items: stretch;
+        padding: 28px;
+        border: 1px solid var(--line);
+        border-radius: 30px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(20px);
+      }
+      .hero-copy {
+        display: grid;
+        align-content: start;
+        gap: 18px;
+      }
+      .eyebrow {
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(52px, 7vw, 86px);
+        line-height: 0.94;
+        letter-spacing: -0.06em;
+        max-width: 11ch;
+      }
+      .sub {
+        max-width: 56ch;
+        color: var(--muted);
+        line-height: 1.72;
+        font-size: 18px;
+      }
+      .hero-actions {
         display: flex;
         align-items: center;
         gap: 12px;
         flex-wrap: wrap;
       }
-      .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 999px;
-        background: var(--green);
-        box-shadow: 0 0 24px rgba(142, 240, 170, 0.7);
-      }
-      .topbar-chip {
+      .cta {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        padding: 10px 14px;
+        gap: 10px;
+        padding: 14px 18px;
+        border-radius: 14px;
+        border: 1px solid var(--line-strong);
+        background: linear-gradient(180deg, var(--blue), #2338d8);
+        color: white;
+        text-decoration: none;
+        font-weight: 600;
+        box-shadow: 0 14px 30px rgba(55, 82, 255, 0.18);
+      }
+      .cta:hover { text-decoration: none; filter: brightness(1.03); }
+      .ghost {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 18px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.76);
+        color: var(--text);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .ghost:hover { text-decoration: none; border-color: var(--line-strong); }
+      .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .tag {
+        padding: 7px 11px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.04);
         border: 1px solid var(--line);
         color: var(--muted);
+        background: rgba(255, 255, 255, 0.72);
         font-size: 12px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
       }
-      .hero {
-        position: relative;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        background:
-          linear-gradient(180deg, rgba(17, 24, 43, 0.92), rgba(9, 13, 23, 0.96)),
-          linear-gradient(135deg, rgba(92, 126, 255, 0.12), rgba(123, 235, 255, 0.04));
-        border-radius: 32px;
-        padding: 28px;
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(16px);
-      }
-      .hero::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background:
-          radial-gradient(circle at 20% 10%, rgba(120, 143, 255, 0.12), transparent 28%),
-          radial-gradient(circle at 86% 16%, rgba(123, 235, 255, 0.11), transparent 22%);
-        pointer-events: none;
-      }
-      h1 {
-        margin: 0;
-        max-width: 12ch;
-        font-size: clamp(56px, 7vw, 92px);
-        line-height: 0.92;
-        letter-spacing: -0.08em;
-        text-transform: uppercase;
-      }
-      .sub {
-        margin-top: 18px;
-        color: var(--muted);
-        line-height: 1.75;
-        max-width: 60ch;
-        font-size: 17px;
-      }
-      .hero-grid {
+      .side {
         display: grid;
-        grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
-        gap: 24px;
-        align-items: start;
-        margin-top: 30px;
+        gap: 14px;
+        align-content: start;
       }
-      .stack {
-        display: grid;
-        gap: 16px;
-        margin-top: 0;
-      }
-      .panel {
+      .command-card,
+      .info-card {
         border: 1px solid var(--line);
-        border-radius: 24px;
-        background: rgba(8, 12, 21, 0.72);
+        border-radius: 22px;
+        background: var(--panel-strong);
         padding: 18px;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       .label {
         color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.08em;
         font-size: 12px;
-        margin-bottom: 12px;
+        margin-bottom: 10px;
       }
       .command {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 14px;
-        padding: 20px;
-        border-radius: 22px;
-        background:
-          linear-gradient(180deg, rgba(6, 10, 18, 0.98), rgba(5, 8, 16, 0.98));
-        border: 1px solid var(--line-strong);
-        font-size: 15px;
+        gap: 12px;
+        border: 1px solid rgba(55, 82, 255, 0.14);
+        border-radius: 16px;
+        padding: 16px;
+        background: #0b1020;
+        color: #eff4ff;
         overflow-x: auto;
       }
       code {
-        color: #f7fbff;
-        white-space: nowrap;
         font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+        white-space: nowrap;
       }
-      .pill {
-        display: inline-flex;
-        align-items: center;
-        padding: 6px 10px;
-        border-radius: 999px;
+      .copy-btn {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.08);
+        color: white;
+        border-radius: 12px;
+        padding: 10px 14px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .copy-btn:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .hint {
+        margin-top: 10px;
+        color: var(--muted-2);
         font-size: 12px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        border: 1px solid rgba(169, 200, 255, 0.22);
-        color: var(--blue);
-        background: rgba(169, 200, 255, 0.08);
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 16px;
-        margin-top: 18px;
-      }
-      .card {
-        border: 1px solid var(--line);
-        border-radius: 22px;
-        background: linear-gradient(180deg, rgba(16, 23, 39, 0.88), rgba(9, 13, 22, 0.8));
-        padding: 18px;
-      }
-      .card strong {
-        display: block;
-        margin-bottom: 10px;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-      }
-      .card p {
-        margin: 0;
-        color: var(--muted);
-        line-height: 1.7;
-      }
-      ul {
-        margin: 0;
-        padding-left: 18px;
-        color: var(--muted);
-        line-height: 1.7;
-      }
-      a {
-        color: var(--green);
-        text-decoration: none;
-      }
-      a:hover { text-decoration: underline; }
-      .footer {
-        margin-top: 18px;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.6;
       }
       .steps {
         display: grid;
-        gap: 12px;
+        gap: 10px;
       }
       .step {
         display: flex;
-        gap: 14px;
-        padding: 14px 16px;
-        border: 1px solid var(--line);
-        border-radius: 18px;
-        background: rgba(7, 11, 18, 0.68);
+        gap: 12px;
+        align-items: flex-start;
+        padding: 12px 0;
+        border-top: 1px solid var(--line);
       }
-      .step-num {
-        width: 30px;
-        height: 30px;
+      .step:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .num {
+        width: 26px;
+        height: 26px;
         border-radius: 999px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         flex: 0 0 auto;
+        background: rgba(55, 82, 255, 0.08);
+        color: var(--blue);
         font-weight: 700;
-        color: var(--green);
-        background: rgba(137, 232, 164, 0.1);
-        border: 1px solid rgba(137, 232, 164, 0.25);
       }
       .step strong {
         display: block;
         margin-bottom: 4px;
-        font-size: 14px;
       }
       .step p {
         margin: 0;
         color: var(--muted);
         line-height: 1.6;
       }
-      .command-actions {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        flex: 0 0 auto;
-      }
-      .copy-btn {
-        border: 1px solid rgba(169, 200, 255, 0.22);
-        background: rgba(169, 200, 255, 0.1);
-        color: var(--text);
-        border-radius: 12px;
-        padding: 10px 14px;
-        font: inherit;
-        cursor: pointer;
-      }
-      .copy-btn:hover {
-        border-color: rgba(169, 200, 255, 0.42);
-        background: rgba(169, 200, 255, 0.14);
-      }
-      .micro {
-        color: var(--muted-2);
-        font-size: 12px;
-        margin-top: 8px;
-      }
-      .split {
+      .grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.82fr);
-        gap: 18px;
-        align-items: stretch;
-      }
-      .hero-copy {
-        padding-right: 6px;
-      }
-      .hero-metrics {
-        display: grid;
-        gap: 12px;
-      }
-      .metric {
-        border: 1px solid var(--line);
-        background: rgba(7, 11, 18, 0.6);
-        border-radius: 20px;
-        padding: 16px;
-      }
-      .metric .k {
-        display: block;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-size: 11px;
-        margin-bottom: 8px;
-      }
-      .metric .v {
-        font-size: 18px;
-        color: var(--text);
-        line-height: 1.45;
-      }
-      .hero-badges {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
         margin-top: 22px;
       }
-      .hero-badges .pill {
-        padding: 8px 12px;
-      }
-      .right-card {
+      .card {
         padding: 18px;
-        border-radius: 24px;
+        border-radius: 20px;
         border: 1px solid var(--line);
-        background:
-          radial-gradient(circle at top right, rgba(123, 235, 255, 0.08), transparent 24%),
-          linear-gradient(180deg, rgba(16, 23, 39, 0.9), rgba(7, 11, 18, 0.88));
-        display: grid;
-        gap: 14px;
+        background: rgba(255, 255, 255, 0.78);
       }
-      .release-badge {
-        width: fit-content;
-        padding: 7px 12px;
-        border-radius: 999px;
-        border: 1px solid rgba(123, 235, 255, 0.26);
-        color: var(--cyan);
-        background: rgba(123, 235, 255, 0.08);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        font-size: 11px;
-      }
-      .release-stack {
-        display: grid;
-        gap: 10px;
-      }
-      .release-line {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 12px 14px;
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        background: rgba(7, 11, 18, 0.6);
-      }
-      .release-line .left {
-        display: grid;
-        gap: 3px;
-      }
-      .release-line .left strong {
-        font-size: 14px;
-      }
-      .release-line .left span {
-        color: var(--muted);
-        font-size: 12px;
-      }
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(143, 161, 210, 0.2);
-        color: var(--muted);
-        background: rgba(255, 255, 255, 0.02);
-        font-size: 12px;
+      .card strong {
+        display: block;
+        margin-bottom: 10px;
+        font-size: 13px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
-      @media (max-width: 760px) {
-        .grid { grid-template-columns: 1fr; }
-        .command { align-items: flex-start; flex-direction: column; }
-        .command-actions { width: 100%; justify-content: space-between; }
-        .hero-grid { grid-template-columns: 1fr; }
+      .card p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+      .footer {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      @media (max-width: 920px) {
+        .hero, .grid { grid-template-columns: 1fr; }
+        .hero { padding: 22px; }
         h1 { max-width: none; }
-        .split { grid-template-columns: 1fr; }
       }
     </style>
   </head>
   <body>
     <div class="wrap">
+      <div class="topbar">
+        <div class="brand"><span class="brand-mark"></span> OpenGPU Install</div>
+        <div class="chip">localhost preview • Mac-first</div>
+      </div>
+
       <div class="hero">
-        <div class="topbar">
-          <div class="brand">OpenGPU Install</div>
-          <div class="topbar-right">
-            <div class="topbar-chip"><span class="dot"></span> localhost preview</div>
-            <div class="topbar-chip">Mac-first release channel</div>
+        <div class="hero-copy">
+          <div class="eyebrow">local-first install flow</div>
+          <h1>Install OpenGPU on your Mac</h1>
+          <div class="sub">
+            A cleaner first-run path for Apple Silicon. Install from one command, verify the
+            signed release binary when available, then move straight into onboarding, cap
+            selection, and start.
+          </div>
+
+          <div class="hero-actions">
+            <a class="cta" href="#command">Copy install command</a>
+            <a class="ghost" href="/docs">Open docs preview</a>
+          </div>
+
+          <div class="tags">
+            <span class="tag">Apple Silicon</span>
+            <span class="tag">signed binary</span>
+            <span class="tag">checksum verified</span>
+            <span class="tag">localhost preview</span>
+          </div>
+
+          <div class="grid">
+            <div class="card">
+              <strong>Why this exists</strong>
+              <p>The install page is the first touch point. It should feel like a product page, not a control panel.</p>
+            </div>
+            <div class="card">
+              <strong>What happens next</strong>
+              <p>After install, run <code>opengpu onboarding</code>, choose a cap, then start the node.</p>
+            </div>
+            <div class="card">
+              <strong>Release discipline</strong>
+              <p>The command, checksum, and release asset should always point to the same Mac-first build.</p>
+            </div>
           </div>
         </div>
-        <div class="split">
-          <div class="hero-copy">
-            <h1>Install OpenGPU on your Mac</h1>
-            <div class="sub">
-              Fast, local-first installation for Apple Silicon. The installer fetches the signed
-              release binary, verifies checksums when available, and sets you up for
-              <code>opengpu onboarding</code> and <code>opengpu start</code>.
-            </div>
-            <div class="hero-badges">
-              <span class="pill">Apple Silicon first</span>
-              <span class="pill">signed binary</span>
-              <span class="pill">checksum verified</span>
-              <span class="pill">localhost preview</span>
-            </div>
 
-            <div class="grid">
-              <div class="card">
-                <strong>What happens next</strong>
-                <p>
-                  The installer downloads the matching Apple Silicon release binary and verifies
-                  the checksum when available.
-                </p>
-              </div>
-              <div class="card">
-                <strong>After install</strong>
-                <p>
-                  Run <code>opengpu onboarding</code>, then <code>opengpu cap</code>, then
-                  <code>opengpu start</code>.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div class="right-card">
-            <div class="release-badge">one command</div>
-            <div class="label">Copy the install command</div>
+        <div class="side">
+          <div class="command-card" id="command">
+            <div class="label">Install command</div>
             <div class="command">
               <code>curl -fsSL https://novusx.ai/install | bash</code>
-              <div class="command-actions">
-                <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'copied'; }).catch(() => {});">Copy</button>
-              </div>
+              <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
             </div>
-            <div class="micro" id="copy-status">local preview only</div>
+            <div class="hint" id="copy-status">Local preview only. Public domain comes later.</div>
+          </div>
 
-            <div class="release-stack">
-              <div class="release-line">
-                <div class="left">
+          <div class="info-card">
+            <div class="label">Install flow</div>
+            <div class="steps">
+              <div class="step">
+                <div class="num">1</div>
+                <div>
                   <strong>Download</strong>
-                  <span>Signed Mac release binary</span>
+                  <p>Fetch the Mac release binary from the release channel.</p>
                 </div>
-                <div class="pill">step 1</div>
               </div>
-              <div class="release-line">
-                <div class="left">
+              <div class="step">
+                <div class="num">2</div>
+                <div>
                   <strong>Verify</strong>
-                  <span>Checksum when published</span>
+                  <p>Checksum verification happens when the release artifact publishes one.</p>
                 </div>
-                <div class="pill">step 2</div>
               </div>
-              <div class="release-line">
-                <div class="left">
+              <div class="step">
+                <div class="num">3</div>
+                <div>
                   <strong>Start</strong>
-                  <span>Onboarding, cap, then connect</span>
+                  <p>Review onboarding, set your cap, and then run <code>opengpu start</code>.</p>
                 </div>
-                <div class="pill">step 3</div>
               </div>
             </div>
           </div>
         </div>
+      </div>
 
-        <div class="footer">
-          Local preview URL: <code>${escapeHtml(appUrl)}/install</code> •
-          Docs preview: <code>${escapeHtml(appUrl)}/docs</code>
-        </div>
+      <div class="footer">
+        Local preview URL: <code>${escapeHtml(appUrl)}/install</code> • Docs preview:
+        <code>${escapeHtml(appUrl)}/docs</code>
       </div>
     </div>
   </body>
