@@ -974,14 +974,19 @@ function page({ health, status, events, credits, error }) {
 </html>`;
 }
 
-function docsShell({ title, subtitle, active, body }) {
+function docsRoute(basePath, path = "") {
+  const normalized = basePath.endsWith("/") ? basePath.slice(0, -1) : basePath;
+  return `${normalized}${path}`;
+}
+
+function docsShell({ title, subtitle, active, body, basePath = "/docs" }) {
   const sections = [
-    ["Overview", "/docs", "overview"],
-    ["Install", "/docs/install", "install"],
-    ["Device identity", "/docs/identity", "identity"],
-    ["Onboarding", "/docs/onboarding", "onboarding"],
-    ["Credits", "/docs/credits", "credits"],
-    ["Releases", "/docs/releases", "releases"],
+    ["Overview", docsRoute(basePath), "overview"],
+    ["Install", docsRoute(basePath, "/install"), "install"],
+    ["Device identity", docsRoute(basePath, "/identity"), "identity"],
+    ["Onboarding", docsRoute(basePath, "/onboarding"), "onboarding"],
+    ["Credits", docsRoute(basePath, "/credits"), "credits"],
+    ["Releases", docsRoute(basePath, "/releases"), "releases"],
   ];
 
   return `<!doctype html>
@@ -1201,12 +1206,13 @@ function docsShell({ title, subtitle, active, body }) {
 </html>`;
 }
 
-function renderDocsHome() {
+function renderDocsHome(basePath = "/docs") {
   return docsShell({
     title: "OpenGPU Docs",
     subtitle:
       "A Mac-first public docs surface for install, identity, onboarding, credits, and release flow. This preview is local, but the copy is written as the public source of truth.",
     active: "overview",
+    basePath,
     body: `
       <div class="cards">
         <div class="card">
@@ -1215,7 +1221,7 @@ function renderDocsHome() {
             One-line install command, checksum verification, and what the contributor sees
             after download.
           </p>
-          <p><a href="/docs/install">Open install page</a></p>
+          <p><a href="${escapeHtml(docsRoute(basePath, "/install"))}">Open install page</a></p>
         </div>
         <div class="card">
           <h2>Device identity</h2>
@@ -1223,7 +1229,7 @@ function renderDocsHome() {
             Explain how the Mac identity survives reinstall, why the private key is not
             exportable, and what metadata is signed.
           </p>
-          <p><a href="/docs/identity">Open identity page</a></p>
+          <p><a href="${escapeHtml(docsRoute(basePath, "/identity"))}">Open identity page</a></p>
         </div>
         <div class="card">
           <h2>Onboarding</h2>
@@ -1231,14 +1237,14 @@ function renderDocsHome() {
             The first-run checklist for a contributor machine: identity, cap, model, and
             start flow.
           </p>
-          <p><a href="/docs/onboarding">Open onboarding page</a></p>
+          <p><a href="${escapeHtml(docsRoute(basePath, "/onboarding"))}">Open onboarding page</a></p>
         </div>
         <div class="card">
           <h2>Credits</h2>
           <p>
             Append-only ledger rules for contributor balances and how job awards are tracked.
           </p>
-          <p><a href="/docs/credits">Open credits page</a></p>
+          <p><a href="${escapeHtml(docsRoute(basePath, "/credits"))}">Open credits page</a></p>
         </div>
         <div class="card">
           <h2>Releases</h2>
@@ -1246,7 +1252,7 @@ function renderDocsHome() {
             Mac-first localhost install flow, signed artifacts, and how the release page maps to
             the installer.
           </p>
-          <p><a href="/docs/releases">Open releases page</a></p>
+          <p><a href="${escapeHtml(docsRoute(basePath, "/releases"))}">Open releases page</a></p>
         </div>
         <div class="card">
           <h2>Dashboard</h2>
@@ -1261,12 +1267,13 @@ function renderDocsHome() {
   });
 }
 
-function renderDocsInstall() {
+function renderDocsInstall(basePath = "/docs") {
   return docsShell({
     title: "Install OpenGPU",
     subtitle:
       "The install page is the first touch for contributors. For now it stays localhost-only, keeps the command identical everywhere, and points to onboarding and cap selection immediately after install.",
     active: "install",
+    basePath,
     body: `
       <div class="cards">
         <div class="card">
@@ -1289,12 +1296,13 @@ function renderDocsInstall() {
   });
 }
 
-function renderDocsIdentity() {
+function renderDocsIdentity(basePath = "/docs") {
   return docsShell({
     title: "Device Identity",
     subtitle:
       "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the OpenGPU data directory remains intact.",
     active: "identity",
+    basePath,
     body: `
       <div class="cards">
         <div class="card">
@@ -1319,12 +1327,13 @@ function renderDocsIdentity() {
   });
 }
 
-function renderDocsOnboarding() {
+function renderDocsOnboarding(basePath = "/docs") {
   return docsShell({
     title: "Onboarding",
     subtitle:
       "The first-run checklist keeps the Mac-first path understandable: review identity, choose a cap, confirm the model, and only then go live.",
     active: "onboarding",
+    basePath,
     body: `
       <div class="cards">
         <div class="card">
@@ -1345,12 +1354,13 @@ function renderDocsOnboarding() {
   });
 }
 
-function renderDocsCredits() {
+function renderDocsCredits(basePath = "/docs") {
   return docsShell({
     title: "Credits",
     subtitle:
       "Credits are tracked as an append-only ledger on the control plane. They belong to the contributor account, not the hostname or the device key itself.",
     active: "credits",
+    basePath,
     body: `
       <div class="cards">
         <div class="card">
@@ -1370,12 +1380,13 @@ function renderDocsCredits() {
   });
 }
 
-function renderDocsReleases() {
+function renderDocsReleases(basePath = "/docs") {
   return docsShell({
     title: "Releases",
     subtitle:
       "The release surface stays Mac-first and localhost-only for now. The install page, installer script, manifest endpoint, and signed binary artifacts should always agree on the same release source.",
     active: "releases",
+    basePath,
     body: `
       <div class="cards">
         <div class="card">
@@ -1461,6 +1472,42 @@ createServer(async (req, res) => {
   if (requestUrl.pathname === "/docs/releases") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderDocsReleases());
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/docs" || requestUrl.pathname === "/public/docs/") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsHome("/public/docs"));
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/docs/install") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsInstall("/public/docs"));
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/docs/identity") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsIdentity("/public/docs"));
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/docs/onboarding") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsOnboarding("/public/docs"));
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/docs/credits") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsCredits("/public/docs"));
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/docs/releases") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsReleases("/public/docs"));
     return;
   }
 

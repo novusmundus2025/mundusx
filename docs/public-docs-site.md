@@ -22,6 +22,10 @@ The dashboard app serves a local docs preview at:
 
 - `http://127.0.0.1:<port>/docs`
 
+It also mirrors the public-endpoint shape locally at:
+
+- `http://127.0.0.1:<port>/public/docs`
+
 Use that preview to review the copy before wiring the public domain.
 
 ## Review Rule

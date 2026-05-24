@@ -97,7 +97,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - `npm run smoke:local` for the same one-shot localhost check from the repo root
 - [scripts/local-release-preview.sh](/Users/DBATALL/Documents/aigrid/scripts/local-release-preview.sh) for the repo-managed localhost release preview helper
 - [scripts/verify-release-packaging.sh](/Users/DBATALL/Documents/aigrid/scripts/verify-release-packaging.sh) for the release artifact packaging validator
-- [docs/public-docs-site.md](/Users/DBATALL/Documents/aigrid/docs/public-docs-site.md) for the local docs site preview at `http://127.0.0.1:<port>/docs`
+- [docs/public-docs-site.md](/Users/DBATALL/Documents/aigrid/docs/public-docs-site.md) for the local docs site preview at `http://127.0.0.1:<port>/docs` and the public-endpoint mirror at `http://127.0.0.1:<port>/public/docs`
 - [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
 - [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files
 - [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints
