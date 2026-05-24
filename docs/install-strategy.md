@@ -1,6 +1,6 @@
 # Install Strategy
 
-This page defines the recommended way to distribute `opengpu` across macOS, Windows, and Linux.
+This page defines the recommended way to distribute `opengpu` starting with macOS, then expanding to the other platforms later.
 
 ## Guiding Principle
 
@@ -16,8 +16,8 @@ Use your own installer that downloads the correct release binary from GitHub Rel
 
 Recommended flow:
 
-- macOS and Linux: `curl -fsSL https://novusx.ai/install | bash`
-- Windows: a PowerShell bootstrapper with the same release assets
+- macOS (current focus): `curl -fsSL https://novusx.ai/install | bash`
+- Linux and Windows: follow later, once the Mac release path is stable
 
 This should be the source of truth for release artifacts and checksums.
 
@@ -61,9 +61,9 @@ Optional later:
 Recommended release targets:
 
 - `macos-aarch64`
-- `macos-x86_64` if you want Intel support
-- `windows-x86_64`
-- `linux-x86_64`
+- `macos-x86_64` later if Intel support becomes necessary
+- `windows-x86_64` later
+- `linux-x86_64` later
 - `linux-aarch64` later if needed
 
 ## Release Checklist
@@ -86,8 +86,8 @@ Before shipping any platform release:
 Ship when all of these are true:
 
 - `macos-aarch64` binary builds and runs on Apple Silicon
-- optionally `macos-x86_64` binary builds if Intel support is required
 - the shell installer works on macOS
+- the installer verifies release checksums when they are published
 - the binary is notarized or otherwise signed according to release policy
 - Homebrew tap or formula can install the same version
 - `opengpu` is available in `PATH` after install

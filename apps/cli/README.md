@@ -12,20 +12,20 @@ Useful commands:
 
 ```bash
 opengpu start
+opengpu onboarding
 opengpu login
 opengpu logout
 opengpu status
 opengpu nodes
 opengpu exit
 opengpu doctor
-opengpu config show
-opengpu config set backend m
 ```
 
 Startup flow:
 
 - `opengpu init` creates local state
 - `opengpu start` creates local state if needed, connects locally, and marks the machine ready
+- `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu login` stores a local operator bearer token
 - `opengpu logout` clears that local token
 - `opengpu connect` marks the machine ready

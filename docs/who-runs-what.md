@@ -5,7 +5,7 @@
 You install one thing and run one command:
 
 ```
-curl https://novusx.ai/install | sh
+curl -fsSL https://novusx.ai/install | bash
 opengpu connect
 ```
 
@@ -43,7 +43,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 | **Control Plane** | Rust (HTTP API) | Node registry, heartbeat ingestion, job queue, routing decisions, job tracking |
 | **Dashboard** | Node.js (planned) | Live view of network health, node status, job history, credits |
 | **Install endpoint** | Static/CDN | `https://novusx.ai/install` — serves the install script and prebuilt binaries |
-| **Release pipeline** | GitHub Actions | Builds and publishes signed binaries on every `cli-v*` tag |
+| **Release pipeline** | GitHub Actions | Builds and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today) |
 | **Auth service** | (planned) | Issues tokens for users and devices |
 | **Credits ledger** | (planned) | Tracks contribution and usage accounting per node |
 | **Durable state store** | (planned) | Persistent DB behind the control plane — currently in-memory only |
@@ -61,7 +61,8 @@ You run and maintain the shared infrastructure that all nodes connect to.
 - Keep binaries up to date and signed after every release
 
 **Release pipeline**
-- Tag `cli-v*` triggers a build for macOS (arm64, x86_64) and Linux (x86_64)
+- Tag `cli-v*` triggers a Mac-first release build today
+- Current release channel targets Apple Silicon macOS binaries
 - Binaries must be verified before the install script points to them
 
 **Dashboard**

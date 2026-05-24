@@ -15,14 +15,32 @@ case "$os" in
 esac
 
 case "$arch" in
-  arm64|aarch64) target="aarch64-${platform}" ;;
-  x86_64|amd64) target="x86_64-${platform}" ;;
-  *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+  arm64|aarch64)
+    target="aarch64-${platform}"
+    ;;
+  x86_64|amd64)
+    if [ "$os" = "darwin" ]; then
+      echo "current Mac release channel is Apple Silicon only; please use an M-series Mac or build from source" >&2
+      exit 1
+    fi
+    target="x86_64-${platform}"
+    ;;
+  *)
+    echo "unsupported architecture: $arch" >&2
+    exit 1
+    ;;
 esac
 
-release_url="https://github.com/${REPO}/releases/latest/download/${BIN_NAME}-${target}"
+asset_name="${BIN_NAME}-${target}"
+release_url="https://github.com/${REPO}/releases/latest/download/${asset_name}"
+checksum_url="${release_url}.sha256"
 tmp_dir="$(mktemp -d)"
-tmp_bin="${tmp_dir}/${BIN_NAME}"
+tmp_bin="${tmp_dir}/${asset_name}"
+tmp_checksum="${tmp_dir}/${asset_name}.sha256"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
 
 mkdir -p "$INSTALL_DIR"
 
@@ -34,6 +52,20 @@ elif command -v wget >/dev/null 2>&1; then
 else
   echo "curl or wget is required" >&2
   exit 1
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  if curl -fsSL "$checksum_url" -o "$tmp_checksum"; then
+    if command -v shasum >/dev/null 2>&1; then
+      (cd "$tmp_dir" && shasum -a 256 -c "$(basename "$tmp_checksum")")
+    elif command -v sha256sum >/dev/null 2>&1; then
+      (cd "$tmp_dir" && sha256sum -c "$(basename "$tmp_checksum")")
+    else
+      echo "checksum verification skipped: no shasum or sha256sum available" >&2
+    fi
+  else
+    echo "checksum unavailable for ${asset_name}, continuing without verification" >&2
+  fi
 fi
 
 chmod +x "$tmp_bin"
