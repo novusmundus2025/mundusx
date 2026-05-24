@@ -100,3 +100,23 @@ Do not use it as proof of uniqueness or as a payout target.
 - macOS: file-encrypted sign-only fallback is implemented now, and the app-visible identity record omits raw private-key bytes.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.
+
+## Reinstall Behavior
+
+If the contributor removes and reinstalls the app, the device identity should be reused as long as the persistent OpenGPU data directory remains intact.
+
+### Expected behavior
+
+- app uninstall alone does not delete the identity
+- reinstall reuses the existing encrypted identity record
+- the node keeps the same contributor identity after reinstall
+
+### When identity is lost
+
+The device only becomes a new identity if the contributor also deletes the OpenGPU data directory or explicitly revokes the device.
+
+That keeps the install path predictable:
+
+- reinstall = same identity
+- explicit reset = new identity
+- app binary alone does not control contributor identity
