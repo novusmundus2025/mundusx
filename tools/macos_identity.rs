@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
