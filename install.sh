@@ -45,7 +45,12 @@ trap cleanup EXIT
 
 mkdir -p "$INSTALL_DIR"
 
-echo "Downloading ${BIN_NAME} for ${target}..."
+echo "OpenGPU installer"
+echo "  target: ${target}"
+echo "  source: ${RELEASE_BASE_URL%/}"
+echo "  install: ${INSTALL_DIR}"
+echo
+echo "Fetching ${BIN_NAME}..."
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL "$release_url" -o "$tmp_bin"
 elif command -v wget >/dev/null 2>&1; then
@@ -57,6 +62,7 @@ fi
 
 if command -v curl >/dev/null 2>&1; then
   if curl -fsSL "$checksum_url" -o "$tmp_checksum"; then
+    echo "Verifying checksum..."
     if command -v shasum >/dev/null 2>&1; then
       (cd "$tmp_dir" && shasum -a 256 -c "$(basename "$tmp_checksum")")
     elif command -v sha256sum >/dev/null 2>&1; then
@@ -72,5 +78,6 @@ fi
 chmod +x "$tmp_bin"
 mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
 
+echo
 echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
-echo "Make sure ${INSTALL_DIR} is on your PATH."
+echo "If needed, add ${INSTALL_DIR} to your PATH."
