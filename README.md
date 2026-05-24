@@ -35,7 +35,7 @@ That installer will download the matching release binary for the user's operatin
 
 See [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the distribution plan.
 
-Release builds for the CLI are published from GitHub Actions on `cli-v*` tags.
+Release builds for the CLI are published from GitHub Actions on `cli-v*` tags with checksums and a signed manifest attached to each release artifact set.
 
 ## First Implementation Files
 

@@ -10,17 +10,17 @@ Use this document as the single working list:
 
 ## Current Focus
 
-1. **Signed release binaries published from tags**
-   - keep the release workflow building, verifying, and publishing from tagged commits
-   - keep the artifact names, checksums, and install expectations in sync
-   - keep the local smoke check proving the preview tree and installer still agree
+1. **Public install endpoint behind `novusx.ai`**
+   - keep the public install page aligned with the localhost preview
+   - keep the install command, checksum wording, and release links in sync
+   - keep the public landing copy matching the current signed release flow
 
 ## Remaining Work
 
 ### Release and Install
 
 - [ ] Public install endpoint behind `novusx.ai`
-- [ ] Signed release binaries published from tags
+- [x] Signed release binaries published from tags
 - [x] Packaging checks on macOS and Linux release artifacts
 - [ ] Homebrew tap or formula publishing
 - [ ] WinGet package publishing
@@ -67,6 +67,7 @@ The following major pieces are already in place and should stay marked complete:
 - Local install page preview
 - Local release preview helper and CLI help polish
 - Packaging checks on macOS and Linux release artifacts
+- Signed release binaries published from tags
 
 ## Tracking Rule
 

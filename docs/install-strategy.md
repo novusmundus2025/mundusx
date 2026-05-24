@@ -78,7 +78,7 @@ Before shipping any platform release:
 - generate checksums for every artifact
 - validate the artifact shape with `scripts/verify-release-packaging.sh` and the localhost smoke test
 - verify checksums in CI before publishing the release assets
-- sign every artifact or release manifest
+- sign the release manifest and publish the verified signature with the artifacts
 - publish release notes with the exact tag
 - verify the installer can fetch the matching asset
 - verify the binary starts without extra dependencies
@@ -121,9 +121,10 @@ Ship when all of these are true:
 
 1. Build binaries in GitHub Actions.
 2. Verify the generated checksums in CI.
-3. Attach the verified artifacts to a tagged release.
-4. Publish checksums and signatures.
-5. Let the installer and package managers fetch from the release channel.
+3. Sign the release manifest for the tagged build.
+4. Attach the verified artifacts and signed manifest to the tagged release.
+5. Publish checksums and signatures.
+6. Let the installer and package managers fetch from the release channel.
 
 ## Definition Of Done
 

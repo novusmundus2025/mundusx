@@ -43,7 +43,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 | **Control Plane** | Rust (HTTP API) | Node registry, heartbeat ingestion, job queue, routing decisions, job tracking |
 | **Dashboard** | Node.js | Live view of network health, node status, job history, credits. Local preview exists now; public rollout follows later. |
 | **Install endpoint** | Local dashboard preview | `http://127.0.0.1:<port>/install` — current landing page and install command for the signed binary preview |
-| **Release pipeline** | GitHub Actions + localhost preview | Builds, verifies checksums, and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today), while the current preview uses a localhost release source |
+| **Release pipeline** | GitHub Actions + localhost preview | Builds, verifies checksums, signs the release manifest, and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today), while the current preview uses a localhost release source |
 | **Auth service** | Local bearer token + signed device requests | Issues operator tokens locally for the prototype and verifies device signatures |
 | **Credits ledger** | Supabase-backed ledger | Tracks contribution and usage accounting per node |
 | **Durable state store** | Supabase / Postgres | Persistent DB behind the control plane, with the local JSON cache kept only as a fallback |
@@ -63,7 +63,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 **Release pipeline**
 - Tag `cli-v*` triggers a Mac-first release build today
 - Current release channel targets Apple Silicon macOS binaries
-- Binaries are checksum-verified in CI before the install script points to them
+- Binaries are checksum-verified in CI and their release manifest is signed before the install script points to them
 
 **Dashboard**
 - Local preview exists now — needed before public launch for trust/transparency

@@ -18,9 +18,7 @@ For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/
    - keep the company control plane separate from the governance layer
 
 3. **Public install and release rollout**
-   - signed release binaries
    - public install endpoint
-   - packaging checks for macOS and Linux release artifacts
    - Homebrew and WinGet publishing
 
 ## Why These Are Pending
@@ -28,7 +26,7 @@ For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/
 - The Mac-first core runtime is now working end to end, so the remaining work is mostly platform expansion and productization.
 - Secure device identity is sign-only and non-exportable on macOS in the current fallback path, but the other platforms still need the same treatment.
 - Onboarding and governance are still design-heavy product layers rather than runtime plumbing.
-- Release packaging is still required before public rollout.
+- The public install endpoint and package-manager publishing are still required before public rollout.
 
 ## How To Use This Doc
 

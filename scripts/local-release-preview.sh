@@ -89,6 +89,8 @@ build_preview() {
 
   checksum="$(checksum_for "$binary_path")"
   printf '%s  %s\n' "$checksum" "$(basename "$binary_path")" > "$checksum_path"
+  OPENGPU_RELEASE_SIGNING_ALLOW_GENERATED_KEYS=1 \
+    "$repo_root/scripts/release-signing.sh" prepare "$asset_dir" "$asset_name" "local-preview" "0.1.0"
 
   cat > "$index_path" <<EOF
 <!doctype html>
@@ -292,6 +294,7 @@ verify_preview() {
   [ -f "$index_path" ] || die "missing release landing page: $index_path"
 
   "$repo_root/scripts/verify-release-packaging.sh" "$asset_dir" "$asset_name"
+  "$repo_root/scripts/release-signing.sh" verify "$asset_dir" "$asset_name"
 
   echo "Verified local release preview:"
   echo "  asset: $asset_name"

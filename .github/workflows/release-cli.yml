@@ -52,6 +52,13 @@ jobs:
         run: |
           ./scripts/verify-release-packaging.sh . ${{ matrix.binary_name }}
 
+      - name: Prepare signed manifest
+        env:
+          OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: |
+          ./scripts/release-signing.sh prepare . ${{ matrix.binary_name }} ${{ github.ref_name }} ${{ github.ref_name }}
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -59,6 +66,8 @@ jobs:
           path: |
             ${{ matrix.binary_name }}
             ${{ matrix.binary_name }}.sha256
+            release-manifest.json
+            release-manifest.json.sig
 
   release:
     needs: build
@@ -71,11 +80,14 @@ jobs:
           path: dist
 
       - name: Verify downloaded artifacts
+        env:
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
         run: |
           find dist -name '*.sha256' -print0 | while IFS= read -r -d '' checksum_file; do
             artifact_dir="$(dirname "$checksum_file")"
             binary_name="$(basename "${checksum_file%.sha256}")"
             ./scripts/verify-release-packaging.sh "$artifact_dir" "$binary_name"
+            ./scripts/release-signing.sh verify "$artifact_dir" "$binary_name"
           done
 
       - name: Publish GitHub release

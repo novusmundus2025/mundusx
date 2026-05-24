@@ -21,7 +21,7 @@ For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Docume
 - [x] Start-first onboarding flow
 - [x] Friendly exit command
 - [x] Reviewable official model catalog config
-- [ ] Signed release binaries published from tags
+- [x] Signed release binaries published from tags
 - [ ] Public install endpoint behind `novusx.ai`
 - [x] Packaging checks on macOS and Linux release artifacts
 - [ ] WinGet package publishing
