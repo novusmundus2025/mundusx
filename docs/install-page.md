@@ -29,7 +29,9 @@ curl -fsSL https://novusx.ai/install | bash
 
 During development, the same copy is available from the dashboard server at:
 
-- `http://127.0.0.1:3002/install`
+- `http://127.0.0.1:<port>/install`
+
+The local dashboard typically runs on `3001`, but you can override `PORT` during review.
 
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
 

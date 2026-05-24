@@ -252,6 +252,22 @@ function renderInstallPage() {
         margin: 0 auto;
         padding: 32px 20px 56px;
       }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+      }
+      .brand {
+        color: var(--text);
+        font-weight: 700;
+      }
       .hero {
         border: 1px solid var(--line);
         background: linear-gradient(180deg, rgba(21, 31, 48, 0.95), rgba(12, 17, 27, 0.95));
@@ -271,10 +287,17 @@ function renderInstallPage() {
         line-height: 1.6;
         max-width: 72ch;
       }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+        gap: 18px;
+        align-items: start;
+        margin-top: 24px;
+      }
       .stack {
         display: grid;
         gap: 16px;
-        margin-top: 22px;
+        margin-top: 0;
       }
       .panel {
         border: 1px solid var(--line);
@@ -358,69 +381,141 @@ function renderInstallPage() {
         font-size: 12px;
         line-height: 1.6;
       }
+      .steps {
+        display: grid;
+        gap: 12px;
+      }
+      .step {
+        display: flex;
+        gap: 14px;
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(6, 10, 16, 0.64);
+      }
+      .step-num {
+        width: 30px;
+        height: 30px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        font-weight: 700;
+        color: var(--green);
+        background: rgba(137, 232, 164, 0.1);
+        border: 1px solid rgba(137, 232, 164, 0.25);
+      }
+      .step strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 14px;
+      }
+      .step p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
       @media (max-width: 760px) {
         .grid { grid-template-columns: 1fr; }
         .command { align-items: flex-start; flex-direction: column; }
+        .hero-grid { grid-template-columns: 1fr; }
       }
     </style>
   </head>
   <body>
     <div class="wrap">
       <div class="hero">
-        <div class="pill">local preview • localhost only</div>
-        <h1>OpenGPU Install</h1>
+        <div class="topbar">
+          <div class="brand">OpenGPU Install</div>
+          <div>Mac-first release channel</div>
+        </div>
+        <div class="pill">localhost preview • mirrors the future public page</div>
+        <h1>Install OpenGPU on your Mac</h1>
         <div class="sub">
-          This is the Mac-first install page preview. The public version will live at
-          <code>https://novusx.ai/install</code>, but for local review we keep it on localhost
-          so you can verify the copy before it ships.
+          Get the Mac-first OpenGPU CLI with one command. The installer downloads the signed
+          release binary, verifies checksums when available, and sets you up for
+          <code>opengpu onboarding</code> and <code>opengpu start</code>.
         </div>
 
-        <div class="stack">
-          <div class="panel">
-            <div class="label">Copy the install command</div>
-            <div class="command">
-              <code>curl -fsSL https://novusx.ai/install | bash</code>
-              <span class="pill">one command</span>
+        <div class="hero-grid">
+          <div class="stack">
+            <div class="panel">
+              <div class="label">Copy the install command</div>
+              <div class="command">
+                <code>curl -fsSL https://novusx.ai/install | bash</code>
+                <span class="pill">one command</span>
+              </div>
+            </div>
+
+            <div class="grid">
+              <div class="card">
+                <strong>What happens next</strong>
+                <p>
+                  The installer downloads the matching Apple Silicon release binary and verifies
+                  the checksum when available.
+                </p>
+              </div>
+              <div class="card">
+                <strong>What this page is</strong>
+                <p>
+                  A public-facing landing page for first-time users. It is not the installer
+                  itself, and it does not replace the release artifacts.
+                </p>
+              </div>
+              <div class="card">
+                <strong>After install</strong>
+                <p>
+                  Run <code>opengpu onboarding</code> to review the contributor checklist, then
+                  <code>opengpu start</code> to bring the machine online.
+                </p>
+              </div>
+              <div class="card">
+                <strong>Release discipline</strong>
+                <p>
+                  The command, checksum, and release asset should always point to the same signed
+                  Mac-first release.
+                </p>
+              </div>
             </div>
           </div>
 
-          <div class="grid">
-            <div class="card">
-              <strong>What happens next</strong>
-              <p>
-                The installer downloads the matching Apple Silicon release binary, verifies the
-                checksum when available, and places <code>opengpu</code> on your PATH.
-              </p>
+          <div class="stack">
+            <div class="panel">
+              <div class="label">How it works</div>
+              <div class="steps">
+                <div class="step">
+                  <div class="step-num">1</div>
+                  <div>
+                    <strong>Download</strong>
+                    <p>The installer fetches the signed release binary for Apple Silicon.</p>
+                  </div>
+                </div>
+                <div class="step">
+                  <div class="step-num">2</div>
+                  <div>
+                    <strong>Verify</strong>
+                    <p>When a checksum is published, the installer verifies it before install.</p>
+                  </div>
+                </div>
+                <div class="step">
+                  <div class="step-num">3</div>
+                  <div>
+                    <strong>Start</strong>
+                    <p>Use onboarding to review the contributor setup, then bring the node online.</p>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="card">
-              <strong>What this page is</strong>
-              <p>
-                A public-facing landing page for first-time users. It is not the installer itself,
-                and it does not replace the release artifacts.
-              </p>
-            </div>
-            <div class="card">
-              <strong>After install</strong>
-              <p>
-                Run <code>opengpu onboarding</code> to review the contributor checklist, then
-                <code>opengpu start</code> to bring the machine online.
-              </p>
-            </div>
-          <div class="card">
-            <strong>Review links</strong>
-            <p>
-                Keep the public page text in sync with the installer, release checksums, and the repo docs.
-            </p>
-          </div>
-          </div>
 
-          <div class="panel">
-            <div class="label">Mac-first checklist</div>
-            <ul>
-              <li>The installer command should stay identical everywhere.</li>
-              <li>The public page should always match the release assets.</li>
-              <li>Checksum verification should stay visible to users.</li>
-            </ul>
+            <div class="panel">
+              <div class="label">Mac-first checklist</div>
+              <ul>
+                <li>The installer command should stay identical everywhere.</li>
+                <li>The public page should always match the release assets.</li>
+                <li>Checksum verification should stay visible to users.</li>
+              </ul>
+            </div>
           </div>
         </div>
 
