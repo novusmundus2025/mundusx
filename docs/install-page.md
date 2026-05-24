@@ -25,6 +25,14 @@ curl -fsSL https://novusx.ai/install | bash
 - The source of truth for the current install command
 - The place users land before they ever see the CLI
 
+## Local Preview
+
+During development, the same copy is available from the dashboard server at:
+
+- `http://127.0.0.1:3002/install`
+
+This keeps the install page reviewable on localhost before the public endpoint is wired up.
+
 ## What The Page Is Not
 
 - Not the installer itself
@@ -55,4 +63,3 @@ Any change to the public install page must be reviewed against:
 - `docs/install-strategy.md`
 - `docs/who-runs-what.md`
 - `README.md`
-

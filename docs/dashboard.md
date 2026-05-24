@@ -16,6 +16,7 @@ The dashboard is the local operator UI for the company-side control plane.
 - It runs as a small local Node server in `apps/dashboard`
 - It proxies the live control plane endpoints server-side
 - It renders the live data into a readable operator view
+- It also serves a local install page preview at `/install`
 
 ## Run
 
@@ -29,4 +30,3 @@ OPENGPU_CONTROL_PLANE_URL=http://127.0.0.1:8787 PORT=3001 npm run dev
 - This is the first real dashboard pass.
 - The credits panel is backed by the control-plane `\/v1\/credits` snapshot.
 - Onboarding is still product work for later.
-

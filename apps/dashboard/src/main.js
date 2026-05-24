@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 
 const controlPlaneUrl = process.env.OPENGPU_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
 const port = Number(process.env.PORT ?? "3001");
+const appUrl = `http://127.0.0.1:${port}`;
 
 const formatCount = (value) => new Intl.NumberFormat("en-US").format(Number(value ?? 0));
 const formatCredits = (value) => {
@@ -213,6 +214,224 @@ function renderCredits(credits = {}) {
         ${recentEntries}
       </div>
     </div>`;
+}
+
+function renderInstallPage() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenGPU Install</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #070b11;
+        --panel: #111a28;
+        --panel-2: #151f30;
+        --line: #283649;
+        --text: #e8eefc;
+        --muted: #95a5bc;
+        --green: #89e8a4;
+        --blue: #a9c8ff;
+        --amber: #ffd58d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(100, 140, 255, 0.18), transparent 30%),
+          radial-gradient(circle at top right, rgba(120, 255, 195, 0.08), transparent 28%),
+          linear-gradient(180deg, #070b11 0%, #090d14 100%);
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+      .wrap {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 32px 20px 56px;
+      }
+      .hero {
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(21, 31, 48, 0.95), rgba(12, 17, 27, 0.95));
+        border-radius: 22px;
+        padding: 28px;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+      }
+      h1 {
+        margin: 0;
+        font-size: 34px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .sub {
+        margin-top: 12px;
+        color: var(--muted);
+        line-height: 1.6;
+        max-width: 72ch;
+      }
+      .stack {
+        display: grid;
+        gap: 16px;
+        margin-top: 22px;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(10, 15, 24, 0.72);
+        padding: 18px 20px;
+      }
+      .label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+        margin-bottom: 10px;
+      }
+      .command {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 16px 18px;
+        border-radius: 14px;
+        background: rgba(6, 10, 16, 0.9);
+        border: 1px solid rgba(169, 200, 255, 0.22);
+        font-size: 16px;
+        overflow-x: auto;
+      }
+      code {
+        color: #f7fbff;
+        white-space: nowrap;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        border: 1px solid rgba(169, 200, 255, 0.22);
+        color: var(--blue);
+        background: rgba(169, 200, 255, 0.1);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin-top: 22px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(17, 26, 40, 0.75);
+        padding: 18px;
+      }
+      .card strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .card p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      ul {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+      a {
+        color: var(--green);
+        text-decoration: none;
+      }
+      a:hover { text-decoration: underline; }
+      .footer {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      @media (max-width: 760px) {
+        .grid { grid-template-columns: 1fr; }
+        .command { align-items: flex-start; flex-direction: column; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="hero">
+        <div class="pill">local preview • localhost only</div>
+        <h1>OpenGPU Install</h1>
+        <div class="sub">
+          This is the Mac-first install page preview. The public version will live at
+          <code>https://novusx.ai/install</code>, but for local review we keep it on localhost
+          so you can verify the copy before it ships.
+        </div>
+
+        <div class="stack">
+          <div class="panel">
+            <div class="label">Copy the install command</div>
+            <div class="command">
+              <code>curl -fsSL https://novusx.ai/install | bash</code>
+              <span class="pill">one command</span>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="card">
+              <strong>What happens next</strong>
+              <p>
+                The installer downloads the matching Apple Silicon release binary, verifies the
+                checksum when available, and places <code>opengpu</code> on your PATH.
+              </p>
+            </div>
+            <div class="card">
+              <strong>What this page is</strong>
+              <p>
+                A public-facing landing page for first-time users. It is not the installer itself,
+                and it does not replace the release artifacts.
+              </p>
+            </div>
+            <div class="card">
+              <strong>After install</strong>
+              <p>
+                Run <code>opengpu onboarding</code> to review the contributor checklist, then
+                <code>opengpu start</code> to bring the machine online.
+              </p>
+            </div>
+          <div class="card">
+            <strong>Review links</strong>
+            <p>
+                Keep the public page text in sync with the installer, release checksums, and the repo docs.
+            </p>
+          </div>
+          </div>
+
+          <div class="panel">
+            <div class="label">Mac-first checklist</div>
+            <ul>
+              <li>The installer command should stay identical everywhere.</li>
+              <li>The public page should always match the release assets.</li>
+              <li>Checksum verification should stay visible to users.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="footer">
+          Local preview URL: <code>${escapeHtml(appUrl)}/install</code> •
+          Docs live in the repository alongside the installer and release workflow.
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
 }
 
 function page({ health, status, events, credits, error }) {
@@ -532,7 +751,14 @@ async function collectData() {
   return { health, status, events, credits, error: null };
 }
 
-createServer(async (_req, res) => {
+createServer(async (req, res) => {
+  const requestUrl = new URL(req.url ?? "/", appUrl);
+  if (requestUrl.pathname === "/install") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderInstallPage());
+    return;
+  }
+
   let data;
   try {
     data = await collectData();
