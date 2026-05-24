@@ -48,10 +48,9 @@ This keeps the install page reviewable on localhost before the public endpoint i
 2. The page shows the one-line install command.
 3. The command downloads the matching signed release binary.
 4. The installer verifies the checksum when available.
-5. The user runs `opengpu start` or `opengpu onboarding` next.
-
-If the contributor has not saved a contribution cap yet, `opengpu start` will prompt for one
-before the machine is treated as ready for routing.
+5. The user runs `opengpu onboarding`.
+6. The user runs `opengpu cap` to choose the contribution budget.
+7. The user runs `opengpu start` to bring the machine online.
 
 ## Page Requirements
 
@@ -59,6 +58,7 @@ before the machine is treated as ready for routing.
 - Keep the command identical to the installer docs.
 - Keep the wording Mac-first until the release channel expands.
 - Link to release notes and checksums when available.
+- Make the cap step obvious so a fresh contributor knows what to do before `start`.
 
 ## Review Rule
 

@@ -4,11 +4,13 @@ This is the current command surface for the Rust CLI.
 
 ## Core Commands
 
-- `opengpu start` - create local state if needed, auto-detect the backend, connect locally, ask for contribution level in a vertical arrow-key menu, and print a startup summary with the public key
-- `opengpu init` - create the local config and device identity
+- `opengpu start` - create local state if needed, auto-detect the backend, connect locally when the secure device identity is available, and print a startup summary with the public key; if no cap is saved, it prints a hint to run `opengpu cap`
 - `opengpu onboarding` - review the contributor onboarding checklist
 - `opengpu onboarding --complete` - mark onboarding complete after review
 - `opengpu onboarding --reset` - reopen the onboarding checklist
+- `opengpu cap` - choose the contribution budget explicitly
+- `opengpu cap --percent <value>` - save a contribution budget directly
+- `opengpu cap --reset` - clear the saved contribution budget
 - `opengpu status` - show local state, detected backend, local provider status, and local policy readiness
 - `opengpu exit` - leave local contribution mode and pause the machine
 - `opengpu model list` - show the local model cache and active model
@@ -44,4 +46,6 @@ These remain available, but they are hidden from the default `--help` output so 
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled.
 - The model commands currently manage the local model cache manifest and active selection; real model downloads are still a future step.
 - `onboarding` is a local contributor review step that summarizes the secure device identity, hostname, model, policy, and credits setup; `start` prints it automatically until it is marked complete.
+- `cap` is the explicit command for choosing the Mac contribution budget before the node is treated as ready for routing.
+- `start` only marks the node ready when the secure device identity is available.
 - Config inspection now happens through `status` and `doctor`; dedicated `config` subcommands are not part of the current CLI surface.

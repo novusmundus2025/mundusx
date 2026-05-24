@@ -6,17 +6,11 @@ This document describes what the CLI does when a user starts using it for the fi
 
 The CLI does not start a long-running service by itself. Instead, it manages local state and prepares the machine to connect to the platform.
 
-When the user runs:
+On first run, the CLI:
 
-```bash
-opengpu init
-```
-
-the CLI:
-
-1. Creates a local config file.
+1. Creates a local config file if needed.
 2. Generates a device ID.
-3. Reuses an existing local keypair if present, or generates one on first run.
+3. Reuses an existing local secure identity if present, or creates one on first run.
 4. Sets default values for:
    - connection state
    - pause state
@@ -51,19 +45,21 @@ opengpu start
 the CLI:
 
 1. Creates local config if needed.
-2. Connects the machine locally.
-3. Clears the paused state.
+2. Connects the machine locally when the secure device identity is available.
+3. Clears the paused state only when the node can sign requests.
 4. Detects the machine backend when possible:
    - Apple Silicon `aarch64` on macOS becomes `M`
 5. Optionally overrides that with `--m`.
-6. If no contribution cap is saved yet, shows a compact retro vertical selector for:
-   - `20%` light
-   - `30%` balanced
-   - `50%` strong
-   - `75%` aggressive
-   - `90%` max
-   - use the arrow keys and press Enter to confirm
-   - press `Ctrl-C` to abort the active `opengpu start` session cleanly and roll back to disconnected/paused
+6. If no contribution cap is saved yet, prints a clear hint to run:
+   - `opengpu cap`
+   - the `cap` command opens the retro vertical selector for:
+     - `20%` light
+     - `30%` balanced
+     - `50%` strong
+     - `75%` aggressive
+     - `90%` max
+     - use the arrow keys and press Enter to confirm
+     - press `Ctrl-C` to cancel the cap selector cleanly
 7. If no active model is saved yet, caches a local model entry and marks it active.
    - the starter model presets come from `apps/cli/config/official-models.json`
    - the starter presets point at public Hugging Face GGUF files compatible with the local Mac runtime, so no account is required for the default path
@@ -72,6 +68,7 @@ the CLI:
    - device ID
    - public key
    - public key fingerprint
+   - identity readiness
    - platform
    - CPU core count
    - backend preference
@@ -98,8 +95,8 @@ the CLI:
 10. Saves the updated config.
 11. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
-12. Prints whether policy currently allows the Mac to accept work, including the power source and battery state.
-13. Keeps the reused device identity attached to the local config.
+12. Prints whether policy currently allows the Mac to accept work, including the power source, battery state, and identity readiness.
+13. Keeps the reused secure device identity attached to the local config when available.
 
 ## Operator Auth
 
@@ -170,5 +167,7 @@ opengpu onboarding --complete
 ```
 
 The onboarding command only marks the review step as complete; it does not change the device identity or control-plane state.
+
+When the contribution cap has not been saved yet, `opengpu cap` is the explicit command that records it before routing starts.
 
 Those deeper network behaviors will come later when the control plane and node agent are online.

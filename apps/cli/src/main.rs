@@ -58,6 +58,15 @@ enum Commands {
         #[arg(long)]
         reset: bool,
     },
+    /// Set or review the contributor cap
+    Cap {
+        /// Set the cap directly instead of using the selector
+        #[arg(long)]
+        percent: Option<u8>,
+        /// Clear the saved contribution cap
+        #[arg(long)]
+        reset: bool,
+    },
     /// Leave the OpenGPU network
     Disconnect,
     /// Show current node status
@@ -143,6 +152,10 @@ fn display_public_key_hex(config: &Config) -> String {
         .unwrap_or_else(|| "unset".to_string())
 }
 
+fn identity_ready() -> bool {
+    load_identity().ok().flatten().is_some()
+}
+
 fn config_from_identity(identity: &identity::DeviceIdentity) -> Config {
     Config {
         device_id: device_id_for_identity(identity),
@@ -219,7 +232,16 @@ fn probe_power_state() -> PowerState {
     }
 }
 
-fn policy_reason(config: &Config, power: &PowerState, active_model: Option<&str>) -> Option<String> {
+fn policy_reason(
+    config: &Config,
+    power: &PowerState,
+    active_model: Option<&str>,
+    identity_ready: bool,
+) -> Option<String> {
+    if !identity_ready {
+        return Some("secure device identity is unavailable".to_string());
+    }
+
     if config.contribution_percent == 0 {
         return Some("contribution percent is unset".to_string());
     }
@@ -243,12 +265,25 @@ fn policy_reason(config: &Config, power: &PowerState, active_model: Option<&str>
     None
 }
 
-fn policy_allowed(config: &Config, power: &PowerState, active_model: Option<&str>) -> bool {
-    policy_reason(config, power, active_model).is_none()
+fn policy_allowed(
+    config: &Config,
+    power: &PowerState,
+    active_model: Option<&str>,
+    identity_ready: bool,
+) -> bool {
+    policy_reason(config, power, active_model, identity_ready).is_none()
 }
 
-fn provider_count(config: &Config, power: &PowerState, active_model: Option<&str>) -> usize {
-    if config.connected && !config.paused && policy_allowed(config, power, active_model) {
+fn provider_count(
+    config: &Config,
+    power: &PowerState,
+    active_model: Option<&str>,
+    identity_ready: bool,
+) -> usize {
+    if config.connected
+        && !config.paused
+        && policy_allowed(config, power, active_model, identity_ready)
+    {
         1
     } else {
         0
@@ -259,8 +294,9 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     let detected_backend = resolved_backend(config);
     let power = probe_power_state();
     let active_model = active_model_name(config);
-    let allowed = policy_allowed(config, &power, active_model.as_deref());
-    let provider_count = provider_count(config, &power, active_model.as_deref());
+    let identity_ready = identity_ready();
+    let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
+    let provider_count = provider_count(config, &power, active_model.as_deref(), identity_ready);
     println!("configPath: {}", path.display());
     println!("deviceId: {}", config.device_id);
     println!("publicKey: {}", display_public_key_hex(config));
@@ -295,6 +331,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     );
     println!("backendPreference: {}", config.backend_preference);
     println!("detectedBackend: {}", detected_backend);
+    println!("identityReady: {}", if identity_ready { "yes" } else { "no" });
     println!("providerCount: {}", provider_count);
     println!(
         "modelDir: {}",
@@ -323,7 +360,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
             .unwrap_or_else(|| "unknown".to_string())
     );
     println!("policyAllowed: {}", if allowed { "yes" } else { "no" });
-    if let Some(reason) = policy_reason(config, &power, active_model.as_deref()) {
+    if let Some(reason) = policy_reason(config, &power, active_model.as_deref(), identity_ready) {
         println!("policyReason: {}", reason);
     }
     println!(
@@ -339,7 +376,8 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         .unwrap_or(1);
     let power = probe_power_state();
     let active_model = active_model_name(config);
-    let allowed = policy_allowed(config, &power, active_model.as_deref());
+    let identity_ready = identity_ready();
+    let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
 
     println!("startup ready for {}", config.device_id);
     println!("publicKey: {}", display_public_key_hex(config));
@@ -351,6 +389,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     println!("cpuCores: {}", cores);
     println!("backendPreference: {}", config.backend_preference);
     println!("detectedBackend: {}", detected_backend);
+    println!("identityReady: {}", if identity_ready { "yes" } else { "no" });
     println!(
         "modelDir: {}",
         configured_model_dir_string(config)
@@ -367,10 +406,13 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
             format!("{}%", config.contribution_percent)
         }
     );
-    println!("connected: {}", colored_state(true, Color::Green, "yes", "no"));
+    println!(
+        "connected: {}",
+        colored_state(config.connected, Color::Green, "yes", "no")
+    );
     println!(
         "paused: {}",
-        colored_state(false, Color::AnsiValue(208), "yes", "no")
+        colored_state(config.paused, Color::AnsiValue(208), "yes", "no")
     );
     println!("configPath: {}", path.display());
     println!("powerSource: {}", power.source);
@@ -383,7 +425,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
             .unwrap_or_else(|| "unknown".to_string())
     );
     println!("policyAllowed: {}", if allowed { "yes" } else { "no" });
-    if let Some(reason) = policy_reason(config, &power, active_model.as_deref()) {
+    if let Some(reason) = policy_reason(config, &power, active_model.as_deref(), identity_ready) {
         println!("policyReason: {}", reason);
     }
     println!(
@@ -406,9 +448,11 @@ fn print_onboarding_checklist(config: &Config, path: &std::path::Path, completed
     let detected_backend = resolved_backend(config);
     let power = probe_power_state();
     let active_model = active_model_name(config);
-    let allowed = policy_allowed(config, &power, active_model.as_deref());
+    let identity_ready = identity_ready();
+    let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
     let body = vec![
         format!("device id: {}", config.device_id),
+        format!("identity: {}", if identity_ready { "ready" } else { "unavailable" }),
         format!("device key: {}", display_public_key_fingerprint(config)),
         format!("hostname: {}", current_hostname()),
         format!("backend: {}", detected_backend),
@@ -632,6 +676,61 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
     }
 }
 
+fn normalize_contribution_percent(percent: u8) -> Result<u8, String> {
+    match percent {
+        20 | 30 | 50 | 75 | 90 => Ok(percent),
+        _ => Err("supported cap values are 20, 30, 50, 75, and 90".to_string()),
+    }
+}
+
+fn cap_label(percent: u8) -> &'static str {
+    match percent {
+        20 => "light",
+        30 => "balanced",
+        50 => "strong",
+        75 => "aggressive",
+        90 => "max",
+        _ => "custom",
+    }
+}
+
+fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool) {
+    let current = selected
+        .or_else(|| (config.contribution_percent > 0).then_some(config.contribution_percent))
+        .unwrap_or(0);
+    let current_text = if current == 0 {
+        "unset".to_string()
+    } else {
+        format!("{}% ({})", current, cap_label(current))
+    };
+    let body = vec![
+        format!("current cap: {}", current_text),
+        format!(
+            "meaning: {}",
+            contribution_semantics(resolved_backend(config))
+        ),
+        "supported caps: 20 / 30 / 50 / 75 / 90".to_string(),
+        "install page: localhost preview or https://novusx.ai/install".to_string(),
+        "next step: run `opengpu start` after saving a cap".to_string(),
+        format!(
+            "state: {}",
+            if completed {
+                "saved"
+            } else if current == 0 {
+                "review needed"
+            } else {
+                "updated"
+            }
+        ),
+    ];
+    print_retro_panel(
+        "CONTRIBUTION CAP",
+        "choose the budget this Mac is allowed to use",
+        &body,
+        if current == 0 { Color::DarkYellow } else { Color::Green },
+    );
+}
+
 fn detect_memory_gb() -> u64 {
     #[cfg(target_os = "macos")]
     {
@@ -791,18 +890,6 @@ fn run_init() -> Config {
         }
     }
 
-    if config.contribution_percent == 0 {
-        match prompt_contribution_percent(30) {
-            PromptOutcome::Selected(percent) => {
-                config.contribution_percent = percent;
-            }
-            PromptOutcome::Cancelled => {
-                eprintln!("cancelled");
-                std::process::exit(130);
-            }
-        }
-    }
-
     match save_config(&config) {
         Ok(path) => {
             if created {
@@ -832,9 +919,32 @@ fn main() {
             }
 
             let mut config = current_config_or_default();
-            if let Ok((identity, _, _)) = load_or_create_identity() {
-                config.device_id = device_id_for_identity(&identity);
-                config.public_key_fingerprint = Some(identity.fingerprint);
+            let identity_ready = match load_or_create_identity() {
+                Ok((identity, _, _)) => {
+                    config.device_id = device_id_for_identity(&identity);
+                    config.public_key_fingerprint = Some(identity.fingerprint);
+                    true
+                }
+                Err(error) => {
+                    eprintln!("failed to load secure device identity: {error}");
+                    false
+                }
+            };
+            if active_model_name(&config).is_none() {
+                match prompt_model_selection(config.backend_preference) {
+                    ModelChoice::Model(model) => {
+                        ensure_effective_model_dir(&mut config);
+                        if let Err(error) = use_model(&mut config, &model.name) {
+                            eprintln!("failed to cache model `{}`: {error}", model.name);
+                            std::process::exit(1);
+                        }
+                    }
+                    ModelChoice::LocalPath(path) => {
+                        config.model_dir = Some(path);
+                        config.active_model = None;
+                        config.models = vec![];
+                    }
+                }
             }
             if let Some(active_model) = active_model_name(&config) {
                 if let Err(error) = use_model(&mut config, &active_model) {
@@ -842,8 +952,8 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            config.connected = true;
-            config.paused = false;
+            config.connected = identity_ready;
+            config.paused = !identity_ready;
 
             match save_config(&config) {
                 Ok(_) => {
@@ -852,9 +962,19 @@ fn main() {
                         "contributionMeaning: {}",
                         contribution_semantics(config.backend_preference)
                     );
+                    if config.contribution_percent == 0 {
+                        println!("capHint: run `opengpu cap` to choose the contribution budget");
+                    }
+                    if !identity_ready {
+                        println!(
+                            "identityHint: secure device identity is unavailable; the node is not online yet"
+                        );
+                    }
                     if !config.onboarding_completed {
                         print_onboarding_checklist(&config, &resolved_config_path(), false);
-                        println!("onboardingHint: run `opengpu onboarding --complete` after you review the checklist");
+                        println!(
+                            "onboardingHint: run `opengpu onboarding --complete` after you review the checklist"
+                        );
                     }
                 }
                 Err(error) => {
@@ -932,6 +1052,66 @@ fn main() {
                 println!("onboardingHint: rerun with --complete once the checklist looks good");
             }
         }
+        Commands::Cap { percent, reset } => {
+            if percent.is_some() && reset {
+                eprintln!("choose either --percent or --reset, not both");
+                std::process::exit(1);
+            }
+
+            let mut config = current_config_or_default();
+            let selected = if reset {
+                config.contribution_percent = 0;
+                None
+            } else if let Some(value) = percent {
+                let value = match normalize_contribution_percent(value) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                };
+                config.contribution_percent = value;
+                Some(value)
+            } else {
+                match prompt_contribution_percent(if config.contribution_percent == 0 {
+                    30
+                } else {
+                    config.contribution_percent
+                }) {
+                    PromptOutcome::Selected(value) => {
+                        config.contribution_percent = value;
+                        Some(value)
+                    }
+                    PromptOutcome::Cancelled => {
+                        eprintln!("cancelled");
+                        std::process::exit(130);
+                    }
+                }
+            };
+
+            if let Err(error) = save_config(&config) {
+                eprintln!("failed to save contribution cap: {error}");
+                std::process::exit(1);
+            }
+
+            print_contribution_cap(&config, selected, !reset && selected.is_some());
+            println!(
+                "contributionPercent: {}",
+                if config.contribution_percent == 0 {
+                    "unset".to_string()
+                } else {
+                    format!("{}%", config.contribution_percent)
+                }
+            );
+            println!(
+                "capHint: {}",
+                if config.contribution_percent == 0 {
+                    "rerun `opengpu cap` to choose one".to_string()
+                } else {
+                    "run `opengpu start` to bring the node online".to_string()
+                }
+            );
+        }
         Commands::Disconnect => {
             if !config_exists() {
                 eprintln!("not connected");
@@ -958,12 +1138,11 @@ fn main() {
             let preferred_backend = resolved_backend(&config);
             let power = probe_power_state();
             let active_model = active_model_name(&config);
-            let policy_allowed = policy_allowed(&config, &power, active_model.as_deref());
-            let provider_count = if config.connected && !config.paused && policy_allowed {
-                1
-            } else {
-                0
-            };
+            let identity_ready = identity_ready();
+            let policy_allowed =
+                policy_allowed(&config, &power, active_model.as_deref(), identity_ready);
+            let provider_count =
+                provider_count(&config, &power, active_model.as_deref(), identity_ready);
 
             if json {
                 let payload = serde_json::json!({
@@ -977,8 +1156,14 @@ fn main() {
                         "on_battery": power.on_battery,
                         "battery_percent": power.battery_percent,
                     },
+                    "identity_ready": identity_ready,
                     "policy_allowed": policy_allowed,
-                    "policy_reason": policy_reason(&config, &power, active_model.as_deref()),
+                    "policy_reason": policy_reason(
+                        &config,
+                        &power,
+                        active_model.as_deref(),
+                        identity_ready
+                    ),
                 });
                 if let Err(error) = print_json(&payload) {
                     eprintln!("failed to print json: {error}");

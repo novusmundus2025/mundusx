@@ -467,8 +467,8 @@ function renderInstallPage() {
                 <strong>After install</strong>
                 <p>
                   Run <code>opengpu onboarding</code> to review the contributor checklist, then
-                  <code>opengpu start</code> to bring the machine online and choose a contribution
-                  cap if one is not already saved.
+                  <code>opengpu cap</code> to choose the contribution budget, and finally
+                  <code>opengpu start</code> to bring the machine online.
                 </p>
               </div>
               <div class="card">
@@ -501,6 +501,13 @@ function renderInstallPage() {
                 </div>
                 <div class="step">
                   <div class="step-num">3</div>
+                  <div>
+                    <strong>Set cap</strong>
+                    <p>Use <code>opengpu cap</code> to choose the contribution budget before starting.</p>
+                  </div>
+                </div>
+                <div class="step">
+                  <div class="step-num">4</div>
                   <div>
                     <strong>Start</strong>
                     <p>Use onboarding to review the contributor setup, then bring the node online.</p>
