@@ -137,3 +137,4 @@ The install strategy is complete when:
 - `novusx.ai` is the public install entrypoint.
 - The public install page should be the same command the installer docs use.
 - GitHub Releases are the artifact source.
+- The public docs site should mirror the install, identity, onboarding, credits, and release pages in a local preview before it is wired to the public domain.

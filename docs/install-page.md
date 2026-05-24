@@ -34,6 +34,7 @@ During development, the same copy is available from the dashboard server at:
 The local dashboard typically runs on `3001`, but you can override `PORT` during review.
 
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
+The broader public docs copy is previewable locally from the dashboard at `http://127.0.0.1:<port>/docs`.
 
 ## What The Page Is Not
 

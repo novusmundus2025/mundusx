@@ -529,7 +529,8 @@ function renderInstallPage() {
 
         <div class="footer">
           Local preview URL: <code>${escapeHtml(appUrl)}/install</code> •
-          Docs live in the repository alongside the installer and release workflow.
+          Docs preview: <code>${escapeHtml(appUrl)}/docs</code> •
+          release copy lives in the repository alongside the installer and release workflow.
         </div>
       </div>
     </div>
@@ -807,6 +808,8 @@ function page({ health, status, events, credits, error }) {
             </div>
           </div>
           <div class="links">
+            <a href="${escapeHtml(appUrl)}/docs" target="_blank" rel="noreferrer">docs</a>
+            <a href="${escapeHtml(appUrl)}/install" target="_blank" rel="noreferrer">install</a>
             <a href="${escapeHtml(controlPlaneUrl)}" target="_blank" rel="noreferrer">control plane</a>
             <a href="${escapeHtml(controlPlaneUrl)}/v1/status" target="_blank" rel="noreferrer">status json</a>
             <a href="${escapeHtml(controlPlaneUrl)}/v1/job-events" target="_blank" rel="noreferrer">job events</a>
@@ -843,6 +846,411 @@ function page({ health, status, events, credits, error }) {
 </html>`;
 }
 
+function docsShell({ title, subtitle, active, body }) {
+  const sections = [
+    ["Overview", "/docs", "overview"],
+    ["Install", "/docs/install", "install"],
+    ["Device identity", "/docs/identity", "identity"],
+    ["Onboarding", "/docs/onboarding", "onboarding"],
+    ["Credits", "/docs/credits", "credits"],
+    ["Releases", "/docs/releases", "releases"],
+  ];
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #071017;
+        --panel: #101826;
+        --panel-2: #151f30;
+        --line: #243145;
+        --text: #ecf3ff;
+        --muted: #97a7c0;
+        --green: #8ef0aa;
+        --blue: #a6c8ff;
+        --amber: #ffd27f;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(86, 125, 255, 0.16), transparent 28%),
+          radial-gradient(circle at top right, rgba(90, 255, 180, 0.08), transparent 24%),
+          linear-gradient(180deg, #071017 0%, #090d14 100%);
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+      .wrap {
+        max-width: 1300px;
+        margin: 0 auto;
+        padding: 28px 20px 48px;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 18px;
+      }
+      .brand {
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        border: 1px solid rgba(166, 200, 255, 0.22);
+        color: var(--blue);
+        background: rgba(166, 200, 255, 0.1);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 18px;
+      }
+      .sidebar,
+      .content {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(17, 24, 38, 0.78);
+      }
+      .sidebar {
+        padding: 18px;
+        position: sticky;
+        top: 20px;
+        height: fit-content;
+      }
+      .content {
+        padding: 24px;
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+      }
+      .nav {
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .nav a {
+        display: block;
+        padding: 12px 14px;
+        border-radius: 12px;
+        color: var(--text);
+        text-decoration: none;
+        border: 1px solid transparent;
+        background: rgba(7, 12, 18, 0.45);
+      }
+      .nav a:hover {
+        border-color: rgba(166, 200, 255, 0.22);
+      }
+      .nav a.active {
+        border-color: rgba(142, 240, 170, 0.3);
+        background: rgba(142, 240, 170, 0.09);
+      }
+      h1 {
+        margin: 0;
+        font-size: 34px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .subtitle {
+        margin-top: 10px;
+        color: var(--muted);
+        line-height: 1.6;
+        max-width: 74ch;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin-top: 20px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(9, 13, 20, 0.74);
+        padding: 18px;
+      }
+      .card h2,
+      .card h3 {
+        margin: 0 0 10px;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .card p,
+      .card li,
+      .card ol {
+        color: var(--muted);
+        line-height: 1.7;
+      }
+      .card ul,
+      .card ol {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .mono {
+        color: #f4f8ff;
+        white-space: nowrap;
+      }
+      a {
+        color: var(--green);
+        text-decoration: none;
+      }
+      a:hover { text-decoration: underline; }
+      code {
+        color: #f7fbff;
+        white-space: nowrap;
+      }
+      .footer {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      @media (max-width: 900px) {
+        .layout { grid-template-columns: 1fr; }
+        .sidebar { position: static; }
+        .cards { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="topbar">
+        <div class="brand">OpenGPU Docs</div>
+        <div class="badge">localhost preview • public layout</div>
+      </div>
+      <div class="layout">
+        <aside class="sidebar">
+          <div class="mono">Mac-first docs</div>
+          <div class="nav">
+            ${sections
+              .map(
+                ([label, href, key]) => `
+                  <a class="${active === key ? "active" : ""}" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`,
+              )
+              .join("")}
+          </div>
+          <div class="footer">
+            This local site mirrors the public docs shape before the public domain is wired.
+          </div>
+        </aside>
+        <main class="content">
+          <h1>${escapeHtml(title)}</h1>
+          <div class="subtitle">${subtitle}</div>
+          ${body}
+          <div class="footer">
+            Local preview URL: <code>${escapeHtml(appUrl)}</code>
+          </div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>`;
+}
+
+function renderDocsHome() {
+  return docsShell({
+    title: "OpenGPU Docs",
+    subtitle:
+      "A Mac-first public docs surface for install, identity, onboarding, credits, and release flow. This preview is local, but the copy is written as the public source of truth.",
+    active: "overview",
+    body: `
+      <div class="cards">
+        <div class="card">
+          <h2>Install</h2>
+          <p>
+            One-line install command, checksum verification, and what the contributor sees
+            after download.
+          </p>
+          <p><a href="/docs/install">Open install page</a></p>
+        </div>
+        <div class="card">
+          <h2>Device identity</h2>
+          <p>
+            Explain how the Mac identity survives reinstall, why the private key is not
+            exportable, and what metadata is signed.
+          </p>
+          <p><a href="/docs/identity">Open identity page</a></p>
+        </div>
+        <div class="card">
+          <h2>Onboarding</h2>
+          <p>
+            The first-run checklist for a contributor machine: identity, cap, model, and
+            start flow.
+          </p>
+          <p><a href="/docs/onboarding">Open onboarding page</a></p>
+        </div>
+        <div class="card">
+          <h2>Credits</h2>
+          <p>
+            Append-only ledger rules for contributor balances and how job awards are tracked.
+          </p>
+          <p><a href="/docs/credits">Open credits page</a></p>
+        </div>
+        <div class="card">
+          <h2>Releases</h2>
+          <p>
+            Mac-first public install flow, signed artifacts, and how the release page maps to
+            the installer.
+          </p>
+          <p><a href="/docs/releases">Open releases page</a></p>
+        </div>
+        <div class="card">
+          <h2>Dashboard</h2>
+          <p>
+            Operator view, live status, and the install preview are still available in the
+            dashboard app.
+          </p>
+          <p><a href="/">Open dashboard</a></p>
+        </div>
+      </div>
+    `,
+  });
+}
+
+function renderDocsInstall() {
+  return docsShell({
+    title: "Install OpenGPU",
+    subtitle:
+      "The install page is the first touch for contributors. It stays Mac-first, keeps the command identical everywhere, and points to onboarding and cap selection immediately after install.",
+    active: "install",
+    body: `
+      <div class="cards">
+        <div class="card">
+          <h2>Canonical command</h2>
+          <p><code>curl -fsSL https://novusx.ai/install | bash</code></p>
+          <p>That command should match the installer script, the docs, and the public page.</p>
+        </div>
+        <div class="card">
+          <h2>Expected flow</h2>
+          <ol>
+            <li>Download the Mac-first release binary.</li>
+            <li>Verify checksum when available.</li>
+            <li>Run <code>opengpu onboarding</code>.</li>
+            <li>Choose a contribution cap with <code>opengpu cap</code>.</li>
+            <li>Start with <code>opengpu start</code>.</li>
+          </ol>
+        </div>
+      </div>
+    `,
+  });
+}
+
+function renderDocsIdentity() {
+  return docsShell({
+    title: "Device Identity",
+    subtitle:
+      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the OpenGPU data directory remains intact.",
+    active: "identity",
+    body: `
+      <div class="cards">
+        <div class="card">
+          <h2>What survives reinstall</h2>
+          <ul>
+            <li>identity record</li>
+            <li>public key</li>
+            <li>fingerprint</li>
+            <li>hostname metadata</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>What is not exposed</h2>
+          <ul>
+            <li>raw private key bytes</li>
+            <li>exportable app-visible secret</li>
+            <li>hostname as identity proof</li>
+          </ul>
+        </div>
+      </div>
+    `,
+  });
+}
+
+function renderDocsOnboarding() {
+  return docsShell({
+    title: "Onboarding",
+    subtitle:
+      "The first-run checklist keeps the Mac-first path understandable: review identity, choose a cap, confirm the model, and only then go live.",
+    active: "onboarding",
+    body: `
+      <div class="cards">
+        <div class="card">
+          <h2>Checklist</h2>
+          <ol>
+            <li>Review device identity.</li>
+            <li>Choose the contribution cap.</li>
+            <li>Confirm the active model.</li>
+            <li>Run <code>opengpu start</code>.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h2>Policy note</h2>
+          <p>The node should remain paused until the cap is set and the policy allows work.</p>
+        </div>
+      </div>
+    `,
+  });
+}
+
+function renderDocsCredits() {
+  return docsShell({
+    title: "Credits",
+    subtitle:
+      "Credits are tracked as an append-only ledger on the control plane. They belong to the contributor account, not the hostname or the device key itself.",
+    active: "credits",
+    body: `
+      <div class="cards">
+        <div class="card">
+          <h2>Ledger rules</h2>
+          <ul>
+            <li>job completion writes a ledger entry</li>
+            <li>balances roll up by contributor account</li>
+            <li>device and hostname stay attached for audit</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>What users should expect</h2>
+          <p>OpenGPU should show earned credits clearly and make the contributor balance easy to inspect in the dashboard.</p>
+        </div>
+      </div>
+    `,
+  });
+}
+
+function renderDocsReleases() {
+  return docsShell({
+    title: "Releases",
+    subtitle:
+      "The public release surface stays Mac-first for now. The public install page, installer script, and signed binary artifacts should always agree on the same release source.",
+    active: "releases",
+    body: `
+      <div class="cards">
+        <div class="card">
+          <h2>Source of truth</h2>
+          <p>The install command, checksum, and release asset must point at the same Mac-first build.</p>
+        </div>
+        <div class="card">
+          <h2>Review rule</h2>
+          <p>Any release-page copy change should be checked against the installer script and release docs.</p>
+        </div>
+      </div>
+    `,
+  });
+}
+
 async function collectData() {
   const [health, status, events, credits] = await Promise.all([
     fetchJson("/health"),
@@ -859,6 +1267,42 @@ createServer(async (req, res) => {
   if (requestUrl.pathname === "/install") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderInstallPage());
+    return;
+  }
+
+  if (requestUrl.pathname === "/docs" || requestUrl.pathname === "/docs/") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsHome());
+    return;
+  }
+
+  if (requestUrl.pathname === "/docs/install") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsInstall());
+    return;
+  }
+
+  if (requestUrl.pathname === "/docs/identity") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsIdentity());
+    return;
+  }
+
+  if (requestUrl.pathname === "/docs/onboarding") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsOnboarding());
+    return;
+  }
+
+  if (requestUrl.pathname === "/docs/credits") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsCredits());
+    return;
+  }
+
+  if (requestUrl.pathname === "/docs/releases") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderDocsReleases());
     return;
   }
 
