@@ -30,11 +30,11 @@ Use this document as the single working list:
 
 - [ ] macOS non-exportable device key storage in OS secure storage
 - [ ] Windows/Linux non-exportable device key storage in OS secure storage
-- [ ] Verify the live Supabase restore path in the project again after any schema or secret changes
+   - [x] Verify the live Supabase restore path in the project again after any schema or secret changes
 
 ### Control Plane
 
-- [ ] Reconfirm the control plane boot source after release-side changes
+- [x] Reconfirm the control plane boot source after release-side changes
 
 ### Worker
 

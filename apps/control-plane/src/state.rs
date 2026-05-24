@@ -1,7 +1,7 @@
 use crate::contracts::{
     AgentRegistration, AgentState, Backend, ControlPlaneSnapshot, Heartbeat, JobClaimResponse,
     JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodeRecord,
-    CreditsLedgerRecord, WorkerHealthReport,
+    CreditsLedgerRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -420,6 +420,7 @@ pub fn save_state(state: &ControlPlaneState) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::WorkerHealthReport;
 
     fn ready_state() -> ControlPlaneState {
         let mut state = ControlPlaneState::default();
