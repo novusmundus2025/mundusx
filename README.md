@@ -99,6 +99,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [scripts/verify-release-packaging.sh](/Users/DBATALL/Documents/aigrid/scripts/verify-release-packaging.sh) for the release artifact packaging validator
 - [docs/public-docs-site.md](/Users/DBATALL/Documents/aigrid/docs/public-docs-site.md) for the local docs site preview at `http://127.0.0.1:<port>/docs` and the public-endpoint mirror at `http://127.0.0.1:<port>/public/docs`
 - [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
+- [docs/requestor-flow.md](/Users/DBATALL/Documents/aigrid/docs/requestor-flow.md) for the subscriber/requestor job submission and response flow
 - [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files
 - [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints
 - [docs/dashboard.md](/Users/DBATALL/Documents/aigrid/docs/dashboard.md) for the local operator dashboard
