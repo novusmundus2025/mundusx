@@ -23,13 +23,15 @@ Rust workspace:
 
 ## One-Click Install
 
-Users should install the CLI with a single command and never need Rust locally:
+Users should install the CLI from the public install page and never need Rust locally:
 
 ```bash
 curl -fsSL https://novusx.ai/install | bash
 ```
 
-That installer will download the prebuilt binary for the user's operating system and CPU architecture.
+That installer will download the prebuilt binary for the user's operating system and CPU architecture, then verify the checksum when available.
+
+See [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the public-facing wording and [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the distribution plan.
 
 Release builds for the CLI are published from GitHub Actions on `cli-v*` tags.
 
@@ -86,6 +88,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/device-identity-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/device-identity-lifecycle.md) for the recommended secure device key lifecycle
 - [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md) for contributor-side model cache, switch, and prune rules
 - [docs/install-strategy.md](/Users/DBATALL/Documents/aigrid/docs/install-strategy.md) for the cross-platform distribution plan
+- [docs/install-page.md](/Users/DBATALL/Documents/aigrid/docs/install-page.md) for the public install page copy and flow
 - [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
 - [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files
 - [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints

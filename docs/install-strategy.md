@@ -1,6 +1,6 @@
 # Install Strategy
 
-This page defines the recommended way to distribute `opengpu` starting with macOS, then expanding to the other platforms later.
+This page defines the recommended way to distribute `opengpu`, starting with the Mac-first public install page and binary installer, then expanding later.
 
 ## Guiding Principle
 
@@ -16,7 +16,7 @@ Use your own installer that downloads the correct release binary from GitHub Rel
 
 Recommended flow:
 
-- macOS (current focus): `curl -fsSL https://novusx.ai/install | bash`
+- macOS (current focus): the public install page at `https://novusx.ai/install` should show `curl -fsSL https://novusx.ai/install | bash`
 - Linux and Windows: follow later, once the Mac release path is stable
 
 This should be the source of truth for release artifacts and checksums.
@@ -135,4 +135,5 @@ The install strategy is complete when:
 
 - `opengpu` remains the CLI name.
 - `novusx.ai` is the public install entrypoint.
+- The public install page should be the same command the installer docs use.
 - GitHub Releases are the artifact source.

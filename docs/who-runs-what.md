@@ -42,7 +42,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 |---|---|---|
 | **Control Plane** | Rust (HTTP API) | Node registry, heartbeat ingestion, job queue, routing decisions, job tracking |
 | **Dashboard** | Node.js (planned) | Live view of network health, node status, job history, credits |
-| **Install endpoint** | Static/CDN | `https://novusx.ai/install` — serves the install script and prebuilt binaries |
+| **Install endpoint** | Static/CDN | `https://novusx.ai/install` — public landing page and install command for the signed binary |
 | **Release pipeline** | GitHub Actions | Builds and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today) |
 | **Auth service** | (planned) | Issues tokens for users and devices |
 | **Credits ledger** | (planned) | Tracks contribution and usage accounting per node |
@@ -57,8 +57,8 @@ You run and maintain the shared infrastructure that all nodes connect to.
 - Migrate from in-memory state to a real DB (top priority)
 
 **Install endpoint**
-- Serve the install script reliably — this is the user's first touch point
-- Keep binaries up to date and signed after every release
+- Serve the public install page reliably — this is the user's first touch point
+- Keep the install command, checksums, and release links in sync with the current Mac-first release
 
 **Release pipeline**
 - Tag `cli-v*` triggers a Mac-first release build today
