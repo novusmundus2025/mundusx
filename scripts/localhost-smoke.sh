@@ -7,6 +7,7 @@ release_base_url="${RELEASE_BASE_URL:-http://127.0.0.1:8788/releases/latest/down
 install_dir="${INSTALL_DIR:-/private/tmp/opengpu-local-smoke-install}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+local_release_preview_helper="${LOCAL_RELEASE_PREVIEW_HELPER:-$repo_root/scripts/local-release-preview.sh}"
 
 check_contains() {
   local url="$1"
@@ -30,6 +31,9 @@ check_contains "${dashboard_url}/docs" "OpenGPU Docs" "docs home"
 echo "Checking control-plane root..."
 check_contains "${control_plane_url}/" "OpenGPU Control Plane" "control plane root"
 check_contains "${control_plane_url}/" "Local operator view" "control plane hero"
+
+echo "Preparing local release preview..."
+"$local_release_preview_helper" up
 
 echo "Checking release source..."
 check_contains "${release_base_url}/" "OpenGPU Local Release Preview" "release landing page"
