@@ -32,6 +32,8 @@ check_contains "${control_plane_url}/" "OpenGPU Control Plane" "control plane ro
 check_contains "${control_plane_url}/" "Local operator view" "control plane hero"
 
 echo "Checking release source..."
+check_contains "${release_base_url}/" "OpenGPU Local Release Preview" "release landing page"
+check_contains "${release_base_url}/" "localhost only" "release landing page badge"
 check_contains "${release_base_url}/opengpu-aarch64-apple-darwin.sha256" "opengpu-aarch64-apple-darwin" "release checksum"
 
 echo "Running installer..."
