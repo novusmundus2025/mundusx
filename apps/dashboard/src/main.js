@@ -226,48 +226,38 @@ function renderInstallPage() {
     <style>
       :root {
         color-scheme: light;
-        --bg: #f5f7fb;
-        --panel: rgba(255, 255, 255, 0.86);
-        --panel-strong: rgba(255, 255, 255, 0.98);
-        --line: rgba(18, 27, 51, 0.08);
-        --line-strong: rgba(18, 27, 51, 0.14);
+        --bg: #ffffff;
+        --surface: #fbfcff;
+        --surface-2: #f5f7fb;
+        --line: rgba(15, 23, 42, 0.09);
         --text: #0f172a;
         --muted: #5f6b85;
-        --muted-2: #78839b;
-        --blue: #3752ff;
-        --cyan: #0f93d5;
-        --green: #0f9d58;
-        --shadow: 0 24px 80px rgba(15, 23, 42, 0.12);
+        --blue: #3452ff;
+        --blue-2: #1f3fe6;
+        --shadow: 0 18px 60px rgba(15, 23, 42, 0.08);
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100vh;
         color: var(--text);
-        font-family:
-          "Inter",
-          "SF Pro Display",
-          "SF Pro Text",
-          "Segoe UI",
-          "Helvetica Neue",
-          sans-serif;
+        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
         background:
-          radial-gradient(circle at 15% 10%, rgba(55, 82, 255, 0.11), transparent 22%),
-          radial-gradient(circle at 84% 18%, rgba(15, 147, 213, 0.12), transparent 18%),
-          linear-gradient(180deg, #fbfcff 0%, var(--bg) 100%);
+          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
+          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
       }
       .wrap {
-        max-width: 1200px;
+        max-width: 1100px;
         margin: 0 auto;
-        padding: 26px 20px 56px;
+        padding: 22px 20px 48px;
       }
       .topbar {
         display: flex;
-        align-items: center;
         justify-content: space-between;
-        gap: 16px;
+        align-items: center;
+        gap: 12px;
         flex-wrap: wrap;
-        margin-bottom: 18px;
+        margin-bottom: 28px;
       }
       .brand {
         display: inline-flex;
@@ -277,171 +267,139 @@ function renderInstallPage() {
         letter-spacing: 0.02em;
       }
       .brand-mark {
-        width: 16px;
-        height: 16px;
-        border-radius: 5px;
-        background: linear-gradient(135deg, var(--blue), var(--cyan));
-        box-shadow: 0 10px 24px rgba(55, 82, 255, 0.22);
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: linear-gradient(135deg, var(--blue), #5a79ff);
       }
       .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 9px 13px;
-        border-radius: 999px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.72);
         color: var(--muted);
         font-size: 12px;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
       .hero {
         display: grid;
-        grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
-        gap: 22px;
-        align-items: stretch;
-        padding: 28px;
-        border: 1px solid var(--line);
-        border-radius: 30px;
-        background: var(--panel);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(20px);
-      }
-      .hero-copy {
-        display: grid;
-        align-content: start;
-        gap: 18px;
+        grid-template-columns: minmax(0, 1.2fr) minmax(330px, 0.8fr);
+        gap: 28px;
+        align-items: start;
       }
       .eyebrow {
         color: var(--blue);
         font-size: 12px;
         font-weight: 700;
-        letter-spacing: 0.16em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
+        margin-bottom: 18px;
       }
       h1 {
         margin: 0;
-        font-size: clamp(52px, 7vw, 86px);
-        line-height: 0.94;
-        letter-spacing: -0.06em;
-        max-width: 11ch;
+        max-width: 9ch;
+        font-size: clamp(54px, 7vw, 88px);
+        line-height: 0.92;
+        letter-spacing: -0.08em;
       }
       .sub {
-        max-width: 56ch;
+        margin-top: 18px;
+        max-width: 52ch;
         color: var(--muted);
-        line-height: 1.72;
         font-size: 18px;
+        line-height: 1.72;
       }
-      .hero-actions {
+      .actions {
         display: flex;
-        align-items: center;
         gap: 12px;
         flex-wrap: wrap;
+        margin-top: 22px;
       }
-      .cta {
+      .button {
         display: inline-flex;
         align-items: center;
-        gap: 10px;
-        padding: 14px 18px;
-        border-radius: 14px;
-        border: 1px solid var(--line-strong);
-        background: linear-gradient(180deg, var(--blue), #2338d8);
+        justify-content: center;
+        min-height: 46px;
+        padding: 0 18px;
+        border-radius: 12px;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .button-primary {
+        background: linear-gradient(180deg, var(--blue), var(--blue-2));
         color: white;
-        text-decoration: none;
-        font-weight: 600;
-        box-shadow: 0 14px 30px rgba(55, 82, 255, 0.18);
+        box-shadow: var(--shadow);
       }
-      .cta:hover { text-decoration: none; filter: brightness(1.03); }
-      .ghost {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        padding: 14px 18px;
-        border-radius: 14px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.76);
+      .button-secondary {
+        background: var(--surface-2);
         color: var(--text);
-        text-decoration: none;
-        font-weight: 600;
+        border: 1px solid var(--line);
       }
-      .ghost:hover { text-decoration: none; border-color: var(--line-strong); }
       .tags {
         display: flex;
+        gap: 8px;
         flex-wrap: wrap;
-        gap: 10px;
+        margin-top: 22px;
       }
       .tag {
-        padding: 7px 11px;
+        padding: 6px 10px;
         border-radius: 999px;
+        background: var(--surface-2);
         border: 1px solid var(--line);
         color: var(--muted);
-        background: rgba(255, 255, 255, 0.72);
         font-size: 12px;
       }
-      .side {
-        display: grid;
-        gap: 14px;
-        align-content: start;
-      }
-      .command-card,
-      .info-card {
+      .install-card {
+        position: sticky;
+        top: 20px;
+        padding: 22px;
+        border-radius: 24px;
         border: 1px solid var(--line);
-        border-radius: 22px;
-        background: var(--panel-strong);
-        padding: 18px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: var(--shadow);
       }
       .label {
         color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.08em;
-        font-size: 12px;
+        font-size: 11px;
         margin-bottom: 10px;
       }
       .command {
         display: flex;
         align-items: center;
-        justify-content: space-between;
         gap: 12px;
-        border: 1px solid rgba(55, 82, 255, 0.14);
+        justify-content: space-between;
+        padding: 16px 16px;
         border-radius: 16px;
-        padding: 16px;
-        background: #0b1020;
-        color: #eff4ff;
+        border: 1px solid var(--line);
+        background: #fff;
         overflow-x: auto;
       }
       code {
         font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+        font-size: 14px;
         white-space: nowrap;
       }
       .copy-btn {
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(255, 255, 255, 0.08);
-        color: white;
-        border-radius: 12px;
-        padding: 10px 14px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 9px 12px;
         cursor: pointer;
         font: inherit;
       }
-      .copy-btn:hover {
-        background: rgba(255, 255, 255, 0.12);
-      }
-      .hint {
-        margin-top: 10px;
-        color: var(--muted-2);
-        font-size: 12px;
-      }
-      .steps {
+      .copy-btn:hover { background: #eef2ff; }
+      .install-list {
         display: grid;
         gap: 10px;
+        margin-top: 18px;
       }
-      .step {
+      .install-step {
         display: flex;
         gap: 12px;
-        align-items: flex-start;
         padding: 12px 0;
         border-top: 1px solid var(--line);
       }
-      .step:first-child {
+      .install-step:first-child {
         border-top: 0;
         padding-top: 0;
       }
@@ -453,53 +411,38 @@ function renderInstallPage() {
         align-items: center;
         justify-content: center;
         flex: 0 0 auto;
-        background: rgba(55, 82, 255, 0.08);
+        background: #eef2ff;
         color: var(--blue);
         font-weight: 700;
       }
-      .step strong {
+      .install-step strong {
         display: block;
         margin-bottom: 4px;
       }
-      .step p {
+      .install-step p {
         margin: 0;
         color: var(--muted);
         line-height: 1.6;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 16px;
-        margin-top: 22px;
-      }
-      .card {
-        padding: 18px;
-        border-radius: 20px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.78);
-      }
-      .card strong {
-        display: block;
-        margin-bottom: 10px;
-        font-size: 13px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-      .card p {
-        margin: 0;
-        color: var(--muted);
-        line-height: 1.7;
+        font-size: 14px;
       }
       .footer {
-        margin-top: 18px;
+        margin-top: 28px;
         color: var(--muted);
         font-size: 12px;
-        line-height: 1.6;
       }
-      @media (max-width: 920px) {
-        .hero, .grid { grid-template-columns: 1fr; }
-        .hero { padding: 22px; }
-        h1 { max-width: none; }
+      .footer code {
+        font-size: 12px;
+      }
+      @media (max-width: 900px) {
+        .hero {
+          grid-template-columns: 1fr;
+        }
+        .install-card {
+          position: static;
+        }
+        h1 {
+          max-width: none;
+        }
       }
     </style>
   </head>
@@ -511,18 +454,18 @@ function renderInstallPage() {
       </div>
 
       <div class="hero">
-        <div class="hero-copy">
-          <div class="eyebrow">local-first install flow</div>
+        <div>
+          <div class="eyebrow">Local-first install flow</div>
           <h1>Install OpenGPU on your Mac</h1>
           <div class="sub">
-            A cleaner first-run path for Apple Silicon. Install from one command, verify the
+            A simple, Mac-first install page for Apple Silicon. Copy one command, verify the
             signed release binary when available, then move straight into onboarding, cap
             selection, and start.
           </div>
 
-          <div class="hero-actions">
-            <a class="cta" href="#command">Copy install command</a>
-            <a class="ghost" href="/docs">Open docs preview</a>
+          <div class="actions">
+            <a class="button button-primary" href="#command">Copy install command</a>
+            <a class="button button-secondary" href="/docs">Open docs preview</a>
           </div>
 
           <div class="tags">
@@ -531,63 +474,45 @@ function renderInstallPage() {
             <span class="tag">checksum verified</span>
             <span class="tag">localhost preview</span>
           </div>
-
-          <div class="grid">
-            <div class="card">
-              <strong>Why this exists</strong>
-              <p>The install page is the first touch point. It should feel like a product page, not a control panel.</p>
-            </div>
-            <div class="card">
-              <strong>What happens next</strong>
-              <p>After install, run <code>opengpu onboarding</code>, choose a cap, then start the node.</p>
-            </div>
-            <div class="card">
-              <strong>Release discipline</strong>
-              <p>The command, checksum, and release asset should always point to the same Mac-first build.</p>
-            </div>
-          </div>
         </div>
 
-        <div class="side">
-          <div class="command-card" id="command">
-            <div class="label">Install command</div>
-            <div class="command">
-              <code>curl -fsSL https://novusx.ai/install | bash</code>
-              <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
-            </div>
-            <div class="hint" id="copy-status">Local preview only. Public domain comes later.</div>
+        <div class="install-card" id="command">
+          <div class="label">Install command</div>
+          <div class="command">
+            <code>curl -fsSL https://novusx.ai/install | bash</code>
+            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://novusx.ai/install | bash').then(() => { const el = document.getElementById('copy-status'); if (el) el.textContent = 'Copied to clipboard'; }).catch(() => {});">Copy</button>
           </div>
-
-          <div class="info-card">
-            <div class="label">Install flow</div>
-            <div class="steps">
-              <div class="step">
-                <div class="num">1</div>
-                <div>
-                  <strong>Download</strong>
-                  <p>Fetch the Mac release binary from the release channel.</p>
-                </div>
-              </div>
-              <div class="step">
-                <div class="num">2</div>
-                <div>
-                  <strong>Verify</strong>
-                  <p>Checksum verification happens when the release artifact publishes one.</p>
-                </div>
-              </div>
-              <div class="step">
-                <div class="num">3</div>
-                <div>
-                  <strong>Start</strong>
-                  <p>Review onboarding, set your cap, and then run <code>opengpu start</code>.</p>
-                </div>
+          <div class="label" style="margin-top: 18px;">Install flow</div>
+          <div class="install-list">
+            <div class="install-step">
+              <div class="num">1</div>
+              <div>
+                <strong>Download</strong>
+                <p>Fetch the Mac release binary from the release channel.</p>
               </div>
             </div>
+            <div class="install-step">
+              <div class="num">2</div>
+              <div>
+                <strong>Verify</strong>
+                <p>Checksum verification happens when the release artifact publishes one.</p>
+              </div>
+            </div>
+            <div class="install-step">
+              <div class="num">3</div>
+              <div>
+                <strong>Start</strong>
+                <p>Review onboarding, set your cap, and then run <code>opengpu start</code>.</p>
+              </div>
+            </div>
+          </div>
+          <div class="footer" id="copy-status">
+            Local preview only. Public domain comes later.
           </div>
         </div>
       </div>
 
-      <div class="footer">
+      <div class="footer" style="margin-top: 22px;">
         Local preview URL: <code>${escapeHtml(appUrl)}/install</code> • Docs preview:
         <code>${escapeHtml(appUrl)}/docs</code>
       </div>
