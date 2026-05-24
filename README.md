@@ -4,6 +4,8 @@ OpenGPU is a distributed compute network that routes requests to the best availa
 
 - Apple Silicon `M` series nodes
 
+OpenGPU is the product name. NovusX is the company and the install domain behind `novusx.ai`.
+
 ## Repo Shape
 
 This repository is a monorepo for the core platform:

@@ -2,6 +2,8 @@
 
 This page describes the local preview for the public docs site.
 
+OpenGPU is the product. NovusX is the company and install domain.
+
 ## Purpose
 
 The docs site should be the public-facing home for:

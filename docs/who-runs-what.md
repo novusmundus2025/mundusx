@@ -32,7 +32,7 @@ Your machine sits idle most of the time. When a job is routed to you:
 
 ---
 
-## As the Company (NovusX / OpenGPU)
+## As the Company (NovusX)
 
 You run and maintain the shared infrastructure that all nodes connect to.
 
