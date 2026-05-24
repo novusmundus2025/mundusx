@@ -55,16 +55,18 @@ pub fn ensure_identity(storage_dir: &Path) -> io::Result<SecureIdentity> {
         }
     }
 
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let mut private_key = [0u8; 32];
+    OsRng.fill_bytes(&mut private_key);
+    let signing_key = SigningKey::from_bytes(&private_key);
     let verifying_key = signing_key.verifying_key();
     let public_key_hex = hex::encode(verifying_key.to_bytes());
     let fingerprint = fingerprint_from_public_key(verifying_key.as_bytes());
-    let private_key = signing_key.to_bytes();
 
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
     let secret = machine_secret_key()?;
     let encrypted = xor_crypt(&private_key, &secret, &nonce);
+    private_key.fill(0);
     let label_hex = machine_label_hex().unwrap_or_else(|_| hex::encode(IDENTITY_SECRET_SALT.as_bytes()));
 
     let persisted = PersistedIdentity {

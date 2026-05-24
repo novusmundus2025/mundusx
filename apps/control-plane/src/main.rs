@@ -231,6 +231,18 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
     let assigned = snapshot["assigned_job_count"].as_u64().unwrap_or(0);
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
     let failed = snapshot["failed_job_count"].as_u64().unwrap_or(0);
+    let healthy_tone = "green";
+    let storage_tone = if storage_source.as_str() == "supabase" {
+        "green"
+    } else {
+        "amber"
+    };
+    let supabase = SupabaseMirror::startup_status();
+    let supabase_tone = if supabase.as_str().starts_with("enabled") {
+        "green"
+    } else {
+        "red"
+    };
 
     format!(
         r#"<!doctype html>
@@ -240,168 +252,313 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenGPU Control Plane</title>
     <style>
+      :root {{
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #fbfcff;
+        --surface-2: #f5f7fb;
+        --line: rgba(15, 23, 42, 0.09);
+        --line-strong: rgba(15, 23, 42, 0.14);
+        --text: #0f172a;
+        --muted: #5f6b85;
+        --blue: #3452ff;
+        --green: #0f9d58;
+        --orange: #c47f1b;
+        --amber: #d97706;
+        --red: #d14343;
+      }}
+      * {{ box-sizing: border-box; }}
       body {{
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #0b1220;
-        color: #e5eefc;
         margin: 0;
-        padding: 32px;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 30%),
+          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
+        color: var(--text);
+        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }}
-      .card {{
-        max-width: 900px;
+      .wrap {{
+        max-width: 1380px;
         margin: 0 auto;
-        background: #111a2e;
-        border: 1px solid #24324f;
-        border-radius: 20px;
-        padding: 28px;
-        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+        padding: 22px 20px 48px;
       }}
-      .badge {{
-        display: inline-block;
+      .hero {{
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 22px;
+        padding: 24px;
+        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.06);
+      }}
+      .topline {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        flex-wrap: wrap;
+      }}
+      .brand {{
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }}
+      .brand-mark {{
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: linear-gradient(135deg, var(--blue), #5a79ff);
+      }}
+      h1 {{
+        margin: 0;
+        font-size: clamp(40px, 5vw, 64px);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
+      }}
+      .sub {{
+        margin-top: 12px;
+        color: var(--muted);
+        line-height: 1.7;
+      }}
+      .statusline {{
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }}
+      .pill {{
+        display: inline-flex;
+        align-items: center;
         padding: 6px 10px;
         border-radius: 999px;
-        background: #12351f;
-        color: #8ef0aa;
         font-size: 12px;
         letter-spacing: 0.04em;
         text-transform: uppercase;
+        border: 1px solid transparent;
       }}
-      h1 {{
-        margin: 16px 0 8px;
-        font-size: 34px;
-      }}
-      p {{
-        color: #a8b4cb;
-        line-height: 1.6;
-      }}
+      .pill-green {{ background: rgba(15, 157, 88, 0.08); color: var(--green); border-color: rgba(15, 157, 88, 0.16); }}
+      .pill-orange {{ background: rgba(196, 127, 27, 0.08); color: var(--orange); border-color: rgba(196, 127, 27, 0.16); }}
+      .pill-amber {{ background: rgba(217, 119, 6, 0.08); color: var(--amber); border-color: rgba(217, 119, 6, 0.16); }}
+      .pill-red {{ background: rgba(209, 67, 67, 0.08); color: var(--red); border-color: rgba(209, 67, 67, 0.16); }}
+      .pill-blue {{ background: rgba(52, 82, 255, 0.08); color: var(--blue); border-color: rgba(52, 82, 255, 0.16); }}
+      .pill-neutral {{ background: rgba(95, 107, 133, 0.08); color: var(--muted); border-color: rgba(95, 107, 133, 0.16); }}
       .grid {{
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 14px;
-        margin: 24px 0;
+        margin: 18px 0 24px;
       }}
-      .stat {{
-        background: #0d1526;
-        border: 1px solid #23314e;
-        border-radius: 16px;
+      .card {{
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 18px;
         padding: 16px;
       }}
-      .stat span {{
-        display: block;
-        font-size: 12px;
-        color: #8da0c4;
+      .card-label {{
+        color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.08em;
+        font-size: 12px;
       }}
-      .stat strong {{
-        display: block;
-        margin-top: 6px;
-        font-size: 28px;
-        color: #ffffff;
+      .card-value {{
+        margin: 10px 0 12px;
+        font-size: 30px;
+        font-weight: 700;
+      }}
+      .section {{
+        margin-top: 24px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 22px;
+        overflow: hidden;
+        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.05);
+      }}
+      .section-head {{
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
       }}
       .section-title {{
-        margin: 30px 0 10px;
-        font-size: 18px;
-        color: #f1f6ff;
-      }}
-      .table {{
-        display: grid;
-        gap: 10px;
-        margin-top: 18px;
-      }}
-      .thead,
-      .row {{
-        display: grid;
-        grid-template-columns: 1.4fr 1fr 0.9fr 0.8fr 1.4fr 1fr 0.7fr;
-        gap: 12px;
-        align-items: start;
-      }}
-      .thead {{
-        color: #91a6cb;
+        margin: 0;
         text-transform: uppercase;
         letter-spacing: 0.08em;
-        font-size: 11px;
-        padding: 0 12px;
-      }}
-      .row {{
-        background: #0d1526;
-        border: 1px solid #23314e;
-        border-radius: 16px;
-        padding: 14px 12px;
-      }}
-      .row strong {{
-        display: block;
         font-size: 14px;
-        color: #f4f8ff;
-        margin-bottom: 4px;
       }}
-      .meta {{
-        color: #8ea4ca;
-        font-size: 12px;
-        line-height: 1.45;
+      .section-body {{
+        padding: 20px;
       }}
-      .pill {{
-        display: inline-block;
-        padding: 4px 9px;
-        border-radius: 999px;
-        font-size: 11px;
+      .table .thead,
+      .table .row {{
+        display: grid;
+        grid-template-columns: 1.3fr 1fr 0.7fr 0.7fr 1fr 1.1fr 0.7fr;
+        gap: 14px;
+        align-items: start;
+      }}
+      .table .thead {{
+        color: var(--muted);
         text-transform: uppercase;
-        letter-spacing: 0.07em;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+        padding-bottom: 12px;
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--line);
       }}
-      .note {{
-        margin-top: 16px;
-        padding: 14px 16px;
-        border-radius: 14px;
-        background: #0a1020;
-        border: 1px solid #24324f;
-        color: #b6c5e4;
+      .table .row {{
+        padding: 14px 0;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+      }}
+      .table .row:last-child {{ border-bottom: 0; }}
+      .meta {{
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
       }}
       .empty {{
-        margin-top: 18px;
-        padding: 18px;
-        border-radius: 16px;
-        border: 1px dashed #24324f;
-        background: #0a1020;
-        color: #8ea4ca;
+        color: var(--muted);
+        padding: 28px 0;
       }}
-      code {{
-        background: #0a1020;
-        border: 1px solid #24324f;
-        padding: 2px 6px;
-        border-radius: 8px;
-        color: #9fe7b0;
+      .events {{
+        display: grid;
+        gap: 12px;
+      }}
+      .balance-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin-bottom: 18px;
+      }}
+      .balance {{
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface);
+        padding: 14px 16px;
+      }}
+      .balance strong {{
+        display: block;
+        margin-bottom: 6px;
+        font-size: 14px;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }}
+      .event {{
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface);
+        padding: 14px 16px;
+      }}
+      .event-top {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }}
+      pre {{
+        overflow: auto;
+        margin: 12px 0 0;
+        color: #31415f;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }}
+      .error {{
+        margin-top: 18px;
+        border: 1px solid rgba(209, 67, 67, 0.22);
+        background: rgba(209, 67, 67, 0.06);
+        color: var(--red);
+        padding: 14px 16px;
+        border-radius: 14px;
+      }}
+      .links {{
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
       }}
       a {{
-        color: #9fe7b0;
+        color: var(--blue);
+        text-decoration: none;
+      }}
+      a:hover {{ text-decoration: underline; }}
+      code {{
+        background: rgba(52, 82, 255, 0.06);
+        border: 1px solid rgba(52, 82, 255, 0.1);
+        padding: 2px 6px;
+        border-radius: 8px;
+        color: var(--text);
+      }}
+      @media (max-width: 1200px) {{
+        .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        .table .thead,
+        .table .row {{ grid-template-columns: 1.1fr 0.9fr 0.7fr 0.7fr 1fr 1fr 0.7fr; }}
+      }}
+      @media (max-width: 820px) {{
+        .grid {{ grid-template-columns: 1fr; }}
+        .table .thead {{ display: none; }}
+        .table .row {{
+          grid-template-columns: 1fr;
+          gap: 10px;
+          padding: 16px 0;
+        }}
       }}
     </style>
   </head>
   <body>
-    <main class="card">
-      <span class="badge">healthy</span>
-      <h1>OpenGPU control plane</h1>
-      <p>This is the local prototype registry and job queue running at <code>http://127.0.0.1:8787</code>.</p>
-      <div class="grid">
-        <div class="stat"><span>Storage source</span><strong>{storage_source}</strong></div>
-        <div class="stat"><span>Online nodes</span><strong>{nodes}</strong></div>
-        <div class="stat"><span>Paused nodes</span><strong>{paused}</strong></div>
-        <div class="stat"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
-        <div class="stat"><span>Job events</span><strong>{job_events}</strong></div>
-        <div class="stat"><span>Credits ledger</span><strong>{credits_ledger}</strong></div>
-        <div class="stat"><span>Total credits</span><strong>{credits_total:.2}</strong></div>
-        <div class="stat"><span>Queued jobs</span><strong>{queued}</strong></div>
-        <div class="stat"><span>Assigned jobs</span><strong>{assigned}</strong></div>
-        <div class="stat"><span>Completed jobs</span><strong>{completed}</strong></div>
-        <div class="stat"><span>Failed jobs</span><strong>{failed}</strong></div>
+    <div class="wrap">
+      <div class="hero">
+        <div class="topline">
+            <div>
+            <div class="brand"><span class="brand-mark"></span> OpenGPU Control Plane</div>
+            <div class="sub">Local operator view for nodes, jobs, storage source, and audit trail.</div>
+            <div class="statusline">
+              <span class="pill pill-{healthy_tone}">healthy</span>
+              <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
+              <span class="pill pill-{supabase_tone}">supabase: {supabase}</span>
+            </div>
+          </div>
+          <div class="links">
+            <a href="/health">health</a>
+            <a href="/v1/status">status json</a>
+            <a href="/v1/nodes">nodes json</a>
+            <a href="/v1/jobs">jobs json</a>
+            <a href="/v1/credits">credits json</a>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card"><div class="card-label">Online nodes</div><div class="card-value">{nodes}</div></div>
+          <div class="card"><div class="card-label">Paused nodes</div><div class="card-value">{paused}</div></div>
+          <div class="card"><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div>
+          <div class="card"><div class="card-label">Job events</div><div class="card-value">{job_events}</div></div>
+          <div class="card"><div class="card-label">Credits ledger</div><div class="card-value">{credits_ledger}</div></div>
+          <div class="card"><div class="card-label">Total credits</div><div class="card-value">{credits_total:.2}</div></div>
+          <div class="card"><div class="card-label">Queued jobs</div><div class="card-value">{queued}</div></div>
+          <div class="card"><div class="card-label">Assigned jobs</div><div class="card-value">{assigned}</div></div>
+          <div class="card"><div class="card-label">Completed jobs</div><div class="card-value">{completed}</div></div>
+          <div class="card"><div class="card-label">Failed jobs</div><div class="card-value">{failed}</div></div>
+        </div>
+
+        <div class="error">
+          Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.
+          Current startup storage source: <code>{storage_source}</code>. Credits are accrued through the
+          append-only ledger and exposed at <code>/v1/credits</code>.
+        </div>
       </div>
-      <div class="note">
-        Policy-aware nodes are still visible in the registry, but nodes that should stay quiet are excluded from scheduling.
-        Current startup storage source: <code>{storage_source}</code>. Credits are accrued through the append-only ledger and exposed at <code>/v1/credits</code>.
+
+      <div class="section">
+        <div class="section-head">
+          <h2 class="section-title">Node details</h2>
+          <div class="meta">{nodes} registered</div>
+        </div>
+        <div class="section-body">
+          {node_rows}
+        </div>
       </div>
-      <h2 class="section-title">Node details</h2>
-      {node_rows}
-      <p>Useful endpoints: <a href="/health">/health</a>, <a href="/v1/status">/v1/status</a>, <a href="/v1/nodes">/v1/nodes</a>, <a href="/v1/jobs">/v1/jobs</a>, <a href="/v1/credits">/v1/credits</a></p>
-    </main>
+    </div>
   </body>
 </html>"#
         ,
