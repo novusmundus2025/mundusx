@@ -3,7 +3,10 @@ mod migrations;
 mod state;
 mod supabase;
 
-use contracts::{AgentRegistration, Heartbeat, JobCompletion, JobRequest};
+use contracts::{
+    AgentRegistration, ChatCompletionChoice, ChatCompletionChoiceMessage, ChatCompletionOpenGpu,
+    ChatCompletionRequest, ChatCompletionResponse, Heartbeat, JobCompletion, JobRequest,
+};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::{applied_migrations, apply_migrations};
 use state::{load_state, save_state, state_path, ControlPlaneState};
@@ -14,6 +17,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[cfg(target_os = "macos")]
 #[path = "../../../tools/macos_identity.rs"]
@@ -66,6 +70,46 @@ fn html_response(status: &str, body: &str) -> String {
         body.len(),
         body
     )
+}
+
+fn chat_messages_to_prompt(messages: &[contracts::ChatMessage]) -> (Option<String>, String) {
+    let mut system_messages = Vec::new();
+    let mut conversation_lines = Vec::new();
+
+    for message in messages {
+        let role = message.role.trim().to_lowercase();
+        let content = message.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        if role == "system" {
+            system_messages.push(content.to_string());
+        } else {
+            conversation_lines.push(format!("{role}: {content}"));
+        }
+    }
+
+    let system_prompt = if system_messages.is_empty() {
+        None
+    } else {
+        Some(system_messages.join("\n"))
+    };
+
+    let prompt = if conversation_lines.is_empty() {
+        messages
+            .last()
+            .map(|message| message.content.clone())
+            .unwrap_or_default()
+    } else {
+        conversation_lines.join("\n")
+    };
+
+    (system_prompt, prompt)
+}
+
+fn now_unix_seconds_u64() -> u64 {
+    now_unix_seconds().parse::<u64>().unwrap_or(0)
 }
 
 fn load_local_env() {
@@ -664,15 +708,16 @@ fn requires_device_signature(method: &str, path: &str) -> bool {
 }
 
 fn requires_operator_auth(method: &str, path: &str) -> bool {
-    matches!(
-        (method, path),
-        ("GET", "/")
+        matches!(
+            (method, path),
+            ("GET", "/")
             | ("GET", "/v1/status")
             | ("GET", "/v1/nodes")
             | ("GET", "/v1/jobs")
             | ("GET", "/v1/job-events")
             | ("GET", "/v1/credits")
             | ("POST", "/v1/jobs")
+            | ("POST", "/v1/chat/completions")
     )
 }
 
@@ -1019,6 +1064,91 @@ fn handle_connection(
                 serde_json::json!({ "error": error.to_string() }),
             ),
         },
+        ("POST", "/v1/chat/completions") => {
+            match serde_json::from_str::<ChatCompletionRequest>(&request.body) {
+                Ok(request_body) => {
+                    if request_body.stream.unwrap_or(false) {
+                        if let Err(error) = stream.write_all(
+                            json_response(
+                                "400 Bad Request",
+                                serde_json::json!({
+                                    "error": "streaming chat completions are not supported yet"
+                                }),
+                            )
+                            .as_bytes(),
+                        ) {
+                            eprintln!("failed to write response: {error}");
+                        }
+                        return;
+                    }
+
+                    let (system_prompt, prompt) = chat_messages_to_prompt(&request_body.messages);
+                    let job_request = JobRequest {
+                        request_id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
+                        prompt,
+                        preferred_backend: crate::contracts::Backend::Auto,
+                        model: Some(request_body.model.clone()),
+                        system_prompt,
+                        max_tokens: request_body.max_tokens,
+                        temperature: request_body.temperature,
+                        top_p: request_body.top_p,
+                        seed: request_body.seed,
+                    };
+
+                    let mut guard = state.lock().expect("state lock");
+                    let record = guard.submit_job(job_request, now_unix_seconds());
+                    let event = guard.record_job_event(
+                        None,
+                        Some(record.job_id.clone()),
+                        "chat_completion_submitted",
+                        serde_json::to_value(&record).expect("json"),
+                        now_unix_seconds(),
+                    );
+                    if let Err(error) = save_state(&guard) {
+                        eprintln!("failed to save control-plane state: {error}");
+                    }
+                    if let Some(db) = supabase.as_ref() {
+                        if let Err(error) = db.record_job(&record) {
+                            eprintln!("database chat completion sync skipped: {error}");
+                        }
+                        if let Err(error) = db.record_job_event(
+                            event.node_id.as_deref(),
+                            event.job_id.as_deref(),
+                            &event.event_type,
+                            event.payload.clone(),
+                        ) {
+                            eprintln!("database chat completion event skipped: {error}");
+                        }
+                    }
+
+                    let response = ChatCompletionResponse {
+                        id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
+                        object: "chat.completion".to_string(),
+                        created: now_unix_seconds_u64(),
+                        model: request_body.model,
+                        choices: vec![ChatCompletionChoice {
+                            index: 0,
+                            message: ChatCompletionChoiceMessage {
+                                role: "assistant".to_string(),
+                                content: String::new(),
+                            },
+                            finish_reason: "queued".to_string(),
+                        }],
+                        opengpu: ChatCompletionOpenGpu {
+                            job_id: record.job_id.clone(),
+                            request_id: record.request_id.clone(),
+                            status: record.status.to_string(),
+                        },
+                    };
+
+                    json_response("200 OK", serde_json::to_value(response).expect("json"))
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
         ("POST", "/v1/jobs/complete") => match serde_json::from_str::<JobCompletion>(&request.body) {
             Ok(completion) => {
                 let completion_clone = completion.clone();

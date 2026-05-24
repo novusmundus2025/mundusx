@@ -24,6 +24,7 @@ When `OPENGPU_OPERATOR_TOKEN` is configured, the human-facing routes require a m
 - `POST /v1/register` - register an agent
 - `POST /v1/heartbeat` - update a node heartbeat
 - `POST /v1/jobs` - submit a job request
+- `POST /v1/chat/completions` - OpenAI / OneAPI-compatible request intake adapter
 - `POST /v1/jobs/complete` - complete a claimed job
 
 Agent-only routes are signed with the node's existing device keypair and are verified by the control plane before being accepted.

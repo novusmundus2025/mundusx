@@ -2,6 +2,8 @@
 
 This page describes how a subscriber, SDK, dashboard, or other requestor gets a response from OpenGPU.
 
+For the requestor-facing compatibility endpoint itself, see [docs/requestor-api.md](/Users/DBATALL/Documents/aigrid/docs/requestor-api.md).
+
 ## The Short Version
 
 Yes, the system should route work to whichever contributor node is capable and available.
@@ -64,6 +66,7 @@ If a node cannot handle the job, the job stays queued until another node can tak
 
 The current prototype already has:
 - `POST /v1/jobs`
+- `POST /v1/chat/completions`
 - `GET /v1/jobs`
 - `GET /v1/jobs/next?node_id=...`
 - `POST /v1/jobs/complete`

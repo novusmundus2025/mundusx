@@ -69,6 +69,23 @@ pub enum JobStatus {
     Failed,
 }
 
+impl JobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Assigned => "assigned",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl fmt::Display for JobStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRegistration {
     pub node_id: String,
@@ -111,6 +128,58 @@ pub struct JobRequest {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub seed: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatCompletionRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub stream: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatCompletionChoiceMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatCompletionChoice {
+    pub index: u32,
+    pub message: ChatCompletionChoiceMessage,
+    pub finish_reason: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatCompletionOpenGpu {
+    pub job_id: String,
+    pub request_id: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatCompletionResponse {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub choices: Vec<ChatCompletionChoice>,
+    pub opengpu: ChatCompletionOpenGpu,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
