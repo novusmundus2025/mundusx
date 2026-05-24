@@ -41,12 +41,12 @@ You run and maintain the shared infrastructure that all nodes connect to.
 | Component | Stack | What it does |
 |---|---|---|
 | **Control Plane** | Rust (HTTP API) | Node registry, heartbeat ingestion, job queue, routing decisions, job tracking |
-| **Dashboard** | Node.js (planned) | Live view of network health, node status, job history, credits |
+| **Dashboard** | Node.js | Live view of network health, node status, job history, credits. Local preview exists now; public rollout follows later. |
 | **Install endpoint** | Static/CDN | `https://novusx.ai/install` — public landing page and install command for the signed binary |
 | **Release pipeline** | GitHub Actions | Builds and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today) |
-| **Auth service** | (planned) | Issues tokens for users and devices |
-| **Credits ledger** | (planned) | Tracks contribution and usage accounting per node |
-| **Durable state store** | (planned) | Persistent DB behind the control plane — currently in-memory only |
+| **Auth service** | Local bearer token + signed device requests | Issues operator tokens locally for the prototype and verifies device signatures |
+| **Credits ledger** | Supabase-backed ledger | Tracks contribution and usage accounting per node |
+| **Durable state store** | Supabase / Postgres | Persistent DB behind the control plane, with the local JSON cache kept only as a fallback |
 
 ### What "maintained" means per component
 
@@ -66,10 +66,10 @@ You run and maintain the shared infrastructure that all nodes connect to.
 - Binaries must be verified before the install script points to them
 
 **Dashboard**
-- Not built yet — needed before public launch for trust/transparency
+- Local preview exists now — needed before public launch for trust/transparency
 
 **Auth + Credits**
-- Not built yet — needed before real money or SLA commitments
+- Built enough for the current prototype; public rollout still needs a broader release plan
 
 ---
 
