@@ -88,6 +88,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/system-flow.md](/Users/DBATALL/Documents/aigrid/docs/system-flow.md) for the living end-to-end architecture diagram
 - [docs/repo-standards.md](/Users/DBATALL/Documents/aigrid/docs/repo-standards.md) for folder structure and review rules
 - [docs/governance-model.md](/Users/DBATALL/Documents/aigrid/docs/governance-model.md) for the federated company / standards org trust model
+- [docs/requestor-routing.md](/Users/DBATALL/Documents/aigrid/docs/requestor-routing.md) for org gateway versus direct provider routing
 - [docs/runtime-transport.md](/Users/DBATALL/Documents/aigrid/docs/runtime-transport.md) for the local-process versus HTTP-server map
 - [docs/device-identity-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/device-identity-lifecycle.md) for the recommended secure device key lifecycle
 - [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md) for contributor-side model cache, switch, and prune rules

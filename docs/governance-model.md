@@ -101,6 +101,21 @@ In practice:
 - a company proves compliance with the governance rules
 - the governance org proves the network is interoperable and auditable
 
+## Requestor Routing
+
+The requestor-facing path should default to an org-managed gateway or broker.
+
+That gateway can:
+
+- pick a certified company control plane
+- health-check available providers
+- fail over when a provider is down
+- keep one stable OpenAI-style API for apps
+
+An app creator may still pin directly to a specific provider control plane, but that should be treated as an explicit choice with visible warnings about failover, policy, and billing differences.
+
+See [docs/requestor-routing.md](/Users/DBATALL/Documents/aigrid/docs/requestor-routing.md) for the detailed routing policy.
+
 ## Why This Separation Matters
 
 - It lets multiple companies participate without breaking compatibility.
@@ -116,4 +131,3 @@ In practice:
 - settlement file format
 - protocol versioning and compatibility windows
 - how a contributor can move between operator companies
-
