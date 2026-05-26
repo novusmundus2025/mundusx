@@ -109,6 +109,7 @@ flowchart TD
    - policy allows it to work
 4. The control plane scans queued jobs and picks the first one whose preferred backend matches the node backend, or is `auto`.
 5. The control plane marks the job as `assigned` and marks the node as `busy`.
+6. The worker finishes and the node returns to `ready` if it is still connected and policy allowed, which means the GPU goes back to idle until the next assignment.
 
 ### Job completion
 
@@ -116,7 +117,7 @@ flowchart TD
 2. The control plane checks the device signature again.
 3. The control plane confirms the job was actually assigned to that node.
 4. If the job matches, it is stored as `completed` or `failed`.
-5. The node is returned to `ready` if it was busy.
+5. The node is returned to `ready` if it was busy, which means the worker exits and the machine becomes idle again.
 
 ## Provider Machine Layout
 
