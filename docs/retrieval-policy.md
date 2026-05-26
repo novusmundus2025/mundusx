@@ -10,6 +10,28 @@ This page explains when a request should be answered by the model alone, when re
 
 The GPU itself does not decide this. The requestor layer, gateway, or control plane policy decides which mode to use.
 
+## Recommended Implementation Contract
+
+The requestor or gateway should make the mode explicit on every request instead of guessing inside the worker.
+
+Recommended modes:
+
+- `model_only`
+- `retrieval`
+- `web_search`
+
+Recommended request metadata:
+
+- `knowledge_mode`: one of the three modes above
+- `retrieval_scope`: optional list of allowed document sources, indexes, or namespaces
+- `allow_web_search`: boolean convenience flag for gateways that still want a simple toggle
+
+Default behavior:
+
+- If the caller provides no mode, default to `model_only`.
+- If the request is clearly time-sensitive or explicitly asks for current facts, the gateway may upgrade to `web_search`.
+- If the request is about local docs, portal records, or other controlled content, prefer `retrieval` before any live browsing.
+
 ## Why This Matters
 
 The worker only runs the model. It does not automatically browse the internet.
@@ -89,11 +111,20 @@ flowchart TD
 - The org gateway may enforce or recommend the mode.
 - Company control planes may expose a policy header or parameter to request retrieval.
 - Contributors do not need to know the mode unless the job itself depends on extra context.
+- The worker should receive only the already-decided context, not the policy decision process itself.
+- If a request is routed through `web_search`, the gateway should attach the resulting source snippets or citations as part of the job context.
 
 ## Current Prototype Status
 
 The current `/v1/chat/completions` path is a queued compatibility layer.
 It does not browse the internet by itself.
+
+If a future requestor gateway adds retrieval or browsing, the safest shape is:
+
+1. classify the request into `model_only`, `retrieval`, or `web_search`
+2. fetch the needed context outside the worker
+3. pass that context into the model job
+4. return the answer with source metadata when applicable
 
 If the product later adds retrieval or browsing, that should happen in a dedicated policy layer above the worker.
 

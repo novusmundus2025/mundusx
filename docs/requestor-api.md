@@ -15,6 +15,8 @@ It accepts a request shaped like an OpenAI / OneAPI chat completion request, the
 - Submits a queued job to the control plane.
 - Returns an OpenAI-shaped `chat.completion` envelope with NovusX metadata.
 - If `OPENGPU_OPERATOR_TOKEN` is configured, the route requires a matching bearer token just like the other operator-facing control-plane routes.
+- It does **not** browse the internet by itself.
+- It does **not** infer retrieval mode inside the worker.
 
 ## Current Response Shape
 
@@ -39,6 +41,8 @@ Example fields:
 - Streaming is not supported yet.
 - The job still completes through the existing control-plane and worker pipeline.
 - Contributors still claim work based on availability, backend compatibility, policy state, and worker health.
+- A later gateway layer may attach `knowledge_mode` to decide between `model_only`, `retrieval`, and `web_search`.
+- If that happens, the worker should receive only the resulting context, not the routing decision itself.
 
 ## Example
 
@@ -62,6 +66,7 @@ The control plane stores the request as a job and returns a queued NovusX respon
 
 ## What Comes Next
 
+- request policy metadata for `model_only`, `retrieval`, and `web_search`
 - streaming responses
 - `/v1/responses` compatibility
 - `GET /v1/models`
