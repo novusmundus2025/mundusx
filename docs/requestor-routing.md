@@ -63,6 +63,49 @@ There are two separate routing decisions:
 - the gateway routes across companies
 - each company control plane routes within its own contributor pool
 
+## Inside One Company Control Plane
+
+```mermaid
+flowchart TD
+    R[Requestor App] --> CP[Company Control Plane]
+
+    subgraph CPB[Company Control Plane]
+        API[OpenAI / OneAPI API]
+        Q[Job Queue]
+        S[Scheduler]
+        DB[(State / Events / Credits)]
+        N1[Contributor Node 1]
+        N2[Contributor Node 2]
+        N3[Contributor Node 3]
+        W1[Worker 1]
+        W2[Worker 2]
+        W3[Worker 3]
+
+        API --> Q
+        Q --> S
+        S --> N1
+        S --> N2
+        S --> N3
+        API --> DB
+        N1 --> W1
+        N2 --> W2
+        N3 --> W3
+        W1 --> API
+        W2 --> API
+        W3 --> API
+    end
+
+    CP --> CPB
+```
+
+This is the local shape we already prototype today:
+
+- one public control plane API
+- multiple contributor nodes behind it
+- a scheduler that picks the best available node
+- workers that run locally on contributor machines
+- job state, events, and credits stored centrally
+
 ## Why This Is the Preferred Shape
 
 - requestors keep one stable API

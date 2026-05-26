@@ -116,6 +116,45 @@ An app creator may still pin directly to a specific provider control plane, but 
 
 See [docs/requestor-routing.md](/Users/DBATALL/Documents/aigrid/docs/requestor-routing.md) for the detailed routing policy.
 
+## Company Control Plane Layout
+
+```mermaid
+flowchart TD
+    R[Requestor App] --> CP[Company Control Plane]
+
+    subgraph CPB[Company Control Plane]
+        API[Public API]
+        Q[Job Queue]
+        S[Scheduler]
+        DB[(State / Events / Credits)]
+        N1[Contributor Node 1]
+        N2[Contributor Node 2]
+        N3[Contributor Node 3]
+
+        API --> Q
+        Q --> S
+        S --> N1
+        S --> N2
+        S --> N3
+        API --> DB
+    end
+
+    N1 --> W1[Worker 1]
+    N2 --> W2[Worker 2]
+    N3 --> W3[Worker 3]
+    W1 --> CP
+    W2 --> CP
+    W3 --> CP
+```
+
+This is the company-side shape the current prototype is already moving toward:
+
+- one company control plane
+- many contributor nodes behind it
+- one public API front door
+- one scheduler for routing work
+- one durable state store for jobs, events, and credits
+
 ## Why This Separation Matters
 
 - It lets multiple companies participate without breaking compatibility.
