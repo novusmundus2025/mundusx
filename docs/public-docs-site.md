@@ -2,7 +2,7 @@
 
 This page describes the local preview for the docs site while the public domain stays future-only.
 
-OpenGPU is the product. NovusX is the company and future install domain.
+NovusX is the product. `opengpu` is the current command family used by the local prototype, and the broader public OpenGPU ecosystem is treated as separate.
 
 ## Purpose
 

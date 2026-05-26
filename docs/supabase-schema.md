@@ -1,6 +1,6 @@
 # Supabase Schema
 
-This page sketches the company-side database schema for the OpenGPU control plane.
+This page sketches the company-side database schema for the NovusX control plane.
 
 ## Ownership Split
 

@@ -11,7 +11,7 @@ const sampleCompletedJobs = [
   {
     id: "job_8f21f3",
     model: "HuggingFaceTB/SmolLM2-135M-Instruct",
-    prompt: "Summarize OpenGPU in one sentence.",
+    prompt: "Summarize NovusX in one sentence.",
     status: "completed",
     credits: 0.5,
     duration: "11s",
@@ -351,7 +351,7 @@ function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenGPU Contributor Job History</title>
+    <title>NovusX Contributor Job History</title>
     <style>
       :root {
         color-scheme: light;
@@ -607,7 +607,7 @@ function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
   <body>
     <div class="wrap">
       <div class="topbar">
-        <div class="brand"><span class="brand-mark"></span> OpenGPU Contributor Portal</div>
+        <div class="brand"><span class="brand-mark"></span> NovusX Contributor Portal</div>
         <div class="badge">localhost preview • job history</div>
       </div>
 
@@ -743,7 +743,7 @@ function renderContributorPortal() {
   const sampleEvents = [
     {
       title: "job_completed",
-      detail: "prompt: summarize OpenGPU in one sentence",
+      detail: "prompt: summarize NovusX in one sentence",
       time: "2m ago",
     },
     {
@@ -763,7 +763,7 @@ function renderContributorPortal() {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenGPU Contributor Portal</title>
+    <title>NovusX Contributor Portal</title>
     <style>
       :root {
         color-scheme: light;
@@ -1195,7 +1195,7 @@ function renderContributorPortal() {
   <body>
     <div class="wrap">
       <div class="topbar">
-        <div class="brand"><span class="brand-mark"></span> OpenGPU Contributor Portal</div>
+        <div class="brand"><span class="brand-mark"></span> NovusX Contributor Portal</div>
         <div class="badge">localhost preview • contributor view</div>
       </div>
 
@@ -1351,7 +1351,7 @@ function renderInstallPage(installPath = "/install") {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenGPU Install</title>
+    <title>NovusX Install</title>
     <style>
       :root {
         color-scheme: light;
@@ -1599,14 +1599,14 @@ function renderInstallPage(installPath = "/install") {
   <body>
     <div class="wrap">
       <div class="topbar">
-        <div class="brand"><span class="brand-mark"></span> OpenGPU Install</div>
+        <div class="brand"><span class="brand-mark"></span> NovusX Install</div>
         <div class="chip">localhost preview • Mac-first</div>
       </div>
 
       <div class="hero">
         <div>
           <div class="eyebrow">Local-first install flow</div>
-          <h1>Install OpenGPU on your Mac</h1>
+          <h1>Install NovusX on your Mac</h1>
           <div class="sub">
             A simple, Mac-first install page for Apple Silicon. Copy one command, verify the
             signed release binary when available, then move straight into onboarding, cap
@@ -1753,7 +1753,7 @@ function page({ health, status, events, credits, error }) {
   const storageSource = health?.storage_source ?? snapshot.storage_source ?? "unknown";
   const supabase = health?.supabase ?? "unknown";
   const isHealthy = health?.status === "ok";
-  const title = "OpenGPU Dashboard";
+  const title = "NovusX Dashboard";
 
   return `<!doctype html>
 <html lang="en">
@@ -2035,7 +2035,7 @@ function page({ health, status, events, credits, error }) {
       <div class="hero">
         <div class="topline">
           <div>
-            <div class="brand"><span class="brand-mark"></span> OpenGPU Dashboard</div>
+            <div class="brand"><span class="brand-mark"></span> NovusX Dashboard</div>
             <div class="sub">Live operator view for nodes, jobs, storage source, and audit trail.</div>
             <div class="statusline">
               ${badge(isHealthy ? "healthy" : "degraded", isHealthy ? "green" : "red")}
@@ -2282,7 +2282,7 @@ function docsShell({ title, subtitle, active, body, basePath = "/docs" }) {
   <body>
     <div class="wrap">
       <div class="topbar">
-        <div class="brand"><span class="brand-mark"></span> OpenGPU Docs</div>
+        <div class="brand"><span class="brand-mark"></span> NovusX Docs</div>
         <div class="badge">localhost preview • local layout</div>
       </div>
       <div class="layout">
@@ -2316,7 +2316,7 @@ function docsShell({ title, subtitle, active, body, basePath = "/docs" }) {
 
 function renderDocsHome(basePath = "/docs") {
   return docsShell({
-    title: "OpenGPU Docs",
+    title: "NovusX Docs",
     subtitle:
       "A Mac-first public docs surface for install, identity, onboarding, credits, and release flow. This preview is local, but the copy is written as the public source of truth.",
     active: "overview",
@@ -2377,7 +2377,7 @@ function renderDocsHome(basePath = "/docs") {
 
 function renderDocsInstall(basePath = "/docs") {
   return docsShell({
-    title: "Install OpenGPU",
+    title: "Install NovusX",
     subtitle:
       "The install page is the first touch for contributors. For now it stays localhost-only, keeps the command identical everywhere, and points to onboarding and cap selection immediately after install.",
     active: "install",
@@ -2408,7 +2408,7 @@ function renderDocsIdentity(basePath = "/docs") {
   return docsShell({
     title: "Device Identity",
     subtitle:
-      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the OpenGPU data directory remains intact.",
+      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the NovusX data directory remains intact.",
     active: "identity",
     basePath,
     body: `
@@ -2481,7 +2481,7 @@ function renderDocsCredits(basePath = "/docs") {
         </div>
         <div class="card">
           <h2>What users should expect</h2>
-          <p>OpenGPU should show earned credits clearly and make the contributor balance easy to inspect in the dashboard.</p>
+          <p>NovusX should show earned credits clearly and make the contributor balance easy to inspect in the dashboard.</p>
         </div>
       </div>
     `,
@@ -2660,6 +2660,6 @@ createServer(async (req, res) => {
   res.end(page(data));
 }).listen(port, "127.0.0.1", () => {
   process.stdout.write(
-    `OpenGPU dashboard listening on http://127.0.0.1:${port} (proxying ${controlPlaneUrl})\n`,
+    `NovusX dashboard listening on http://127.0.0.1:${port} (proxying ${controlPlaneUrl})\n`,
   );
 });

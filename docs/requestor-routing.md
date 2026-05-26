@@ -1,6 +1,6 @@
 # Requestor Routing
 
-This document explains how requestors should reach OpenGPU when the network grows beyond a single operator.
+This document explains how requestors should reach NovusX when the network grows beyond a single operator.
 
 ## Default Path
 

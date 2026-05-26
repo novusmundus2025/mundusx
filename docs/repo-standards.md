@@ -1,6 +1,6 @@
 # Repository Standards
 
-This document is the living guide for folder structure, code ownership, and review expectations in the OpenGPU repo.
+This document is the living guide for folder structure, code ownership, and review expectations in the NovusX repo.
 
 ## Canonical Folder Structure
 
@@ -58,4 +58,3 @@ Update this doc when:
 - a placeholder becomes real code
 - the review checklist changes
 - a folder is renamed or split
-

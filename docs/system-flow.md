@@ -1,6 +1,6 @@
-# OpenGPU System Flow
+# NovusX System Flow
 
-This page is the living end-to-end one-pager for how OpenGPU works.
+This page is the living end-to-end one-pager for how NovusX works.
 
 ```mermaid
 flowchart TD

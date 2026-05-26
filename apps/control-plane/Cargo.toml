@@ -2,7 +2,7 @@
 name = "opengpu-control-plane"
 version = "0.1.0"
 edition = "2021"
-description = "OpenGPU control plane"
+description = "NovusX control plane"
 license = "UNLICENSED"
 
 [dependencies]

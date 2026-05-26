@@ -30,7 +30,7 @@ use model_catalog::{selection_for, ModelOption};
 #[command(
     name = "opengpu",
     version,
-    about = "OpenGPU CLI",
+    about = "NovusX CLI",
     arg_required_else_help = true
 )]
 struct Cli {
@@ -40,9 +40,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Start the OpenGPU network
+    /// Start the NovusX network
     Start,
-    /// Join the OpenGPU network (boots local state on first use)
+    /// Join the NovusX network (boots local state on first use)
     Connect,
     /// Store local operator auth state
     Login {
@@ -67,7 +67,7 @@ enum Commands {
         #[arg(long)]
         reset: bool,
     },
-    /// Leave the OpenGPU network
+    /// Leave the NovusX network
     Disconnect,
     /// Show current node status
     Status {
@@ -79,7 +79,7 @@ enum Commands {
         #[command(subcommand)]
         command: ModelCommands,
     },
-    /// Update the OpenGPU binary
+    /// Update the NovusX binary
     Update,
 }
 

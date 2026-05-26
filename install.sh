@@ -45,7 +45,7 @@ trap cleanup EXIT
 
 mkdir -p "$INSTALL_DIR"
 
-echo "OpenGPU installer"
+echo "NovusX installer"
 echo "  target: ${target}"
 echo "  source: ${RELEASE_BASE_URL%/}"
 echo "  install: ${INSTALL_DIR}"

@@ -324,7 +324,7 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenGPU Control Plane</title>
+    <title>NovusX Control Plane</title>
     <style>
       :root {{
         color-scheme: light;
@@ -586,7 +586,7 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
       <div class="hero">
         <div class="topline">
             <div>
-            <div class="brand"><span class="brand-mark"></span> OpenGPU Control Plane</div>
+            <div class="brand"><span class="brand-mark"></span> NovusX Control Plane</div>
             <div class="sub">Local operator view for nodes, jobs, storage source, and audit trail.</div>
             <div class="statusline">
               <span class="pill pill-{healthy_tone}">healthy</span>
@@ -1307,7 +1307,7 @@ fn main() {
     };
     let state = Arc::new(Mutex::new(restored_state));
 
-    println!("OpenGPU control plane listening on http://127.0.0.1:8787");
+    println!("NovusX control plane listening on http://127.0.0.1:8787");
     println!("supabase: {}", SupabaseMirror::startup_status());
     println!("storage_source: {}", storage_source.as_str());
     if let Ok(database_url) = std::env::var("DATABASE_URL") {

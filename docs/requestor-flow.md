@@ -1,6 +1,6 @@
 # Requestor Flow
 
-This page describes how a subscriber, SDK, dashboard, or other requestor gets a response from OpenGPU.
+This page describes how a subscriber, SDK, dashboard, or other requestor gets a response from NovusX.
 
 For the requestor-facing compatibility endpoint itself, see [docs/requestor-api.md](/Users/DBATALL/Documents/aigrid/docs/requestor-api.md).
 

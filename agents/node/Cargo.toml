@@ -2,7 +2,7 @@
 name = "opengpu-node-agent"
 version = "0.1.0"
 edition = "2021"
-description = "OpenGPU node agent"
+description = "NovusX node agent"
 license = "Apache-2.0"
 
 [dependencies]

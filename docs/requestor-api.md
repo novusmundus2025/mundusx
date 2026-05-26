@@ -6,14 +6,14 @@ The first compatibility endpoint is:
 
 - `POST /v1/chat/completions`
 
-It accepts a request shaped like an OpenAI / OneAPI chat completion request, then maps it into OpenGPU's internal job queue.
+It accepts a request shaped like an OpenAI / OneAPI chat completion request, then maps it into NovusX's internal job queue.
 
 ## What It Does Today
 
 - Accepts `model`, `messages`, `temperature`, `top_p`, `max_tokens`, and `seed`.
 - Converts chat messages into an internal prompt plus optional system prompt.
 - Submits a queued job to the control plane.
-- Returns an OpenAI-shaped `chat.completion` envelope with OpenGPU metadata.
+- Returns an OpenAI-shaped `chat.completion` envelope with NovusX metadata.
 - If `OPENGPU_OPERATOR_TOKEN` is configured, the route requires a matching bearer token just like the other operator-facing control-plane routes.
 
 ## Current Response Shape
@@ -49,7 +49,7 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
     "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
     "messages": [
       {"role": "system", "content": "You are concise."},
-      {"role": "user", "content": "Summarize OpenGPU in one sentence."}
+      {"role": "user", "content": "Summarize NovusX in one sentence."}
     ],
     "temperature": 0.2,
     "top_p": 0.9,
@@ -58,7 +58,7 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-The control plane stores the request as a job and returns a queued OpenGPU response envelope immediately.
+The control plane stores the request as a job and returns a queued NovusX response envelope immediately.
 
 ## What Comes Next
 

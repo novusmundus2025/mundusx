@@ -1,4 +1,4 @@
-# OpenGPU Control Plane Proprietary Notice
+# NovusX Control Plane Proprietary Notice
 
 Copyright 2026 NovusX
 

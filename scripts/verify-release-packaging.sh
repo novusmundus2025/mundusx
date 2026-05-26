@@ -40,7 +40,7 @@ else
 fi
 
 if [ -f "$index_path" ]; then
-  rg -q "OpenGPU Local Release Preview" "$index_path" || die "release landing page title missing"
+  rg -q "NovusX Local Release Preview" "$index_path" || die "release landing page title missing"
   rg -q "localhost only" "$index_path" || die "release landing page badge missing"
 fi
 

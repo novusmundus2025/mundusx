@@ -2,7 +2,7 @@
 name = "opengpu"
 version = "0.1.0"
 edition = "2021"
-description = "OpenGPU CLI"
+description = "NovusX CLI"
 license = "Apache-2.0"
 
 [dependencies]

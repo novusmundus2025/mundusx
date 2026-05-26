@@ -24,21 +24,21 @@ check_contains() {
 }
 
 echo "Checking dashboard pages..."
-check_contains "${dashboard_url}/install" "Install OpenGPU on your Mac" "install page hero"
+check_contains "${dashboard_url}/install" "Install NovusX on your Mac" "install page hero"
 check_contains "${dashboard_url}/install" "Fetching ./install.json" "install manifest loading state"
 check_contains "${dashboard_url}/install" "./install.json" "install manifest endpoint reference"
 check_contains "${dashboard_url}/install.json" "\"kind\": \"install-manifest\"" "install manifest kind"
 check_contains "${dashboard_url}/install.json" "\"install_command\": \"RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh\"" "install manifest command"
-check_contains "${dashboard_url}/public/install" "Install OpenGPU on your Mac" "public install mirror hero"
+check_contains "${dashboard_url}/public/install" "Install NovusX on your Mac" "public install mirror hero"
 check_contains "${dashboard_url}/public/install" "Fetching ./install.json" "public install mirror loading state"
 check_contains "${dashboard_url}/public/install.json" "\"kind\": \"install-manifest\"" "public install mirror manifest kind"
-check_contains "${dashboard_url}/docs" "OpenGPU Docs" "docs home"
-check_contains "${dashboard_url}/public/docs" "OpenGPU Docs" "public docs mirror home"
+check_contains "${dashboard_url}/docs" "NovusX Docs" "docs home"
+check_contains "${dashboard_url}/public/docs" "NovusX Docs" "public docs mirror home"
 check_contains "${dashboard_url}/public/docs" "local layout" "public docs mirror badge"
 check_contains "${dashboard_url}/public/docs/install" "Canonical command" "public docs mirror install page"
 
 echo "Checking control-plane root..."
-check_contains "${control_plane_url}/" "OpenGPU Control Plane" "control plane root"
+check_contains "${control_plane_url}/" "NovusX Control Plane" "control plane root"
 check_contains "${control_plane_url}/" "Local operator view" "control plane hero"
 
 echo "Preparing local release preview..."
@@ -46,7 +46,7 @@ echo "Preparing local release preview..."
 "$local_release_preview_helper" verify
 
 echo "Checking release source..."
-check_contains "${release_base_url}/" "OpenGPU Local Release Preview" "release landing page"
+check_contains "${release_base_url}/" "NovusX Local Release Preview" "release landing page"
 check_contains "${release_base_url}/" "localhost only" "release landing page badge"
 check_contains "${release_base_url}/" "Manifest loaded from /release-manifest.json" "release landing page manifest state"
 check_contains "${release_base_url}/release-manifest.json" "\"artifact_kind\": \"release-binary\"" "release manifest kind"

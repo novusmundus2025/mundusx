@@ -14,7 +14,7 @@ use std::io;
 #[command(
     name = "opengpu-agent worker",
     version,
-    about = "OpenGPU local worker process",
+    about = "NovusX local worker process",
     arg_required_else_help = true
 )]
 pub struct WorkerCli {

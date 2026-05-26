@@ -1,6 +1,6 @@
 # Runtime And Transport Map
 
-This page explains which OpenGPU components are local processes, which ones are HTTP servers, and which ones only speak HTTP as clients.
+This page explains which NovusX components are local processes, which ones are HTTP servers, and which ones only speak HTTP as clients.
 
 ## Current Prototype
 

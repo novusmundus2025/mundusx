@@ -1,10 +1,12 @@
-# OpenGPU
+# NovusX
 
-OpenGPU is a distributed compute network that routes requests to the best available live node across:
+NovusX is the product and platform we are building here. `opengpu` is the current CLI command name and compatibility binary, while the broader public OpenGPU ecosystem is treated as separate.
+
+NovusX is a distributed compute network that routes requests to the best available live node across:
 
 - Apple Silicon `M` series nodes
 
-OpenGPU is the product name. NovusX is the company name for the future public install domain, but the current flow is localhost-only.
+NovusX is the product name. `opengpu` is the current command family for the local prototype, but the current flow is localhost-only.
 
 ## Repo Shape
 
@@ -88,6 +90,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/heartbeat-flow.md](/Users/DBATALL/Documents/aigrid/docs/heartbeat-flow.md) for the proposed node heartbeat timing and offline thresholds
 - [docs/system-flow.md](/Users/DBATALL/Documents/aigrid/docs/system-flow.md) for the living end-to-end architecture diagram
 - [docs/repo-standards.md](/Users/DBATALL/Documents/aigrid/docs/repo-standards.md) for folder structure and review rules
+- [docs/naming-strategy.md](/Users/DBATALL/Documents/aigrid/docs/naming-strategy.md) for the product / command naming rules
 - [docs/governance-model.md](/Users/DBATALL/Documents/aigrid/docs/governance-model.md) for the federated company / standards org trust model
 - [docs/requestor-routing.md](/Users/DBATALL/Documents/aigrid/docs/requestor-routing.md) for org gateway versus direct provider routing
 - [docs/runtime-transport.md](/Users/DBATALL/Documents/aigrid/docs/runtime-transport.md) for the local-process versus HTTP-server map
