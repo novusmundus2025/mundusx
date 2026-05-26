@@ -242,6 +242,475 @@ function renderCredits(credits = {}) {
     </div>`;
 }
 
+function renderContributorPortal() {
+  const sampleHealth = {
+    healthy: true,
+    power_source: "AC",
+    on_battery: false,
+    battery_percent: 100,
+    policy_allowed: true,
+    policy_reason: null,
+    worker_health: {
+      healthy: true,
+      model_name: "HuggingFaceTB/SmolLM2-135M-Instruct",
+      model_path: "/Users/DBATALL/.opengpu/models/...",
+      llama_cli_available: true,
+      blas_device_available: true,
+      notes: ["ready for local jobs", "Mac-first preview"],
+    },
+  };
+
+  const sampleStats = [
+    ["Balance", "128.40 credits", "green", "earned this week"],
+    ["Jobs completed", "84", "blue", "lifetime total"],
+    ["Ready state", "Healthy", "green", "worker is online"],
+    ["Policy", "Allowed", "blue", "cap and power are OK"],
+  ];
+
+  const sampleEvents = [
+    {
+      title: "job_completed",
+      detail: "prompt: summarize OpenGPU in one sentence",
+      time: "2m ago",
+    },
+    {
+      title: "credit_awarded",
+      detail: "0.50 credits added to contributor balance",
+      time: "2m ago",
+    },
+    {
+      title: "heartbeat",
+      detail: "model healthy, AC power, 16 GB free",
+      time: "just now",
+    },
+  ];
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenGPU Contributor Portal</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #fbfcff;
+        --surface-2: #f5f7fb;
+        --line: rgba(15, 23, 42, 0.09);
+        --line-strong: rgba(15, 23, 42, 0.14);
+        --text: #0f172a;
+        --muted: #5f6b85;
+        --green: #0f9d58;
+        --blue: #3452ff;
+        --amber: #d97706;
+        --orange: #c47f1b;
+        --red: #d14343;
+        --shadow: 0 18px 60px rgba(15, 23, 42, 0.06);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
+          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
+        color: var(--text);
+        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+      }
+      .wrap {
+        max-width: 1380px;
+        margin: 0 auto;
+        padding: 22px 20px 48px;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 28px;
+      }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .brand-mark {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: linear-gradient(135deg, var(--blue), #5a79ff);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.8);
+      }
+      .hero {
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow);
+        padding: 24px;
+      }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+        gap: 20px;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(42px, 5vw, 68px);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
+      }
+      .sub {
+        margin-top: 14px;
+        color: var(--muted);
+        line-height: 1.72;
+        max-width: 68ch;
+      }
+      .statusline {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        border: 1px solid transparent;
+      }
+      .pill-green { background: rgba(15, 157, 88, 0.08); color: var(--green); border-color: rgba(15, 157, 88, 0.16); }
+      .pill-blue { background: rgba(52, 82, 255, 0.08); color: var(--blue); border-color: rgba(52, 82, 255, 0.16); }
+      .pill-orange { background: rgba(196, 127, 27, 0.08); color: var(--orange); border-color: rgba(196, 127, 27, 0.16); }
+      .pill-red { background: rgba(209, 67, 67, 0.08); color: var(--red); border-color: rgba(209, 67, 67, 0.16); }
+      .pill-neutral { background: rgba(95, 107, 133, 0.08); color: var(--muted); border-color: rgba(95, 107, 133, 0.16); }
+      .sidebar {
+        margin-top: 22px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        padding: 18px;
+      }
+      .sidebar-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+      }
+      .kicker {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 20px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 18px;
+        padding: 16px;
+      }
+      .card-label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+      }
+      .card-value {
+        margin: 10px 0 8px;
+        font-size: 28px;
+        font-weight: 700;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.75fr);
+        gap: 18px;
+        margin-top: 20px;
+      }
+      .section {
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow);
+      }
+      .section-head {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .section-title {
+        margin: 0;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 14px;
+      }
+      .section-body {
+        padding: 20px;
+      }
+      .panel-list {
+        display: grid;
+        gap: 12px;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+        padding: 14px 16px;
+      }
+      .panel-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: start;
+        flex-wrap: wrap;
+      }
+      .panel strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+      .panel p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .device-box {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: linear-gradient(180deg, #ffffff, #f9fbff);
+        padding: 16px;
+        margin-top: 16px;
+      }
+      .device-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .device-field {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface);
+        padding: 12px 14px;
+      }
+      .device-field .label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
+        margin-bottom: 6px;
+      }
+      .device-field .value {
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .links {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      a {
+        color: var(--blue);
+        text-decoration: none;
+      }
+      a:hover { text-decoration: underline; }
+      .footer {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      @media (max-width: 1100px) {
+        .hero-grid,
+        .layout { grid-template-columns: 1fr; }
+        .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 760px) {
+        .grid,
+        .device-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="topbar">
+        <div class="brand"><span class="brand-mark"></span> OpenGPU Contributor Portal</div>
+        <div class="badge">localhost preview • contributor view</div>
+      </div>
+
+      <div class="hero">
+        <div class="hero-grid">
+          <div>
+            <div class="kicker">Owner-facing portal</div>
+            <h1>See what your GPU is doing, and what it earned.</h1>
+            <div class="sub">
+              This is the contributor view: earnings, health, policy, cap, and job history in one
+              place. The worker still runs locally on the machine, while the portal shows the
+              company-side summary that the contributor cares about most.
+            </div>
+            <div class="statusline">
+              <span class="pill pill-green">earning preview</span>
+              <span class="pill pill-blue">health visible</span>
+              <span class="pill pill-neutral">trust path shown</span>
+              <span class="pill pill-orange">local preview only</span>
+            </div>
+          </div>
+          <div class="sidebar">
+            <div class="sidebar-head">
+              <div>
+                <div class="kicker">Machine summary</div>
+                <strong>Mac contributor node</strong>
+              </div>
+              <span class="pill pill-green">healthy</span>
+            </div>
+            <div class="device-box">
+              <div class="device-grid">
+                <div class="device-field">
+                  <div class="label">Balance</div>
+                  <div class="value">128.40 credits</div>
+                </div>
+                <div class="device-field">
+                  <div class="label">Policy</div>
+                  <div class="value">Allowed</div>
+                </div>
+                <div class="device-field">
+                  <div class="label">Cap</div>
+                  <div class="value">20%</div>
+                </div>
+                <div class="device-field">
+                  <div class="label">Power</div>
+                  <div class="value">AC power</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid">
+        ${sampleStats
+          .map(
+            ([label, value, tone, detail]) => `
+              <div class="card">
+                <div class="card-label">${escapeHtml(label)}</div>
+                <div class="card-value">${escapeHtml(value)}</div>
+                <div class="meta">${badge(tone === "green" ? "live" : tone, tone)}</div>
+                <div class="meta" style="margin-top: 8px;">${escapeHtml(detail)}</div>
+              </div>`,
+          )
+          .join("")}
+      </div>
+
+      <div class="layout">
+        <div class="section">
+          <div class="section-head">
+            <h2 class="section-title">Recent activity</h2>
+            <div class="meta">latest jobs and awards</div>
+          </div>
+          <div class="section-body">
+            <div class="panel-list">
+              ${sampleEvents
+                .map(
+                  (event) => `
+                    <div class="panel">
+                      <div class="panel-top">
+                        <strong>${escapeHtml(event.title)}</strong>
+                        <span class="meta">${escapeHtml(event.time)}</span>
+                      </div>
+                      <p>${escapeHtml(event.detail)}</p>
+                    </div>`,
+                )
+                .join("")}
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-head">
+            <h2 class="section-title">Machine health</h2>
+            <div class="meta">${sampleHealth.healthy ? "healthy" : "degraded"}</div>
+          </div>
+          <div class="section-body">
+            <div class="panel-list">
+              <div class="panel">
+                <div class="panel-top">
+                  <strong>Worker</strong>
+                  <span class="pill pill-green">ready</span>
+                </div>
+                <p>
+                  Model ${escapeHtml(sampleHealth.worker_health.model_name)} is loaded and the
+                  local worker is available for jobs.
+                </p>
+              </div>
+              <div class="panel">
+                <div class="panel-top">
+                  <strong>Trust path</strong>
+                  <span class="pill pill-blue">signed</span>
+                </div>
+                <p>
+                  The node identity is sign-only and survives reinstall through the local
+                  encrypted fallback.
+                </p>
+              </div>
+              <div class="panel">
+                <div class="panel-top">
+                  <strong>Next actions</strong>
+                  <span class="pill pill-neutral">simple</span>
+                </div>
+                <p>
+                  Start, pause, adjust your cap, or review earnings history from the portal.
+                </p>
+              </div>
+            </div>
+
+            <div class="footer" style="margin-top: 16px;">
+              This portal reads from the company control plane and its durable state, not directly
+              from the worker.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer" style="margin-top: 20px;">
+        Contributor portal preview only. The live public portal would sit on top of the company
+        control plane and show the same data.
+      </div>
+    </div>
+  </body>
+</html>`;
+}
+
 function renderInstallPage(installPath = "/install") {
   return `<!doctype html>
 <html lang="en">
@@ -1513,6 +1982,18 @@ createServer(async (req, res) => {
   if (requestUrl.pathname === "/public/docs/releases") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderDocsReleases("/public/docs"));
+    return;
+  }
+
+  if (requestUrl.pathname === "/portal") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderContributorPortal());
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/portal") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderContributorPortal());
     return;
   }
 

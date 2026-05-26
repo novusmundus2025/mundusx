@@ -32,6 +32,16 @@ The contributor portal should show:
 
 The portal gives the GPU owner one place to understand what the machine is doing and what it has earned.
 
+## Local Preview
+
+The dashboard app serves the contributor portal preview locally at:
+
+- `http://127.0.0.1:<port>/portal`
+
+It also mirrors the public-endpoint shape locally at:
+
+- `http://127.0.0.1:<port>/public/portal`
+
 ## What The Portal Is Not
 
 The contributor portal does **not**:
