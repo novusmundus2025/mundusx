@@ -7,6 +7,75 @@ const installReleaseBaseUrl =
   process.env.OPENGPU_INSTALL_RELEASE_BASE_URL ?? "http://127.0.0.1:8788/releases/latest/download";
 const installCommand = `RELEASE_BASE_URL=${installReleaseBaseUrl} bash install.sh`;
 
+const sampleCompletedJobs = [
+  {
+    id: "job_8f21f3",
+    model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    prompt: "Summarize OpenGPU in one sentence.",
+    status: "completed",
+    credits: 0.5,
+    duration: "11s",
+    finished_at: "2m ago",
+    node: "mac-mini-01",
+    tokens: 126,
+  },
+  {
+    id: "job_8f21be",
+    model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    prompt: "Write a friendly onboarding tip for first-time contributors.",
+    status: "completed",
+    credits: 0.75,
+    duration: "18s",
+    finished_at: "11m ago",
+    node: "mac-mini-01",
+    tokens: 180,
+  },
+  {
+    id: "job_8f2184",
+    model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    prompt: "Draft a short reply explaining credit accrual.",
+    status: "completed",
+    credits: 0.62,
+    duration: "14s",
+    finished_at: "32m ago",
+    node: "mac-mini-01",
+    tokens: 148,
+  },
+  {
+    id: "job_8f217c",
+    model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    prompt: "Translate our contributor portal into a friendlier sentence.",
+    status: "completed",
+    credits: 0.88,
+    duration: "21s",
+    finished_at: "48m ago",
+    node: "mac-mini-01",
+    tokens: 214,
+  },
+  {
+    id: "job_8f2149",
+    model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    prompt: "Generate a brief status update for the operator dashboard.",
+    status: "completed",
+    credits: 0.7,
+    duration: "15s",
+    finished_at: "1h ago",
+    node: "mac-mini-01",
+    tokens: 160,
+  },
+  {
+    id: "job_8f20f2",
+    model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    prompt: "Explain how a GPU owner checks credits.",
+    status: "completed",
+    credits: 0.65,
+    duration: "13s",
+    finished_at: "2h ago",
+    node: "mac-mini-01",
+    tokens: 152,
+  },
+];
+
 const formatCount = (value) => new Intl.NumberFormat("en-US").format(Number(value ?? 0));
 const formatCredits = (value) => {
   const normalized = Math.abs(Number(value ?? 0)) < 0.000001 ? 0 : Number(value ?? 0);
@@ -242,6 +311,410 @@ function renderCredits(credits = {}) {
     </div>`;
 }
 
+function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
+  const query = (requestUrl.searchParams.get("q") ?? "").trim();
+  const normalizedQuery = query.toLowerCase();
+  const requestedPage = Number.parseInt(requestUrl.searchParams.get("page") ?? "1", 10);
+  const pageSize = 3;
+
+  const filteredJobs = sampleCompletedJobs.filter((job) => {
+    if (!normalizedQuery) return true;
+    return [job.id, job.model, job.prompt, job.node, job.status]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
+
+  const totalJobs = sampleCompletedJobs.length;
+  const totalCredits = sampleCompletedJobs.reduce((sum, job) => sum + Number(job.credits ?? 0), 0);
+  const averageDurationSeconds = sampleCompletedJobs.reduce((sum, job) => sum + Number(String(job.duration).replace(/[^0-9.]/g, "")), 0) /
+    Math.max(sampleCompletedJobs.length, 1);
+  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
+  const page = Math.min(
+    Math.max(Number.isFinite(requestedPage) ? requestedPage : 1, 1),
+    totalPages,
+  );
+  const pageJobs = filteredJobs.slice((page - 1) * pageSize, page * pageSize);
+
+  const buildHref = (nextPage) => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    if (nextPage > 1) params.set("page", String(nextPage));
+    const qs = params.toString();
+    return `${basePath}/jobs${qs ? `?${qs}` : ""}`;
+  };
+
+  const pageTitle = query ? `Job history for "${query}"` : "Completed jobs";
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenGPU Contributor Job History</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #fbfcff;
+        --surface-2: #f5f7fb;
+        --line: rgba(15, 23, 42, 0.09);
+        --text: #0f172a;
+        --muted: #5f6b85;
+        --green: #0f9d58;
+        --blue: #3452ff;
+        --amber: #d97706;
+        --shadow: 0 18px 60px rgba(15, 23, 42, 0.06);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
+          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
+        color: var(--text);
+        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+      }
+      .wrap {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 22px 20px 48px;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 26px;
+      }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+      }
+      .brand-mark {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: linear-gradient(135deg, var(--blue), #5a79ff);
+      }
+      .badge, .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.8);
+      }
+      .hero {
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow);
+        padding: 24px;
+      }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+        gap: 18px;
+      }
+      h1 {
+        margin: 10px 0 0;
+        font-size: clamp(36px, 4vw, 56px);
+        line-height: 0.98;
+        letter-spacing: -0.06em;
+      }
+      .sub {
+        margin-top: 14px;
+        color: var(--muted);
+        line-height: 1.72;
+        max-width: 68ch;
+      }
+      .statusline {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+      .pill-blue { background: rgba(52, 82, 255, 0.08); color: var(--blue); border-color: rgba(52, 82, 255, 0.16); }
+      .pill-green { background: rgba(15, 157, 88, 0.08); color: var(--green); border-color: rgba(15, 157, 88, 0.16); }
+      .pill-amber { background: rgba(217, 119, 6, 0.08); color: var(--amber); border-color: rgba(217, 119, 6, 0.16); }
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .summary-card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        padding: 16px;
+      }
+      .summary-label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
+      }
+      .summary-value {
+        margin-top: 8px;
+        font-size: 28px;
+        font-weight: 800;
+        letter-spacing: -0.05em;
+      }
+      .toolbar {
+        margin-top: 20px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .search-form {
+        display: flex;
+        gap: 10px;
+        flex: 1 1 420px;
+      }
+      .search-input {
+        flex: 1 1 auto;
+        min-width: 240px;
+        min-height: 46px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        padding: 0 14px;
+        font: inherit;
+      }
+      .search-button, .nav-button {
+        min-height: 46px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--text);
+        padding: 0 16px;
+        font: inherit;
+        font-weight: 600;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .results {
+        display: grid;
+        gap: 14px;
+        margin-top: 18px;
+      }
+      .job-card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow);
+        padding: 18px;
+      }
+      .job-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: start;
+      }
+      .job-id {
+        font-weight: 800;
+        letter-spacing: -0.02em;
+      }
+      .job-model {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .job-prompt {
+        margin: 14px 0 0;
+        color: var(--text);
+        line-height: 1.65;
+        font-size: 15px;
+      }
+      .job-meta {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .meta-box {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface);
+        padding: 12px 14px;
+      }
+      .meta-label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
+      }
+      .meta-value {
+        margin-top: 6px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .empty {
+        border: 1px dashed var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        padding: 28px;
+        color: var(--muted);
+        text-align: center;
+      }
+      @media (max-width: 900px) {
+        .hero-grid,
+        .job-meta,
+        .summary-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (max-width: 720px) {
+        .hero-grid,
+        .job-meta,
+        .summary-grid {
+          grid-template-columns: 1fr;
+        }
+        .search-form {
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="topbar">
+        <div class="brand"><span class="brand-mark"></span> OpenGPU Contributor Portal</div>
+        <div class="badge">localhost preview • job history</div>
+      </div>
+
+      <div class="hero">
+        <div class="hero-grid">
+          <div>
+            <div class="kicker">Detailed history</div>
+            <h1>${escapeHtml(pageTitle)}</h1>
+            <div class="sub">
+              Completed jobs live on their own page so the list can scale with search and pagination.
+              This view is contributor-first: every row shows the prompt, credits earned, duration,
+              and the node that completed the work.
+            </div>
+            <div class="statusline">
+              <span class="pill pill-green">${formatCount(totalJobs)} jobs total</span>
+              <span class="pill pill-blue">${formatCredits(totalCredits)} credits earned</span>
+              <span class="pill pill-amber">${formatCount(Math.round(averageDurationSeconds))}s avg duration</span>
+            </div>
+          </div>
+          <div class="summary-grid">
+            <div class="summary-card">
+              <div class="summary-label">Completed jobs</div>
+              <div class="summary-value">${formatCount(filteredJobs.length)}</div>
+              <div class="muted">${query ? "matching the current search" : "visible in this history"}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">Credits earned</div>
+              <div class="summary-value">${formatCredits(
+                filteredJobs.reduce((sum, job) => sum + Number(job.credits ?? 0), 0),
+              )}</div>
+              <div class="muted">from the filtered set</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">Page</div>
+              <div class="summary-value">${formatCount(page)} / ${formatCount(totalPages)}</div>
+              <div class="muted">3 jobs per page</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <form class="search-form" method="get" action="${escapeHtml(`${basePath}/jobs`)}">
+          <input class="search-input" type="search" name="q" placeholder="Search by job ID, model, prompt, or node" value="${escapeHtml(query)}" />
+          <button class="search-button" type="submit">Search</button>
+        </form>
+        <a class="nav-button" href="${escapeHtml(basePath)}">Back to portal</a>
+      </div>
+
+      <div class="results">
+        ${
+          pageJobs.length
+            ? pageJobs
+                .map(
+                  (job) => `
+                    <article class="job-card">
+                      <div class="job-top">
+                        <div>
+                          <div class="job-id">${escapeHtml(job.id)}</div>
+                          <div class="job-model">${escapeHtml(job.model)}</div>
+                        </div>
+                        <span class="pill pill-green">${escapeHtml(job.status)}</span>
+                      </div>
+                      <div class="job-prompt">${escapeHtml(job.prompt)}</div>
+                      <div class="job-meta">
+                        <div class="meta-box">
+                          <div class="meta-label">Credits</div>
+                          <div class="meta-value">${job.credits.toFixed(2)}</div>
+                        </div>
+                        <div class="meta-box">
+                          <div class="meta-label">Duration</div>
+                          <div class="meta-value">${escapeHtml(job.duration)}</div>
+                        </div>
+                        <div class="meta-box">
+                          <div class="meta-label">Finished</div>
+                          <div class="meta-value">${escapeHtml(job.finished_at)}</div>
+                        </div>
+                        <div class="meta-box">
+                          <div class="meta-label">Node</div>
+                          <div class="meta-value">${escapeHtml(job.node)}</div>
+                        </div>
+                        <div class="meta-box">
+                          <div class="meta-label">Tokens</div>
+                          <div class="meta-value">${formatCount(job.tokens)}</div>
+                        </div>
+                      </div>
+                    </article>`,
+                )
+                .join("")
+            : `<div class="empty">No completed jobs matched your search.</div>`
+        }
+      </div>
+
+      <div class="pagination">
+        <div class="muted">
+          ${filteredJobs.length ? `Showing ${Math.min((page - 1) * pageSize + 1, filteredJobs.length)}-${Math.min(page * pageSize, filteredJobs.length)} of ${formatCount(filteredJobs.length)} jobs` : "No jobs to show"}
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <a class="nav-button" href="${escapeHtml(buildHref(Math.max(page - 1, 1)))}" ${page <= 1 ? 'aria-disabled="true" style="pointer-events:none; opacity:0.5;"' : ""}>Previous</a>
+          <a class="nav-button" href="${escapeHtml(buildHref(Math.min(page + 1, totalPages)))}" ${page >= totalPages ? 'aria-disabled="true" style="pointer-events:none; opacity:0.5;"' : ""}>Next</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+}
+
 function renderContributorPortal() {
   const sampleHealth = {
     healthy: true,
@@ -265,42 +738,6 @@ function renderContributorPortal() {
     ["Jobs completed", "84", "blue", "lifetime total"],
     ["Ready state", "Healthy", "green", "worker is online"],
     ["Policy", "Allowed", "blue", "cap and power are OK"],
-  ];
-
-  const sampleCompletedJobs = [
-    {
-      id: "job_8f21f3",
-      model: "HuggingFaceTB/SmolLM2-135M-Instruct",
-      prompt: "Summarize OpenGPU in one sentence.",
-      status: "completed",
-      credits: 0.5,
-      duration: "11s",
-      finished_at: "2m ago",
-      node: "mac-mini-01",
-      tokens: 126,
-    },
-    {
-      id: "job_8f21be",
-      model: "HuggingFaceTB/SmolLM2-135M-Instruct",
-      prompt: "Write a friendly onboarding tip for first-time contributors.",
-      status: "completed",
-      credits: 0.75,
-      duration: "18s",
-      finished_at: "11m ago",
-      node: "mac-mini-01",
-      tokens: 180,
-    },
-    {
-      id: "job_8f2184",
-      model: "HuggingFaceTB/SmolLM2-135M-Instruct",
-      prompt: "Draft a short reply explaining credit accrual.",
-      status: "completed",
-      credits: 0.62,
-      duration: "14s",
-      finished_at: "32m ago",
-      node: "mac-mini-01",
-      tokens: 148,
-    },
   ];
 
   const sampleEvents = [
@@ -483,6 +920,11 @@ function renderContributorPortal() {
         border-color: rgba(52, 82, 255, 0.26);
         box-shadow: 0 18px 48px rgba(52, 82, 255, 0.08);
         outline: none;
+      }
+      .card-link {
+        display: block;
+        color: inherit;
+        text-decoration: none;
       }
       .card-label {
         color: var(--muted);
@@ -810,77 +1252,19 @@ function renderContributorPortal() {
         ${sampleStats
           .map(
             ([label, value, tone, detail]) => `
-              <button
-                class="card${label === "Jobs completed" ? " card-action" : ""}"
-                type="button"
-                ${
-                  label === "Jobs completed"
-                    ? 'data-open-job-details="true" aria-controls="jobs-drawer" aria-label="Open completed jobs details"'
-                    : 'aria-hidden="true" tabindex="-1" style="cursor: default;"'
-                }
-              >
+              ${
+                label === "Jobs completed"
+                  ? `<a class="card card-action card-link" href="/portal/jobs" aria-label="Open completed jobs history">`
+                  : `<div class="card">`
+              }
                 <div class="card-label">${escapeHtml(label)}</div>
                 <div class="card-value">${escapeHtml(value)}</div>
                 <div class="meta">${badge(tone === "green" ? "live" : tone, tone)}</div>
                 <div class="meta" style="margin-top: 8px;">${escapeHtml(detail)}</div>
-              </button>`,
+              ${label === "Jobs completed" ? "</a>" : "</div>"}`,
           )
           .join("")}
       </div>
-
-      <div class="drawer-backdrop" id="jobs-drawer-backdrop" hidden></div>
-      <aside class="drawer" id="jobs-drawer" aria-hidden="true">
-        <div class="drawer-head">
-          <div>
-            <div class="drawer-kicker">Job history</div>
-            <h3 class="drawer-title">Completed jobs</h3>
-          </div>
-          <button class="drawer-close" id="jobs-drawer-close" type="button" aria-label="Close job details">
-            Close
-          </button>
-        </div>
-        <div class="drawer-summary">
-          <div class="summary-card">
-            <div class="summary-label">Jobs completed</div>
-            <div class="summary-value">84</div>
-            <div class="meta">lifetime total</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">Credits earned</div>
-            <div class="summary-value">128.40</div>
-            <div class="meta">credits</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">Average duration</div>
-            <div class="summary-value">14s</div>
-            <div class="meta">last 30 jobs</div>
-          </div>
-        </div>
-        <div class="drawer-body">
-          ${sampleCompletedJobs
-            .map(
-              (job) => `
-                <div class="job-row">
-                  <div class="job-row-top">
-                    <div>
-                      <div class="job-id">${escapeHtml(job.id)}</div>
-                      <div class="job-model">${escapeHtml(job.model)}</div>
-                    </div>
-                    <span class="pill pill-green">${escapeHtml(job.status)}</span>
-                  </div>
-                  <p class="job-prompt">${escapeHtml(job.prompt)}</p>
-                  <div class="job-meta-grid">
-                    <div><span class="job-meta-label">Credits</span><strong>${job.credits.toFixed(2)}</strong></div>
-                    <div><span class="job-meta-label">Duration</span><strong>${escapeHtml(job.duration)}</strong></div>
-                    <div><span class="job-meta-label">Time</span><strong>${escapeHtml(job.finished_at)}</strong></div>
-                    <div><span class="job-meta-label">Node</span><strong>${escapeHtml(job.node)}</strong></div>
-                    <div><span class="job-meta-label">Tokens</span><strong>${formatCount(job.tokens)}</strong></div>
-                  </div>
-                </div>`,
-            )
-            .join("")}
-        </div>
-      </aside>
 
       <div class="layout">
         <div class="section">
@@ -957,33 +1341,6 @@ function renderContributorPortal() {
         control plane and show the same data.
       </div>
     </div>
-    <script>
-      (() => {
-        const drawer = document.getElementById("jobs-drawer");
-        const backdrop = document.getElementById("jobs-drawer-backdrop");
-        const closeButton = document.getElementById("jobs-drawer-close");
-        const openButtons = document.querySelectorAll('[data-open-job-details="true"]');
-
-        const openDrawer = () => {
-          drawer.classList.add("is-open");
-          drawer.setAttribute("aria-hidden", "false");
-          backdrop.hidden = false;
-        };
-
-        const closeDrawer = () => {
-          drawer.classList.remove("is-open");
-          drawer.setAttribute("aria-hidden", "true");
-          backdrop.hidden = true;
-        };
-
-        openButtons.forEach((button) => button.addEventListener("click", openDrawer));
-        backdrop.addEventListener("click", closeDrawer);
-        closeButton.addEventListener("click", closeDrawer);
-        document.addEventListener("keydown", (event) => {
-          if (event.key === "Escape") closeDrawer();
-        });
-      })();
-    </script>
   </body>
 </html>`;
 }
@@ -2268,9 +2625,21 @@ createServer(async (req, res) => {
     return;
   }
 
+  if (requestUrl.pathname === "/portal/jobs") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderContributorJobHistoryPage(requestUrl, "/portal"));
+    return;
+  }
+
   if (requestUrl.pathname === "/public/portal") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderContributorPortal());
+    return;
+  }
+
+  if (requestUrl.pathname === "/public/portal/jobs") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderContributorJobHistoryPage(requestUrl, "/public/portal"));
     return;
   }
 

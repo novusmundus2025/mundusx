@@ -21,7 +21,7 @@ Those pieces let the control plane route jobs to the machine without exposing a 
 The contributor portal should show:
 
 - current credits / earnings
-- job history, with completed jobs opening a details view for the job payload, credits earned, duration, and worker/node used
+- job history, with completed jobs opening a dedicated searchable and paginated page for the job payload, credits earned, duration, and worker/node used
 - machine health
 - current policy state
 - contribution cap
@@ -37,10 +37,12 @@ The portal gives the GPU owner one place to understand what the machine is doing
 The dashboard app serves the contributor portal preview locally at:
 
 - `http://127.0.0.1:<port>/portal`
+- `http://127.0.0.1:<port>/portal/jobs`
 
 It also mirrors the public-endpoint shape locally at:
 
 - `http://127.0.0.1:<port>/public/portal`
+- `http://127.0.0.1:<port>/public/portal/jobs`
 
 ## What The Portal Is Not
 
