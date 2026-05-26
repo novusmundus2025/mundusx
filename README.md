@@ -83,6 +83,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/cli-commands.md](/Users/DBATALL/Documents/aigrid/docs/cli-commands.md) for the current CLI command reference
 - [docs/missing-items.md](/Users/DBATALL/Documents/aigrid/docs/missing-items.md) for the work that is still missing
 - [docs/master-checklist.md](/Users/DBATALL/Documents/aigrid/docs/master-checklist.md) for the single working checklist we track item by item
+- [docs/gap-checklist.md](/Users/DBATALL/Documents/aigrid/docs/gap-checklist.md) for the compare-and-contrast list of what is already implemented versus what is still missing
 - [docs/pending-items.md](/Users/DBATALL/Documents/aigrid/docs/pending-items.md) for the next concrete implementation steps
 - [docs/heartbeat-flow.md](/Users/DBATALL/Documents/aigrid/docs/heartbeat-flow.md) for the proposed node heartbeat timing and offline thresholds
 - [docs/system-flow.md](/Users/DBATALL/Documents/aigrid/docs/system-flow.md) for the living end-to-end architecture diagram

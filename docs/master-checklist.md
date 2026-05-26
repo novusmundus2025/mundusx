@@ -7,6 +7,7 @@ Use this document as the single working list:
 - when an item is done, mark it done here first
 - keep the phase docs for detail and architecture notes
 - do not add new work here without also deciding where it belongs in the repo
+- for a three-way comparison of implemented vs public launch vs federated network work, see [docs/gap-checklist.md](/Users/DBATALL/Documents/aigrid/docs/gap-checklist.md)
 
 ## Current Focus
 
