@@ -267,6 +267,42 @@ function renderContributorPortal() {
     ["Policy", "Allowed", "blue", "cap and power are OK"],
   ];
 
+  const sampleCompletedJobs = [
+    {
+      id: "job_8f21f3",
+      model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+      prompt: "Summarize OpenGPU in one sentence.",
+      status: "completed",
+      credits: 0.5,
+      duration: "11s",
+      finished_at: "2m ago",
+      node: "mac-mini-01",
+      tokens: 126,
+    },
+    {
+      id: "job_8f21be",
+      model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+      prompt: "Write a friendly onboarding tip for first-time contributors.",
+      status: "completed",
+      credits: 0.75,
+      duration: "18s",
+      finished_at: "11m ago",
+      node: "mac-mini-01",
+      tokens: 180,
+    },
+    {
+      id: "job_8f2184",
+      model: "HuggingFaceTB/SmolLM2-135M-Instruct",
+      prompt: "Draft a short reply explaining credit accrual.",
+      status: "completed",
+      credits: 0.62,
+      duration: "14s",
+      finished_at: "32m ago",
+      node: "mac-mini-01",
+      tokens: 148,
+    },
+  ];
+
   const sampleEvents = [
     {
       title: "job_completed",
@@ -434,6 +470,20 @@ function renderContributorPortal() {
         border-radius: 18px;
         padding: 16px;
       }
+      .card.card-action {
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        cursor: pointer;
+        transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+      }
+      .card.card-action:hover,
+      .card.card-action:focus-visible {
+        transform: translateY(-1px);
+        border-color: rgba(52, 82, 255, 0.26);
+        box-shadow: 0 18px 48px rgba(52, 82, 255, 0.08);
+        outline: none;
+      }
       .card-label {
         color: var(--muted);
         text-transform: uppercase;
@@ -506,6 +556,133 @@ function renderContributorPortal() {
         color: var(--muted);
         line-height: 1.6;
       }
+      .drawer-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.28);
+        backdrop-filter: blur(8px);
+        z-index: 30;
+      }
+      .drawer {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        width: min(760px, calc(100vw - 40px));
+        max-height: calc(100vh - 40px);
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow: 0 30px 80px rgba(15, 23, 42, 0.18);
+        z-index: 40;
+        transform: translateY(8px);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 160ms ease, transform 160ms ease;
+      }
+      .drawer.is-open {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }
+      .drawer-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 22px 22px 0;
+      }
+      .drawer-kicker {
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .drawer-title {
+        margin: 8px 0 0;
+        font-size: 30px;
+        line-height: 1;
+        letter-spacing: -0.05em;
+      }
+      .drawer-close {
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--text);
+        border-radius: 999px;
+        min-height: 40px;
+        padding: 0 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+      .drawer-summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        padding: 18px 22px 0;
+      }
+      .summary-card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        padding: 16px;
+      }
+      .summary-label,
+      .job-meta-label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .summary-value {
+        margin-top: 8px;
+        font-size: 28px;
+        font-weight: 800;
+        letter-spacing: -0.05em;
+      }
+      .drawer-body {
+        display: grid;
+        gap: 12px;
+        padding: 18px 22px 22px;
+      }
+      .job-row {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        padding: 16px;
+      }
+      .job-row-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .job-id {
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .job-model {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .job-prompt {
+        margin: 14px 0 0;
+        color: var(--text);
+        line-height: 1.65;
+      }
+      .job-meta-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .job-meta-grid strong {
+        display: block;
+        margin-top: 6px;
+        font-size: 15px;
+        letter-spacing: -0.02em;
+      }
       .device-box {
         border: 1px solid var(--line);
         border-radius: 18px;
@@ -555,10 +732,21 @@ function renderContributorPortal() {
         .hero-grid,
         .layout { grid-template-columns: 1fr; }
         .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .drawer-summary,
+        .job-meta-grid { grid-template-columns: 1fr 1fr; }
       }
       @media (max-width: 760px) {
         .grid,
         .device-grid { grid-template-columns: 1fr; }
+        .drawer {
+          top: 10px;
+          right: 10px;
+          left: 10px;
+          width: auto;
+          max-height: calc(100vh - 20px);
+        }
+        .drawer-summary,
+        .job-meta-grid { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -622,15 +810,77 @@ function renderContributorPortal() {
         ${sampleStats
           .map(
             ([label, value, tone, detail]) => `
-              <div class="card">
+              <button
+                class="card${label === "Jobs completed" ? " card-action" : ""}"
+                type="button"
+                ${
+                  label === "Jobs completed"
+                    ? 'data-open-job-details="true" aria-controls="jobs-drawer" aria-label="Open completed jobs details"'
+                    : 'aria-hidden="true" tabindex="-1" style="cursor: default;"'
+                }
+              >
                 <div class="card-label">${escapeHtml(label)}</div>
                 <div class="card-value">${escapeHtml(value)}</div>
                 <div class="meta">${badge(tone === "green" ? "live" : tone, tone)}</div>
                 <div class="meta" style="margin-top: 8px;">${escapeHtml(detail)}</div>
-              </div>`,
+              </button>`,
           )
           .join("")}
       </div>
+
+      <div class="drawer-backdrop" id="jobs-drawer-backdrop" hidden></div>
+      <aside class="drawer" id="jobs-drawer" aria-hidden="true">
+        <div class="drawer-head">
+          <div>
+            <div class="drawer-kicker">Job history</div>
+            <h3 class="drawer-title">Completed jobs</h3>
+          </div>
+          <button class="drawer-close" id="jobs-drawer-close" type="button" aria-label="Close job details">
+            Close
+          </button>
+        </div>
+        <div class="drawer-summary">
+          <div class="summary-card">
+            <div class="summary-label">Jobs completed</div>
+            <div class="summary-value">84</div>
+            <div class="meta">lifetime total</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Credits earned</div>
+            <div class="summary-value">128.40</div>
+            <div class="meta">credits</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Average duration</div>
+            <div class="summary-value">14s</div>
+            <div class="meta">last 30 jobs</div>
+          </div>
+        </div>
+        <div class="drawer-body">
+          ${sampleCompletedJobs
+            .map(
+              (job) => `
+                <div class="job-row">
+                  <div class="job-row-top">
+                    <div>
+                      <div class="job-id">${escapeHtml(job.id)}</div>
+                      <div class="job-model">${escapeHtml(job.model)}</div>
+                    </div>
+                    <span class="pill pill-green">${escapeHtml(job.status)}</span>
+                  </div>
+                  <p class="job-prompt">${escapeHtml(job.prompt)}</p>
+                  <div class="job-meta-grid">
+                    <div><span class="job-meta-label">Credits</span><strong>${job.credits.toFixed(2)}</strong></div>
+                    <div><span class="job-meta-label">Duration</span><strong>${escapeHtml(job.duration)}</strong></div>
+                    <div><span class="job-meta-label">Time</span><strong>${escapeHtml(job.finished_at)}</strong></div>
+                    <div><span class="job-meta-label">Node</span><strong>${escapeHtml(job.node)}</strong></div>
+                    <div><span class="job-meta-label">Tokens</span><strong>${formatCount(job.tokens)}</strong></div>
+                  </div>
+                </div>`,
+            )
+            .join("")}
+        </div>
+      </aside>
 
       <div class="layout">
         <div class="section">
@@ -707,6 +957,33 @@ function renderContributorPortal() {
         control plane and show the same data.
       </div>
     </div>
+    <script>
+      (() => {
+        const drawer = document.getElementById("jobs-drawer");
+        const backdrop = document.getElementById("jobs-drawer-backdrop");
+        const closeButton = document.getElementById("jobs-drawer-close");
+        const openButtons = document.querySelectorAll('[data-open-job-details="true"]');
+
+        const openDrawer = () => {
+          drawer.classList.add("is-open");
+          drawer.setAttribute("aria-hidden", "false");
+          backdrop.hidden = false;
+        };
+
+        const closeDrawer = () => {
+          drawer.classList.remove("is-open");
+          drawer.setAttribute("aria-hidden", "true");
+          backdrop.hidden = true;
+        };
+
+        openButtons.forEach((button) => button.addEventListener("click", openDrawer));
+        backdrop.addEventListener("click", closeDrawer);
+        closeButton.addEventListener("click", closeDrawer);
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") closeDrawer();
+        });
+      })();
+    </script>
   </body>
 </html>`;
 }

@@ -21,7 +21,7 @@ Those pieces let the control plane route jobs to the machine without exposing a 
 The contributor portal should show:
 
 - current credits / earnings
-- job history
+- job history, with completed jobs opening a details view for the job payload, credits earned, duration, and worker/node used
 - machine health
 - current policy state
 - contribution cap
