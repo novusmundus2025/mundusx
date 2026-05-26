@@ -107,6 +107,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-
 - [docs/agent-worker-contract.md](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md) for the agent and worker handshake contract
 - [docs/requestor-flow.md](/Users/DBATALL/Documents/aigrid/docs/requestor-flow.md) for the subscriber/requestor job submission and response flow
 - [docs/requestor-api.md](/Users/DBATALL/Documents/aigrid/docs/requestor-api.md) for the OpenAI / OneAPI-compatible request intake adapter
+- [docs/retrieval-policy.md](/Users/DBATALL/Documents/aigrid/docs/retrieval-policy.md) for when to answer from the model, when to retrieve local context, and when to use live tools
 - [docs/node-agent.md](/Users/DBATALL/Documents/aigrid/docs/node-agent.md) for the current node agent prototype and local state files
 - [docs/control-plane.md](/Users/DBATALL/Documents/aigrid/docs/control-plane.md) for the current control plane prototype and endpoints
 - [docs/dashboard.md](/Users/DBATALL/Documents/aigrid/docs/dashboard.md) for the local operator dashboard
