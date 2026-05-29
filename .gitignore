@@ -10,3 +10,4 @@ coverage/
 .turbo/
 .next/
 .opengpu/
+control-plane/

@@ -63,7 +63,7 @@ opengpu config set control-plane-url http://127.0.0.1:8787
 
 The prototype agent does not speak TLS yet, so `https://` URLs will be rejected with a helpful error.
 
-For contributor-side model switching and cleanup rules, see [docs/model-lifecycle.md](/Users/DBATALL/Documents/aigrid/docs/model-lifecycle.md).
+For contributor-side model switching and cleanup rules, see [docs/model-lifecycle.md](/Users/DBATALL/Documents/mundusx/docs/model-lifecycle.md).
 
 ## Policy Controls
 

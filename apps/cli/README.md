@@ -33,4 +33,4 @@ Startup flow:
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available
 - `opengpu status` shows the live local routing decision
 
-See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/aigrid/docs/cli-startup-flow.md) for the full first-run sequence.
+See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup-flow.md) for the full first-run sequence.

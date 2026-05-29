@@ -2,7 +2,7 @@
 
 This page describes how a subscriber, SDK, dashboard, or other requestor gets a response from NovusX.
 
-For the requestor-facing compatibility endpoint itself, see [docs/requestor-api.md](/Users/DBATALL/Documents/aigrid/docs/requestor-api.md).
+For the requestor-facing compatibility endpoint itself, see [docs/requestor-api.md](/Users/DBATALL/Documents/mundusx/docs/requestor-api.md).
 
 ## The Short Version
 

@@ -114,7 +114,7 @@ That gateway can:
 
 An app creator may still pin directly to a specific provider control plane, but that should be treated as an explicit choice with visible warnings about failover, policy, and billing differences.
 
-See [docs/requestor-routing.md](/Users/DBATALL/Documents/aigrid/docs/requestor-routing.md) for the detailed routing policy.
+See [docs/requestor-routing.md](/Users/DBATALL/Documents/mundusx/docs/requestor-routing.md) for the detailed routing policy.
 
 ## Company Control Plane Layout
 

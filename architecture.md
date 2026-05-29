@@ -1,6 +1,6 @@
 # OpenGPU Architecture
 
-For the current repo layout and review rules, see [docs/repo-standards.md](/Users/DBATALL/Documents/aigrid/docs/repo-standards.md).
+For the current repo layout and review rules, see [docs/repo-standards.md](/Users/DBATALL/Documents/mundusx/docs/repo-standards.md).
 
 ## Core Principle
 

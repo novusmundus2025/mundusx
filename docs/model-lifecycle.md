@@ -20,7 +20,7 @@ On the node agent side, the worker already reads an effective model directory fr
 
 The official starter model presets are defined in:
 
-- [apps/cli/config/official-models.json](/Users/DBATALL/Documents/aigrid/apps/cli/config/official-models.json)
+- [apps/cli/config/official-models.json](/Users/DBATALL/Documents/mundusx/apps/cli/config/official-models.json)
 
 That file is the reviewable source of truth for the default `start` / `connect` model choices on the CLI.
 

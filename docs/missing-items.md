@@ -2,8 +2,8 @@
 
 This document tracks what is still missing before NovusX becomes a full product.
 
-For the active working list, see [docs/master-checklist.md](/Users/DBATALL/Documents/aigrid/docs/master-checklist.md).
-For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Documents/aigrid/docs/pending-items.md).
+For the active working list, see [docs/master-checklist.md](/Users/DBATALL/Documents/mundusx/docs/master-checklist.md).
+For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Documents/mundusx/docs/pending-items.md).
 
 ## CLI Phase
 

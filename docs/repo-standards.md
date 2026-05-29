@@ -6,10 +6,6 @@ This document is the living guide for folder structure, code ownership, and revi
 
 - `apps/cli/`
   - Rust CLI for contributor bootstrap, status, and local control
-- `apps/control-plane/`
-  - private Rust control-plane service, scheduler, and job queue
-- `apps/dashboard/`
-  - future operator web UI
 - `agents/node/`
   - Rust node agent and local worker orchestration
 - `workers/m-series/`
@@ -21,13 +17,19 @@ This document is the living guide for folder structure, code ownership, and revi
 - `packages/proto/`
   - protobuf and RPC contracts
 - `supabase/`
-  - SQL schema and migrations for the company-side database
 - `docs/`
   - living architecture, policy, and product docs
 - `tools/`
   - OS-specific helpers and build-time support code
 - `scripts/`
   - install/bootstrap helper scripts
+
+The private operator repo owns the control plane, dashboard, and company-side database schema.
+
+## Ownership And License Boundaries
+
+- All top-level product code in this repo is intended to remain under the repository-level Apache 2.0 license.
+- When adding a new folder, choose its license and owner before merging so the boundary is explicit in docs and code.
 
 ## Review Rules
 
@@ -44,10 +46,8 @@ Before merging code, verify:
 ## Current Expectations
 
 - Rust crates should not carry stray JS placeholders in their source trees.
-- Dashboard can stay a minimal JS placeholder until the real UI is built.
 - `agents/node` should be Rust-only.
 - Security code must fail closed instead of falling back to exportable keys or silent stubs.
-- Supabase schema changes should be versioned in `supabase/`.
 
 ## When To Update This Doc
 

@@ -84,7 +84,7 @@ This is what makes the contributor experience friendly:
 
 ## Related Docs
 
-- [System Flow](/Users/DBATALL/Documents/aigrid/docs/system-flow.md)
-- [Agent / Worker Contract](/Users/DBATALL/Documents/aigrid/docs/agent-worker-contract.md)
-- [Node Agent](/Users/DBATALL/Documents/aigrid/docs/node-agent.md)
-- [Who Runs What](/Users/DBATALL/Documents/aigrid/docs/who-runs-what.md)
+- [System Flow](/Users/DBATALL/Documents/mundusx/docs/system-flow.md)
+- [Agent / Worker Contract](/Users/DBATALL/Documents/mundusx/docs/agent-worker-contract.md)
+- [Node Agent](/Users/DBATALL/Documents/mundusx/docs/node-agent.md)
+- [Who Runs What](/Users/DBATALL/Documents/mundusx/docs/who-runs-what.md)

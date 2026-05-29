@@ -6,7 +6,7 @@ This document groups the remaining work into three buckets:
 - missing for public launch
 - missing for a federated multi-company network
 
-Use this alongside [docs/master-checklist.md](/Users/DBATALL/Documents/aigrid/docs/master-checklist.md) as the comparison sheet for what exists now versus what still needs to be built.
+Use this alongside [docs/master-checklist.md](/Users/DBATALL/Documents/mundusx/docs/master-checklist.md) as the comparison sheet for what exists now versus what still needs to be built.
 
 ## Already In The Repo
 

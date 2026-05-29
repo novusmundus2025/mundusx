@@ -10,8 +10,6 @@ The docs site should be the future public-facing home for:
 
 - install
 - device identity
-- onboarding
-- credits
 - releases
 
 The current preview copy is Mac-first, so the local preview should keep that framing until the release channel expands.
@@ -34,6 +32,4 @@ Any change to the docs site should keep the copy aligned with:
 
 - `docs/install-page.md`
 - `docs/device-identity-lifecycle.md`
-- `docs/onboarding.md`
-- `docs/credits-model.md`
 - `docs/install-strategy.md`

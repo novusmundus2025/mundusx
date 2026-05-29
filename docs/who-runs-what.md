@@ -19,8 +19,8 @@ opengpu connect
 
 ### What you do NOT run
 
-- Control plane (that's the company's)
-- Dashboard (that's the company's)
+- Control plane (that's in the private operator repo)
+- Dashboard (that's in the private operator repo)
 - Any database or server
 
 ### Your machine's role
@@ -41,11 +41,11 @@ You run and maintain the shared infrastructure that all nodes connect to.
 | Component | Stack | What it does |
 |---|---|---|
 | **Control Plane** | Rust (HTTP API) | Node registry, heartbeat ingestion, job queue, routing decisions, job tracking |
-| **Dashboard** | Node.js | Live view of network health, node status, job history, credits. Local preview exists now; public rollout follows later. |
+| **Dashboard** | Node.js | Live view of network health, node status, job history, credits. Lives in the private operator repo. |
 | **Install endpoint** | Local dashboard preview | `http://127.0.0.1:<port>/install` — current landing page and install command for the signed binary preview |
 | **Release pipeline** | GitHub Actions + localhost preview | Builds, verifies checksums, signs the release manifest, and publishes signed binaries on every `cli-v*` tag (Mac-first release channel today), while the current preview uses a localhost release source |
 | **Auth service** | Local bearer token + signed device requests | Issues operator tokens locally for the prototype and verifies device signatures |
-| **Credits ledger** | Supabase-backed ledger | Tracks contribution and usage accounting per node |
+| **Credits ledger** | Supabase-backed ledger | Tracks contribution and usage accounting per node in the private operator repo |
 | **Durable state store** | Supabase / Postgres | Persistent DB behind the control plane, with the local JSON cache kept only as a fallback |
 
 ### What "maintained" means per component
@@ -66,7 +66,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 - Binaries are checksum-verified in CI and their release manifest is signed before the install script points to them
 
 **Dashboard**
-- Local preview exists now — needed before public launch for trust/transparency
+- Lives in the private operator repo and renders the operator-facing view
 
 **Auth + Credits**
 - Built enough for the current prototype; public rollout still needs a broader release plan
@@ -99,20 +99,20 @@ Users contribute their hardware and run code on their machines. For them to trus
 | **Install script** | The first thing a user runs. A closed install script is a red flag — must be readable before execution. |
 | **Protobuf / shared contracts** | Defines exactly what data flows between nodes and the control plane. Transparency here builds protocol trust. |
 
-### Should be open source (strong recommendation)
+### Should stay transparent
 
 | Component | Why |
 |---|---|
-| **Control plane** | Nodes send heartbeats and job results here. Users should be able to verify what's stored, how long, and who can access it. Closed control planes are a common trust failure point. |
+| **Control plane** | Now lives in the private operator repo. The protocol and message shapes should stay documented publicly, but the service implementation can remain closed. |
 | **Heartbeat + routing logic** | Nodes want to know how they're scored and selected — opaque routing creates suspicion of favoritism or hidden costs. |
 
 ### Can stay closed (acceptable)
 
 | Component | Why |
 |---|---|
-| **Dashboard** | UI only, no user data risk. Can stay closed without hurting trust. |
-| **Credits / billing logic** | Business-sensitive. Acceptable to keep closed as long as the accounting rules are publicly documented. |
-| **Auth service** | Internal token issuance. Closing this is standard practice — the protocol it enforces should still be documented. |
+| **Dashboard** | UI only, but the operator-facing implementation now lives in the private repo. |
+| **Credits / billing logic** | Business-sensitive. Kept in the private repo while the accounting rules remain publicly documented. |
+| **Auth service** | Internal token issuance. The protocol it enforces should still be documented. |
 | **Deploy infra / CI secrets** | Never needs to be public. |
 
 ### The rule of thumb
@@ -128,7 +128,7 @@ Why Apache 2.0 over MIT:
 - **Enterprise-friendly** — companies running nodes (the target contributors) prefer Apache 2.0 because their legal teams have pre-approved it. It's the standard for infrastructure projects.
 - **Ecosystem alignment** — Kubernetes, TensorFlow, Tokio (the async runtime used here), and most serious Rust infrastructure use Apache 2.0 or dual Apache-2.0/MIT.
 
-For the **control plane**: keep it proprietary for now. That keeps the trust-sensitive orchestration layer private while the contributor-facing code stays auditable under Apache 2.0.
+For the **control plane**: keep it proprietary in the private operator repo. That keeps the trust-sensitive orchestration layer private while the contributor-facing code stays auditable under Apache 2.0.
 
 | Component | Recommended License | Rationale |
 |---|---|---|
@@ -137,14 +137,14 @@ For the **control plane**: keep it proprietary for now. That keeps the trust-sen
 | Workers (M-series) | Apache 2.0 | Runs jobs on user hardware |
 | Install script | Apache 2.0 | First thing a user runs |
 | Protobuf / contracts | Apache 2.0 | Defines the protocol |
-| Control plane | Proprietary | Keep private for now |
-| Dashboard | Proprietary | Acceptable closed |
-| Credits / auth | Proprietary | Acceptable closed |
+| Control plane | Proprietary | Private operator repo |
+| Dashboard | Proprietary | Private operator repo |
+| Credits / auth | Proprietary | Private operator repo |
 
 ### Practical setup
 
-1. Add a `LICENSE` file at the repo root for the Apache 2.0 licensed parts of the repo.
-2. Add a separate proprietary notice for the `apps/control-plane/` subtree.
+1. Keep the public repo root `LICENSE` file for the Apache 2.0 licensed parts of the repo.
+2. Keep a separate private license notice in the operator repo.
 3. Optionally add an SPDX header to each source file for machine-readable license scanning:
 
 ```rust

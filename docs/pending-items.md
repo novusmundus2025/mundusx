@@ -2,7 +2,7 @@
 
 This document tracks the next concrete implementation steps after the current Mac-first prototype.
 
-For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/Documents/aigrid/docs/master-checklist.md).
+For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/Documents/mundusx/docs/master-checklist.md).
 
 ## Next Up
 
