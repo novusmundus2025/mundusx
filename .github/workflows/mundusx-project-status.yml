@@ -1,0 +1,244 @@
+name: Sync MundusX project status
+
+on:
+  issues:
+    types:
+      - opened
+      - labeled
+      - closed
+      - reopened
+  pull_request:
+    types:
+      - opened
+      - ready_for_review
+      - closed
+      - reopened
+      - converted_to_draft
+  workflow_dispatch:
+    inputs:
+      content_node_id:
+        description: "GitHub node ID for the issue or pull request to sync"
+        required: true
+        type: string
+      content_kind:
+        description: "Issue or PullRequest"
+        required: true
+        type: string
+      target_status:
+        description: "Backlog, Ready, In Progress, Review, or Done"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sync-status:
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      PROJECT_OWNER: mundusx
+      PROJECT_NUMBER: "2"
+
+    steps:
+      - name: Determine target status
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          event_name="${{ github.event_name }}"
+          action="${{ github.event.action }}"
+          target_status=""
+          content_id=""
+          content_kind=""
+
+          if [[ "$event_name" == "issues" ]]; then
+            content_id="${{ github.event.issue.node_id }}"
+            content_kind="Issue"
+
+            if [[ "$action" == "opened" || "$action" == "reopened" ]]; then
+              target_status="Backlog"
+            elif [[ "$action" == "labeled" && "${{ github.event.label.name }}" == "ready" ]]; then
+              target_status="Ready"
+            elif [[ "$action" == "closed" ]]; then
+              target_status="Done"
+            fi
+          elif [[ "$event_name" == "pull_request" ]]; then
+            content_id="${{ github.event.pull_request.node_id }}"
+            content_kind="PullRequest"
+
+            if [[ "$action" == "opened" ]]; then
+              if [[ "${{ github.event.pull_request.draft }}" == "true" ]]; then
+                target_status="In Progress"
+              else
+                target_status="Review"
+              fi
+            elif [[ "$action" == "ready_for_review" ]]; then
+              target_status="Review"
+            elif [[ "$action" == "converted_to_draft" ]]; then
+              target_status="In Progress"
+            elif [[ "$action" == "closed" && "${{ github.event.pull_request.merged }}" == "true" ]]; then
+              target_status="Done"
+            fi
+          elif [[ "$event_name" == "workflow_dispatch" ]]; then
+            content_id="${{ inputs.content_node_id }}"
+            content_kind="${{ inputs.content_kind }}"
+            target_status="${{ inputs.target_status }}"
+          fi
+
+          if [[ -z "$content_id" || -z "$target_status" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "content_id=$content_id" >> "$GITHUB_OUTPUT"
+          echo "content_kind=$content_kind" >> "$GITHUB_OUTPUT"
+          echo "target_status=$target_status" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch project metadata
+        if: steps.target.outputs.skip != 'true'
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project_data="$(
+            gh api graphql -f query='
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' -f owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER"
+          )"
+
+          project_id="$(jq -r '.data.user.projectV2.id' <<<"$project_data")"
+          status_field_id="$(jq -r '.data.user.projectV2.fields.nodes[] | select(.name == "Status") | .id' <<<"$project_data")"
+          status_option_id="$(jq -r --arg status "${{ steps.target.outputs.target_status }}" '.data.user.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == $status) | .id' <<<"$project_data")"
+
+          if [[ -z "$status_option_id" || "$status_option_id" == "null" ]] && [[ "${{ steps.target.outputs.target_status }}" == "Backlog" ]]; then
+            status_option_id="$(jq -r '.data.user.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' <<<"$project_data")"
+          fi
+
+          if [[ -z "$project_id" || "$project_id" == "null" ]]; then
+            echo "Could not resolve project metadata." >&2
+            exit 1
+          fi
+
+          if [[ -z "$status_field_id" || "$status_field_id" == "null" ]]; then
+            echo "Could not find the Status field on the project." >&2
+            exit 1
+          fi
+
+          if [[ -z "$status_option_id" || "$status_option_id" == "null" ]]; then
+            echo "Could not find project status option '${{ steps.target.outputs.target_status }}'." >&2
+            exit 1
+          fi
+
+          echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
+          echo "status_field_id=$status_field_id" >> "$GITHUB_OUTPUT"
+          echo "status_option_id=$status_option_id" >> "$GITHUB_OUTPUT"
+
+      - name: Add item to project
+        if: steps.target.outputs.skip != 'true'
+        id: add_item
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          existing_item_data="$(
+            gh api graphql -f query='
+              query($project: ID!) {
+                node(id: $project) {
+                  ... on ProjectV2 {
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          ... on Issue {
+                            id
+                          }
+                          ... on PullRequest {
+                            id
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' -f project="${{ steps.project.outputs.project_id }}"
+          )"
+
+          item_id="$(jq -r --arg content_id "${{ steps.target.outputs.content_id }}" '
+            .data.node.items.nodes[]
+            | select(.content.id == $content_id)
+            | .id
+          ' <<<"$existing_item_data" | head -n 1)"
+
+          if [[ -z "$item_id" || "$item_id" == "null" ]]; then
+            item_data="$(
+              gh api graphql -f query='
+                mutation($project: ID!, $content: ID!) {
+                  addProjectV2ItemById(input: {projectId: $project, contentId: $content}) {
+                    item {
+                      id
+                    }
+                  }
+                }' -f project="${{ steps.project.outputs.project_id }}" -f content="${{ steps.target.outputs.content_id }}"
+            )"
+
+            item_id="$(jq -r '.data.addProjectV2ItemById.item.id' <<<"$item_data")"
+          fi
+
+          if [[ -z "$item_id" || "$item_id" == "null" ]]; then
+            echo "Could not add or locate the project item." >&2
+            exit 1
+          fi
+
+          echo "item_id=$item_id" >> "$GITHUB_OUTPUT"
+
+      - name: Update project status
+        if: steps.target.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh api graphql -f query='
+            mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+              updateProjectV2ItemFieldValue(
+                input: {
+                  projectId: $project
+                  itemId: $item
+                  fieldId: $field
+                  value: { singleSelectOptionId: $option }
+                }
+              ) {
+                projectV2Item {
+                  id
+                }
+              }
+            }' \
+            -f project="${{ steps.project.outputs.project_id }}" \
+            -f item="${{ steps.add_item.outputs.item_id }}" \
+            -f field="${{ steps.project.outputs.status_field_id }}" \
+            -f option="${{ steps.project.outputs.status_option_id }}"
