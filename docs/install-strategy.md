@@ -80,6 +80,7 @@ Before shipping any platform release:
 - embed the CLI version in the binary
 - generate checksums for every artifact
 - validate the artifact shape with `scripts/verify-release-packaging.sh` and the localhost smoke test
+- generate a machine-readable release verification report with `scripts/release-monitor-report.sh`
 - verify checksums in CI before publishing the release assets
 - sign the release manifest and publish the verified signature with the artifacts
 - publish release notes with the exact tag
