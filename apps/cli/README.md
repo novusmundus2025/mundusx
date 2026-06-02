@@ -1,4 +1,6 @@
-# opengpu CLI
+# NovusX CLI
+
+NovusX is the product; `opengpu` is the current CLI command.
 
 Separately installable Rust command-line client for bootstrap, auth, node control, and updates.
 
