@@ -8,7 +8,6 @@ use std::str::FromStr;
 pub enum Backend {
     Auto,
     M,
-    #[value(skip)]
     Cuda,
 }
 
@@ -39,7 +38,8 @@ impl FromStr for Backend {
         match input.trim().to_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "m" => Ok(Self::M),
-            _ => Err("backend must be one of: auto or m".to_string()),
+            "cuda" => Ok(Self::Cuda),
+            _ => Err("backend must be one of: auto, m, cuda".to_string()),
         }
     }
 }
@@ -140,10 +140,33 @@ pub struct RoutingDecision {
 pub struct AgentRegistration {
     pub node_id: String,
     pub public_key_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key_hex: Option<String>,
     pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_trust_path: Option<String>,
     pub backend: Backend,
     pub contribution_percent: u8,
     pub agent_version: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerHealthReport {
+    pub healthy: bool,
+    pub model_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_path: Option<String>,
+    pub llama_cli_available: bool,
+    pub blas_device_available: bool,
+    pub power_source: String,
+    pub on_battery: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_percent: Option<u8>,
+    pub runtime_mode: String,
+    pub checked_at: String,
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -156,6 +179,20 @@ pub struct Heartbeat {
     pub updated_at: String,
     pub contribution_percent: u8,
     pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_trust_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_battery: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_percent: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_allowed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_health: Option<WorkerHealthReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -177,7 +214,13 @@ pub struct WorkerLaunchResponse {
     pub job_id: String,
     pub worker_id: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<Backend>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -186,4 +229,149 @@ pub struct WorkerStatus {
     pub node_id: String,
     pub status: String,
     pub updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::ValueEnum;
+
+    #[test]
+    fn backend_accepts_cuda_across_cli_parsing() {
+        assert_eq!(
+            <Backend as std::str::FromStr>::from_str("cuda").expect("parse cuda backend"),
+            Backend::Cuda
+        );
+        assert_eq!(
+            <Backend as ValueEnum>::from_str("cuda", false).expect("clap parse cuda backend"),
+            Backend::Cuda
+        );
+
+        let variants = Backend::value_variants()
+            .iter()
+            .map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("possible value")
+                    .get_name()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            variants.iter().any(|variant| variant == "cuda"),
+            "expected clap variants to expose cuda"
+        );
+    }
+
+    #[test]
+    fn agent_registration_preserves_agent_contract_fields() {
+        let registration: AgentRegistration = serde_json::from_str(
+            r#"{
+                "node_id": "node-1",
+                "public_key_fingerprint": "fingerprint",
+                "public_key_hex": "abcd",
+                "hostname": "host-1",
+                "identity_trust_path": "/tmp/trust",
+                "backend": "m",
+                "contribution_percent": 70,
+                "agent_version": "0.1.0"
+            }"#,
+        )
+        .expect("deserialize agent registration");
+
+        let json = serde_json::to_value(registration).expect("serialize registration");
+        assert_eq!(
+            json.get("public_key_hex").and_then(|value| value.as_str()),
+            Some("abcd")
+        );
+        assert_eq!(
+            json.get("identity_trust_path")
+                .and_then(|value| value.as_str()),
+            Some("/tmp/trust")
+        );
+    }
+
+    #[test]
+    fn heartbeat_preserves_extended_agent_status_fields() {
+        let heartbeat: Heartbeat = serde_json::from_str(
+            r#"{
+                "node_id": "node-1",
+                "backend": "cuda",
+                "agent_state": "paused",
+                "available_memory_mb": 32768,
+                "available_gpu_percent": 55,
+                "updated_at": "2026-06-02T12:00:00Z",
+                "contribution_percent": 40,
+                "hostname": "host-1",
+                "identity_trust_path": "/tmp/trust",
+                "power_source": "Battery Power",
+                "on_battery": true,
+                "battery_percent": 42,
+                "policy_allowed": false,
+                "policy_reason": "battery saver",
+                "worker_health": {
+                    "healthy": false,
+                    "model_dir": "/models",
+                    "model_name": "llama",
+                    "model_path": "/models/llama.gguf",
+                    "llama_cli_available": true,
+                    "blas_device_available": false,
+                    "power_source": "Battery Power",
+                    "on_battery": true,
+                    "battery_percent": 42,
+                    "runtime_mode": "cpu",
+                    "checked_at": "2026-06-02T12:00:00Z",
+                    "notes": ["using fallback"]
+                }
+            }"#,
+        )
+        .expect("deserialize heartbeat");
+
+        let json = serde_json::to_value(heartbeat).expect("serialize heartbeat");
+        assert_eq!(
+            json.get("backend").and_then(|value| value.as_str()),
+            Some("cuda")
+        );
+        assert_eq!(
+            json.get("identity_trust_path")
+                .and_then(|value| value.as_str()),
+            Some("/tmp/trust")
+        );
+        assert_eq!(
+            json.get("worker_health")
+                .and_then(|value| value.get("runtime_mode"))
+                .and_then(|value| value.as_str()),
+            Some("cpu")
+        );
+    }
+
+    #[test]
+    fn worker_launch_response_preserves_worker_output_and_origin() {
+        let response: WorkerLaunchResponse = serde_json::from_str(
+            r#"{
+                "job_id": "job-1",
+                "worker_id": "worker-1",
+                "status": "completed",
+                "output": "hello world",
+                "error": null,
+                "backend": "m",
+                "node_id": "node-1"
+            }"#,
+        )
+        .expect("deserialize worker launch response");
+
+        let json = serde_json::to_value(response).expect("serialize worker launch response");
+        assert_eq!(
+            json.get("output").and_then(|value| value.as_str()),
+            Some("hello world")
+        );
+        assert_eq!(
+            json.get("backend").and_then(|value| value.as_str()),
+            Some("m")
+        );
+        assert_eq!(
+            json.get("node_id").and_then(|value| value.as_str()),
+            Some("node-1")
+        );
+    }
 }
