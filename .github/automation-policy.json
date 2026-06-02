@@ -36,6 +36,16 @@
       "missing_public_web_deployment_target"
     ]
   },
+  "issue_priority_policy": {
+    "source_of_truth": "GitHub Project 3",
+    "allowed_labels": [
+      "priority:P0",
+      "priority:P1",
+      "priority:P2"
+    ],
+    "default_label": "priority:P1",
+    "selection_rule": "choose the highest-priority repo-local issue from GitHub Project 3; break ties by smallest clearly shippable change"
+  },
   "notes": [
     "This repository ships a CLI, release artifacts, installer flow, and public docs surface.",
     "A merge to uat is successful for automation purposes when repo validations pass and the relevant artifact or localhost smoke checks pass.",
