@@ -46,6 +46,12 @@
     "default_label": "priority:P1",
     "selection_rule": "choose the highest-priority repo-local issue from GitHub Project 3; break ties by smallest clearly shippable change"
   },
+  "issue_link_policy": {
+    "source_prefix": "Source:",
+    "required_notion_host": "https://www.notion.so/",
+    "github_reference_format": "owner/repo#issue-number",
+    "template_rule": "issues derived from Notion specs or backlog pages should include a Source line that links the originating Notion page"
+  },
   "notes": [
     "This repository ships a CLI, release artifacts, installer flow, and public docs surface.",
     "A merge to uat is successful for automation purposes when repo validations pass and the relevant artifact or localhost smoke checks pass.",

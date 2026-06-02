@@ -40,7 +40,10 @@ body:
     id: references
     attributes:
       label: References
-      description: Link any related issues, docs, Notion pages, or code paths.
-      placeholder: docs/requestor-api.md, related GitHub issues, backlog links
+      description: Link the originating Notion page first, then any related issues, docs, or code paths.
+      placeholder: |
+        Source: [Related spec or backlog page](https://www.notion.so/...)
+        Related: mundusx/mundusx#31
+        Docs: docs/requestor-api.md
     validations:
       required: false

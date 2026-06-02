@@ -37,7 +37,10 @@ body:
     id: scope
     attributes:
       label: Relevant files, packages, or docs
-      description: Point to the code, docs, workflows, or release surfaces that are likely affected.
-      placeholder: apps/cli, agents/node, install.sh, docs/install-page.md
+      description: Point to the likely code surfaces and include the originating Notion spec or backlog page when one exists.
+      placeholder: |
+        Source: [Related spec or backlog page](https://www.notion.so/...)
+        Related: mundusx/mundusx#31
+        Surfaces: apps/cli, agents/node, install.sh, docs/install-page.md
     validations:
       required: false
