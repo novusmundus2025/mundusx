@@ -2,6 +2,7 @@
   "name": "opengpu",
   "private": true,
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "packageManager": "pnpm@9.0.0",
   "workspaces": [
     "apps/*",
@@ -10,6 +11,7 @@
   "scripts": {
     "lint": "echo \"lint not configured yet\"",
     "test": "echo \"test not configured yet\"",
+    "test:license": "bash tests/license-surface.sh",
     "smoke:local": "./scripts/localhost-smoke.sh"
   }
 }
