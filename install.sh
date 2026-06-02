@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="novusmundus2025/opengpu"
+REPO="mundusx/mundusx"
 BIN_NAME="opengpu"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
