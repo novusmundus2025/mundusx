@@ -1,12 +1,13 @@
 # Local Install Page Preview
 
-This page defines the localhost-first touch for `opengpu` while we keep the public domain for later.
+This page defines the localhost-first install touch for NovusX while we keep the public domain for later.
 
 ## Purpose
 
 The install page should do one thing well:
 
-- explain that `opengpu` is installed with one command
+- explain that NovusX installs with one command
+- explain that the `opengpu` CLI is installed with one command
 - show the exact copy-paste install command
 - set expectations that the installer downloads a signed Mac-first release binary from localhost during development
 - point users to release notes and checksums
