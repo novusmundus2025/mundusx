@@ -75,6 +75,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect config paths and writability
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show local log source information
+    Logs {
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage the local model cache
     Model {
         #[command(subcommand)]
@@ -151,6 +161,156 @@ fn display_public_key_hex(config: &Config) -> String {
         .flatten()
         .map(|identity| identity.public_key_hex)
         .unwrap_or_else(|| "unset".to_string())
+}
+
+fn doctor_payload(config: &Config) -> serde_json::Value {
+    let resolved_path = resolved_config_path();
+    let local_path = config::local_config_path();
+    let home_path = config::config_path();
+    let config_dir = config::config_dir();
+    let model_dir = model::effective_model_dir(config);
+
+    serde_json::json!({
+        "config_dir": config_dir,
+        "resolved_config_path": resolved_path,
+        "home_config_path": home_path,
+        "local_config_path": local_path,
+        "resolved_config_exists": resolved_path.exists(),
+        "config_dir_exists": config_dir.exists(),
+        "config_dir_writable": std::fs::create_dir_all(&config_dir).is_ok(),
+        "resolved_config_parent_writable": resolved_path.parent().map(|parent| std::fs::create_dir_all(parent).is_ok()).unwrap_or(false),
+        "identity_path": identity::resolved_identity_path(),
+        "model_dir": model_dir,
+        "model_dir_exists": model_dir.exists(),
+        "model_dir_writable": std::fs::create_dir_all(&model_dir).is_ok(),
+        "active_model": active_model_name(config),
+        "auth_token_present": config.auth_token.as_ref().map(|token| !token.trim().is_empty()).unwrap_or(false),
+    })
+}
+
+fn logs_payload() -> serde_json::Value {
+    let config_dir = config::config_dir();
+    let heartbeat_log_path = config_dir.join("heartbeat.jsonl");
+    let agent_state_path = config_dir.join("agent-state.json");
+
+    serde_json::json!({
+        "config_dir": config_dir,
+        "agent_state_path": agent_state_path,
+        "agent_state_exists": agent_state_path.exists(),
+        "heartbeat_log_path": heartbeat_log_path,
+        "heartbeat_log_exists": heartbeat_log_path.exists(),
+    })
+}
+
+fn print_doctor_report(config: &Config, json: bool) {
+    let payload = doctor_payload(config);
+    if json {
+        if let Err(error) = print_json(&payload) {
+            eprintln!("failed to print json: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    println!("configDir: {}", payload["config_dir"].as_str().unwrap_or("unknown"));
+    println!(
+        "resolvedConfigPath: {}",
+        payload["resolved_config_path"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "homeConfigPath: {}",
+        payload["home_config_path"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "localConfigPath: {}",
+        payload["local_config_path"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "resolvedConfigExists: {}",
+        if payload["resolved_config_exists"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "configDirWritable: {}",
+        if payload["config_dir_writable"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "resolvedConfigParentWritable: {}",
+        if payload["resolved_config_parent_writable"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "identityPath: {}",
+        payload["identity_path"].as_str().unwrap_or("unknown")
+    );
+    println!("modelDir: {}", payload["model_dir"].as_str().unwrap_or("unknown"));
+    println!(
+        "modelDirWritable: {}",
+        if payload["model_dir_writable"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "activeModel: {}",
+        payload["active_model"].as_str().unwrap_or("none")
+    );
+    println!(
+        "authTokenPresent: {}",
+        if payload["auth_token_present"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+}
+
+fn print_logs_report(json: bool) {
+    let payload = logs_payload();
+    if json {
+        if let Err(error) = print_json(&payload) {
+            eprintln!("failed to print json: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    println!("configDir: {}", payload["config_dir"].as_str().unwrap_or("unknown"));
+    println!(
+        "agentStatePath: {}",
+        payload["agent_state_path"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "agentStateExists: {}",
+        if payload["agent_state_exists"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "heartbeatLogPath: {}",
+        payload["heartbeat_log_path"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "heartbeatLogExists: {}",
+        if payload["heartbeat_log_exists"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
 }
 
 fn identity_ready() -> bool {
@@ -1183,6 +1343,13 @@ fn main() {
                 if provider_count == 1 { "self" } else { "none" }
             );
         }
+        Commands::Doctor { json } => {
+            let config = current_config_or_default();
+            print_doctor_report(&config, json);
+        }
+        Commands::Logs { json } => {
+            print_logs_report(json);
+        }
         Commands::Model { command } => {
             let mut config = current_config_or_default();
             match command {
@@ -1293,12 +1460,65 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands};
+    use super::{doctor_payload, logs_payload, Cli, Commands};
     use clap::Parser;
+    use std::path::Path;
 
     #[test]
     fn exit_alias_maps_to_disconnect() {
         let cli = Cli::try_parse_from(["opengpu", "exit"]).expect("exit alias should parse");
         assert!(matches!(cli.command, Commands::Disconnect));
+    }
+
+    #[test]
+    fn doctor_command_parses() {
+        let cli = Cli::try_parse_from(["opengpu", "doctor"]).expect("doctor should parse");
+        assert!(matches!(cli.command, Commands::Doctor { json: false }));
+    }
+
+    #[test]
+    fn logs_command_parses() {
+        let cli = Cli::try_parse_from(["opengpu", "logs", "--json"]).expect("logs should parse");
+        assert!(matches!(cli.command, Commands::Logs { json: true }));
+    }
+
+    #[test]
+    fn doctor_payload_reports_expected_paths() {
+        let temp = std::env::temp_dir().join(format!("opengpu-cli-doctor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir");
+        std::env::set_var("OPENGPU_HOME", &temp);
+
+        let payload = doctor_payload(&crate::config::Config::default());
+
+        assert_eq!(payload["config_dir"].as_str(), temp.to_str());
+        assert!(payload["resolved_config_parent_writable"].as_bool().unwrap_or(false));
+        assert!(payload["model_dir"].as_str().unwrap_or("").starts_with(temp.to_str().unwrap_or("")));
+        assert!(Path::new(payload["identity_path"].as_str().unwrap_or("")).starts_with(&temp));
+
+        std::env::remove_var("OPENGPU_HOME");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn logs_payload_points_at_local_agent_files() {
+        let temp = std::env::temp_dir().join(format!("opengpu-cli-logs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir");
+        std::env::set_var("OPENGPU_HOME", &temp);
+
+        let payload = logs_payload();
+
+        assert_eq!(
+            payload["agent_state_path"].as_str(),
+            temp.join("agent-state.json").to_str()
+        );
+        assert_eq!(
+            payload["heartbeat_log_path"].as_str(),
+            temp.join("heartbeat.jsonl").to_str()
+        );
+
+        std::env::remove_var("OPENGPU_HOME");
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }
