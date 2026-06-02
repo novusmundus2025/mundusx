@@ -30,6 +30,7 @@ The private operator repo owns the control plane, dashboard, and company-side da
 
 - All top-level product code in this repo is intended to remain under the repository-level Apache 2.0 license.
 - When adding a new folder, choose its license and owner before merging so the boundary is explicit in docs and code.
+- Run `bash tests/license-surface.sh` when touching manifest or license metadata so Apache-2.0 declarations stay aligned across the public repo.
 
 ## Review Rules
 
