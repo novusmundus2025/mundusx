@@ -89,3 +89,17 @@ Selection rule:
 
 - choose the highest-priority repo-local issue from GitHub Project 3
 - if several issues have the same priority, choose the smallest clearly shippable change
+
+## Notion Source Linking Policy
+
+When a GitHub issue comes from a Notion spec or backlog page, the issue body should begin with a canonical source line:
+
+- `Source: [Spec or backlog page title](https://www.notion.so/...)`
+
+Use the Notion page as the source of truth for upstream planning context, then use GitHub issues for execution.
+
+Reference format rules:
+
+- use the literal `Source:` prefix
+- use a full `https://www.notion.so/` URL for the originating Notion page
+- refer to related GitHub work in `owner/repo#issue-number` format when the cross-link should stay stable outside one repository
