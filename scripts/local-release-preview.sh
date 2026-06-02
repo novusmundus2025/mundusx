@@ -380,6 +380,7 @@ verify_preview() {
 
   "$repo_root/scripts/verify-release-packaging.sh" "$asset_dir" "$asset_name"
   "$repo_root/scripts/release-signing.sh" verify "$asset_dir" "$asset_name"
+  "$repo_root/scripts/release-monitor-report.sh" "$asset_dir" "$asset_name" >/dev/null
 
   echo "Verified local release preview:"
   echo "  asset: $asset_name"

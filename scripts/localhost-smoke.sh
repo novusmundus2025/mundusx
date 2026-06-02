@@ -52,6 +52,19 @@ check_contains "${release_base_url}/" "Manifest loaded from /release-manifest.js
 check_contains "${release_base_url}/release-manifest.json" "\"artifact_kind\": \"release-binary\"" "release manifest kind"
 check_contains "${release_base_url}/opengpu-aarch64-apple-darwin.sha256" "opengpu-aarch64-apple-darwin" "release checksum"
 
+echo "Checking release monitor report..."
+report="$("$repo_root/scripts/release-monitor-report.sh" \
+  "$repo_root/.opengpu/local-release-preview/releases/latest/download" \
+  "opengpu-aarch64-apple-darwin")"
+python3 - <<'PY' "$report"
+import json
+import sys
+
+report = json.loads(sys.argv[1])
+assert report["manifest_signature_verified"] is True
+assert report["checksum_matches_manifest"] is True
+PY
+
 echo "Running installer..."
 rm -rf "$install_dir"
 mkdir -p "$install_dir"
