@@ -25,6 +25,7 @@ It also mirrors the public-endpoint shape locally at:
 - `http://127.0.0.1:<port>/public/docs`
 
 Use that preview to review the copy before wiring the public domain.
+The repository also owns a static export path now: `npm run build:docs-site` generates a GitHub Pages-ready site in `dist/public-docs-site`, and `.github/workflows/public-docs-site.yml` deploys that artifact from `uat` and `main`.
 
 ## Review Rule
 

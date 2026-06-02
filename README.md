@@ -39,6 +39,7 @@ That installer will download the matching release binary for the user's operatin
 
 See [docs/install-page.md](/Users/DBATALL/Documents/mundusx/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/mundusx/docs/install-strategy.md) for the distribution plan.
 The local install page also exposes a machine-readable manifest at `http://127.0.0.1:3002/install.json` for tooling and future public rollout work. The same dashboard also mirrors the future public-endpoint shape at `http://127.0.0.1:3002/public/install` and `http://127.0.0.1:3002/public/install.json`. The matching local release preview is also manifest-driven and serves `release-manifest.json` from `http://127.0.0.1:8788/releases/latest/download/`.
+For a repo-owned public docs artifact, run `npm run build:docs-site` to generate the static site into `dist/public-docs-site`. That same build is what the GitHub Pages workflow deploys from `uat` and `main`.
 
 Release builds for the CLI are published from GitHub Actions on `cli-v*` tags with checksums and a signed manifest attached to each release artifact set.
 
@@ -99,6 +100,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup
 - [docs/model-lifecycle.md](/Users/DBATALL/Documents/mundusx/docs/model-lifecycle.md) for contributor-side model cache, switch, and prune rules
 - [docs/install-strategy.md](/Users/DBATALL/Documents/mundusx/docs/install-strategy.md) for the cross-platform distribution plan
 - [docs/install-page.md](/Users/DBATALL/Documents/mundusx/docs/install-page.md) for the local install page copy and flow
+- `npm run build:docs-site` to generate the static public docs site preview from tracked markdown
 - [scripts/localhost-smoke.sh](/Users/DBATALL/Documents/mundusx/scripts/localhost-smoke.sh) for the one-shot localhost install and docs smoke test
 - `npm run smoke:local` for the same one-shot localhost check from the repo root
 - [scripts/local-release-preview.sh](/Users/DBATALL/Documents/mundusx/scripts/local-release-preview.sh) for the repo-managed localhost release preview helper
