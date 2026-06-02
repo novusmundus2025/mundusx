@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a public-repo bug with enough detail to reproduce and verify a fix.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for runtime defects, docs regressions, release issues, or other incorrect behavior in the public MundusX repo.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What is broken?
+      description: Summarize the bug and the impact in one or two sentences.
+      placeholder: The install page points at the wrong release asset URL.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How do we reproduce it?
+      description: List the exact steps, commands, URLs, or inputs needed to trigger the problem.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened?
+      description: Describe the expected behavior or output.
+      placeholder: The installer should download the latest CLI release from this repository.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and evidence
+      description: Include OS, architecture, branch, logs, screenshots, or links that make triage faster.
+      placeholder: macOS 15.5 on Apple Silicon, `uat`, relevant logs, screenshots, or traces.
+    validations:
+      required: false

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: MundusX repo overview
+    url: https://github.com/mundusx/mundusx/blob/uat/README.md
+    about: Start here for repository shape, install flow, and public-surface context.
+  - name: Public docs and architecture notes
+    url: https://github.com/mundusx/mundusx/tree/uat/docs
+    about: Check existing docs before filing a spec or feature issue.
