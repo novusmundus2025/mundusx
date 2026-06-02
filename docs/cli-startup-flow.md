@@ -119,13 +119,15 @@ the CLI:
 5. Reuses the active local model entry if it is already configured.
    - if the selected open model is missing, it is downloaded before being marked active
 
-## Exit
+## Disconnect / Exit
 
 When the user runs:
 
 ```bash
 opengpu exit
 ```
+
+`opengpu disconnect` remains available as the explicit advanced form.
 
 the CLI:
 

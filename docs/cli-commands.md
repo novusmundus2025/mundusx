@@ -30,7 +30,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - `opengpu login` - prompt for and store local operator auth state
 - `opengpu logout` - clear local operator auth state
 - `opengpu connect` - mark the machine as ready
-- `opengpu disconnect` - mark the machine as disconnected
+- `opengpu disconnect` - same behavior as `opengpu exit`, kept as the explicit advanced form
 - `opengpu nodes` - show the current sample node inventory
 - `opengpu pause` - pause contribution
 - `opengpu resume` - resume contribution
