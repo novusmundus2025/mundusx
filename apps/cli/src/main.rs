@@ -17,7 +17,9 @@ use std::thread;
 use types::Backend;
 
 use config::{config_exists, load_config, resolved_config_path, save_config, Config};
-use identity::{device_id_for_identity, ensure_identity, load_identity, load_or_create_identity};
+use identity::{
+    device_id_for_identity, ensure_identity, load_identity, load_or_create_identity,
+};
 use model::{
     active_model_name, add_model, configured_model_dir_string, ensure_effective_model_dir,
     list_models, prune_models, remove_model, use_model, ModelRecord,
@@ -100,9 +102,13 @@ enum ModelCommands {
         json: bool,
     },
     /// Download or cache a model and mark it active
-    Use { name: String },
+    Use {
+        name: String,
+    },
     /// Download or cache a model without switching to it
-    Add { name: String },
+    Add {
+        name: String,
+    },
     /// Remove a cached model
     Remove {
         name: String,
@@ -206,15 +212,10 @@ fn print_doctor_report(config: &Config, json: bool) {
         return;
     }
 
-    println!(
-        "configDir: {}",
-        payload["config_dir"].as_str().unwrap_or("unknown")
-    );
+    println!("configDir: {}", payload["config_dir"].as_str().unwrap_or("unknown"));
     println!(
         "resolvedConfigPath: {}",
-        payload["resolved_config_path"]
-            .as_str()
-            .unwrap_or("unknown")
+        payload["resolved_config_path"].as_str().unwrap_or("unknown")
     );
     println!(
         "homeConfigPath: {}",
@@ -242,10 +243,7 @@ fn print_doctor_report(config: &Config, json: bool) {
     );
     println!(
         "resolvedConfigParentWritable: {}",
-        if payload["resolved_config_parent_writable"]
-            .as_bool()
-            .unwrap_or(false)
-        {
+        if payload["resolved_config_parent_writable"].as_bool().unwrap_or(false) {
             "yes"
         } else {
             "no"
@@ -255,10 +253,7 @@ fn print_doctor_report(config: &Config, json: bool) {
         "identityPath: {}",
         payload["identity_path"].as_str().unwrap_or("unknown")
     );
-    println!(
-        "modelDir: {}",
-        payload["model_dir"].as_str().unwrap_or("unknown")
-    );
+    println!("modelDir: {}", payload["model_dir"].as_str().unwrap_or("unknown"));
     println!(
         "modelDirWritable: {}",
         if payload["model_dir_writable"].as_bool().unwrap_or(false) {
@@ -291,10 +286,7 @@ fn print_logs_report(json: bool) {
         return;
     }
 
-    println!(
-        "configDir: {}",
-        payload["config_dir"].as_str().unwrap_or("unknown")
-    );
+    println!("configDir: {}", payload["config_dir"].as_str().unwrap_or("unknown"));
     println!(
         "agentStatePath: {}",
         payload["agent_state_path"].as_str().unwrap_or("unknown")
@@ -341,12 +333,7 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn colored_state(
-    value: bool,
-    active_color: Color,
-    active_text: &str,
-    inactive_text: &str,
-) -> String {
+fn colored_state(value: bool, active_color: Color, active_text: &str, inactive_text: &str) -> String {
     if value {
         style(active_text).with(active_color).to_string()
     } else {
@@ -496,17 +483,22 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     );
     println!(
         "paused: {}",
-        colored_state(config.paused, Color::AnsiValue(208), "yes", "no")
+        colored_state(
+            config.paused,
+            Color::AnsiValue(208),
+            "yes",
+            "no"
+        )
     );
     println!("backendPreference: {}", config.backend_preference);
     println!("detectedBackend: {}", detected_backend);
-    println!(
-        "identityReady: {}",
-        if identity_ready { "yes" } else { "no" }
-    );
+    println!("identityReady: {}", if identity_ready { "yes" } else { "no" });
     println!("identityTrustPath: {}", identity::trust_path());
     println!("providerCount: {}", provider_count);
-    println!("modelDir: {}", configured_model_dir_string(config));
+    println!(
+        "modelDir: {}",
+        configured_model_dir_string(config)
+    );
     println!(
         "activeModel: {}",
         active_model.clone().unwrap_or_else(|| "unset".to_string())
@@ -535,11 +527,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     }
     println!(
         "onboardingCompleted: {}",
-        if config.onboarding_completed {
-            "yes"
-        } else {
-            "no"
-        }
+        if config.onboarding_completed { "yes" } else { "no" }
     );
 }
 
@@ -563,12 +551,12 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     println!("cpuCores: {}", cores);
     println!("backendPreference: {}", config.backend_preference);
     println!("detectedBackend: {}", detected_backend);
-    println!(
-        "identityReady: {}",
-        if identity_ready { "yes" } else { "no" }
-    );
+    println!("identityReady: {}", if identity_ready { "yes" } else { "no" });
     println!("identityTrustPath: {}", identity::trust_path());
-    println!("modelDir: {}", configured_model_dir_string(config));
+    println!(
+        "modelDir: {}",
+        configured_model_dir_string(config)
+    );
     println!(
         "activeModel: {}",
         active_model.clone().unwrap_or_else(|| "unset".to_string())
@@ -605,11 +593,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     }
     println!(
         "onboardingCompleted: {}",
-        if config.onboarding_completed {
-            "yes"
-        } else {
-            "no"
-        }
+        if config.onboarding_completed { "yes" } else { "no" }
     );
 }
 
@@ -631,14 +615,7 @@ fn print_onboarding_checklist(config: &Config, path: &std::path::Path, completed
     let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
     let body = vec![
         format!("device id: {}", config.device_id),
-        format!(
-            "identity: {}",
-            if identity_ready {
-                "ready"
-            } else {
-                "unavailable"
-            }
-        ),
+        format!("identity: {}", if identity_ready { "ready" } else { "unavailable" }),
         format!("device key: {}", display_public_key_fingerprint(config)),
         format!("hostname: {}", current_hostname()),
         format!("backend: {}", detected_backend),
@@ -658,14 +635,7 @@ fn print_onboarding_checklist(config: &Config, path: &std::path::Path, completed
         format!("credits: /v1/credits"),
         format!("dashboard: http://127.0.0.1:3001"),
         format!("config: {}", path.display()),
-        format!(
-            "state: {}",
-            if completed {
-                "complete"
-            } else {
-                "review needed"
-            }
-        ),
+        format!("state: {}", if completed { "complete" } else { "review needed" }),
     ];
     print_retro_panel(
         "CONTRIBUTOR ONBOARDING",
@@ -760,10 +730,7 @@ fn print_retro_panel(title: &str, subtitle: &str, lines: &[String], accent: Colo
         "{}",
         style(format!("│ {:<width$} │", subtitle, width = width)).with(Color::DarkGrey)
     );
-    println!(
-        "{}",
-        style(format!("├{}┤", "─".repeat(inner_width))).with(Color::DarkGrey)
-    );
+    println!("{}", style(format!("├{}┤", "─".repeat(inner_width))).with(Color::DarkGrey));
     for line in lines {
         println!("│ {:<width$} │", line, width = width);
     }
@@ -890,62 +857,35 @@ fn cap_label(percent: u8) -> &'static str {
     }
 }
 
-fn cap_explanation(backend: Backend, percent: u8) -> &'static str {
-    match (backend, percent) {
-        (Backend::M, 20) => "good for battery-friendly bursts or light background contribution",
-        (Backend::M, 30) => "balanced default for an M-series Mac used interactively",
-        (Backend::M, 50) => "stronger throughput while still leaving room for foreground work",
-        (Backend::M, 75) => "high contribution, best for plugged-in workstations",
-        (Backend::M, 90) => "max contribution, only for dedicated machines",
-        (_, 20) => "low contribution budget",
-        (_, 30) => "balanced contribution budget",
-        (_, 50) => "higher throughput budget",
-        (_, 75) => "aggressive contribution budget",
-        (_, 90) => "near-maximum contribution budget",
-        _ => "custom contribution budget",
-    }
-}
-
 fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool) {
-    let backend = resolved_backend(config);
-    let current = config.contribution_percent;
-    let mut body = vec![format!("backend: {}", backend)];
-
-    if current == 0 {
-        body.push("current: unset".to_string());
-        body.push("meaning: this machine will stay policy-blocked until you choose a cap".to_string());
+    let current = selected
+        .or_else(|| (config.contribution_percent > 0).then_some(config.contribution_percent))
+        .unwrap_or(0);
+    let current_text = if current == 0 {
+        "unset".to_string()
     } else {
-        body.push(format!("current: {}% ({})", current, cap_label(current)));
-        body.push(format!("meaning: {}", cap_explanation(backend, current)));
-    }
-
-    if let Some(value) = selected {
-        body.push(format!("saved: {}% ({})", value, cap_label(value)));
-    } else if completed {
-        body.push("saved: unchanged".to_string());
-    }
-
-    body.push(format!(
-        "next step: {}",
-        if completed {
-            "run `opengpu start` when you are ready"
-        } else if current == 0 {
-            "rerun `opengpu cap` to choose one"
-        } else {
-            "run `opengpu start` when you are ready"
-        }
-    ));
-
-    body.push(format!(
-        "policy: {}",
-        if completed {
-            "saved"
-        } else if current == 0 {
-            "review needed"
-        } else {
-            "updated"
-        }
-    ));
+        format!("{}% ({})", current, cap_label(current))
+    };
+    let body = vec![
+        format!("current cap: {}", current_text),
+        format!(
+            "meaning: {}",
+            contribution_semantics(resolved_backend(config))
+        ),
+        "supported caps: 20 / 30 / 50 / 75 / 90".to_string(),
+        "install page: localhost preview at http://127.0.0.1:3002/install".to_string(),
+        "next step: run `opengpu start` after saving a cap".to_string(),
+        format!(
+            "state: {}",
+            if completed {
+                "saved"
+            } else if current == 0 {
+                "review needed"
+            } else {
+                "updated"
+            }
+        ),
+    ];
     print_retro_panel(
         "CONTRIBUTION CAP",
         "choose the budget this Mac is allowed to use",
@@ -1264,18 +1204,10 @@ fn main() {
                 std::process::exit(1);
             }
 
-            print_onboarding_checklist(
-                &config,
-                &resolved_config_path(),
-                config.onboarding_completed,
-            );
+            print_onboarding_checklist(&config, &resolved_config_path(), config.onboarding_completed);
             println!(
                 "onboardingCompleted: {}",
-                if config.onboarding_completed {
-                    "yes"
-                } else {
-                    "no"
-                }
+                if config.onboarding_completed { "yes" } else { "no" }
             );
             if config.onboarding_completed {
                 println!("onboardingHint: the machine is ready for contributor use");
@@ -1560,13 +1492,8 @@ mod tests {
         let payload = doctor_payload(&crate::config::Config::default());
 
         assert_eq!(payload["config_dir"].as_str(), temp.to_str());
-        assert!(payload["resolved_config_parent_writable"]
-            .as_bool()
-            .unwrap_or(false));
-        assert!(payload["model_dir"]
-            .as_str()
-            .unwrap_or("")
-            .starts_with(temp.to_str().unwrap_or("")));
+        assert!(payload["resolved_config_parent_writable"].as_bool().unwrap_or(false));
+        assert!(payload["model_dir"].as_str().unwrap_or("").starts_with(temp.to_str().unwrap_or("")));
         assert!(Path::new(payload["identity_path"].as_str().unwrap_or("")).starts_with(&temp));
 
         std::env::remove_var("OPENGPU_HOME");
