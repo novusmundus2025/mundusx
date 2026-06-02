@@ -43,6 +43,7 @@ Before merging code, verify:
 5. Tests pass.
 6. New code has a clear owner and purpose.
 7. Placeholder code does not leak into runtime trees that should already be real.
+8. Automation-facing metadata stays aligned with the repo type and verification surface.
 
 ## Current Expectations
 
@@ -59,3 +60,10 @@ Update this doc when:
 - a placeholder becomes real code
 - the review checklist changes
 - a folder is renamed or split
+- automation success or blocker rules change for this repo
+
+## Automation Policy
+
+- This repo is treated as a CLI/distribution repo for automation purposes.
+- Use [`docs/automation-policy.md`](/Users/DBATALL/Documents/mundusx/docs/automation-policy.md) for the human-readable rules.
+- Use `.github/automation-policy.json` for machine-readable automation classification and verification expectations.

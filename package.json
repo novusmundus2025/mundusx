@@ -11,6 +11,7 @@
   "scripts": {
     "lint": "echo \"lint not configured yet\"",
     "test": "echo \"test not configured yet\"",
+    "test:automation-policy": "bash tests/automation-policy.sh",
     "test:license": "bash tests/license-surface.sh",
     "smoke:local": "./scripts/localhost-smoke.sh"
   }
