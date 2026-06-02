@@ -70,3 +70,22 @@ The machine-readable source of truth for this policy lives in:
 - `.github/automation-policy.json`
 
 Use this document for human explanation and the JSON file for automation-specific interpretation.
+
+## Priority Labeling Policy
+
+Backlog priority for this repo is managed from GitHub Project 3.
+
+Automation should treat these labels as the allowed repo-level priority set:
+
+- `priority:P0`
+- `priority:P1`
+- `priority:P2`
+
+Default rule:
+
+- if an issue does not yet have one of those labels, treat it as `priority:P1` unless GitHub Project 3 explicitly says otherwise
+
+Selection rule:
+
+- choose the highest-priority repo-local issue from GitHub Project 3
+- if several issues have the same priority, choose the smallest clearly shippable change

@@ -39,7 +39,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
       PROJECT_OWNER: mundusx
-      PROJECT_NUMBER: "2"
+      PROJECT_NUMBER: "3"
 
     steps:
       - name: Determine target status
@@ -108,7 +108,7 @@ jobs:
           project_data="$(
             gh api graphql -f query='
               query($owner: String!, $number: Int!) {
-                user(login: $owner) {
+                organization(login: $owner) {
                   projectV2(number: $number) {
                     id
                     fields(first: 20) {
@@ -132,12 +132,12 @@ jobs:
               }' -f owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER"
           )"
 
-          project_id="$(jq -r '.data.user.projectV2.id' <<<"$project_data")"
-          status_field_id="$(jq -r '.data.user.projectV2.fields.nodes[] | select(.name == "Status") | .id' <<<"$project_data")"
-          status_option_id="$(jq -r --arg status "${{ steps.target.outputs.target_status }}" '.data.user.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == $status) | .id' <<<"$project_data")"
+          project_id="$(jq -r '.data.organization.projectV2.id' <<<"$project_data")"
+          status_field_id="$(jq -r '.data.organization.projectV2.fields.nodes[] | select(.name == "Status") | .id' <<<"$project_data")"
+          status_option_id="$(jq -r --arg status "${{ steps.target.outputs.target_status }}" '.data.organization.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == $status) | .id' <<<"$project_data")"
 
           if [[ -z "$status_option_id" || "$status_option_id" == "null" ]] && [[ "${{ steps.target.outputs.target_status }}" == "Backlog" ]]; then
-            status_option_id="$(jq -r '.data.user.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' <<<"$project_data")"
+            status_option_id="$(jq -r '.data.organization.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' <<<"$project_data")"
           fi
 
           if [[ -z "$project_id" || "$project_id" == "null" ]]; then
