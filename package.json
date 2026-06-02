@@ -13,6 +13,7 @@
     "test": "echo \"test not configured yet\"",
     "test:automation-policy": "bash tests/automation-policy.sh",
     "test:branding": "bash tests/branding-surface.sh",
+    "test:cli-docs": "bash tests/cli-docs-surface.sh",
     "test:license": "bash tests/license-surface.sh",
     "smoke:local": "./scripts/localhost-smoke.sh"
   }
