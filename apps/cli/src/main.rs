@@ -68,6 +68,7 @@ enum Commands {
         reset: bool,
     },
     /// Leave the NovusX network
+    #[command(visible_alias = "exit")]
     Disconnect,
     /// Show current node status
     Status {
@@ -1287,5 +1288,17 @@ fn main() {
             println!("releasePreview: http://127.0.0.1:8788/releases/latest/download");
             println!("smokeCheck: npm run smoke:local");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn exit_alias_maps_to_disconnect() {
+        let cli = Cli::try_parse_from(["opengpu", "exit"]).expect("exit alias should parse");
+        assert!(matches!(cli.command, Commands::Disconnect));
     }
 }

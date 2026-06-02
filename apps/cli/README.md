@@ -31,6 +31,7 @@ Startup flow:
 - `opengpu login` stores a local operator bearer token
 - `opengpu logout` clears that local token
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available
+- `opengpu exit` leaves contribution mode; `opengpu disconnect` remains available as the explicit alias
 - `opengpu status` shows the live local routing decision
 
 See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup-flow.md) for the full first-run sequence.
