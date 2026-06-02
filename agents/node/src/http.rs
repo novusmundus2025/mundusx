@@ -188,6 +188,36 @@ fn parse_json_body<T: DeserializeOwned>(response: &str) -> Result<T, String> {
     serde_json::from_str(body).map_err(|error| error.to_string())
 }
 
+fn parse_response_status(response: &str) -> Result<(), String> {
+    let Some(status_line) = response.lines().next() else {
+        return Err("empty HTTP response".to_string());
+    };
+
+    let mut parts = status_line.split_whitespace();
+    let _http_version = parts
+        .next()
+        .ok_or_else(|| "malformed HTTP status line".to_string())?;
+    let status_code = parts
+        .next()
+        .ok_or_else(|| "malformed HTTP status line".to_string())?;
+    let status_code_num = status_code
+        .parse::<u16>()
+        .map_err(|_| format!("invalid HTTP status code `{status_code}`"))?;
+
+    if (200..300).contains(&status_code_num) {
+        return Ok(());
+    }
+
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.trim())
+        .filter(|body| !body.is_empty());
+    match body {
+        Some(body) => Err(format!("HTTP {status_code_num}: {body}")),
+        None => Err(format!("HTTP {status_code_num}")),
+    }
+}
+
 fn send_request(host: &str, port: u16, request: &str) -> Result<String, String> {
     let mut stream =
         TcpStream::connect((host, port)).map_err(|error| format!("connect failed: {error}"))?;
@@ -198,5 +228,27 @@ fn send_request(host: &str, port: u16, request: &str) -> Result<String, String> 
     stream
         .read_to_string(&mut response)
         .map_err(|error| format!("read failed: {error}"))?;
+    parse_response_status(&response)?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_response_status;
+
+    #[test]
+    fn parse_response_status_rejects_non_success_status_codes() {
+        let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 16\r\n\r\n{\"error\":\"boom\"}";
+        let error =
+            parse_response_status(response).expect_err("non-2xx response should fail");
+
+        assert!(error.contains("500"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn parse_response_status_accepts_success_status_codes() {
+        let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+
+        parse_response_status(response).expect("2xx response should succeed");
+    }
 }
