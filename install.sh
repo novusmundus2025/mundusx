@@ -45,34 +45,39 @@ trap cleanup EXIT
 
 mkdir -p "$INSTALL_DIR"
 
+download_to() {
+  local url="$1"
+  local output="$2"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$output"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$output" "$url"
+  else
+    echo "curl or wget is required" >&2
+    exit 1
+  fi
+}
+
 echo "NovusX installer"
 echo "  target: ${target}"
 echo "  source: ${RELEASE_BASE_URL%/}"
 echo "  install: ${INSTALL_DIR}"
 echo
 echo "Fetching ${BIN_NAME}..."
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$release_url" -o "$tmp_bin"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$tmp_bin" "$release_url"
-else
-  echo "curl or wget is required" >&2
-  exit 1
-fi
+download_to "$release_url" "$tmp_bin"
 
-if command -v curl >/dev/null 2>&1; then
-  if curl -fsSL "$checksum_url" -o "$tmp_checksum"; then
-    echo "Verifying checksum..."
-    if command -v shasum >/dev/null 2>&1; then
-      (cd "$tmp_dir" && shasum -a 256 -c "$(basename "$tmp_checksum")")
-    elif command -v sha256sum >/dev/null 2>&1; then
-      (cd "$tmp_dir" && sha256sum -c "$(basename "$tmp_checksum")")
-    else
-      echo "checksum verification skipped: no shasum or sha256sum available" >&2
-    fi
+if download_to "$checksum_url" "$tmp_checksum"; then
+  echo "Verifying checksum..."
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "$tmp_dir" && shasum -a 256 -c "$(basename "$tmp_checksum")")
+  elif command -v sha256sum >/dev/null 2>&1; then
+    (cd "$tmp_dir" && sha256sum -c "$(basename "$tmp_checksum")")
   else
-    echo "checksum unavailable for ${asset_name}, continuing without verification" >&2
+    echo "checksum verification skipped: no shasum or sha256sum available" >&2
   fi
+else
+  echo "checksum unavailable for ${asset_name}, continuing without verification" >&2
 fi
 
 chmod +x "$tmp_bin"
