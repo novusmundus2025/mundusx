@@ -32,7 +32,7 @@ During development, the same copy is available from the dashboard server at:
 
 - `http://127.0.0.1:<port>/install`
 
-The local dashboard typically runs on `3001`, but you can override `PORT` during review.
+The local dashboard typically runs on `3002`, but you can override `PORT` during review.
 For the matching localhost release source, run `scripts/local-release-preview.sh up` to build and serve the repo-managed preview on `http://127.0.0.1:8788/releases/latest/download/`.
 
 This keeps the install page reviewable on localhost before the public endpoint is wired up.
