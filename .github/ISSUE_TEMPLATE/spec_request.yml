@@ -1,0 +1,46 @@
+name: Spec request
+description: Capture missing requirements, delivery rules, or design decisions before implementation.
+title: "[Spec]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template when the implementation path is blocked by missing requirements, policy, or design decisions.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is underspecified?
+      description: Explain which decision or requirement is missing and why that blocks safe implementation.
+      placeholder: The retry behavior is not defined for streaming request failures.
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Required decisions
+      description: List the decisions, rules, or constraints the spec needs to define.
+      placeholder: |
+        - ...
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Define what a complete and actionable spec looks like.
+      placeholder: |
+        - The runtime contract is explicit.
+        - Failure handling is documented.
+        - The owning repo or service is clear.
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link any related issues, docs, Notion pages, or code paths.
+      placeholder: docs/requestor-api.md, related GitHub issues, backlog links
+    validations:
+      required: false
