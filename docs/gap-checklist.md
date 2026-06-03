@@ -20,6 +20,10 @@ These pieces already exist in the current local prototype and should be treated 
 - dashboard preview
 - contributor portal preview
 - requestor API adapter
+- requestor API completion
+  - documented `GET /v1/models` contract
+  - documented streaming response contract
+  - documented retry / timeout / idempotency rules
 - credits ledger
 - onboarding flow
 - local install page preview
@@ -46,10 +50,6 @@ These are the remaining steps before the product feels public, polished, and dis
 - contributor earnings portal polish
   - searchable, paginated job history
   - payout / withdrawal history
-- requestor API completion
-  - `GET /v1/models`
-  - streaming responses
-  - retry / timeout / idempotency rules
 - contributor onboarding polish
 - branding and naming cleanup
 - production observability and release monitoring
