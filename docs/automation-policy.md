@@ -63,6 +63,16 @@ Automation should retry before declaring a blocker when the failure is likely te
 - CI flake
 - rate limit
 
+## Terminal Notifications
+
+A success outcome must send both a Codex inbox notification and an email.
+
+A blocker outcome must send both a Codex inbox notification and an email.
+
+For transient GitHub, git, network, DNS, CI, or rate-limit failures, retry for up to 30 minutes total before sending the blocker email.
+
+If Gmail is unavailable, treat that as part of the blocker itself.
+
 ## Source Of Truth
 
 The machine-readable source of truth for this policy lives in:

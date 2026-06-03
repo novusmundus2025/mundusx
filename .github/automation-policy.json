@@ -52,6 +52,19 @@
     "github_reference_format": "owner/repo#issue-number",
     "template_rule": "issues derived from Notion specs or backlog pages should include a Source line that links the originating Notion page"
   },
+  "terminal_notifications": {
+    "success_channels": [
+      "codex_inbox",
+      "email"
+    ],
+    "blocker_channels": [
+      "codex_inbox",
+      "email"
+    ],
+    "transient_retry_window_minutes": 30,
+    "blocker_email_after": "hard_blocker_or_retry_window_exhausted",
+    "gmail_unavailable_treated_as_blocker": true
+  },
   "notes": [
     "This repository ships a CLI, release artifacts, installer flow, and public docs surface.",
     "A merge to uat is successful for automation purposes when repo validations pass and the relevant artifact or localhost smoke checks pass.",
