@@ -13,6 +13,7 @@
     "lint": "echo \"lint not configured yet\"",
     "test": "echo \"test not configured yet\"",
     "test:automation-policy": "bash tests/automation-policy.sh",
+    "test:automation-notifications": "bash tests/automation-notifications.sh",
     "test:branding": "bash tests/branding-surface.sh",
     "test:cli-docs": "bash tests/cli-docs-surface.sh",
     "test:docs-site": "bash tests/public-docs-site.sh",
