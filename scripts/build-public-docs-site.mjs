@@ -5,6 +5,9 @@ import path from "node:path";
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const outputDir = path.resolve(process.argv[2] ?? path.join(repoRoot, "dist/public-docs-site"));
+const repoReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download";
+const repoReleaseNotesUrl = "https://github.com/mundusx/mundusx/releases/latest";
+const installScriptContents = fs.readFileSync(path.join(repoRoot, "install.sh"), "utf8");
 
 const pages = [
   {
@@ -37,16 +40,56 @@ const pages = [
 fs.rmSync(outputDir, { recursive: true, force: true });
 fs.mkdirSync(outputDir, { recursive: true });
 
-for (const page of pages) {
-  const html = renderPage(page);
-  const pageDir = page.slug ? path.join(outputDir, page.slug) : outputDir;
-  fs.mkdirSync(pageDir, { recursive: true });
-  fs.writeFileSync(path.join(pageDir, "index.html"), html);
-}
+writeDocsVariant({
+  outputBaseDir: outputDir,
+  eyebrow: "Public Repo Docs",
+  homeIntro:
+    "Public-facing documentation for install, device identity, and release flow previews in the MundusX repo.",
+});
+writeDocsVariant({
+  outputBaseDir: path.join(outputDir, "public", "docs"),
+  eyebrow: "Public Endpoint Mirror",
+  homeIntro:
+    "GitHub Pages mirror of the public docs shape so install, device identity, and release pages can be reviewed before the final domain is wired up.",
+});
+writePublicInstallSurface();
 
 fs.writeFileSync(path.join(outputDir, ".nojekyll"), "\n");
 
-function renderPage(page) {
+function writeDocsVariant({ outputBaseDir, eyebrow, homeIntro }) {
+  for (const page of pages) {
+    const html = renderPage(page, { eyebrow, homeIntro });
+    const pageDir = page.slug ? path.join(outputBaseDir, page.slug) : outputBaseDir;
+    fs.mkdirSync(pageDir, { recursive: true });
+    fs.writeFileSync(path.join(pageDir, "index.html"), html);
+  }
+}
+
+function writePublicInstallSurface() {
+  const publicDir = path.join(outputDir, "public");
+  const installDir = path.join(publicDir, "install");
+  fs.mkdirSync(installDir, { recursive: true });
+
+  const manifest = {
+    kind: "install-manifest",
+    product_name: "NovusX",
+    audience: "public",
+    install_script_href: "./install.sh",
+    release_base_url: repoReleaseBaseUrl,
+    release_notes_url: repoReleaseNotesUrl,
+    docs_home_href: "./docs/",
+    install_docs_href: "./docs/install/",
+    checksum_hint:
+      "The hosted install script uses the signed GitHub release artifacts and verifies checksums when the matching .sha256 file is published.",
+  };
+
+  fs.writeFileSync(path.join(publicDir, "install.sh"), installScriptContents);
+  fs.writeFileSync(path.join(publicDir, "install.json"), JSON.stringify(manifest, null, 2) + "\n");
+  fs.writeFileSync(path.join(installDir, "index.html"), renderPublicInstallPage());
+}
+
+function renderPage(page, options) {
+  const { eyebrow, homeIntro } = options;
   const nav = pages
     .map((entry) => {
       const href = relativeHref(page.slug, entry.slug);
@@ -57,7 +100,7 @@ function renderPage(page) {
 
   const body = page.sourcePath
     ? renderMarkdown(page, fs.readFileSync(page.sourcePath, "utf8"))
-    : renderHome();
+    : renderHome(homeIntro);
 
   return `<!doctype html>
 <html lang="en">
@@ -219,7 +262,7 @@ function renderPage(page) {
     <div class="shell">
       <header>
         <div class="hero">
-          <span class="eyebrow">Public Repo Docs</span>
+          <span class="eyebrow">${escapeHtml(eyebrow)}</span>
           <h1>${escapeHtml(page.title)}</h1>
           <p>${escapeHtml(page.intro)}</p>
           <nav>${nav}</nav>
@@ -234,10 +277,10 @@ function renderPage(page) {
 </html>`;
 }
 
-function renderHome() {
+function renderHome(homeIntro) {
   return `
     <article>
-      <p>This site is the repo-owned public documentation surface for the current MundusX install and onboarding flow. It is generated directly from the checked-in markdown pages so the deployable site stays aligned with reviewed source docs.</p>
+      <p>${escapeHtml(homeIntro)}</p>
       <div class="cards">
         ${pages
           .filter((entry) => entry.slug)
@@ -375,4 +418,212 @@ function relativeHref(fromSlug, toSlug) {
     return "../";
   }
   return `../${toSlug}/`;
+}
+
+function renderPublicInstallPage() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install NovusX</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4efe4;
+        --panel: #fffdf8;
+        --text: #1c1c19;
+        --muted: #5e584d;
+        --accent: #0b6bcb;
+        --border: #d9d2c3;
+        --shadow: 0 20px 56px rgba(55, 42, 20, 0.1);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+        background:
+          radial-gradient(circle at top left, rgba(11, 107, 203, 0.15), transparent 30%),
+          linear-gradient(180deg, #efe7d6 0%, var(--bg) 28%, #fbfaf7 100%);
+        color: var(--text);
+      }
+      a { color: var(--accent); }
+      .shell {
+        width: min(1040px, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: 2.5rem 0 4rem;
+      }
+      .hero, .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        box-shadow: var(--shadow);
+      }
+      .hero {
+        padding: 2rem;
+      }
+      .eyebrow {
+        display: inline-block;
+        margin-bottom: 1rem;
+        padding: 0.3rem 0.7rem;
+        border-radius: 999px;
+        background: #efe7d6;
+        color: var(--muted);
+        font: 600 0.84rem/1.2 "Helvetica Neue", Arial, sans-serif;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2.7rem, 5vw, 4.6rem);
+        line-height: 0.98;
+      }
+      .lead {
+        max-width: 46rem;
+        font-size: 1.12rem;
+        line-height: 1.7;
+        color: var(--muted);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+      }
+      .actions a {
+        text-decoration: none;
+        font: 600 0.95rem/1.2 "Helvetica Neue", Arial, sans-serif;
+        padding: 0.75rem 1rem;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.8);
+      }
+      .actions a.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+      }
+      .panel {
+        margin-top: 1.4rem;
+        padding: 1.8rem;
+      }
+      .panel h2 {
+        margin-top: 0;
+      }
+      .command {
+        overflow-x: auto;
+        padding: 1rem 1.1rem;
+        border-radius: 20px;
+        background: #1f2430;
+        color: #f4f1eb;
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+      .manifest {
+        margin-top: 1rem;
+        color: var(--muted);
+        font: 0.95rem/1.6 "Helvetica Neue", Arial, sans-serif;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+      }
+      .card {
+        padding: 1rem;
+        border-radius: 20px;
+        background: #fff;
+        border: 1px solid var(--border);
+      }
+      .card h3 {
+        margin-top: 0;
+      }
+      code {
+        background: #f3eee4;
+        border-radius: 6px;
+        padding: 0.12rem 0.35rem;
+      }
+      ul {
+        padding-left: 1.2rem;
+      }
+      @media (max-width: 640px) {
+        .hero, .panel {
+          border-radius: 22px;
+          padding: 1.4rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <span class="eyebrow">Public Install Endpoint</span>
+        <h1>Install NovusX on your Mac</h1>
+        <p class="lead">This Pages-backed install surface mirrors the future public endpoint shape. It hosts the reviewed installer script from this repo and points that script at the latest signed GitHub release artifacts.</p>
+        <div class="actions">
+          <a class="primary" href="../install.sh">Download install.sh</a>
+          <a href="../docs/install/">Install docs</a>
+          <a href="../docs/release/">Release notes and distribution</a>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>One command</h2>
+        <div class="command" id="install-command">Fetching ../install.json</div>
+        <p class="manifest" id="manifest-state">The public install shell loads its command and release source from <code>../install.json</code>.</p>
+      </section>
+
+      <section class="panel">
+        <h2>What this endpoint guarantees</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Repo-owned script</h3>
+            <p>The same checked-in <code>install.sh</code> from this repo is published at <code>/public/install.sh</code>.</p>
+          </div>
+          <div class="card">
+            <h3>Signed release source</h3>
+            <p>The installer defaults to the latest GitHub release download set and verifies the matching checksum file when it is published.</p>
+          </div>
+          <div class="card">
+            <h3>Reviewable copy</h3>
+            <p>The broader docs mirror stays available under <code>/public/docs</code> so install wording and release notes can be reviewed together.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Before you run it</h2>
+        <ul>
+          <li>Apple Silicon Macs remain the primary release channel today.</li>
+          <li>The installer places <code>opengpu</code> into <code>$HOME/.local/bin</code> by default.</li>
+          <li>After install, use <code>opengpu cap</code> before <code>opengpu start</code> so the node budget is explicit.</li>
+        </ul>
+      </section>
+    </div>
+    <script>
+      const manifestUrl = new URL("../install.json", window.location.href);
+      const commandNode = document.getElementById("install-command");
+      const stateNode = document.getElementById("manifest-state");
+
+      async function loadInstallManifest() {
+        const response = await fetch(manifestUrl, { headers: { Accept: "application/json" } });
+        if (!response.ok) {
+          throw new Error("manifest request failed with " + response.status);
+        }
+        const manifest = await response.json();
+        const installScriptUrl = new URL(manifest.install_script_href, manifestUrl).href;
+        const command = "curl -fsSL " + installScriptUrl + " | bash";
+        commandNode.textContent = command;
+        stateNode.textContent =
+          "Manifest loaded from ../install.json • GitHub release source: " + manifest.release_base_url;
+      }
+
+      loadInstallManifest().catch((error) => {
+        commandNode.textContent = "Failed to load install manifest";
+        stateNode.textContent = "Unable to load ../install.json: " + error.message;
+      });
+    </script>
+  </body>
+</html>`;
 }
