@@ -27,6 +27,16 @@ It also mirrors the public-endpoint shape locally at:
 Use that preview to review the copy before wiring the public domain.
 The repository also owns a static export path now: `npm run build:docs-site` generates a GitHub Pages-ready site in `dist/public-docs-site`, and `.github/workflows/public-docs-site.yml` deploys that artifact from `uat` and `main`.
 
+That static artifact now includes the same public-surface mirror paths as the localhost dashboard:
+
+- `/public/docs`
+- `/public/docs/install`
+- `/public/install`
+- `/public/install.json`
+- `/public/install.sh`
+
+This keeps the future public install endpoint reviewable in pull requests even before `novusx.ai` is finally wired up.
+
 ## Review Rule
 
 Any change to the docs site should keep the copy aligned with:
