@@ -2,7 +2,8 @@ use crate::identity::DeviceIdentity;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct HttpEndpoint {
@@ -20,12 +21,10 @@ pub fn parse_http_endpoint(input: &str, default_path: &str) -> Result<HttpEndpoi
         );
     }
 
-    let without_scheme = trimmed
-        .strip_prefix("http://")
-        .ok_or_else(|| {
-            "control plane URL must use http://; set control-plane-url to http://127.0.0.1:8787"
-                .to_string()
-        })?;
+    let without_scheme = trimmed.strip_prefix("http://").ok_or_else(|| {
+        "control plane URL must use http://; set control-plane-url to http://127.0.0.1:8787"
+            .to_string()
+    })?;
 
     let mut parts = without_scheme.splitn(2, '/');
     let host_port = parts.next().unwrap_or_default();
@@ -42,7 +41,11 @@ pub fn parse_http_endpoint(input: &str, default_path: &str) -> Result<HttpEndpoi
 
     let port = host_parts
         .next()
-        .map(|value| value.parse::<u16>().map_err(|_| "invalid control plane port".to_string()))
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| "invalid control plane port".to_string())
+        })
         .transpose()?
         .unwrap_or(80);
 
@@ -112,7 +115,14 @@ pub fn signed_get_json<T: DeserializeOwned>(
     node_id: &str,
     identity: &DeviceIdentity,
 ) -> Result<T, String> {
-    let response = signed_request(control_plane_url, "GET", path, node_id, identity, &serde_json::json!({}))?;
+    let response = signed_request(
+        control_plane_url,
+        "GET",
+        path,
+        node_id,
+        identity,
+        &serde_json::json!({}),
+    )?;
     parse_json_body(&response)
 }
 
@@ -143,7 +153,9 @@ fn signed_request<T: Serialize>(
     };
     let timestamp = unix_seconds_string();
     let message = format!("{method}\n{}\n{timestamp}\n{body}", endpoint.path);
-    let signature = identity.sign_hex(&message).map_err(|error| error.to_string())?;
+    let signature = identity
+        .sign_hex(&message)
+        .map_err(|error| error.to_string())?;
     let request = if method == "GET" {
         format!(
             "GET {} HTTP/1.1\r\nHost: {}:{}\r\nX-OpenGPU-Node-Id: {}\r\nX-OpenGPU-Public-Key: {}\r\nX-OpenGPU-Timestamp: {}\r\nX-OpenGPU-Signature: {}\r\nConnection: close\r\n\r\n",
@@ -188,6 +200,15 @@ fn parse_json_body<T: DeserializeOwned>(response: &str) -> Result<T, String> {
     serde_json::from_str(body).map_err(|error| error.to_string())
 }
 
+fn request_timeout() -> Duration {
+    std::env::var("OPENGPU_HTTP_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(5))
+}
+
 fn parse_response_status(response: &str) -> Result<(), String> {
     let Some(status_line) = response.lines().next() else {
         return Err("empty HTTP response".to_string());
@@ -219,8 +240,20 @@ fn parse_response_status(response: &str) -> Result<(), String> {
 }
 
 fn send_request(host: &str, port: u16, request: &str) -> Result<String, String> {
-    let mut stream =
-        TcpStream::connect((host, port)).map_err(|error| format!("connect failed: {error}"))?;
+    let timeout = request_timeout();
+    let address = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("resolve failed: {error}"))?
+        .next()
+        .ok_or_else(|| "resolve failed: no address found".to_string())?;
+    let mut stream = TcpStream::connect_timeout(&address, timeout)
+        .map_err(|error| format!("connect failed: {error}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| format!("read timeout setup failed: {error}"))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|error| format!("write timeout setup failed: {error}"))?;
     stream
         .write_all(request.as_bytes())
         .map_err(|error| format!("write failed: {error}"))?;
@@ -234,13 +267,21 @@ fn send_request(host: &str, port: u16, request: &str) -> Result<String, String> 
 
 #[cfg(test)]
 mod tests {
-    use super::parse_response_status;
+    use super::{parse_response_status, request_timeout};
+    use std::env;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn parse_response_status_rejects_non_success_status_codes() {
-        let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 16\r\n\r\n{\"error\":\"boom\"}";
-        let error =
-            parse_response_status(response).expect_err("non-2xx response should fail");
+        let response =
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 16\r\n\r\n{\"error\":\"boom\"}";
+        let error = parse_response_status(response).expect_err("non-2xx response should fail");
 
         assert!(error.contains("500"), "unexpected error: {error}");
     }
@@ -250,5 +291,25 @@ mod tests {
         let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
 
         parse_response_status(response).expect("2xx response should succeed");
+    }
+
+    #[test]
+    fn request_timeout_uses_env_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        env::set_var("OPENGPU_HTTP_TIMEOUT_MS", "25");
+        let timeout = request_timeout();
+        env::remove_var("OPENGPU_HTTP_TIMEOUT_MS");
+
+        assert_eq!(timeout, Duration::from_millis(25));
+    }
+
+    #[test]
+    fn request_timeout_ignores_invalid_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        env::set_var("OPENGPU_HTTP_TIMEOUT_MS", "bad");
+        let timeout = request_timeout();
+        env::remove_var("OPENGPU_HTTP_TIMEOUT_MS");
+
+        assert_eq!(timeout, Duration::from_secs(5));
     }
 }
