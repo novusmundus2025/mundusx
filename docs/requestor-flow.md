@@ -78,7 +78,6 @@ The current prototype already has:
 
 - a dedicated subscriber/requestor app or SDK
 - richer multi-node scheduling and fairness rules
-- explicit job retry / timeout policy
 - a public-facing requestor UI
 
 ## How To Update
