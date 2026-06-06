@@ -21,6 +21,7 @@ Recommended flow:
 - the same local page should expose a machine-readable manifest at `http://127.0.0.1:<port>/install.json`
 - the same dashboard should also mirror the public-endpoint shape at `http://127.0.0.1:<port>/public/install` and `http://127.0.0.1:<port>/public/install.json`
 - the matching localhost release preview should expose a machine-readable manifest at `http://127.0.0.1:8788/releases/latest/download/release-manifest.json`
+- the repo-owned Pages artifact should mirror the public release/distribution surface at `/public/release` and `/public/release.json`
 - Linux and Windows: follow later, once the Mac release path is stable
 
 This should be the source of truth for release artifacts and checksums.

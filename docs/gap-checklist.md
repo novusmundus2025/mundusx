@@ -29,6 +29,7 @@ These pieces already exist in the current local prototype and should be treated 
 - local install page preview
 - local docs preview
 - local release preview helper
+- public release hosting and distribution mirror
 - localhost smoke test
 - release packaging checks
 - signed release manifest flow
@@ -43,7 +44,6 @@ These are the remaining steps before the product feels public, polished, and dis
 
 - public install endpoint
 - public docs site
-- public release hosting and distribution
 - package manager distribution
   - Homebrew tap or formula
   - WinGet package

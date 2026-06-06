@@ -34,8 +34,10 @@ That static artifact now includes the same public-surface mirror paths as the lo
 - `/public/install`
 - `/public/install.json`
 - `/public/install.sh`
+- `/public/release`
+- `/public/release.json`
 
-This keeps the future public install endpoint reviewable in pull requests even before `novusx.ai` is finally wired up.
+This keeps the future public install endpoint and the GitHub-hosted release/distribution story reviewable in pull requests even before `novusx.ai` is finally wired up.
 
 ## Review Rule
 

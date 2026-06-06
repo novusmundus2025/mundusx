@@ -53,6 +53,7 @@ writeDocsVariant({
     "GitHub Pages mirror of the public docs shape so install, device identity, and release pages can be reviewed before the final domain is wired up.",
 });
 writePublicInstallSurface();
+writePublicReleaseSurface();
 
 fs.writeFileSync(path.join(outputDir, ".nojekyll"), "\n");
 
@@ -86,6 +87,31 @@ function writePublicInstallSurface() {
   fs.writeFileSync(path.join(publicDir, "install.sh"), installScriptContents);
   fs.writeFileSync(path.join(publicDir, "install.json"), JSON.stringify(manifest, null, 2) + "\n");
   fs.writeFileSync(path.join(installDir, "index.html"), renderPublicInstallPage());
+}
+
+function writePublicReleaseSurface() {
+  const publicDir = path.join(outputDir, "public");
+  const releaseDir = path.join(publicDir, "release");
+  fs.mkdirSync(releaseDir, { recursive: true });
+
+  const manifest = {
+    kind: "release-channel",
+    product_name: "NovusX",
+    audience: "public",
+    release_base_url: repoReleaseBaseUrl,
+    release_notes_url: repoReleaseNotesUrl,
+    install_surface_href: "./install/",
+    install_manifest_href: "./install.json",
+    docs_release_href: "./docs/release/",
+    artifact_name_pattern: "opengpu-<target>",
+    checksum_suffix: ".sha256",
+    signed_manifest_name: "release-manifest.json",
+    distribution_summary:
+      "GitHub Releases remains the current public artifact host while the Pages mirror explains the release channel, checksums, and install entrypoints.",
+  };
+
+  fs.writeFileSync(path.join(publicDir, "release.json"), JSON.stringify(manifest, null, 2) + "\n");
+  fs.writeFileSync(path.join(releaseDir, "index.html"), renderPublicReleasePage());
 }
 
 function renderPage(page, options) {
@@ -622,6 +648,218 @@ function renderPublicInstallPage() {
       loadInstallManifest().catch((error) => {
         commandNode.textContent = "Failed to load install manifest";
         stateNode.textContent = "Unable to load ../install.json: " + error.message;
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function renderPublicReleasePage() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Public Release Mirror</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #eef5f4;
+        --panel: #fbfefd;
+        --text: #162321;
+        --muted: #526865;
+        --accent: #0d8b78;
+        --border: #c7ddd8;
+        --shadow: 0 18px 56px rgba(18, 55, 48, 0.1);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+        background:
+          radial-gradient(circle at top right, rgba(13, 139, 120, 0.14), transparent 28%),
+          linear-gradient(180deg, #e7f1ee 0%, var(--bg) 30%, #f9fcfb 100%);
+        color: var(--text);
+      }
+      a { color: var(--accent); }
+      .shell {
+        width: min(1080px, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: 2.5rem 0 4rem;
+      }
+      .hero, .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        box-shadow: var(--shadow);
+      }
+      .hero {
+        padding: 2rem;
+      }
+      .eyebrow {
+        display: inline-block;
+        margin-bottom: 1rem;
+        padding: 0.3rem 0.7rem;
+        border-radius: 999px;
+        background: #ddeeea;
+        color: var(--muted);
+        font: 600 0.84rem/1.2 "Helvetica Neue", Arial, sans-serif;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2.6rem, 5vw, 4.4rem);
+        line-height: 0.98;
+      }
+      .lead {
+        max-width: 48rem;
+        font-size: 1.1rem;
+        line-height: 1.7;
+        color: var(--muted);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+      }
+      .actions a {
+        text-decoration: none;
+        font: 600 0.95rem/1.2 "Helvetica Neue", Arial, sans-serif;
+        padding: 0.75rem 1rem;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.8);
+      }
+      .actions a.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+      }
+      .panel {
+        margin-top: 1.4rem;
+        padding: 1.8rem;
+      }
+      .panel h2 {
+        margin-top: 0;
+      }
+      .manifest {
+        overflow-x: auto;
+        padding: 1rem 1.1rem;
+        border-radius: 20px;
+        background: #1e2a2a;
+        color: #ecf6f4;
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+      .status {
+        margin-top: 1rem;
+        color: var(--muted);
+        font: 0.95rem/1.6 "Helvetica Neue", Arial, sans-serif;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+      }
+      .card {
+        padding: 1rem;
+        border-radius: 20px;
+        background: #fff;
+        border: 1px solid var(--border);
+      }
+      .card h3 {
+        margin-top: 0;
+      }
+      code {
+        background: #e7f1ee;
+        border-radius: 6px;
+        padding: 0.12rem 0.35rem;
+      }
+      ul {
+        padding-left: 1.2rem;
+      }
+      @media (max-width: 640px) {
+        .hero, .panel {
+          border-radius: 22px;
+          padding: 1.4rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <span class="eyebrow">Public Release Mirror</span>
+        <h1>Review the live release channel before the final domain exists.</h1>
+        <p class="lead">This Pages-backed release surface keeps the current GitHub-hosted distribution flow legible in pull requests. It points at the signed release artifact channel, the checked-in installer surface, and the release notes users should trust today.</p>
+        <div class="actions">
+          <a class="primary" href="https://github.com/mundusx/mundusx/releases/latest">Latest release notes</a>
+          <a href="../install/">Install endpoint</a>
+          <a href="../docs/release/">Release strategy docs</a>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Release channel manifest</h2>
+        <div class="manifest" id="release-summary">Fetching ../release.json</div>
+        <p class="status" id="release-state">This mirror loads its release-channel metadata from <code>../release.json</code>.</p>
+      </section>
+
+      <section class="panel">
+        <h2>What this release surface covers</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Artifact host</h3>
+            <p>GitHub Releases stays the current public binary host, with the latest download set rooted at <code>/releases/latest/download</code>.</p>
+          </div>
+          <div class="card">
+            <h3>Verification path</h3>
+            <p>Each published asset is expected to ship with a checksum and a signed <code>release-manifest.json</code>.</p>
+          </div>
+          <div class="card">
+            <h3>Install hand-off</h3>
+            <p>The public install surface and checked-in <code>install.sh</code> remain the supported way to consume that release channel.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Current release posture</h2>
+        <ul>
+          <li>Apple Silicon macOS remains the primary release lane today.</li>
+          <li>Package-manager distribution can layer on later without changing the signed GitHub release source.</li>
+          <li>The Pages mirror is for reviewability; the actual binary artifacts still come from GitHub Releases.</li>
+        </ul>
+      </section>
+    </div>
+    <script>
+      const manifestUrl = new URL("../release.json", window.location.href);
+      const summaryNode = document.getElementById("release-summary");
+      const stateNode = document.getElementById("release-state");
+
+      async function loadReleaseManifest() {
+        const response = await fetch(manifestUrl, { headers: { Accept: "application/json" } });
+        if (!response.ok) {
+          throw new Error("release manifest request failed with " + response.status);
+        }
+        const manifest = await response.json();
+        summaryNode.textContent =
+          "Latest artifacts: " +
+          manifest.release_base_url +
+          " | Notes: " +
+          manifest.release_notes_url +
+          " | Pattern: " +
+          manifest.artifact_name_pattern;
+        stateNode.textContent =
+          "Manifest loaded from ../release.json • Signed manifest: " + manifest.signed_manifest_name;
+      }
+
+      loadReleaseManifest().catch((error) => {
+        summaryNode.textContent = "Failed to load release channel manifest";
+        stateNode.textContent = "Unable to load ../release.json: " + error.message;
       });
     </script>
   </body>
