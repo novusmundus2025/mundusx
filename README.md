@@ -59,12 +59,18 @@ Route each request to the most suitable live node, rather than combining partial
 
 ## First Commands
 
-The CLI now supports local setup, node inspection, and preference management:
+For a fresh contributor machine, review onboarding, set a contribution cap, and then start the node:
 
 ```bash
-opengpu start
+opengpu onboarding
 opengpu cap
+opengpu start
 opengpu status
+```
+
+After that first-run setup, the CLI also supports local inspection and preference management:
+
+```bash
 opengpu exit
 opengpu model list
 opengpu model use <name>
