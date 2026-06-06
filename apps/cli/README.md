@@ -13,9 +13,9 @@ RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 Useful commands:
 
 ```bash
-opengpu start
 opengpu onboarding
 opengpu cap
+opengpu start
 opengpu login
 opengpu logout
 opengpu status
@@ -26,6 +26,7 @@ opengpu doctor
 
 Startup flow:
 
+- For a fresh machine, review onboarding, set a contribution cap, and then run `opengpu start`
 - `opengpu start` creates local state if needed, connects locally when the secure device identity is available, and marks the machine ready
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu cap` sets the contribution budget explicitly
