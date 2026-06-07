@@ -116,6 +116,16 @@ pub fn save_heartbeat(heartbeat: &Heartbeat) -> std::io::Result<PathBuf> {
 }
 
 pub fn load_last_heartbeat() -> std::io::Result<Option<Heartbeat>> {
+    let log_path = heartbeat_log_path();
+    if log_path.exists() {
+        let raw = fs::read_to_string(&log_path)?;
+        if let Some(line) = raw.lines().rev().find(|line| !line.trim().is_empty()) {
+            let heartbeat: Heartbeat = serde_json::from_str(line)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            return Ok(Some(heartbeat));
+        }
+    }
+
     let path = agent_state_path();
     if !path.exists() {
         return Ok(None);
@@ -135,4 +145,88 @@ fn save_json<T: Serialize>(path: PathBuf, value: &T) -> std::io::Result<PathBuf>
     let data = serde_json::to_string_pretty(value).expect("json serialization");
     fs::write(&path, format!("{data}\n"))?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::{AgentState, WorkerHealthReport};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn with_temp_home(test: impl FnOnce()) {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp = std::env::temp_dir().join(format!(
+            "opengpu-node-agent-storage-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let previous = std::env::var_os("OPENGPU_HOME");
+        std::env::set_var("OPENGPU_HOME", &temp);
+        test();
+        match previous {
+            Some(value) => std::env::set_var("OPENGPU_HOME", value),
+            None => std::env::remove_var("OPENGPU_HOME"),
+        }
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    fn heartbeat(updated_at: &str) -> Heartbeat {
+        Heartbeat {
+            node_id: "node-1".to_string(),
+            backend: Backend::Auto,
+            agent_state: AgentState::Ready,
+            available_memory_mb: 4096,
+            available_gpu_percent: 80,
+            updated_at: updated_at.to_string(),
+            contribution_percent: 20,
+            hostname: "host".to_string(),
+            identity_trust_path: "keychain://novusx".to_string(),
+            power_source: "ac".to_string(),
+            on_battery: false,
+            battery_percent: Some(100),
+            policy_allowed: true,
+            policy_reason: None,
+            worker_health: WorkerHealthReport {
+                healthy: true,
+                model_dir: "/tmp/models".to_string(),
+                model_name: Some("llama3.1:8b".to_string()),
+                model_path: Some("/tmp/models/llama3.1-8b.gguf".to_string()),
+                llama_cli_available: true,
+                blas_device_available: true,
+                power_source: "ac".to_string(),
+                on_battery: false,
+                battery_percent: Some(100),
+                runtime_mode: "native".to_string(),
+                checked_at: updated_at.to_string(),
+                notes: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn load_last_heartbeat_prefers_latest_log_entry() {
+        with_temp_home(|| {
+            save_agent_state(&heartbeat("10")).unwrap();
+            save_heartbeat(&heartbeat("11")).unwrap();
+            save_heartbeat(&heartbeat("12")).unwrap();
+
+            let restored = load_last_heartbeat().unwrap().expect("heartbeat");
+            assert_eq!(restored.updated_at, "12");
+        });
+    }
+
+    #[test]
+    fn load_last_heartbeat_falls_back_to_agent_state() {
+        with_temp_home(|| {
+            save_agent_state(&heartbeat("20")).unwrap();
+
+            let restored = load_last_heartbeat().unwrap().expect("heartbeat");
+            assert_eq!(restored.updated_at, "20");
+        });
+    }
 }
