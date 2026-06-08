@@ -95,6 +95,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Get or set configuration values
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
     /// Run an inference request — tries local worker first, falls back to network
     Run {
         /// The prompt to send
@@ -113,6 +118,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCommands {
+    /// Set the directory to search for GGUF model files
+    #[command(name = "model-dir")]
+    ModelDir { path: String },
+    /// Set the control plane URL
+    #[command(name = "control-plane-url")]
+    ControlPlaneUrl { url: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1941,6 +1956,36 @@ fn main() {
                 Err(error) => {
                     eprintln!("run failed: {error}");
                     std::process::exit(1);
+                }
+            }
+        }
+        Commands::Config { command } => {
+            let mut config = current_config_or_default();
+            match command {
+                ConfigCommands::ModelDir { path } => {
+                    let expanded = if path.starts_with('~') {
+                        if let Some(home) = dirs::home_dir() {
+                            home.join(path.trim_start_matches("~/")).display().to_string()
+                        } else {
+                            path.clone()
+                        }
+                    } else {
+                        path.clone()
+                    };
+                    config.model_dir = Some(expanded.clone());
+                    if let Err(error) = crate::config::save_config(&config) {
+                        eprintln!("failed to save config: {error}");
+                        std::process::exit(1);
+                    }
+                    println!("modelDir: {expanded}");
+                }
+                ConfigCommands::ControlPlaneUrl { url } => {
+                    config.control_plane_url = url.clone();
+                    if let Err(error) = crate::config::save_config(&config) {
+                        eprintln!("failed to save config: {error}");
+                        std::process::exit(1);
+                    }
+                    println!("controlPlaneUrl: {url}");
                 }
             }
         }
