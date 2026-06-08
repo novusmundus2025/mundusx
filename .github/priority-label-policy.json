@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "project_number": 3,
+  "priority_order": [
+    "P0",
+    "P1",
+    "P2",
+    "P3"
+  ],
+  "priority_labels": {
+    "P0": "priority:P0",
+    "P1": "priority:P1",
+    "P2": "priority:P2",
+    "P3": "priority:P3"
+  },
+  "title_prefixes": [
+    "[P0]",
+    "[P1]",
+    "[P2]",
+    "[P3]"
+  ],
+  "allowed_areas": [
+    "Public",
+    "Private",
+    "Platform",
+    "Workflow",
+    "Docs"
+  ],
+  "selection_rule": {
+    "require_exactly_one_priority_label": true,
+    "fallback_to_title_prefix": true,
+    "highest_priority_first": true,
+    "blocked_items_must_not_be_selected": true
+  },
+  "notes": [
+    "GitHub labels are the canonical priority signal for automation once present.",
+    "Title prefixes remain a tolerated fallback for older issues until labels are backfilled.",
+    "GitHub Project 3 is the active prioritization board for this repository."
+  ]
+}
