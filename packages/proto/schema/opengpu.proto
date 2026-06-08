@@ -33,6 +33,14 @@ message NodeHeartbeat {
   uint32 available_gpu_percent = 5;
   string updated_at = 6;
   uint32 contribution_percent = 7;
+  string hostname = 8;
+  string identity_trust_path = 9;
+  string power_source = 10;
+  bool on_battery = 11;
+  optional uint32 battery_percent = 12;
+  bool policy_allowed = 13;
+  optional string policy_reason = 14;
+  WorkerHealthReport worker_health = 15;
 }
 
 message JobRequest {
@@ -89,9 +97,12 @@ message JobCompletion {
 message AgentRegistration {
   string node_id = 1;
   string public_key_fingerprint = 2;
-  Backend backend = 3;
-  uint32 contribution_percent = 4;
-  string agent_version = 5;
+  string public_key_hex = 3;
+  string hostname = 4;
+  string identity_trust_path = 5;
+  Backend backend = 6;
+  uint32 contribution_percent = 7;
+  string agent_version = 8;
 }
 
 message WorkerLaunchRequest {
@@ -111,7 +122,10 @@ message WorkerLaunchResponse {
   string job_id = 1;
   string worker_id = 2;
   string status = 3;
-  string error = 4;
+  string output = 4;
+  string error = 5;
+  Backend backend = 6;
+  string node_id = 7;
 }
 
 message WorkerStatus {
@@ -119,4 +133,19 @@ message WorkerStatus {
   string node_id = 2;
   string status = 3;
   string updated_at = 4;
+}
+
+message WorkerHealthReport {
+  bool healthy = 1;
+  string model_dir = 2;
+  optional string model_name = 3;
+  optional string model_path = 4;
+  bool llama_cli_available = 5;
+  bool blas_device_available = 6;
+  string power_source = 7;
+  bool on_battery = 8;
+  optional uint32 battery_percent = 9;
+  string runtime_mode = 10;
+  string checked_at = 11;
+  repeated string notes = 12;
 }
