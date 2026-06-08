@@ -105,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          project_data="$(
+          project_data="$({
             gh api graphql -f query='
               query($owner: String!, $number: Int!) {
                 organization(login: $owner) {
@@ -129,15 +129,36 @@ jobs:
                     }
                   }
                 }
-              }' -f owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER"
-          )"
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' -f owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER";
+          })"
 
-          project_id="$(jq -r '.data.organization.projectV2.id' <<<"$project_data")"
-          status_field_id="$(jq -r '.data.organization.projectV2.fields.nodes[] | select(.name == "Status") | .id' <<<"$project_data")"
-          status_option_id="$(jq -r --arg status "${{ steps.target.outputs.target_status }}" '.data.organization.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == $status) | .id' <<<"$project_data")"
+          project_id="$(jq -r '(.data.organization.projectV2 // .data.user.projectV2).id' <<<"$project_data")"
+          status_field_id="$(jq -r '(.data.organization.projectV2 // .data.user.projectV2).fields.nodes[] | select(.name == "Status") | .id' <<<"$project_data")"
+          status_option_id="$(jq -r --arg status "${{ steps.target.outputs.target_status }}" '(.data.organization.projectV2 // .data.user.projectV2).fields.nodes[] | select(.name == "Status") | .options[] | select(.name == $status) | .id' <<<"$project_data")"
 
           if [[ -z "$status_option_id" || "$status_option_id" == "null" ]] && [[ "${{ steps.target.outputs.target_status }}" == "Backlog" ]]; then
-            status_option_id="$(jq -r '.data.organization.projectV2.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' <<<"$project_data")"
+            status_option_id="$(jq -r '(.data.organization.projectV2 // .data.user.projectV2).fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Inbox / Backlog" or .name == "Todo") | .id' <<<"$project_data" | head -n 1)"
           fi
 
           if [[ -z "$project_id" || "$project_id" == "null" ]]; then
@@ -166,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          existing_item_data="$(
+          existing_item_data="$({
             gh api graphql -f query='
               query($project: ID!) {
                 node(id: $project) {
@@ -186,8 +207,8 @@ jobs:
                     }
                   }
                 }
-              }' -f project="${{ steps.project.outputs.project_id }}"
-          )"
+              }' -f project="${{ steps.project.outputs.project_id }}";
+          })"
 
           item_id="$(jq -r --arg content_id "${{ steps.target.outputs.content_id }}" '
             .data.node.items.nodes[]
@@ -196,7 +217,7 @@ jobs:
           ' <<<"$existing_item_data" | head -n 1)"
 
           if [[ -z "$item_id" || "$item_id" == "null" ]]; then
-            item_data="$(
+            item_data="$({
               gh api graphql -f query='
                 mutation($project: ID!, $content: ID!) {
                   addProjectV2ItemById(input: {projectId: $project, contentId: $content}) {
@@ -204,8 +225,8 @@ jobs:
                       id
                     }
                   }
-                }' -f project="${{ steps.project.outputs.project_id }}" -f content="${{ steps.target.outputs.content_id }}"
-            )"
+                }' -f project="${{ steps.project.outputs.project_id }}" -f content="${{ steps.target.outputs.content_id }}";
+            })"
 
             item_id="$(jq -r '.data.addProjectV2ItemById.item.id' <<<"$item_data")"
           fi
