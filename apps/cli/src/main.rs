@@ -90,6 +90,11 @@ enum Commands {
     },
     /// Update the MundusX binary
     Update,
+    /// Show earned credits from the control plane
+    Credits {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -339,6 +344,84 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
             println!("{output}");
         })
         .map_err(|error| error.to_string())
+}
+
+/// Fetch a JSON resource from the control plane using an operator bearer token.
+/// Only supports http:// URLs — the same constraint as the node agent.
+fn operator_get_json(
+    control_plane_url: &str,
+    path: &str,
+    auth_token: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let url = control_plane_url.trim();
+    if url.starts_with("https://") {
+        return Err(
+            "CLI remote fetch only supports http://; set control-plane-url to an http:// address"
+                .to_string(),
+        );
+    }
+    let without_scheme = url
+        .strip_prefix("http://")
+        .ok_or_else(|| "control-plane-url must start with http://".to_string())?;
+    let (host_port, _) = without_scheme.split_once('/').unwrap_or((without_scheme, ""));
+    let (host, port_str) = host_port.split_once(':').unwrap_or((host_port, "80"));
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| "invalid control-plane port".to_string())?;
+
+    let auth_header = match auth_token {
+        Some(token) if !token.is_empty() => {
+            format!("Authorization: Bearer {token}\r\n")
+        }
+        _ => String::new(),
+    };
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\n{auth_header}Connection: close\r\n\r\n"
+    );
+
+    let timeout = Duration::from_secs(10);
+    let addr = format!("{host}:{port}");
+    let mut stream = TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .map_err(|_| format!("invalid address: {addr}"))?,
+        timeout,
+    )
+    .map_err(|error| format!("connect failed: {error}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| format!("read timeout: {error}"))?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("write failed: {error}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| format!("read failed: {error}"))?;
+
+    let status_line = response
+        .lines()
+        .next()
+        .ok_or_else(|| "empty response".to_string())?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "malformed HTTP response".to_string())?;
+    if !(200..300).contains(&status_code) {
+        return Err(format!("HTTP {status_code}"));
+    }
+
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or_default();
+    serde_json::from_str(body).map_err(|error| error.to_string())
 }
 
 fn colored_state(
@@ -1549,6 +1632,37 @@ fn main() {
             println!("releasePreview: http://127.0.0.1:8788/releases/latest/download");
             println!("smokeCheck: npm run smoke:local");
         }
+        Commands::Credits { json } => {
+            let config = current_config_or_default();
+            let token = config.auth_token.as_deref();
+            match operator_get_json(&config.control_plane_url, "/v1/credits", token) {
+                Ok(payload) => {
+                    if json {
+                        if let Err(error) = print_json(&payload) {
+                            eprintln!("failed to print json: {error}");
+                            std::process::exit(1);
+                        }
+                        return;
+                    }
+                    let total = payload["total"].as_f64().unwrap_or(0.0);
+                    println!("total: {total:.2}");
+                    if let Some(by_node) = payload["by_node"].as_object() {
+                        if by_node.is_empty() {
+                            println!("byNode: none");
+                        } else {
+                            for (node_id, amount) in by_node {
+                                let amount = amount.as_f64().unwrap_or(0.0);
+                                println!("  {node_id}: {amount:.2}");
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("failed to fetch credits: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }
 
@@ -1558,6 +1672,12 @@ mod tests {
     use crate::config::Config;
     use clap::Parser;
     use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn exit_alias_maps_to_disconnect() {
@@ -1579,6 +1699,7 @@ mod tests {
 
     #[test]
     fn doctor_payload_reports_expected_paths() {
+        let _guard = env_lock().lock().expect("env lock");
         let temp = std::env::temp_dir().join(format!("opengpu-cli-doctor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).expect("temp dir");
@@ -1602,6 +1723,7 @@ mod tests {
 
     #[test]
     fn logs_payload_points_at_local_agent_files() {
+        let _guard = env_lock().lock().expect("env lock");
         let temp = std::env::temp_dir().join(format!("opengpu-cli-logs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).expect("temp dir");
