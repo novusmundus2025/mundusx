@@ -158,7 +158,7 @@ fn signed_request<T: Serialize>(
         .map_err(|error| error.to_string())?;
     let request = if method == "GET" {
         format!(
-            "GET {} HTTP/1.1\r\nHost: {}:{}\r\nX-OpenGPU-Node-Id: {}\r\nX-OpenGPU-Public-Key: {}\r\nX-OpenGPU-Timestamp: {}\r\nX-OpenGPU-Signature: {}\r\nConnection: close\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}:{}\r\nX-MundusX-Node-Id: {}\r\nX-MundusX-Public-Key: {}\r\nX-MundusX-Timestamp: {}\r\nX-MundusX-Signature: {}\r\nConnection: close\r\n\r\n",
             endpoint.path,
             endpoint.host,
             endpoint.port,
@@ -169,7 +169,7 @@ fn signed_request<T: Serialize>(
         )
     } else {
         format!(
-            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-OpenGPU-Node-Id: {}\r\nX-OpenGPU-Public-Key: {}\r\nX-OpenGPU-Timestamp: {}\r\nX-OpenGPU-Signature: {}\r\nConnection: close\r\n\r\n{}",
+            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-MundusX-Node-Id: {}\r\nX-MundusX-Public-Key: {}\r\nX-MundusX-Timestamp: {}\r\nX-MundusX-Signature: {}\r\nConnection: close\r\n\r\n{}",
             endpoint.path,
             endpoint.host,
             endpoint.port,
