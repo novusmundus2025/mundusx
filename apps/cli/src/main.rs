@@ -645,6 +645,35 @@ fn print_onboarding_checklist(config: &Config, path: &std::path::Path, completed
     );
 }
 
+fn onboarding_completion_hint(
+    config: &Config,
+    identity_ready: bool,
+    active_model: Option<&str>,
+    policy_allowed: bool,
+) -> &'static str {
+    if !identity_ready {
+        return "run `opengpu start` to create and verify the secure device identity";
+    }
+
+    if active_model.is_none() {
+        return "run `opengpu start` to cache the starter model";
+    }
+
+    if config.contribution_percent == 0 {
+        return "run `opengpu cap` to choose the contribution budget";
+    }
+
+    if !config.connected || config.paused {
+        return "run `opengpu start` to bring the node online";
+    }
+
+    if !policy_allowed {
+        return "the machine is configured, but policy is currently blocking work";
+    }
+
+    "the machine is ready for contributor use"
+}
+
 fn print_model_inventory(config: &Config, models: &[ModelRecord], json: bool) {
     if json {
         let payload = serde_json::json!({
@@ -1204,13 +1233,26 @@ fn main() {
                 std::process::exit(1);
             }
 
+            let active_model = active_model_name(&config);
+            let identity_ready = identity_ready();
+            let power = probe_power_state();
+            let policy_allowed =
+                policy_allowed(&config, &power, active_model.as_deref(), identity_ready);
             print_onboarding_checklist(&config, &resolved_config_path(), config.onboarding_completed);
             println!(
                 "onboardingCompleted: {}",
                 if config.onboarding_completed { "yes" } else { "no" }
             );
             if config.onboarding_completed {
-                println!("onboardingHint: the machine is ready for contributor use");
+                println!(
+                    "onboardingHint: {}",
+                    onboarding_completion_hint(
+                        &config,
+                        identity_ready,
+                        active_model.as_deref(),
+                        policy_allowed
+                    )
+                );
             } else {
                 println!("onboardingHint: rerun with --complete once the checklist looks good");
             }
@@ -1461,6 +1503,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{doctor_payload, logs_payload, Cli, Commands};
+    use crate::config::Config;
     use clap::Parser;
     use std::path::Path;
 
@@ -1520,5 +1563,24 @@ mod tests {
 
         std::env::remove_var("OPENGPU_HOME");
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn onboarding_complete_hint_requires_a_contribution_cap() {
+        let config = Config::default();
+
+        let hint = super::onboarding_completion_hint(&config, true, Some("Qwen"), true);
+
+        assert_eq!(hint, "run `opengpu cap` to choose the contribution budget");
+    }
+
+    #[test]
+    fn onboarding_complete_hint_requires_start_when_not_connected() {
+        let mut config = Config::default();
+        config.contribution_percent = 30;
+
+        let hint = super::onboarding_completion_hint(&config, true, Some("Qwen"), true);
+
+        assert_eq!(hint, "run `opengpu start` to bring the node online");
     }
 }
