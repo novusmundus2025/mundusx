@@ -376,7 +376,11 @@ fn run_inference_local_first(
     max_tokens: u32,
 ) -> Result<InferenceResult, String> {
     // --- 1. try local ---------------------------------------------------------
-    let model_dir = model::effective_model_dir(config);
+    // Honour OPENGPU_MODEL_DIR env var as an override (useful for pointing at
+    // LM Studio or other external model directories without changing config).
+    let model_dir = std::env::var_os("OPENGPU_MODEL_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| model::effective_model_dir(config));
     match run_local_inference(&model_dir, prompt, model, max_tokens) {
         Ok((output, model_name)) => {
             return Ok(InferenceResult {
