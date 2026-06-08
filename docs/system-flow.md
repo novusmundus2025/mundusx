@@ -2,6 +2,22 @@
 
 This page is the living end-to-end one-pager for how NovusX works.
 
+## Requestor → Control Plane → GPU
+
+```mermaid
+flowchart TD
+    R[Requestor / Client / SDK / Dashboard] -->|POST /v1/jobs| AG[Operator Auth Gate]
+    AG -->|valid token| CP[Control Plane]
+    CP --> Q[Job queued]
+    Q --> SCH[Scheduler picks best live eligible node]
+    SCH -->|GET /v1/jobs/next| NA[Node Agent on contributor machine]
+    NA --> W[Launch local worker]
+    W --> GPU[Run compute on GPU\nM-series or CUDA]
+    GPU --> R2[Result]
+    R2 -->|POST /v1/jobs/complete| CP
+    CP --> OUT[Return response to requestor]
+```
+
 ```mermaid
 flowchart TD
     I[Install CLI] --> S[Run opengpu start]

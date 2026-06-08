@@ -113,6 +113,18 @@ pub struct NodeStatus {
     pub available_gpu_percent: u32,
     pub label: String,
     pub region: Option<String>,
+    /// Whether the node's policy currently permits it to accept jobs.
+    /// `None` means unknown; treated as allowed for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_allowed: Option<bool>,
+    /// Whether the local worker is healthy and ready to run inference.
+    /// `None` means unknown; treated as healthy for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_healthy: Option<bool>,
+    /// Model identifiers available on this node (e.g. `["llama3.1:8b"]`).
+    /// Empty means no model information was reported.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -3,12 +3,12 @@ use crate::contracts::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::env;
-use std::path::PathBuf;
-use std::path::Path;
-use std::process::Command;
+use std::fs;
 use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -491,7 +491,9 @@ fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
         worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
         status: "failed".to_string(),
         output: String::new(),
-        error: Some(format!("backend {backend} is not enabled in the Mac M-only worker")),
+        error: Some(format!(
+            "backend {backend} is not enabled in the Mac M-only worker"
+        )),
         backend,
         node_id: request.node_id.clone(),
     }

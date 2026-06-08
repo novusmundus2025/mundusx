@@ -312,7 +312,11 @@ fn emit_json_line<T: Serialize>(value: &T) {
     }
 }
 
-fn send_registration(config: &AgentConfig, identity: &DeviceIdentity, registration: &AgentRegistration) {
+fn send_registration(
+    config: &AgentConfig,
+    identity: &DeviceIdentity,
+    registration: &AgentRegistration,
+) {
     match http::signed_post_json(
         &config.control_plane_url,
         "/v1/register",
@@ -320,7 +324,10 @@ fn send_registration(config: &AgentConfig, identity: &DeviceIdentity, registrati
         identity,
         registration,
     ) {
-        Ok(response) => println!("controlPlaneRegister: ok ({})", response.lines().next().unwrap_or("no response line")),
+        Ok(response) => println!(
+            "controlPlaneRegister: ok ({})",
+            response.lines().next().unwrap_or("no response line")
+        ),
         Err(error) => eprintln!("controlPlaneRegister: {error}"),
     }
 }
@@ -333,12 +340,19 @@ fn send_heartbeat(config: &AgentConfig, identity: &DeviceIdentity, heartbeat: &H
         identity,
         heartbeat,
     ) {
-        Ok(response) => println!("controlPlaneHeartbeat: ok ({})", response.lines().next().unwrap_or("no response line")),
+        Ok(response) => println!(
+            "controlPlaneHeartbeat: ok ({})",
+            response.lines().next().unwrap_or("no response line")
+        ),
         Err(error) => eprintln!("controlPlaneHeartbeat: {error}"),
     }
 }
 
-fn launch_worker_process(config: &AgentConfig, request: WorkerLaunchRequest, json: bool) -> Result<contracts::WorkerLaunchResponse, String> {
+fn launch_worker_process(
+    config: &AgentConfig,
+    request: WorkerLaunchRequest,
+    json: bool,
+) -> Result<contracts::WorkerLaunchResponse, String> {
     let model_dir = config.effective_model_dir();
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
@@ -383,7 +397,11 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
 
     println!(
         "workerHealth: {}",
-        if health.healthy { "healthy" } else { "degraded" }
+        if health.healthy {
+            "healthy"
+        } else {
+            "degraded"
+        }
     );
     println!("modelDir: {}", health.model_dir);
     println!(
@@ -396,14 +414,25 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
     );
     println!(
         "llamaCliAvailable: {}",
-        if health.llama_cli_available { "yes" } else { "no" }
+        if health.llama_cli_available {
+            "yes"
+        } else {
+            "no"
+        }
     );
     println!(
         "blasDeviceAvailable: {}",
-        if health.blas_device_available { "yes" } else { "no" }
+        if health.blas_device_available {
+            "yes"
+        } else {
+            "no"
+        }
     );
     println!("powerSource: {}", health.power_source);
-    println!("onBattery: {}", if health.on_battery { "yes" } else { "no" });
+    println!(
+        "onBattery: {}",
+        if health.on_battery { "yes" } else { "no" }
+    );
     println!(
         "batteryPercent: {}",
         health
@@ -440,7 +469,12 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
 
 fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<JobRecord> {
     let path = format!("/v1/jobs/next?node_id={}", config.device_id);
-    match signed_get_json::<JobClaimResponse>(&config.control_plane_url, &path, &config.device_id, identity) {
+    match signed_get_json::<JobClaimResponse>(
+        &config.control_plane_url,
+        &path,
+        &config.device_id,
+        identity,
+    ) {
         Ok(response) => response.job,
         Err(error) => {
             eprintln!("controlPlaneClaim: {error}");
@@ -468,10 +502,7 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
     if !policy.allowed {
         println!(
             "jobPoll: skipped ({})",
-            policy
-                .reason
-                .as_deref()
-                .unwrap_or("policy denied launch")
+            policy.reason.as_deref().unwrap_or("policy denied launch")
         );
         let policy_heartbeat = build_heartbeat_with_state(config, AgentState::Paused);
         let _ = save_agent_state(&policy_heartbeat);
@@ -627,7 +658,7 @@ fn run_agent(once: bool, json: bool, interval_seconds: u64) {
     println!("agentStatePath: {}", agent_state_path().display());
     println!("heartbeatLogPath: {}", heartbeat_log_path().display());
     println!("registration: ready");
-        println!("heartbeat: ready");
+    println!("heartbeat: ready");
 
     if let Err(error) = save_agent_state(&heartbeat) {
         eprintln!("failed to save agent state: {error}");
@@ -678,9 +709,15 @@ fn print_registration(json: bool) {
     }
 
     println!("nodeId: {}", registration.node_id);
-    println!("publicKeyFingerprint: {}", registration.public_key_fingerprint);
+    println!(
+        "publicKeyFingerprint: {}",
+        registration.public_key_fingerprint
+    );
     println!("backend: {}", registration.backend);
-    println!("contributionPercent: {}%", registration.contribution_percent);
+    println!(
+        "contributionPercent: {}%",
+        registration.contribution_percent
+    );
     println!("agentVersion: {}", registration.agent_version);
 }
 

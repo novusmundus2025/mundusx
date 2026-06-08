@@ -87,7 +87,9 @@ pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
 pub fn remove_model(config: &mut Config, name: &str, force: bool) -> io::Result<bool> {
     ensure_effective_model_dir(config);
     let mut models = list_models(config)?;
-    let target_active = models.iter().any(|model| model.name == name && model.active);
+    let target_active = models
+        .iter()
+        .any(|model| model.name == name && model.active);
     if target_active && !force {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -148,9 +150,12 @@ pub fn active_model_name(config: &Config) -> Option<String> {
         return Some(name);
     }
 
-    list_models(config)
-        .ok()
-        .and_then(|models| models.into_iter().find(|model| model.active).map(|model| model.name))
+    list_models(config).ok().and_then(|models| {
+        models
+            .into_iter()
+            .find(|model| model.active)
+            .map(|model| model.name)
+    })
 }
 
 pub fn configured_model_dir_string(config: &Config) -> String {
@@ -248,7 +253,11 @@ fn download_model_from_option(
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
-    if let Ok(output) = Command::new("shasum").args(["-a", "256"]).arg(path).output() {
+    if let Ok(output) = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(path)
+        .output()
+    {
         if output.status.success() {
             let raw = String::from_utf8_lossy(&output.stdout);
             let digest = raw.split_whitespace().next().unwrap_or("").trim();
@@ -490,8 +499,8 @@ mod tests {
             sha256: String::new(),
         };
 
-        let downloaded = download_model_from_option(&config, &option.name, &option)
-            .expect("download");
+        let downloaded =
+            download_model_from_option(&config, &option.name, &option).expect("download");
         assert!(downloaded);
 
         let dest = model_file_path(&config, &option.name, &option);

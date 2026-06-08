@@ -3,9 +3,9 @@
 mod macos_identity;
 
 use crate::storage::{config_dir, identity_path};
-use ed25519_dalek::{SigningKey, VerifyingKey};
 #[cfg(not(target_os = "macos"))]
 use ed25519_dalek::Signer;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,9 +61,9 @@ impl DeviceIdentity {
 
         #[cfg(not(target_os = "macos"))]
         {
-        let signing_key = self.signing_key()?;
-        let signature = signing_key.sign(message.as_bytes());
-        Ok(hex::encode(signature.to_bytes()))
+            let signing_key = self.signing_key()?;
+            let signature = signing_key.sign(message.as_bytes());
+            Ok(hex::encode(signature.to_bytes()))
         }
     }
 }
@@ -92,19 +92,19 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
 
     #[cfg(not(target_os = "macos"))]
     {
-    let path = resolved_identity_path();
-    if !path.exists() {
-        return Ok(None);
-    }
+        let path = resolved_identity_path();
+        if !path.exists() {
+            return Ok(None);
+        }
 
-    let raw = fs::read_to_string(path)?;
-    let identity: DeviceIdentity = serde_json::from_str(&raw)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    identity.verifying_key()?;
-    if !cfg!(target_os = "macos") || !identity.private_key_hex.trim().is_empty() {
-        identity.signing_key()?;
-    }
-    Ok(Some(identity))
+        let raw = fs::read_to_string(path)?;
+        let identity: DeviceIdentity = serde_json::from_str(&raw)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        identity.verifying_key()?;
+        if !cfg!(target_os = "macos") || !identity.private_key_hex.trim().is_empty() {
+            identity.signing_key()?;
+        }
+        Ok(Some(identity))
     }
 }
 
