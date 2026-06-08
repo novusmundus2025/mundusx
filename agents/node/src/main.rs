@@ -24,7 +24,7 @@ use storage::{
 #[command(
     name = "opengpu-agent",
     version,
-    about = "NovusX node agent",
+    about = "MundusX node agent",
     arg_required_else_help = true
 )]
 struct Cli {

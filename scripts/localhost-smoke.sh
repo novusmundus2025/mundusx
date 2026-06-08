@@ -164,7 +164,7 @@ ensure_dashboard_preview() {
 
 echo "Checking dashboard pages..."
 ensure_dashboard_preview
-check_dashboard_contains "${dashboard_url}/install" "Install NovusX on your Mac" "install page hero"
+check_dashboard_contains "${dashboard_url}/install" "Install MundusX on your Mac" "install page hero"
 check_dashboard_contains "${dashboard_url}/install" "Fetching ./install.json" "install manifest loading state" "Fetching ../install.json"
 check_dashboard_contains "${dashboard_url}/install" "./install.json" "install manifest endpoint reference" "../install.json"
 check_dashboard_contains "${dashboard_url}/install.json" "\"kind\": \"install-manifest\"" "install manifest kind"
@@ -173,11 +173,11 @@ check_dashboard_contains \
   "\"install_command\": \"RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh\"" \
   "install manifest command" \
   "\"release_base_url\": \"https://github.com/mundusx/mundusx/releases/latest/download\""
-check_dashboard_contains "${dashboard_url}/public/install" "Install NovusX on your Mac" "public install mirror hero"
+check_dashboard_contains "${dashboard_url}/public/install" "Install MundusX on your Mac" "public install mirror hero"
 check_dashboard_contains "${dashboard_url}/public/install" "Fetching ../install.json" "public install mirror loading state"
 check_dashboard_contains "${dashboard_url}/public/install.json" "\"kind\": \"install-manifest\"" "public install mirror manifest kind"
-check_dashboard_contains "${dashboard_url}/docs" "NovusX Docs" "docs home"
-check_dashboard_contains "${dashboard_url}/public/docs" "NovusX Docs" "public docs mirror home"
+check_dashboard_contains "${dashboard_url}/docs" "MundusX Docs" "docs home"
+check_dashboard_contains "${dashboard_url}/public/docs" "MundusX Docs" "public docs mirror home"
 check_dashboard_contains "${dashboard_url}/public/docs" "local layout" "public docs mirror badge" "Public Endpoint Mirror"
 check_dashboard_contains "${dashboard_url}/public/docs/install" "Canonical command" "public docs mirror install page"
 
@@ -185,7 +185,7 @@ echo "Checking control-plane root..."
 if [ "$skip_control_plane" = "1" ]; then
   echo "Skipping control-plane checks."
 else
-  check_contains "${control_plane_url}/" "NovusX Control Plane" "control plane root"
+  check_contains "${control_plane_url}/" "MundusX Control Plane" "control plane root"
   check_contains "${control_plane_url}/" "Local operator view" "control plane hero"
 fi
 
@@ -200,7 +200,7 @@ echo "Preparing local release preview..."
 "$local_release_preview_helper" verify
 
 echo "Checking release source..."
-check_contains "${release_base_url}/" "NovusX Local Release Preview" "release landing page"
+check_contains "${release_base_url}/" "MundusX Local Release Preview" "release landing page"
 check_contains "${release_base_url}/" "localhost only" "release landing page badge"
 check_contains "${release_base_url}/" "Manifest loaded from /release-manifest.json" "release landing page manifest state"
 check_contains "${release_base_url}/release-manifest.json" "\"artifact_kind\": \"release-binary\"" "release manifest kind"

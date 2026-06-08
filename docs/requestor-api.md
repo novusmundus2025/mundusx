@@ -13,7 +13,7 @@ The current requestor surface is:
 - `stream: true` server-sent event responses for chat completions
 - explicit retry, timeout, and idempotency rules for request submission
 
-The requestor layer stays OpenAI-shaped where that helps client compatibility, but the control plane still maps accepted work into NovusX's internal queued-job pipeline.
+The requestor layer stays OpenAI-shaped where that helps client compatibility, but the control plane still maps accepted work into MundusX's internal queued-job pipeline.
 
 ## What It Does Today
 
@@ -21,7 +21,7 @@ The requestor layer stays OpenAI-shaped where that helps client compatibility, b
 - Accepts `stream` when the client wants a `text/event-stream` response.
 - Converts chat messages into an internal prompt plus optional system prompt.
 - Submits the request to the control plane with explicit request metadata.
-- Returns an OpenAI-shaped `chat.completion` envelope with NovusX metadata when `stream` is absent or `false`.
+- Returns an OpenAI-shaped `chat.completion` envelope with MundusX metadata when `stream` is absent or `false`.
 - Returns a `text/event-stream` response when `stream` is `true`.
 - If `OPENGPU_OPERATOR_TOKEN` is configured, the route requires a matching bearer token just like the other operator-facing control-plane routes.
 - It does **not** browse the internet by itself.
@@ -111,7 +111,7 @@ event: queued
 data: {"type":"queued","request_id":"req_123","job_id":"job_123","created":1717000000,"model":"HuggingFaceTB/SmolLM2-135M-Instruct"}
 
 event: delta
-data: {"type":"delta","request_id":"req_123","job_id":"job_123","delta":"NovusX is a distributed GPU network."}
+data: {"type":"delta","request_id":"req_123","job_id":"job_123","delta":"MundusX is a distributed GPU network."}
 
 event: done
 data: {"type":"done","request_id":"req_123","job_id":"job_123","finish_reason":"stop"}
@@ -158,7 +158,7 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
     "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
     "messages": [
       {"role": "system", "content": "You are concise."},
-      {"role": "user", "content": "Summarize NovusX in one sentence."}
+      {"role": "user", "content": "Summarize MundusX in one sentence."}
     ],
     "temperature": 0.2,
     "top_p": 0.9,
@@ -167,7 +167,7 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-The control plane stores the request as a job and returns a queued NovusX response envelope immediately.
+The control plane stores the request as a job and returns a queued MundusX response envelope immediately.
 
 ## What Comes Next
 

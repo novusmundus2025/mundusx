@@ -1,6 +1,6 @@
 # Requestor Flow
 
-This page describes how a subscriber, SDK, dashboard, or other requestor gets a response from NovusX.
+This page describes how a subscriber, SDK, dashboard, or other requestor gets a response from MundusX.
 
 For the requestor-facing compatibility endpoint itself, see [docs/requestor-api.md](/Users/DBATALL/Documents/mundusx/docs/requestor-api.md).
 

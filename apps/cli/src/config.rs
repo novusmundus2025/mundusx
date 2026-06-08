@@ -37,7 +37,7 @@ impl Default for Config {
             paused: false,
             backend_preference: Backend::Auto,
             contribution_percent: 0,
-            control_plane_url: "https://api.novusx.ai".to_string(),
+            control_plane_url: "https://api.mundusx.ai".to_string(),
             active_model: None,
             models: vec![],
             model_dir: None,

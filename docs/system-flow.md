@@ -1,6 +1,6 @@
-# NovusX System Flow
+# MundusX System Flow
 
-This page is the living end-to-end one-pager for how NovusX works.
+This page is the living end-to-end one-pager for how MundusX works.
 
 ## Requestor → Control Plane → GPU
 

@@ -40,7 +40,7 @@ node "$repo_root/scripts/render-homebrew-formula.mjs" \
 }
 
 grep -F 'class Opengpu < Formula' "$formula_path" >/dev/null
-grep -F 'desc "NovusX contributor CLI"' "$formula_path" >/dev/null
+grep -F 'desc "MundusX contributor CLI"' "$formula_path" >/dev/null
 grep -F "url \"$binary_url\"" "$formula_path" >/dev/null
 grep -F "sha256 \"$checksum\"" "$formula_path" >/dev/null
 grep -F 'version "0.1.0"' "$formula_path" >/dev/null

@@ -14,7 +14,7 @@ use std::process::Command;
 #[command(
     name = "opengpu-agent worker",
     version,
-    about = "NovusX local worker process",
+    about = "MundusX local worker process",
     arg_required_else_help = true
 )]
 pub struct WorkerCli {

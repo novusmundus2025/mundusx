@@ -59,7 +59,7 @@ download_to() {
   fi
 }
 
-echo "NovusX installer"
+echo "MundusX installer"
 echo "  target: ${target}"
 echo "  source: ${RELEASE_BASE_URL%/}"
 echo "  install: ${INSTALL_DIR}"

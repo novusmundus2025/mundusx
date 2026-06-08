@@ -1,6 +1,6 @@
 # Missing Items
 
-This document tracks what is still missing before NovusX becomes a full product.
+This document tracks what is still missing before MundusX becomes a full product.
 
 For the active working list, see [docs/master-checklist.md](/Users/DBATALL/Documents/mundusx/docs/master-checklist.md).
 For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Documents/mundusx/docs/pending-items.md).
@@ -22,7 +22,7 @@ For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Docume
 - [x] Friendly exit command
 - [x] Reviewable official model catalog config
 - [x] Signed release binaries published from tags
-- [ ] Public install endpoint behind `novusx.ai`
+- [ ] Public install endpoint behind `mundusx.ai`
 - [x] Packaging checks on macOS and Linux release artifacts
 - [ ] WinGet package publishing
 - [ ] Homebrew tap or formula publishing

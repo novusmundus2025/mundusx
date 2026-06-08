@@ -104,7 +104,7 @@ build_preview() {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>NovusX Local Release Preview</title>
+    <title>MundusX Local Release Preview</title>
     <style>
       :root {
         color-scheme: light;
@@ -274,7 +274,7 @@ build_preview() {
   <body>
     <div class="wrap">
       <div class="hero">
-        <div class="brand"><span class="brand-mark"></span> NovusX Local Release Preview</div>
+        <div class="brand"><span class="brand-mark"></span> MundusX Local Release Preview</div>
         <div class="badge">localhost only • mac-first</div>
         <h1>Signed binaries, local preview, one clean install path.</h1>
         <div class="sub">

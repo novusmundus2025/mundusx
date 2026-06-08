@@ -1,6 +1,6 @@
 # Repository Standards
 
-This document is the living guide for folder structure, code ownership, and review expectations in the NovusX repo.
+This document is the living guide for folder structure, code ownership, and review expectations in the MundusX repo.
 
 ## Canonical Folder Structure
 

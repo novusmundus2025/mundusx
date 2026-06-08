@@ -25,12 +25,12 @@ assert_not_contains() {
   fi
 }
 
-assert_contains "apps/cli/README.md" "# NovusX CLI"
-assert_contains "apps/cli/README.md" 'NovusX is the product; `opengpu` is the current CLI command.'
+assert_contains "apps/cli/README.md" "# MundusX CLI"
+assert_contains "apps/cli/README.md" 'MundusX is the product; `opengpu` is the current CLI command.'
 assert_not_contains "apps/cli/README.md" "# opengpu CLI"
 
-assert_contains "docs/install-page.md" "This page defines the localhost-first install touch for NovusX"
-assert_contains "docs/install-page.md" "explain that NovusX installs with one command"
+assert_contains "docs/install-page.md" "This page defines the localhost-first install touch for MundusX"
+assert_contains "docs/install-page.md" "explain that MundusX installs with one command"
 assert_contains "docs/install-page.md" 'the `opengpu` CLI is installed with one command'
 assert_not_contains "docs/install-page.md" "This page defines the localhost-first touch for `opengpu`"
 

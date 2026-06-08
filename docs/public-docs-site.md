@@ -2,7 +2,7 @@
 
 This page describes the local preview for the docs site while the public domain stays future-only.
 
-NovusX is the product. `opengpu` is the current command family used by the local prototype, and the broader public OpenGPU ecosystem is treated as separate.
+MundusX is the product. `opengpu` is the current command family used by the local prototype, and the broader public OpenGPU ecosystem is treated as separate.
 
 ## Purpose
 
@@ -37,7 +37,7 @@ That static artifact now includes the same public-surface mirror paths as the lo
 - `/public/release`
 - `/public/release.json`
 
-This keeps the future public install endpoint and the GitHub-hosted release/distribution story reviewable in pull requests even before `novusx.ai` is finally wired up.
+This keeps the future public install endpoint and the GitHub-hosted release/distribution story reviewable in pull requests even before `mundusx.ai` is finally wired up.
 
 ## Review Rule
 

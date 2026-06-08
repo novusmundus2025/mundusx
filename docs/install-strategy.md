@@ -147,7 +147,7 @@ The install strategy is complete when:
 ## Product Positioning
 
 - `opengpu` remains the CLI name.
-- `novusx.ai` remains a future public install entrypoint.
+- `mundusx.ai` remains a future public install entrypoint.
 - The local install page should be the same command the installer docs use.
 - GitHub Releases are the artifact source.
 - The local docs site mirrors the install, identity, onboarding, credits, and release pages before anything is wired to the public domain.

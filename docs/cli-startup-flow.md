@@ -1,4 +1,4 @@
-# NovusX CLI Startup Flow
+# MundusX CLI Startup Flow
 
 This document describes what the CLI does when a user starts using it for the first time and what each command is responsible for.
 

@@ -19,5 +19,5 @@ printf '%s\n' "$output"
 
 printf '%s' "$output" | rg -q "Smoke test complete."
 if printf '%s' "$output" | rg -q "falling back to static file verification"; then
-  rg -q "Install NovusX on your Mac" "$docs_dir/public/install/index.html"
+  rg -q "Install MundusX on your Mac" "$docs_dir/public/install/index.html"
 fi

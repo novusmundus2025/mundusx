@@ -1,4 +1,4 @@
-# NovusX CLI Commands
+# MundusX CLI Commands
 
 This is the current command surface for the Rust CLI.
 

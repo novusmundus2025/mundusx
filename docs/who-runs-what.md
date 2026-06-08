@@ -32,7 +32,7 @@ Your machine sits idle most of the time. When a job is routed to you:
 
 ---
 
-## As the Company (NovusX)
+## As the Company (MundusX)
 
 You run and maintain the shared infrastructure that all nodes connect to.
 
@@ -149,7 +149,7 @@ For the **control plane**: keep it proprietary in the private operator repo. Tha
 
 ```rust
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 NovusX, Inc.
+// Copyright 2026 MundusX, Inc.
 ```
 
 SPDX headers are not required but make enterprise users and legal audits significantly easier, and are read automatically by GitHub, FOSSA, and OSS compliance tools.

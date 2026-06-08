@@ -1,10 +1,10 @@
-# NovusX
+# MundusX
 
-NovusX is the product and platform we are building here. `opengpu` is the current CLI command name and compatibility binary, while the broader public OpenGPU ecosystem is treated as separate.
+MundusX is the product and platform we are building here. `opengpu` is the current CLI command name and compatibility binary, while the broader public OpenGPU ecosystem is treated as separate.
 
-This repository contains the public, contributor-facing pieces of NovusX. The operator/control-plane side lives in a separate private repo.
+This repository contains the public, contributor-facing pieces of MundusX. The operator/control-plane side lives in a separate private repo.
 
-NovusX is a distributed compute network that routes requests to the best available live node across Apple Silicon `M` series nodes.
+MundusX is a distributed compute network that routes requests to the best available live node across Apple Silicon `M` series nodes.
 
 `opengpu` is the current command family for the local prototype, but the current flow is localhost-only.
 

@@ -11,7 +11,7 @@ Use this document as the single working list:
 
 ## Current Focus
 
-1. **Public install endpoint behind `novusx.ai`**
+1. **Public install endpoint behind `mundusx.ai`**
    - keep the public install page aligned with the localhost preview
    - keep the install command, checksum wording, and release links in sync
    - keep the public landing copy matching the current signed release flow
@@ -20,7 +20,7 @@ Use this document as the single working list:
 
 ### Release and Install
 
-- [ ] Public install endpoint behind `novusx.ai`
+- [ ] Public install endpoint behind `mundusx.ai`
 - [x] Signed release binaries published from tags
 - [x] Packaging checks on macOS and Linux release artifacts
 - [ ] Homebrew tap or formula publishing

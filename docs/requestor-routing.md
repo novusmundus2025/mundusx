@@ -1,6 +1,6 @@
 # Requestor Routing
 
-This document explains how requestors should reach NovusX when the network grows beyond a single operator.
+This document explains how requestors should reach MundusX when the network grows beyond a single operator.
 
 ## Default Path
 

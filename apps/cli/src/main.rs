@@ -28,7 +28,7 @@ use model_catalog::{selection_for, ModelOption};
 #[command(
     name = "opengpu",
     version,
-    about = "NovusX CLI",
+    about = "MundusX CLI",
     arg_required_else_help = true
 )]
 struct Cli {
@@ -38,9 +38,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Start the NovusX network
+    /// Start the MundusX network
     Start,
-    /// Join the NovusX network (boots local state on first use)
+    /// Join the MundusX network (boots local state on first use)
     Connect,
     /// Store local operator auth state
     Login {
@@ -65,7 +65,7 @@ enum Commands {
         #[arg(long)]
         reset: bool,
     },
-    /// Leave the NovusX network
+    /// Leave the MundusX network
     #[command(visible_alias = "exit")]
     Disconnect,
     /// Show current node status
@@ -88,7 +88,7 @@ enum Commands {
         #[command(subcommand)]
         command: ModelCommands,
     },
-    /// Update the NovusX binary
+    /// Update the MundusX binary
     Update,
 }
 

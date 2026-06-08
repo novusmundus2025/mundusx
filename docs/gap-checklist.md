@@ -79,9 +79,9 @@ These are the larger ecosystem pieces needed if multiple operator companies and 
 
 The current local prototype still uses the `opengpu` CLI and route names because that is what the repo already implements and tests.
 
-`NovusX` is the user-facing brand for the product and the local UI surfaces.
+`MundusX` is the user-facing brand for the product and the local UI surfaces.
 
-If the binary family is renamed later, `novusx` can become the command name too, but that should be an intentional compatibility pass rather than an incidental change.
+If the binary family is renamed later, `mundusx` can become the command name too, but that should be an intentional compatibility pass rather than an incidental change.
 
 ## How To Use This Doc
 
