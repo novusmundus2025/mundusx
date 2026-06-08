@@ -30,6 +30,9 @@ This should be the source of truth for release artifacts and checksums.
 
 Add a Homebrew tap or formula for users who prefer `brew`.
 
+The repo-managed local release preview now generates `homebrew/opengpu.rb` from the signed
+release manifest so formula publishing can reuse the same artifact URL and checksum source.
+
 Why:
 
 - familiar on macOS

@@ -70,12 +70,13 @@ preview_url() {
 }
 
 build_preview() {
-  local target asset_name binary_source binary_path checksum_path index_path checksum release_url
+  local target asset_name binary_source binary_path checksum_path formula_path index_path checksum release_url
   target="$(target_triplet)"
   asset_name="${bin_name}-${target}"
   binary_source="$repo_root/target/release/$bin_name"
   binary_path="$asset_dir/$asset_name"
   checksum_path="$binary_path.sha256"
+  formula_path="$asset_dir/homebrew/opengpu.rb"
   index_path="$asset_dir/index.html"
   release_url="$(preview_url)"
 
@@ -92,6 +93,10 @@ build_preview() {
   printf '%s  %s\n' "$checksum" "$(basename "$binary_path")" > "$checksum_path"
   OPENGPU_RELEASE_SIGNING_ALLOW_GENERATED_KEYS=1 \
     "$repo_root/scripts/release-signing.sh" prepare "$asset_dir" "$asset_name" "local-preview" "0.1.0"
+  node "$repo_root/scripts/render-homebrew-formula.mjs" \
+    "$asset_dir/release-manifest.json" \
+    "$release_url/$asset_name" \
+    "$formula_path"
 
   cat > "$index_path" <<EOF
 <!doctype html>
@@ -250,6 +255,10 @@ build_preview() {
         font-size: 12px;
         line-height: 1.6;
       }
+      .inline-link {
+        color: var(--blue);
+        font-weight: 600;
+      }
       code {
         background: rgba(52, 82, 255, 0.06);
         border: 1px solid rgba(52, 82, 255, 0.1);
@@ -299,6 +308,10 @@ build_preview() {
 
         <div class="footer">
           Use this preview with <code>RELEASE_BASE_URL=$release_url bash install.sh</code>.
+        </div>
+        <div class="footer">
+          Homebrew formula:
+          <a class="inline-link" href="./homebrew/opengpu.rb">./homebrew/opengpu.rb</a>
         </div>
       </div>
     </div>
