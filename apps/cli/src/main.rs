@@ -95,6 +95,24 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Run an inference request — tries local worker first, falls back to network
+    Run {
+        /// The prompt to send
+        #[arg(long, short = 'p')]
+        prompt: String,
+        /// Model name to use (defaults to active model)
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+        /// Preferred backend
+        #[arg(long, default_value = "auto")]
+        backend: Backend,
+        /// Maximum tokens to generate
+        #[arg(long, default_value_t = 512)]
+        max_tokens: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -336,6 +354,260 @@ fn config_from_identity(identity: &identity::DeviceIdentity) -> Config {
         public_key_fingerprint: Some(identity.fingerprint.clone()),
         ..Config::default()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Local-first inference
+// ---------------------------------------------------------------------------
+
+struct InferenceResult {
+    output: String,
+    node_label: String,
+    model_name: Option<String>,
+}
+
+/// Try running inference locally via llama-cli, then fall back to the
+/// control plane if local is unavailable.
+fn run_inference_local_first(
+    config: &Config,
+    prompt: &str,
+    model: Option<&str>,
+    _backend: crate::types::Backend,
+    max_tokens: u32,
+) -> Result<InferenceResult, String> {
+    // --- 1. try local ---------------------------------------------------------
+    let model_dir = model::effective_model_dir(config);
+    match run_local_inference(&model_dir, prompt, model, max_tokens) {
+        Ok((output, model_name)) => {
+            return Ok(InferenceResult {
+                output,
+                node_label: "local".to_string(),
+                model_name,
+            });
+        }
+        Err(local_err) => {
+            eprintln!("local worker unavailable: {local_err}");
+            eprintln!("falling back to network routing...");
+        }
+    }
+
+    // --- 2. remote fallback via control plane ---------------------------------
+    let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+    let job = serde_json::json!({
+        "request_id": request_id,
+        "prompt": prompt,
+        "preferred_backend": _backend.as_str(),
+        "model": model,
+        "max_tokens": max_tokens,
+    });
+
+    let result = operator_get_json(&config.control_plane_url, "/v1/jobs", None)
+        .err()
+        .map(|_| ()) // ignore GET error, we need POST
+        .ok_or_else(|| "unexpected GET response".to_string());
+    let _ = result; // discard
+
+    // POST the job
+    match http_post_json(&config.control_plane_url, "/v1/jobs", &job) {
+        Ok(record) => {
+            let job_id = record["job_id"]
+                .as_str()
+                .unwrap_or(&request_id)
+                .to_string();
+            Ok(InferenceResult {
+                output: format!(
+                    "Job submitted to network (id: {job_id}).\n\
+                     A contributor node will pick it up shortly.\n\
+                     Remote job result polling is not yet supported in the CLI."
+                ),
+                node_label: "network".to_string(),
+                model_name: model.map(|m| m.to_string()),
+            })
+        }
+        Err(error) => Err(format!("network routing failed: {error}")),
+    }
+}
+
+/// Find a GGUF model file under `model_dir`, optionally matching `model_name`,
+/// then invoke `llama-cli` and return (output, model_name).
+fn run_local_inference(
+    model_dir: &std::path::Path,
+    prompt: &str,
+    model_name: Option<&str>,
+    max_tokens: u32,
+) -> Result<(String, Option<String>), String> {
+    // resolve model path
+    let model_path = resolve_local_model_path(model_dir, model_name)
+        .map_err(|error| format!("no cached model: {error}"))?;
+
+    let detected_name = model_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string());
+
+    // check llama-cli is available
+    let which = Command::new("llama-cli")
+        .arg("--version")
+        .output()
+        .map_err(|_| "llama-cli not found in PATH".to_string())?;
+    if !which.status.success() {
+        return Err("llama-cli --version failed".to_string());
+    }
+
+    // run inference
+    let output = Command::new("llama-cli")
+        .arg("-m")
+        .arg(&model_path)
+        .arg("--device")
+        .arg("BLAS")
+        .arg("--simple-io")
+        .arg("--single-turn")
+        .arg("--no-display-prompt")
+        .arg("--no-perf")
+        .arg("--log-disable")
+        .arg("--color")
+        .arg("off")
+        .arg("-p")
+        .arg(prompt)
+        .arg("-n")
+        .arg(max_tokens.to_string())
+        .arg("--seed")
+        .arg("42")
+        .output()
+        .map_err(|error| format!("failed to launch llama-cli: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "llama-cli exited {} — {}",
+            output.status.code().unwrap_or(-1),
+            stderr.lines().next().unwrap_or("no output")
+        ));
+    }
+
+    let transcript = String::from_utf8(output.stdout)
+        .map_err(|error| error.to_string())?
+        .trim()
+        .to_string();
+
+    Ok((transcript, detected_name))
+}
+
+fn resolve_local_model_path(
+    model_dir: &std::path::Path,
+    model_name: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let mut search_dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(name) = model_name {
+        search_dirs.push(model_dir.join(sanitize_for_path(name)));
+    }
+    search_dirs.push(model_dir.to_path_buf());
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for dir in &search_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
+                    files.push(path);
+                }
+            }
+        }
+        if !files.is_empty() {
+            break;
+        }
+    }
+
+    files.sort();
+    files
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no .gguf file found in {}", model_dir.display()))
+}
+
+fn sanitize_for_path(name: &str) -> String {
+    name.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+/// HTTP POST a JSON payload to an http:// control-plane URL.
+fn http_post_json(
+    control_plane_url: &str,
+    path: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let url = control_plane_url.trim();
+    if url.starts_with("https://") {
+        return Err(
+            "remote job routing requires an http:// control-plane URL; \
+             the public control plane (https://api.mundusx.ai) is not reachable \
+             from the CLI over plain HTTP — configure a local or LAN control plane."
+                .to_string(),
+        );
+    }
+    let without_scheme = url
+        .strip_prefix("http://")
+        .ok_or_else(|| "control-plane-url must start with http://".to_string())?;
+    let (host_port, _) = without_scheme
+        .split_once('/')
+        .unwrap_or((without_scheme, ""));
+    let (host, port_str) = host_port.split_once(':').unwrap_or((host_port, "80"));
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| "invalid control-plane port".to_string())?;
+
+    let body = serde_json::to_string(payload).map_err(|e| e.to_string())?;
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+
+    let timeout = Duration::from_secs(10);
+    let addr = format!("{host}:{port}");
+    let mut stream = TcpStream::connect_timeout(
+        &addr.parse().map_err(|_| format!("invalid address: {addr}"))?,
+        timeout,
+    )
+    .map_err(|error| format!("connect failed: {error}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| format!("read timeout: {error}"))?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("write failed: {error}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| format!("read failed: {error}"))?;
+
+    let status_line = response
+        .lines()
+        .next()
+        .ok_or_else(|| "empty response".to_string())?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "malformed HTTP response".to_string())?;
+    if !(200..300).contains(&status_code) {
+        return Err(format!("HTTP {status_code}"));
+    }
+
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or_default();
+    serde_json::from_str(body).map_err(|e| e.to_string())
 }
 
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
@@ -1631,6 +1903,42 @@ fn main() {
             println!("installPage: http://127.0.0.1:3002/install");
             println!("releasePreview: http://127.0.0.1:8788/releases/latest/download");
             println!("smokeCheck: npm run smoke:local");
+        }
+        Commands::Run {
+            prompt,
+            model,
+            backend,
+            max_tokens,
+            json,
+        } => {
+            let config = current_config_or_default();
+            match run_inference_local_first(&config, &prompt, model.as_deref(), backend, max_tokens) {
+                Ok(result) => {
+                    if json {
+                        let output = serde_json::json!({
+                            "prompt": prompt,
+                            "output": result.output,
+                            "node": result.node_label,
+                            "model": result.model_name,
+                        });
+                        if let Err(error) = print_json(&output) {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
+                    } else {
+                        println!("node: {}", result.node_label);
+                        if let Some(model_name) = &result.model_name {
+                            println!("model: {model_name}");
+                        }
+                        println!();
+                        println!("{}", result.output);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("run failed: {error}");
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Credits { json } => {
             let config = current_config_or_default();
