@@ -64,6 +64,9 @@ The worker should return:
 - job ID
 - worker ID
 - status
+- output text
+- resolved backend
+- node ID
 - optional error text
  
 When running on Mac `M`, the worker uses the cached GGUF model with `llama.cpp` in single-turn batch mode via `llama-cli --device BLAS`.

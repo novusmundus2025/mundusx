@@ -18,6 +18,7 @@
     "test:cli-docs": "bash tests/cli-docs-surface.sh",
     "test:docs-site": "bash tests/public-docs-site.sh",
     "test:license": "bash tests/license-surface.sh",
+    "test:shared-contract": "bash tests/shared-contract-surface.sh",
     "test:requestor-api": "bash tests/requestor-api-contract.sh",
     "smoke:local": "./scripts/localhost-smoke.sh"
   }
