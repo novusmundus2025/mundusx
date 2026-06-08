@@ -47,3 +47,28 @@ body:
         Docs: docs/requestor-api.md
     validations:
       required: false
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Choose the delivery priority that should map to the matching GitHub label.
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Choose the repo area that owns this work.
+      options:
+        - Public
+        - Private
+        - Platform
+        - Workflow
+        - Docs
+    validations:
+      required: true
