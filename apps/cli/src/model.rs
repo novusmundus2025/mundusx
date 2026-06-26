@@ -13,6 +13,31 @@ pub struct ModelRecord {
     pub active: bool,
     pub cached_at: String,
     pub model_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_vram_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportModelOptions<'a> {
+    pub name: Option<&'a str>,
+    pub path: &'a Path,
+    pub active: bool,
+    pub backend: crate::types::Backend,
+    pub available_vram_mb: Option<u64>,
 }
 
 pub fn effective_model_dir(config: &Config) -> PathBuf {
@@ -79,6 +104,40 @@ pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     let _ = download_model_if_available(config, name)?;
     let mut models = list_models(config)?;
     let record = upsert_model(config, &mut models, name, true)?;
+    sync_config_models(config, &models);
+    write_models(config, &models)?;
+    Ok(record)
+}
+
+pub fn import_model(
+    config: &mut Config,
+    options: ImportModelOptions<'_>,
+) -> io::Result<ModelRecord> {
+    ensure_effective_model_dir(config);
+    let source = options.path;
+    let metadata = fs::metadata(source)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "model import path must point to a file",
+        ));
+    }
+
+    let name = options
+        .name
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            source
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string())
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "model name is required"))?;
+
+    let mut models = list_models(config)?;
+    let record = upsert_imported_model(config, &mut models, &name, options, metadata.len())?;
     sync_config_models(config, &models);
     write_models(config, &models)?;
     Ok(record)
@@ -181,6 +240,84 @@ fn source_filename(source_url: &str) -> String {
 
 fn model_file_path(config: &Config, name: &str, option: &ModelOption) -> PathBuf {
     model_cache_dir(config, name).join(source_filename(&option.source_url))
+}
+
+fn model_format(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn model_quantization(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
+    let parts = stem.split(['.', '-']).collect::<Vec<_>>();
+    for part in parts {
+        let subparts = part.split('_').collect::<Vec<_>>();
+        for (index, value) in subparts.iter().enumerate() {
+            if value.len() >= 2
+                && value.starts_with('q')
+                && value[1..].chars().all(|ch| ch.is_ascii_digit())
+            {
+                let mut tag = vec![*value];
+                for next in subparts.iter().skip(index + 1).take(2) {
+                    if next.len() == 1 && next.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                        tag.push(*next);
+                    } else {
+                        break;
+                    }
+                }
+                return Some(tag.join("_").to_ascii_uppercase());
+            }
+        }
+    }
+    None
+}
+
+fn estimate_vram_mb(size_bytes: u64) -> u64 {
+    let base_mb = size_bytes.div_ceil(1024 * 1024);
+    base_mb.saturating_mul(5).div_ceil(4).saturating_add(512)
+}
+
+fn compatibility_for(
+    backend: crate::types::Backend,
+    format: Option<&str>,
+    estimated_vram_mb: u64,
+    available_vram_mb: Option<u64>,
+) -> (String, String) {
+    if format != Some("gguf") {
+        return (
+            "rejected".to_string(),
+            "only GGUF files are currently runnable by the local worker".to_string(),
+        );
+    }
+
+    if backend == crate::types::Backend::Cuda {
+        match available_vram_mb {
+            Some(available) if estimated_vram_mb > available => (
+                "rejected".to_string(),
+                format!("estimated {estimated_vram_mb} MB VRAM exceeds available {available} MB"),
+            ),
+            Some(available) if estimated_vram_mb > available.saturating_mul(4) / 5 => (
+                "degraded".to_string(),
+                format!(
+                    "estimated {estimated_vram_mb} MB VRAM is close to available {available} MB"
+                ),
+            ),
+            Some(available) => (
+                "accepted".to_string(),
+                format!("estimated {estimated_vram_mb} MB VRAM fits available {available} MB"),
+            ),
+            None => (
+                "degraded".to_string(),
+                "CUDA VRAM was not supplied; compatibility needs runtime confirmation".to_string(),
+            ),
+        }
+    } else {
+        (
+            "accepted".to_string(),
+            "GGUF file is compatible with the local llama.cpp worker path".to_string(),
+        )
+    }
 }
 
 fn download_model_if_available(config: &Config, name: &str) -> io::Result<bool> {
@@ -362,6 +499,14 @@ fn upsert_model(
             active,
             cached_at: now,
             model_dir,
+            source_path: None,
+            file_name: None,
+            format: None,
+            quantization: None,
+            size_bytes: None,
+            estimated_vram_mb: None,
+            compatibility: None,
+            compatibility_reason: None,
         });
     }
 
@@ -381,6 +526,79 @@ fn upsert_model(
         .expect("model record");
 
     Ok(record)
+}
+
+fn upsert_imported_model(
+    config: &mut Config,
+    models: &mut Vec<ModelRecord>,
+    name: &str,
+    options: ImportModelOptions<'_>,
+    size_bytes: u64,
+) -> io::Result<ModelRecord> {
+    ensure_manifest_dir(config)?;
+    let model_dir = effective_model_dir(config).display().to_string();
+    let now = now_unix_seconds();
+    let format = model_format(options.path);
+    let estimated_vram_mb = estimate_vram_mb(size_bytes);
+    let (compatibility, compatibility_reason) = compatibility_for(
+        options.backend,
+        format.as_deref(),
+        estimated_vram_mb,
+        options.available_vram_mb,
+    );
+
+    for model in models.iter_mut() {
+        if model.name == name {
+            model.active = options.active || model.active;
+            model.cached_at = now.clone();
+            model.model_dir = model_dir.clone();
+            model.source_path = Some(options.path.display().to_string());
+            model.file_name = options
+                .path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string());
+            model.format = format.clone();
+            model.quantization = model_quantization(options.path);
+            model.size_bytes = Some(size_bytes);
+            model.estimated_vram_mb = Some(estimated_vram_mb);
+            model.compatibility = Some(compatibility.clone());
+            model.compatibility_reason = Some(compatibility_reason.clone());
+        } else if options.active {
+            model.active = false;
+        }
+    }
+
+    if !models.iter().any(|model| model.name == name) {
+        models.push(ModelRecord {
+            name: name.to_string(),
+            active: options.active,
+            cached_at: now,
+            model_dir,
+            source_path: Some(options.path.display().to_string()),
+            file_name: options
+                .path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string()),
+            format,
+            quantization: model_quantization(options.path),
+            size_bytes: Some(size_bytes),
+            estimated_vram_mb: Some(estimated_vram_mb),
+            compatibility: Some(compatibility),
+            compatibility_reason: Some(compatibility_reason),
+        });
+    }
+
+    if options.active {
+        config.active_model = Some(name.to_string());
+    }
+
+    models
+        .iter()
+        .find(|model| model.name == name)
+        .cloned()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "model import failed"))
 }
 
 fn write_models(config: &Config, models: &[ModelRecord]) -> io::Result<()> {
@@ -508,5 +726,84 @@ mod tests {
         assert_eq!(fs::read(&dest).expect("dest"), b"model-bytes");
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn imports_compatible_local_gguf_model() {
+        let (mut config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let source_path = temp_dir.join("llama-3.2-q4_k_m.gguf");
+        fs::write(&source_path, vec![0u8; 1024 * 1024]).expect("write source");
+
+        let record = import_model(
+            &mut config,
+            ImportModelOptions {
+                name: Some("local-llama"),
+                path: &source_path,
+                active: true,
+                backend: crate::types::Backend::Cuda,
+                available_vram_mb: Some(4096),
+            },
+        )
+        .expect("import model");
+
+        assert_eq!(record.name, "local-llama");
+        assert!(record.active);
+        assert_eq!(record.format.as_deref(), Some("gguf"));
+        assert_eq!(record.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(record.compatibility.as_deref(), Some("accepted"));
+        assert_eq!(config.active_model.as_deref(), Some("local-llama"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_local_model_that_exceeds_cuda_vram() {
+        let (mut config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let source_path = temp_dir.join("too-large-q8_0.gguf");
+        fs::write(&source_path, vec![0u8; 2 * 1024 * 1024]).expect("write source");
+
+        let record = import_model(
+            &mut config,
+            ImportModelOptions {
+                name: None,
+                path: &source_path,
+                active: false,
+                backend: crate::types::Backend::Cuda,
+                available_vram_mb: Some(1),
+            },
+        )
+        .expect("import model");
+
+        assert_eq!(record.name, "too-large-q8_0");
+        assert_eq!(record.compatibility.as_deref(), Some("rejected"));
+        assert!(record
+            .compatibility_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("exceeds available"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn import_requires_existing_model_file() {
+        let (mut config, temp_dir) = temp_config();
+        let missing = temp_dir.join("missing.gguf");
+
+        let error = import_model(
+            &mut config,
+            ImportModelOptions {
+                name: Some("missing"),
+                path: &missing,
+                active: false,
+                backend: crate::types::Backend::Cuda,
+                available_vram_mb: Some(4096),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }

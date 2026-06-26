@@ -92,6 +92,8 @@ pub struct CudaDiagnostics {
 struct CachedModelRecord {
     name: String,
     active: bool,
+    #[serde(default)]
+    source_path: Option<String>,
 }
 
 fn sanitize_model_name(name: &str) -> String {
@@ -130,6 +132,39 @@ fn active_model_name_from_cache(model_dir: &Path) -> Option<String> {
     None
 }
 
+fn imported_model_path_from_cache(model_dir: &Path, model_name: Option<&str>) -> Option<PathBuf> {
+    let manifest_dir = model_dir.join(".opengpu");
+    let entries = fs::read_dir(manifest_dir).ok()?;
+    let mut active_fallback = None;
+
+    for entry in entries.flatten() {
+        if entry.file_type().ok()?.is_file()
+            && entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+        {
+            let raw = fs::read_to_string(entry.path()).ok()?;
+            let record = serde_json::from_str::<CachedModelRecord>(&raw).ok()?;
+            let path = record
+                .source_path
+                .as_ref()
+                .map(PathBuf::from)
+                .filter(|path| path.is_file());
+
+            if model_name
+                .map(|name| record.name == name)
+                .unwrap_or(record.active)
+            {
+                if path.is_some() {
+                    return path;
+                }
+            } else if record.active {
+                active_fallback = path;
+            }
+        }
+    }
+
+    active_fallback
+}
+
 fn collect_gguf_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     if !dir.exists() {
         return Ok(());
@@ -149,6 +184,10 @@ fn collect_gguf_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
 }
 
 fn resolve_model_path(model_dir: &Path, model_name: Option<&str>) -> io::Result<PathBuf> {
+    if let Some(path) = imported_model_path_from_cache(model_dir, model_name) {
+        return Ok(path);
+    }
+
     let mut search_dirs = Vec::new();
     if let Some(name) = model_name {
         search_dirs.push(model_dir.join(sanitize_model_name(name)));
@@ -738,5 +777,34 @@ mod tests {
         assert_eq!(diagnostics.device_name.as_deref(), Some("NVIDIA RTX 4090"));
         assert_eq!(diagnostics.memory_mb, Some(24564));
         assert!(!diagnostics.low_vram_profile);
+    }
+
+    #[test]
+    fn resolves_imported_model_source_path_from_manifest() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "opengpu-agent-imported-model-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let manifest_dir = temp_dir.join(".opengpu");
+        fs::create_dir_all(&manifest_dir).expect("manifest dir");
+        let source_path = temp_dir.join("external-q4_k_m.gguf");
+        fs::write(&source_path, b"model").expect("model file");
+        fs::write(
+            manifest_dir.join("external.json"),
+            serde_json::json!({
+                "name": "external",
+                "active": true,
+                "cached_at": "1",
+                "model_dir": temp_dir,
+                "source_path": source_path,
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+
+        let resolved = resolve_model_path(&temp_dir, Some("external")).expect("resolve model");
+
+        assert_eq!(resolved, source_path);
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
