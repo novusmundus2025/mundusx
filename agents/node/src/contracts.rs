@@ -199,6 +199,16 @@ pub struct WorkerHealthReport {
     pub model_path: Option<String>,
     pub llama_cli_available: bool,
     pub blas_device_available: bool,
+    #[serde(default)]
+    pub cuda_device_available: bool,
+    #[serde(default)]
+    pub cuda_driver_available: bool,
+    #[serde(default)]
+    pub cuda_device_name: Option<String>,
+    #[serde(default)]
+    pub cuda_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub cuda_low_vram_profile: bool,
     pub power_source: String,
     pub on_battery: bool,
     pub battery_percent: Option<u8>,

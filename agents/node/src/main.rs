@@ -161,7 +161,11 @@ fn resolved_state(config: &AgentConfig) -> AgentState {
 
 fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyReport) {
     let model_dir = config.effective_model_dir();
-    let health = worker::probe_worker_health(&model_dir, config.active_model.as_deref());
+    let health = worker::probe_worker_health(
+        &model_dir,
+        config.active_model.as_deref(),
+        resolved_backend(config),
+    );
     let policy = worker::probe_worker_policy(&health, config.contribution_percent);
     (health, policy)
 }
@@ -207,6 +211,7 @@ fn resolved_backend(config: &AgentConfig) -> Backend {
 
         if std::env::var_os("NVIDIA_VISIBLE_DEVICES").is_some()
             || std::env::var_os("CUDA_VISIBLE_DEVICES").is_some()
+            || worker::probe_cuda_diagnostics().device_available
         {
             return Backend::Cuda;
         }
@@ -264,7 +269,7 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
         public_key_hex: identity.public_key_hex.clone(),
         hostname: detect_hostname(),
         identity_trust_path: identity::trust_path(),
-        backend: config.backend_preference,
+        backend: resolved_backend(config),
         contribution_percent: config.contribution_percent,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
     }
@@ -423,6 +428,41 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
     println!(
         "blasDeviceAvailable: {}",
         if health.blas_device_available {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "cudaDeviceAvailable: {}",
+        if health.cuda_device_available {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "cudaDriverAvailable: {}",
+        if health.cuda_driver_available {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "cudaDeviceName: {}",
+        health.cuda_device_name.as_deref().unwrap_or("none")
+    );
+    println!(
+        "cudaMemoryMb: {}",
+        health
+            .cuda_memory_mb
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    println!(
+        "cudaLowVramProfile: {}",
+        if health.cuda_low_vram_profile {
             "yes"
         } else {
             "no"

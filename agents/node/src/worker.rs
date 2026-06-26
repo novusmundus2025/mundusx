@@ -78,6 +78,16 @@ struct PowerState {
     battery_percent: Option<u8>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CudaDiagnostics {
+    pub device_available: bool,
+    pub driver_available: bool,
+    pub device_name: Option<String>,
+    pub memory_mb: Option<u32>,
+    pub low_vram_profile: bool,
+    pub notes: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CachedModelRecord {
     name: String,
@@ -185,6 +195,89 @@ fn probe_llama_cli_devices() -> Result<String, String> {
     Ok(stdout)
 }
 
+fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
+    let mut best: Option<(String, u32)> = None;
+
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Some((name, memory)) = line.rsplit_once(',') else {
+            continue;
+        };
+        let Some(memory_mb) = memory.trim().parse::<u32>().ok() else {
+            continue;
+        };
+        let name = name.trim().to_string();
+        if best
+            .as_ref()
+            .map(|(_, best_memory)| memory_mb > *best_memory)
+            .unwrap_or(true)
+        {
+            best = Some((name, memory_mb));
+        }
+    }
+
+    if let Some((device_name, memory_mb)) = best {
+        let low_vram_profile = memory_mb <= 4096;
+        let mut notes = Vec::new();
+        if low_vram_profile {
+            notes.push(format!(
+                "CUDA low-VRAM profile selected for {memory_mb} MB; advertise modest workloads only"
+            ));
+        }
+
+        CudaDiagnostics {
+            device_available: true,
+            driver_available: true,
+            device_name: Some(device_name),
+            memory_mb: Some(memory_mb),
+            low_vram_profile,
+            notes,
+        }
+    } else {
+        CudaDiagnostics {
+            driver_available: true,
+            notes: vec!["nvidia-smi returned no parseable GPU rows".to_string()],
+            ..CudaDiagnostics::default()
+        }
+    }
+}
+
+pub fn probe_cuda_diagnostics() -> CudaDiagnostics {
+    let output = Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            parse_nvidia_smi_query(&stdout)
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            CudaDiagnostics {
+                notes: vec![format!(
+                    "nvidia-smi exited {}: {}",
+                    output.status.code().unwrap_or(-1),
+                    stderr.lines().next().unwrap_or("no stderr")
+                )],
+                ..CudaDiagnostics::default()
+            }
+        }
+        Err(error) => CudaDiagnostics {
+            notes: vec![format!(
+                "nvidia-smi unavailable; install NVIDIA driver/CUDA runtime first: {error}"
+            )],
+            ..CudaDiagnostics::default()
+        },
+    }
+}
+
 fn probe_power_state() -> PowerState {
     #[cfg(target_os = "macos")]
     {
@@ -288,30 +381,50 @@ fn run_llama_command(
     Ok((generated, "blas".to_string()))
 }
 
-pub fn probe_worker_health(model_dir: &Path, model_name: Option<&str>) -> WorkerHealthReport {
+pub fn probe_worker_health(
+    model_dir: &Path,
+    model_name: Option<&str>,
+    backend: Backend,
+) -> WorkerHealthReport {
     let mut notes = Vec::new();
     let mut model_path = None;
     let mut llama_cli_available = false;
     let mut blas_device_available = false;
     let power_state = probe_power_state();
+    let cuda = probe_cuda_diagnostics();
 
     match resolve_model_path(model_dir, model_name) {
         Ok(path) => model_path = Some(path.display().to_string()),
         Err(error) => notes.push(format!("model cache missing: {error}")),
     }
 
-    match probe_llama_cli_devices() {
-        Ok(stdout) => {
-            llama_cli_available = true;
-            blas_device_available = stdout.lines().any(|line| line.contains("BLAS"));
-            if !blas_device_available {
-                notes.push("BLAS device not listed by llama-cli".to_string());
+    if backend != Backend::Cuda {
+        match probe_llama_cli_devices() {
+            Ok(stdout) => {
+                llama_cli_available = true;
+                blas_device_available = stdout.lines().any(|line| line.contains("BLAS"));
+                if !blas_device_available {
+                    notes.push("BLAS device not listed by llama-cli".to_string());
+                }
             }
+            Err(error) => notes.push(error),
         }
-        Err(error) => notes.push(error),
     }
 
-    let healthy = model_path.is_some() && llama_cli_available && blas_device_available;
+    if backend == Backend::Cuda {
+        notes.extend(cuda.notes.clone());
+        if !cuda.device_available {
+            notes.push(
+                "CUDA device not detected; node will stay unavailable for CUDA jobs".to_string(),
+            );
+        }
+    }
+
+    let healthy = if backend == Backend::Cuda {
+        cuda.device_available && cuda.driver_available
+    } else {
+        model_path.is_some() && llama_cli_available && blas_device_available
+    };
 
     WorkerHealthReport {
         healthy,
@@ -320,10 +433,19 @@ pub fn probe_worker_health(model_dir: &Path, model_name: Option<&str>) -> Worker
         model_path,
         llama_cli_available,
         blas_device_available,
+        cuda_device_available: cuda.device_available,
+        cuda_driver_available: cuda.driver_available,
+        cuda_device_name: cuda.device_name,
+        cuda_memory_mb: cuda.memory_mb,
+        cuda_low_vram_profile: cuda.low_vram_profile,
         power_source: power_state.source,
         on_battery: power_state.on_battery,
         battery_percent: power_state.battery_percent,
-        runtime_mode: "blas".to_string(),
+        runtime_mode: if backend == Backend::Cuda {
+            "cuda".to_string()
+        } else {
+            "blas".to_string()
+        },
         checked_at: now_unix_seconds(),
         notes,
     }
@@ -584,4 +706,37 @@ pub fn launch_worker(
 
     let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
     serde_json::from_str(stdout.trim()).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_low_vram_cuda_device_from_nvidia_smi() {
+        let diagnostics = parse_nvidia_smi_query("NVIDIA GeForce GTX 1050 Ti, 4096\n");
+
+        assert!(diagnostics.device_available);
+        assert!(diagnostics.driver_available);
+        assert_eq!(
+            diagnostics.device_name.as_deref(),
+            Some("NVIDIA GeForce GTX 1050 Ti")
+        );
+        assert_eq!(diagnostics.memory_mb, Some(4096));
+        assert!(diagnostics.low_vram_profile);
+        assert!(diagnostics
+            .notes
+            .iter()
+            .any(|note| note.contains("low-VRAM profile")));
+    }
+
+    #[test]
+    fn chooses_largest_cuda_device_from_nvidia_smi() {
+        let diagnostics =
+            parse_nvidia_smi_query("NVIDIA GeForce GTX 1050 Ti, 4096\nNVIDIA RTX 4090, 24564\n");
+
+        assert_eq!(diagnostics.device_name.as_deref(), Some("NVIDIA RTX 4090"));
+        assert_eq!(diagnostics.memory_mb, Some(24564));
+        assert!(!diagnostics.low_vram_profile);
+    }
 }
