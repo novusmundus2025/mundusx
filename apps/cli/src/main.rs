@@ -14,6 +14,7 @@ use std::env;
 use std::io::{self, IsTerminal, Read, Write};
 use std::process::Command;
 use std::thread;
+use std::time::{Duration, Instant};
 use types::Backend;
 
 use config::{config_exists, load_config, resolved_config_path, save_config, Config};
@@ -95,6 +96,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Submit and inspect async control-plane jobs
+    Jobs {
+        #[command(subcommand)]
+        command: JobsCommands,
+    },
     /// Get or set configuration values
     Config {
         #[command(subcommand)]
@@ -151,6 +157,48 @@ enum ModelCommands {
     Prune {
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum JobsCommands {
+    /// Submit an async job and print its job/request identifiers
+    Submit {
+        /// The prompt to send
+        #[arg(long, short = 'p')]
+        prompt: String,
+        /// Model name to request
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+        /// Preferred backend
+        #[arg(long, default_value = "auto")]
+        backend: Backend,
+        /// Maximum tokens to generate
+        #[arg(long, default_value_t = 512)]
+        max_tokens: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fetch current state for a submitted job
+    Status {
+        job_id: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Poll until a job reaches a terminal state or times out
+    Wait {
+        job_id: String,
+        /// Maximum seconds to wait
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        /// Poll interval in seconds
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -411,28 +459,10 @@ fn run_inference_local_first(
     }
 
     // --- 2. remote fallback via control plane ---------------------------------
-    let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
-    let job = serde_json::json!({
-        "request_id": request_id,
-        "prompt": prompt,
-        "preferred_backend": _backend.as_str(),
-        "model": model,
-        "max_tokens": max_tokens,
-    });
-
-    let result = operator_get_json(&config.control_plane_url, "/v1/jobs", None)
-        .err()
-        .map(|_| ()) // ignore GET error, we need POST
-        .ok_or_else(|| "unexpected GET response".to_string());
-    let _ = result; // discard
-
-    // POST the job
+    let (request_id, job) = build_job_submission_payload(prompt, model, _backend, max_tokens);
     match http_post_json(&config.control_plane_url, "/v1/jobs", &job) {
         Ok(record) => {
-            let job_id = record["job_id"]
-                .as_str()
-                .unwrap_or(&request_id)
-                .to_string();
+            let job_id = record["job_id"].as_str().unwrap_or(&request_id).to_string();
             Ok(InferenceResult {
                 output: format!(
                     "Job submitted to network (id: {job_id}).\n\
@@ -445,6 +475,118 @@ fn run_inference_local_first(
         }
         Err(error) => Err(format!("network routing failed: {error}")),
     }
+}
+
+fn build_job_submission_payload(
+    prompt: &str,
+    model: Option<&str>,
+    backend: Backend,
+    max_tokens: u32,
+) -> (String, serde_json::Value) {
+    let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+    let job = serde_json::json!({
+        "request_id": request_id,
+        "prompt": prompt,
+        "preferred_backend": backend.as_str(),
+        "model": model,
+        "max_tokens": max_tokens,
+    });
+    (request_id, job)
+}
+
+fn submit_job(
+    config: &Config,
+    prompt: &str,
+    model: Option<&str>,
+    backend: Backend,
+    max_tokens: u32,
+) -> Result<serde_json::Value, String> {
+    let (_, job) = build_job_submission_payload(prompt, model, backend, max_tokens);
+    http_post_json(&config.control_plane_url, "/v1/jobs", &job)
+}
+
+fn job_status_path(job_id: &str) -> Result<String, String> {
+    let trimmed = job_id.trim();
+    if trimmed.is_empty() {
+        return Err("job id cannot be empty".to_string());
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        return Err("job id may only contain letters, numbers, hyphen, or underscore".to_string());
+    }
+    Ok(format!("/v1/jobs/{trimmed}"))
+}
+
+fn get_job(config: &Config, job_id: &str) -> Result<serde_json::Value, String> {
+    let path = job_status_path(job_id)?;
+    operator_get_json(
+        &config.control_plane_url,
+        &path,
+        config.auth_token.as_deref(),
+    )
+}
+
+fn job_state(payload: &serde_json::Value) -> String {
+    payload
+        .get("status")
+        .or_else(|| payload.get("state"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown")
+        .to_ascii_lowercase()
+}
+
+fn job_is_terminal(payload: &serde_json::Value) -> bool {
+    matches!(
+        job_state(payload).as_str(),
+        "completed" | "failed" | "cancelled" | "canceled"
+    )
+}
+
+fn wait_for_job(
+    config: &Config,
+    job_id: &str,
+    timeout_secs: u64,
+    interval_secs: u64,
+) -> Result<serde_json::Value, String> {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let interval = Duration::from_secs(interval_secs.max(1));
+
+    loop {
+        let payload = get_job(config, job_id)?;
+        if job_is_terminal(&payload) {
+            return Ok(payload);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for job {job_id} while status was {}",
+                job_state(&payload)
+            ));
+        }
+        thread::sleep(interval);
+    }
+}
+
+fn print_job_response(payload: &serde_json::Value, json: bool) -> Result<(), String> {
+    if json {
+        return print_json(payload);
+    }
+
+    if let Some(job_id) = payload.get("job_id").and_then(|value| value.as_str()) {
+        println!("jobId: {job_id}");
+    }
+    if let Some(request_id) = payload.get("request_id").and_then(|value| value.as_str()) {
+        println!("requestId: {request_id}");
+    }
+    println!("status: {}", job_state(payload));
+    if let Some(output) = payload.get("output").and_then(|value| value.as_str()) {
+        println!("output: {output}");
+    }
+    if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
+        println!("error: {error}");
+    }
+    Ok(())
 }
 
 /// Find a GGUF model file under `model_dir`, optionally matching `model_name`,
@@ -546,7 +688,13 @@ fn resolve_local_model_path(
 
 fn sanitize_for_path(name: &str) -> String {
     name.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string()
@@ -564,12 +712,10 @@ fn http_post_json(
 
     let url = control_plane_url.trim();
     if url.starts_with("https://") {
-        return Err(
-            "remote job routing requires an http:// control-plane URL; \
+        return Err("remote job routing requires an http:// control-plane URL; \
              the public control plane (https://api.mundusx.ai) is not reachable \
              from the CLI over plain HTTP — configure a local or LAN control plane."
-                .to_string(),
-        );
+            .to_string());
     }
     let without_scheme = url
         .strip_prefix("http://")
@@ -593,7 +739,9 @@ fn http_post_json(
     let timeout = Duration::from_secs(10);
     let addr = format!("{host}:{port}");
     let mut stream = TcpStream::connect_timeout(
-        &addr.parse().map_err(|_| format!("invalid address: {addr}"))?,
+        &addr
+            .parse()
+            .map_err(|_| format!("invalid address: {addr}"))?,
         timeout,
     )
     .map_err(|error| format!("connect failed: {error}"))?;
@@ -658,7 +806,9 @@ fn operator_get_json(
     let without_scheme = url
         .strip_prefix("http://")
         .ok_or_else(|| "control-plane-url must start with http://".to_string())?;
-    let (host_port, _) = without_scheme.split_once('/').unwrap_or((without_scheme, ""));
+    let (host_port, _) = without_scheme
+        .split_once('/')
+        .unwrap_or((without_scheme, ""));
     let (host, port_str) = host_port.split_once(':').unwrap_or((host_port, "80"));
     let port: u16 = port_str
         .parse()
@@ -1931,7 +2081,8 @@ fn main() {
             json,
         } => {
             let config = current_config_or_default();
-            match run_inference_local_first(&config, &prompt, model.as_deref(), backend, max_tokens) {
+            match run_inference_local_first(&config, &prompt, model.as_deref(), backend, max_tokens)
+            {
                 Ok(result) => {
                     if json {
                         let output = serde_json::json!({
@@ -1959,13 +2110,42 @@ fn main() {
                 }
             }
         }
+        Commands::Jobs { command } => {
+            let config = current_config_or_default();
+            let result = match command {
+                JobsCommands::Submit {
+                    prompt,
+                    model,
+                    backend,
+                    max_tokens,
+                    json,
+                } => submit_job(&config, &prompt, model.as_deref(), backend, max_tokens)
+                    .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
+                JobsCommands::Status { job_id, json } => get_job(&config, &job_id)
+                    .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
+                JobsCommands::Wait {
+                    job_id,
+                    timeout,
+                    interval,
+                    json,
+                } => wait_for_job(&config, &job_id, timeout, interval)
+                    .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
+            };
+
+            if let Err(error) = result {
+                eprintln!("jobs command failed: {error}");
+                std::process::exit(1);
+            }
+        }
         Commands::Config { command } => {
             let mut config = current_config_or_default();
             match command {
                 ConfigCommands::ModelDir { path } => {
                     let expanded = if path.starts_with('~') {
                         if let Some(home) = dirs::home_dir() {
-                            home.join(path.trim_start_matches("~/")).display().to_string()
+                            home.join(path.trim_start_matches("~/"))
+                                .display()
+                                .to_string()
                         } else {
                             path.clone()
                         }
@@ -2025,8 +2205,12 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{doctor_payload, logs_payload, Cli, Commands};
+    use super::{
+        build_job_submission_payload, doctor_payload, job_is_terminal, job_status_path,
+        logs_payload, Cli, Commands, JobsCommands,
+    };
     use crate::config::Config;
+    use crate::types::Backend;
     use clap::Parser;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
@@ -2052,6 +2236,112 @@ mod tests {
     fn logs_command_parses() {
         let cli = Cli::try_parse_from(["opengpu", "logs", "--json"]).expect("logs should parse");
         assert!(matches!(cli.command, Commands::Logs { json: true }));
+    }
+
+    #[test]
+    fn jobs_submit_command_parses_async_options() {
+        let cli = Cli::try_parse_from([
+            "opengpu",
+            "jobs",
+            "submit",
+            "--prompt",
+            "hello",
+            "--model",
+            "smol",
+            "--backend",
+            "cuda",
+            "--max-tokens",
+            "64",
+            "--json",
+        ])
+        .expect("jobs submit should parse");
+
+        match cli.command {
+            Commands::Jobs {
+                command:
+                    JobsCommands::Submit {
+                        prompt,
+                        model,
+                        backend,
+                        max_tokens,
+                        json,
+                    },
+            } => {
+                assert_eq!(prompt, "hello");
+                assert_eq!(model.as_deref(), Some("smol"));
+                assert_eq!(backend, Backend::Cuda);
+                assert_eq!(max_tokens, 64);
+                assert!(json);
+            }
+            _ => panic!("expected jobs submit command"),
+        }
+    }
+
+    #[test]
+    fn jobs_status_and_wait_commands_parse() {
+        let status = Cli::try_parse_from(["opengpu", "jobs", "status", "job_123", "--json"])
+            .expect("jobs status should parse");
+        assert!(matches!(
+            status.command,
+            Commands::Jobs {
+                command: JobsCommands::Status { json: true, .. }
+            }
+        ));
+
+        let wait = Cli::try_parse_from([
+            "opengpu",
+            "jobs",
+            "wait",
+            "job-123",
+            "--timeout",
+            "30",
+            "--interval",
+            "5",
+        ])
+        .expect("jobs wait should parse");
+        assert!(matches!(
+            wait.command,
+            Commands::Jobs {
+                command: JobsCommands::Wait {
+                    timeout: 30,
+                    interval: 5,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn job_submission_payload_matches_control_plane_contract() {
+        let (_, payload) = build_job_submission_payload("hello", Some("smol"), Backend::Cuda, 64);
+
+        assert!(payload["request_id"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("req-"));
+        assert_eq!(payload["prompt"].as_str(), Some("hello"));
+        assert_eq!(payload["model"].as_str(), Some("smol"));
+        assert_eq!(payload["preferred_backend"].as_str(), Some("cuda"));
+        assert_eq!(payload["max_tokens"].as_u64(), Some(64));
+    }
+
+    #[test]
+    fn job_status_path_rejects_unsafe_ids() {
+        assert_eq!(
+            job_status_path("job_123").as_deref(),
+            Ok("/v1/jobs/job_123")
+        );
+        assert!(job_status_path("../jobs").is_err());
+        assert!(job_status_path("job 123").is_err());
+        assert!(job_status_path("").is_err());
+    }
+
+    #[test]
+    fn terminal_job_states_are_detected() {
+        assert!(job_is_terminal(&serde_json::json!({"status": "completed"})));
+        assert!(job_is_terminal(&serde_json::json!({"status": "failed"})));
+        assert!(!job_is_terminal(&serde_json::json!({"status": "queued"})));
+        assert!(!job_is_terminal(&serde_json::json!({"state": "assigned"})));
     }
 
     #[test]
