@@ -38,7 +38,8 @@ The prototype agent:
 - claims one queued job at a time for the local node
 - launches the local worker as a subprocess when requested
 - sends a busy heartbeat before worker launch and a ready heartbeat after completion
-- posts the worker result back to the control plane
+- posts the worker result back to the control plane with output, error, duration, model/runtime, backend, worker ID, and node ID metadata
+- converts subprocess launch failures into failed job completions so claimed jobs do not disappear silently
 - includes the worker health snapshot in heartbeats so the control plane can surface backend readiness
 - reports NVIDIA CUDA driver/device availability, device name, VRAM, and low-VRAM classification when the selected backend is `cuda`
 - treats the configured model directory as a local cache, not as something the control plane owns
@@ -75,6 +76,19 @@ Expected health behavior:
 - missing drivers or CUDA runtime support produce an actionable health note and keep policy from allowing CUDA jobs.
 
 The CUDA worker execution loop is still intentionally conservative. A low-VRAM node should advertise capability metadata and stay eligible only for modest CUDA work until model compatibility checks land.
+
+## Job Lifecycle
+
+When connected and policy-allowed, the run loop keeps heartbeats flowing while it checks for queued work:
+
+1. Send registration and heartbeat payloads.
+2. Poll `GET /v1/jobs/next?node_id=...`.
+3. If no compatible job is available, keep heartbeating.
+4. If a job is claimed, write and send a busy heartbeat.
+5. Launch the local worker with the claimed job profile.
+6. Post `completed` or `failed` to `POST /v1/jobs/complete`.
+7. Include output, error, duration, model/runtime, backend, worker ID, and node ID in the completion report.
+8. Write and send the next ready or paused heartbeat.
 
 ## Local Development URL
 

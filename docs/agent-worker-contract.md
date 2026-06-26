@@ -67,6 +67,8 @@ The worker should return:
 - output text
 - resolved backend
 - node ID
+- model name when known
+- runtime mode when known
 - optional error text
  
 When running on Mac `M`, the worker uses the cached GGUF model with `llama.cpp` in single-turn batch mode via `llama-cli --device BLAS`.
@@ -80,9 +82,12 @@ The current prototype adds one small control-plane queue:
 2. The control plane stores the job as `queued`.
 3. The agent asks `GET /v1/jobs/next?node_id=...` for work.
 4. If a queued job matches the node backend, the control plane marks it `assigned`.
-5. The agent launches the worker locally.
-6. The worker result is posted back to `POST /v1/jobs/complete`.
+5. The agent sends a busy heartbeat and launches the worker locally.
+6. The worker result is posted back to `POST /v1/jobs/complete` with output, error, duration, model/runtime, backend, worker ID, and node ID metadata.
 7. The control plane marks the job `completed` or `failed`.
+8. The agent sends a ready or paused heartbeat after completion so the control plane can keep scheduling decisions current.
+
+If the worker subprocess fails before returning a normal result, the agent still posts a failed completion for the claimed job. That failure includes the node ID, selected backend, model when known, runtime mode when known, duration, and actionable error text so the control plane can expose the failed lifecycle cleanly.
 
 ## Output Path
 
