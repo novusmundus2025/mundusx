@@ -21,7 +21,8 @@ use config::{config_exists, load_config, resolved_config_path, save_config, Conf
 use identity::{device_id_for_identity, ensure_identity, load_identity, load_or_create_identity};
 use model::{
     active_model_name, add_model, configured_model_dir_string, ensure_effective_model_dir,
-    list_models, prune_models, remove_model, use_model, ModelRecord,
+    import_model, list_models, prune_models, remove_model, use_model, ImportModelOptions,
+    ModelRecord,
 };
 use model_catalog::{selection_for, ModelOption};
 
@@ -147,6 +148,18 @@ enum ModelCommands {
     Use { name: String },
     /// Download or cache a model without switching to it
     Add { name: String },
+    /// Import an existing local model file and record compatibility metadata
+    Import {
+        path: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        backend: Option<Backend>,
+        #[arg(long)]
+        vram_mb: Option<u64>,
+        #[arg(long)]
+        activate: bool,
+    },
     /// Remove a cached model
     Remove {
         name: String,
@@ -429,6 +442,13 @@ struct InferenceResult {
     model_name: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct LocalModelManifestRecord {
+    name: String,
+    active: bool,
+    source_path: Option<String>,
+}
+
 /// Try running inference locally via llama-cli, then fall back to the
 /// control plane if local is unavailable.
 fn run_inference_local_first(
@@ -658,6 +678,10 @@ fn resolve_local_model_path(
     model_dir: &std::path::Path,
     model_name: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
+    if let Some(path) = resolve_manifest_model_path(model_dir, model_name) {
+        return Ok(path);
+    }
+
     let mut search_dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Some(name) = model_name {
         search_dirs.push(model_dir.join(sanitize_for_path(name)));
@@ -684,6 +708,42 @@ fn resolve_local_model_path(
         .into_iter()
         .next()
         .ok_or_else(|| format!("no .gguf file found in {}", model_dir.display()))
+}
+
+fn resolve_manifest_model_path(
+    model_dir: &std::path::Path,
+    model_name: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let manifest_dir = model_dir.join(".opengpu");
+    let entries = std::fs::read_dir(manifest_dir).ok()?;
+    let mut fallback = None;
+
+    for entry in entries.flatten() {
+        if entry.file_type().ok()?.is_file()
+            && entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+        {
+            let raw = std::fs::read_to_string(entry.path()).ok()?;
+            let record = serde_json::from_str::<LocalModelManifestRecord>(&raw).ok()?;
+            let matches_name = model_name
+                .map(|name| record.name == name)
+                .unwrap_or(record.active);
+            if matches_name {
+                let source_path = record.source_path.as_ref()?;
+                let path = std::path::PathBuf::from(source_path);
+                if path.is_file() {
+                    return Some(path);
+                }
+            } else if record.active {
+                fallback = record
+                    .source_path
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .filter(|path| path.is_file());
+            }
+        }
+    }
+
+    fallback
 }
 
 fn sanitize_for_path(name: &str) -> String {
@@ -1256,7 +1316,14 @@ fn print_model_inventory(config: &Config, models: &[ModelRecord], json: bool) {
         for model in models {
             let state = if model.active { "ACTIVE" } else { "cached" };
             let prefix = if model.active { ">>" } else { "  " };
-            body.push(format!("{prefix} {:<28} [{state}]", model.name));
+            let compatibility = model.compatibility.as_deref().unwrap_or("unknown");
+            body.push(format!(
+                "{prefix} {:<28} [{state}, {compatibility}]",
+                model.name
+            ));
+            if let Some(reason) = model.compatibility_reason.as_ref() {
+                body.push(format!("     reason: {reason}"));
+            }
         }
     }
 
@@ -2027,6 +2094,46 @@ fn main() {
                         &config,
                     );
                 }
+                ModelCommands::Import {
+                    path,
+                    name,
+                    backend,
+                    vram_mb,
+                    activate,
+                } => {
+                    let backend = backend.unwrap_or_else(detect_backend);
+                    let path = std::path::PathBuf::from(path);
+                    let record = match import_model(
+                        &mut config,
+                        ImportModelOptions {
+                            name: name.as_deref(),
+                            path: &path,
+                            active: activate,
+                            backend,
+                            available_vram_mb: vram_mb,
+                        },
+                    ) {
+                        Ok(record) => record,
+                        Err(error) => {
+                            eprintln!("failed to import model `{}`: {error}", path.display());
+                            std::process::exit(1);
+                        }
+                    };
+                    if let Err(error) = save_config(&config) {
+                        eprintln!("failed to save config: {error}");
+                        std::process::exit(1);
+                    }
+                    print_model_event(
+                        "MODEL IMPORTED",
+                        &record.name,
+                        record
+                            .compatibility_reason
+                            .as_deref()
+                            .unwrap_or("local model metadata recorded"),
+                        Color::Cyan,
+                        &config,
+                    );
+                }
                 ModelCommands::Remove { name, force } => {
                     match remove_model(&mut config, &name, force) {
                         Ok(true) => {
@@ -2290,6 +2397,44 @@ mod tests {
     }
 
     #[test]
+    fn model_import_command_parses_compatibility_options() {
+        let cli = Cli::try_parse_from([
+            "opengpu",
+            "model",
+            "import",
+            "./models/local.gguf",
+            "--name",
+            "local",
+            "--backend",
+            "cuda",
+            "--vram-mb",
+            "4096",
+            "--activate",
+        ])
+        .expect("model import should parse");
+
+        match cli.command {
+            Commands::Model {
+                command:
+                    super::ModelCommands::Import {
+                        path,
+                        name,
+                        backend,
+                        vram_mb,
+                        activate,
+                    },
+            } => {
+                assert_eq!(path, "./models/local.gguf");
+                assert_eq!(name.as_deref(), Some("local"));
+                assert_eq!(backend, Some(Backend::Cuda));
+                assert_eq!(vram_mb, Some(4096));
+                assert!(activate);
+            }
+            _ => panic!("expected model import command"),
+        }
+    }
+
+    #[test]
     fn jobs_status_and_wait_commands_parse() {
         let status = Cli::try_parse_from(["opengpu", "jobs", "status", "job_123", "--json"])
             .expect("jobs status should parse");
@@ -2354,6 +2499,36 @@ mod tests {
         assert!(job_is_terminal(&serde_json::json!({"status": "failed"})));
         assert!(!job_is_terminal(&serde_json::json!({"status": "queued"})));
         assert!(!job_is_terminal(&serde_json::json!({"state": "assigned"})));
+    }
+
+    #[test]
+    fn local_model_resolution_uses_imported_source_path() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "opengpu-cli-imported-model-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let manifest_dir = temp_dir.join(".opengpu");
+        std::fs::create_dir_all(&manifest_dir).expect("manifest dir");
+        let source_path = temp_dir.join("external-q4_k_m.gguf");
+        std::fs::write(&source_path, b"model").expect("model file");
+        std::fs::write(
+            manifest_dir.join("external.json"),
+            serde_json::json!({
+                "name": "external",
+                "active": true,
+                "cached_at": "1",
+                "model_dir": temp_dir,
+                "source_path": source_path,
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+
+        let resolved =
+            super::resolve_local_model_path(&temp_dir, Some("external")).expect("resolve model");
+
+        assert_eq!(resolved, source_path);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
