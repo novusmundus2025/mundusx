@@ -26,6 +26,8 @@ assertContains("agents/node/src/contracts.rs", [
   "pub output: String",
   "pub backend: Backend",
   "pub node_id: String",
+  "pub duration_ms: Option<u64>",
+  "pub runtime_mode: Option<String>",
 ]);
 
 assertContains("apps/cli/src/types.rs", [
@@ -50,6 +52,8 @@ assertContains("packages/proto/schema/opengpu.proto", [
   "string output =",
   "Backend backend =",
   "string node_id =",
+  "uint64 duration_ms =",
+  "string runtime_mode =",
 ]);
 
 assertContains("docs/agent-worker-contract.md", [
@@ -58,6 +62,8 @@ assertContains("docs/agent-worker-contract.md", [
   "worker health snapshot",
   "The worker should return:",
   "optional error text",
+  "duration",
+  "model/runtime",
 ]);
 
 console.log("shared contract surface is aligned");

@@ -7,14 +7,15 @@ mod worker;
 use clap::{Parser, Subcommand};
 use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    WorkerHealthReport, WorkerLaunchRequest, WorkerPolicyReport,
+    WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
 };
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 use std::io::{self, Write};
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use storage::{
     agent_state_path, config_path, heartbeat_log_path, load_agent_config, load_last_heartbeat,
     save_agent_state, save_heartbeat, AgentConfig,
@@ -536,6 +537,85 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
     }
 }
 
+fn build_completion_from_worker_response(
+    response: WorkerLaunchResponse,
+    duration_ms: u64,
+) -> JobCompletion {
+    let is_completed = response.status == "completed";
+    JobCompletion {
+        job_id: response.job_id,
+        node_id: response.node_id,
+        worker_id: response.worker_id,
+        backend: response.backend,
+        status: if is_completed {
+            contracts::JobStatus::Completed
+        } else {
+            contracts::JobStatus::Failed
+        },
+        output: if is_completed {
+            Some(response.output)
+        } else {
+            None
+        },
+        error: if is_completed {
+            response.error
+        } else {
+            response
+                .error
+                .or_else(|| Some("worker returned failed status".to_string()))
+        },
+        duration_ms: Some(duration_ms),
+        model: response.model,
+        runtime_mode: response.runtime_mode,
+    }
+}
+
+fn build_worker_error_completion(
+    job: &JobRecord,
+    config: &AgentConfig,
+    error: String,
+    duration_ms: u64,
+) -> JobCompletion {
+    JobCompletion {
+        job_id: job.job_id.clone(),
+        node_id: config.device_id.clone(),
+        worker_id: "worker-failed".to_string(),
+        backend: resolved_backend(config),
+        status: contracts::JobStatus::Failed,
+        output: None,
+        error: Some(error),
+        duration_ms: Some(duration_ms),
+        model: job.model.clone().or_else(|| config.active_model.clone()),
+        runtime_mode: Some(resolved_backend(config).as_str().to_string()),
+    }
+}
+
+fn start_busy_heartbeat_supervisor(
+    config: AgentConfig,
+    identity: DeviceIdentity,
+    interval: Duration,
+) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let handle = thread::spawn(move || loop {
+        match stop_rx.recv_timeout(interval) {
+            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let heartbeat = build_heartbeat_with_state(&config, AgentState::Busy);
+                let _ = save_agent_state(&heartbeat);
+                let _ = save_heartbeat(&heartbeat);
+                send_heartbeat(&config, &identity, &heartbeat);
+            }
+        }
+    });
+
+    (stop_tx, handle)
+}
+
+fn stop_busy_heartbeat_supervisor(stop_tx: mpsc::Sender<()>, handle: thread::JoinHandle<()>) {
+    let _ = stop_tx.send(());
+    let _ = handle.join();
+}
+
 fn process_pending_job(config: &AgentConfig, json: bool) {
     let identity = load_identity_or_exit();
     let (_, policy) = worker_readiness(config);
@@ -577,44 +657,27 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
         seed: job.seed,
     };
 
-    match launch_worker_process(config, request, json) {
+    let started_at = Instant::now();
+    let (stop_busy_heartbeat, busy_heartbeat_handle) =
+        start_busy_heartbeat_supervisor(config.clone(), identity.clone(), Duration::from_secs(5));
+    let worker_result = launch_worker_process(config, request, json);
+    stop_busy_heartbeat_supervisor(stop_busy_heartbeat, busy_heartbeat_handle);
+
+    match worker_result {
         Ok(response) => {
-            let is_completed = response.status == "completed";
-            let completion = JobCompletion {
-                job_id: response.job_id.clone(),
-                node_id: response.node_id.clone(),
-                worker_id: response.worker_id.clone(),
-                backend: response.backend,
-                status: if is_completed {
-                    contracts::JobStatus::Completed
-                } else {
-                    contracts::JobStatus::Failed
-                },
-                output: if is_completed {
-                    Some(response.output)
-                } else {
-                    None
-                },
-                error: if is_completed {
-                    response.error
-                } else {
-                    response
-                        .error
-                        .or_else(|| Some("worker returned failed status".to_string()))
-                },
-            };
+            let completion = build_completion_from_worker_response(
+                response,
+                started_at.elapsed().as_millis() as u64,
+            );
             complete_job(config, &identity, &completion);
         }
         Err(error) => {
-            let completion = JobCompletion {
-                job_id: job.job_id.clone(),
-                node_id: config.device_id.clone(),
-                worker_id: "worker-failed".to_string(),
-                backend: resolved_backend(config),
-                status: contracts::JobStatus::Failed,
-                output: None,
-                error: Some(error),
-            };
+            let completion = build_worker_error_completion(
+                &job,
+                config,
+                error,
+                started_at.elapsed().as_millis() as u64,
+            );
             complete_job(config, &identity, &completion);
         }
     }
@@ -846,5 +909,119 @@ fn main() {
         Commands::Worker(worker_cli) => worker::worker_main(worker_cli),
         Commands::Status { json } => print_status(json),
         Commands::Stop => stop_agent(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> AgentConfig {
+        AgentConfig {
+            version: 1,
+            device_id: "node-1".to_string(),
+            public_key_fingerprint: None,
+            profile_name: None,
+            auth_token: None,
+            connected: true,
+            paused: false,
+            backend_preference: Backend::Cuda,
+            contribution_percent: 25,
+            control_plane_url: "http://127.0.0.1:8787".to_string(),
+            model_dir: None,
+            active_model: Some("tiny-cuda".to_string()),
+            models: vec!["tiny-cuda".to_string()],
+        }
+    }
+
+    fn test_job() -> JobRecord {
+        JobRecord {
+            job_id: "job-1".to_string(),
+            request_id: "request-1".to_string(),
+            prompt: "summarize".to_string(),
+            preferred_backend: Backend::Cuda,
+            model: Some("tiny-cuda".to_string()),
+            system_prompt: None,
+            max_tokens: Some(32),
+            temperature: None,
+            top_p: None,
+            seed: None,
+            status: contracts::JobStatus::Assigned,
+            submitted_at: "1".to_string(),
+            assigned_node_id: Some("node-1".to_string()),
+            assigned_at: Some("2".to_string()),
+            completed_at: None,
+            worker_id: None,
+            backend: Some(Backend::Cuda),
+            output: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn completion_preserves_success_runtime_metadata() {
+        let response = WorkerLaunchResponse {
+            job_id: "job-1".to_string(),
+            worker_id: "worker-1".to_string(),
+            status: "completed".to_string(),
+            output: "answer".to_string(),
+            error: None,
+            backend: Backend::Cuda,
+            node_id: "node-1".to_string(),
+            model: Some("tiny-cuda".to_string()),
+            runtime_mode: Some("cuda".to_string()),
+        };
+
+        let completion = build_completion_from_worker_response(response, 42);
+
+        assert_eq!(completion.status, contracts::JobStatus::Completed);
+        assert_eq!(completion.output.as_deref(), Some("answer"));
+        assert_eq!(completion.error, None);
+        assert_eq!(completion.duration_ms, Some(42));
+        assert_eq!(completion.model.as_deref(), Some("tiny-cuda"));
+        assert_eq!(completion.runtime_mode.as_deref(), Some("cuda"));
+    }
+
+    #[test]
+    fn completion_converts_worker_failure_to_actionable_error() {
+        let response = WorkerLaunchResponse {
+            job_id: "job-1".to_string(),
+            worker_id: "worker-1".to_string(),
+            status: "failed".to_string(),
+            output: "partial".to_string(),
+            error: None,
+            backend: Backend::Cuda,
+            node_id: "node-1".to_string(),
+            model: Some("tiny-cuda".to_string()),
+            runtime_mode: Some("cuda".to_string()),
+        };
+
+        let completion = build_completion_from_worker_response(response, 7);
+
+        assert_eq!(completion.status, contracts::JobStatus::Failed);
+        assert_eq!(completion.output, None);
+        assert_eq!(
+            completion.error.as_deref(),
+            Some("worker returned failed status")
+        );
+        assert_eq!(completion.duration_ms, Some(7));
+    }
+
+    #[test]
+    fn launch_error_completion_keeps_job_model_and_node_metadata() {
+        let config = test_config();
+        let job = test_job();
+
+        let completion =
+            build_worker_error_completion(&job, &config, "runtime crashed".to_string(), 13);
+
+        assert_eq!(completion.job_id, "job-1");
+        assert_eq!(completion.node_id, "node-1");
+        assert_eq!(completion.worker_id, "worker-failed");
+        assert_eq!(completion.status, contracts::JobStatus::Failed);
+        assert_eq!(completion.error.as_deref(), Some("runtime crashed"));
+        assert_eq!(completion.duration_ms, Some(13));
+        assert_eq!(completion.model.as_deref(), Some("tiny-cuda"));
+        assert_eq!(completion.runtime_mode.as_deref(), Some("cuda"));
     }
 }

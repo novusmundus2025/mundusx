@@ -164,6 +164,12 @@ pub struct JobCompletion {
     pub status: JobStatus,
     pub output: Option<String>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,6 +195,8 @@ pub struct WorkerLaunchResponse {
     pub error: Option<String>,
     pub backend: Backend,
     pub node_id: String,
+    pub model: Option<String>,
+    pub runtime_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

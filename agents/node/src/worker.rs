@@ -627,6 +627,8 @@ fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespon
         error: None,
         backend: Backend::M,
         node_id: request.node_id.clone(),
+        model: Some(model_name),
+        runtime_mode: Some(runtime_mode),
     })
 }
 
@@ -643,6 +645,8 @@ fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
                 error: Some(error),
                 backend,
                 node_id: request.node_id.clone(),
+                model: request.model.clone(),
+                runtime_mode: Some(backend.as_str().to_string()),
             },
         };
     }
@@ -657,6 +661,8 @@ fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
         )),
         backend,
         node_id: request.node_id.clone(),
+        model: request.model.clone(),
+        runtime_mode: Some(backend.as_str().to_string()),
     }
 }
 
