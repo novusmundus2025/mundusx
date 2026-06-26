@@ -1340,6 +1340,18 @@ fn detect_backend() -> Backend {
         return Backend::M;
     }
 
+    if env::var_os("NVIDIA_VISIBLE_DEVICES").is_some()
+        || env::var_os("CUDA_VISIBLE_DEVICES").is_some()
+        || Command::new("nvidia-smi")
+            .arg("--query-gpu=name")
+            .arg("--format=csv,noheader")
+            .output()
+            .map(|output| output.status.success() && !output.stdout.is_empty())
+            .unwrap_or(false)
+    {
+        return Backend::Cuda;
+    }
+
     Backend::Auto
 }
 

@@ -49,6 +49,7 @@ the CLI:
 3. Clears the paused state only when the node can sign requests.
 4. Detects the machine backend when possible:
    - Apple Silicon `aarch64` on macOS becomes `M`
+   - NVIDIA CUDA machines become `CUDA` when CUDA environment hints or `nvidia-smi` are available
 5. Optionally overrides that with `--m`.
 6. If no contribution cap is saved yet, prints a clear hint to run:
    - `opengpu cap`
@@ -95,6 +96,7 @@ the CLI:
 10. Saves the updated config.
 11. Prints how the contribution cap should be interpreted:
    - `M` means a memory-and-compute budget on Apple Silicon
+   - `CUDA` means a routing budget for NVIDIA nodes, with low-VRAM cards kept to modest workloads
 12. Prints whether policy currently allows the Mac to accept work, including the power source, battery state, and identity readiness.
 13. Keeps the reused secure device identity attached to the local config when available.
 

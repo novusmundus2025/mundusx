@@ -10,7 +10,7 @@ The node agent is the background service that lives on a provider machine.
 - `opengpu-agent heartbeat` - print one heartbeat payload
 - `opengpu-agent launch-worker` - spawn the local worker process and print its result
 - `opengpu-agent status` - show agent state and the last heartbeat saved locally
-- `opengpu-agent health` - check whether the Mac worker runtime, device list, cached model, power state, and policy state are ready
+- `opengpu-agent health` - check whether the local worker runtime, device list, cached model, power state, CUDA diagnostics, and policy state are ready
 - `opengpu-agent stop` - write a paused/offline state and exit
 
 ## What It Reuses
@@ -40,6 +40,7 @@ The prototype agent:
 - sends a busy heartbeat before worker launch and a ready heartbeat after completion
 - posts the worker result back to the control plane
 - includes the worker health snapshot in heartbeats so the control plane can surface backend readiness
+- reports NVIDIA CUDA driver/device availability, device name, VRAM, and low-VRAM classification when the selected backend is `cuda`
 - treats the configured model directory as a local cache, not as something the control plane owns
 - emits policy-aware heartbeats on a loop
 - sends the power source, battery state, and policy allowance with each heartbeat
@@ -51,7 +52,29 @@ The prototype agent:
 
 ## Next Step
 
-The health check is already connected to live contribution limits and pause policy. The worker backend health snapshot is now carried through to the control plane and browser views, so the remaining work is mostly additional runtimes and richer execution metrics.
+The health check is already connected to live contribution limits and pause policy. The worker backend health snapshot is now carried through to the control plane and browser views. CUDA nodes now use `nvidia-smi` to report the NVIDIA device name, total VRAM, and whether the machine should use the low-VRAM profile.
+
+## Windows NVIDIA Bring-Up
+
+For the first Windows contributor path, use a modest NVIDIA machine as a real capability probe rather than assuming it can run every CUDA workload.
+
+```bash
+opengpu start
+opengpu-agent health
+opengpu-agent register --json
+opengpu-agent heartbeat --json
+```
+
+Expected health behavior:
+
+- `opengpu start` auto-selects `cuda` when NVIDIA environment hints or `nvidia-smi` identify a CUDA-capable machine.
+- `cudaDeviceAvailable: yes` means `nvidia-smi` found at least one NVIDIA GPU.
+- `cudaDriverAvailable: yes` means the NVIDIA driver/runtime probe completed successfully.
+- `cudaMemoryMb` reports the largest detected GPU memory total.
+- `cudaLowVramProfile: yes` is selected at 4096 MB or below, including GTX 10-series 4 GB cards.
+- missing drivers or CUDA runtime support produce an actionable health note and keep policy from allowing CUDA jobs.
+
+The CUDA worker execution loop is still intentionally conservative. A low-VRAM node should advertise capability metadata and stay eligible only for modest CUDA work until model compatibility checks land.
 
 ## Local Development URL
 
@@ -67,5 +90,5 @@ For contributor-side model switching and cleanup rules, see [docs/model-lifecycl
 
 ## Policy Controls
 
-The health command now reports a policy result in addition to runtime health. If the model cache is missing, `llama-cli` is unavailable, the Mac worker is on battery with too high a contribution cap, or the contribution cap has not been set yet, the agent will skip job claims and report `policyAllowed: no`.
+The health command now reports a policy result in addition to runtime health. If the model cache is missing for the Mac path, `llama-cli` is unavailable, CUDA diagnostics fail for the CUDA path, the Mac worker is on battery with too high a contribution cap, or the contribution cap has not been set yet, the agent will skip job claims and report `policyAllowed: no`.
 The agent also signs `register`, `heartbeat`, `jobs/next`, and `jobs/complete` requests so the control plane can verify the device by signature instead of a separate login flow. The signed payload includes the node ID, hostname, `identityTrustPath`, and the public device identity that identifies the contributor machine. On macOS, the private key is kept encrypted-at-rest inside the local identity record, and the decryption secret uses the macOS Keychain when available with a local fallback when it is not.

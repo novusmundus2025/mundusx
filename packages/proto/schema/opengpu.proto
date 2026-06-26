@@ -148,4 +148,9 @@ message WorkerHealthReport {
   string runtime_mode = 10;
   string checked_at = 11;
   repeated string notes = 12;
+  bool cuda_device_available = 13;
+  bool cuda_driver_available = 14;
+  optional string cuda_device_name = 15;
+  optional uint32 cuda_memory_mb = 16;
+  bool cuda_low_vram_profile = 17;
 }
