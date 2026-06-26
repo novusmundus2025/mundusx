@@ -22,6 +22,9 @@ opengpu status
 opengpu nodes
 opengpu exit
 opengpu doctor
+opengpu jobs submit --model <model> --prompt <text>
+opengpu jobs status <job_id>
+opengpu jobs wait <job_id> --timeout 300 --interval 2
 ```
 
 Startup flow:
@@ -36,5 +39,6 @@ Startup flow:
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available
 - `opengpu exit` leaves contribution mode; `opengpu disconnect` remains available as the explicit alias
 - `opengpu status` shows the live local routing decision
+- `opengpu jobs submit/status/wait` uses the async control-plane job API. `wait` is a CLI polling helper; the server still returns quickly and does not hold the request open.
 
 See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup-flow.md) for the full first-run sequence.
