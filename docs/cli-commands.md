@@ -47,6 +47,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet, and whether it is using Keychain or the local encrypted fallback.
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled.
 - The model commands manage the local model cache manifest and active selection, download official open presets from the reviewed catalog before caching or activating them, and can import contributor-supplied local GGUF files with compatibility metadata for node capability reporting.
+- Official catalog entries must include GGUF format, backend compatibility, and conservative estimated VRAM metadata before review. CUDA entries should be sized against the cap-applied budget, so a 4 GB card at a 50% cap only sees models estimated at 2 GB VRAM or less; entries without VRAM metadata are not offered for CUDA auto-download.
 - `onboarding` is a local contributor review step that summarizes the secure device identity, hostname, model, policy, and credits setup; `start` prints it automatically until it is marked complete.
 - `start` asks for the contribution budget on interactive first run; `cap` is the explicit command for changing it later.
 - Community contribution caps are limited to `20%`, `30%`, and `50%`.

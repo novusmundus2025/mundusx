@@ -8,20 +8,78 @@
       "lighter": {
         "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
         "label": "SmolLM2 135M",
-        "notes": "light open starter model for quick local pulls on Mac",
+        "notes": "light open starter model for quick local pulls",
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["auto", "m", "cuda"],
         "estimated_vram_mb": 800
       },
       "recommended": {
         "name": "Qwen/Qwen2.5-0.5B-Instruct",
         "label": "Qwen 2.5 0.5B",
-        "notes": "balanced open starter model for Mac inference",
+        "notes": "balanced open starter model for small contributor machines",
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["auto", "m", "cuda"],
         "estimated_vram_mb": 1200
+      }
+    },
+    {
+      "backend": "cuda",
+      "min_memory_gb": 0,
+      "max_memory_gb": 15,
+      "lighter": {
+        "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "label": "SmolLM2 135M GGUF",
+        "notes": "cap-safe Windows CUDA preset for very small VRAM budgets",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
+        "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["cuda"],
+        "estimated_vram_mb": 800
+      },
+      "recommended": {
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B GGUF",
+        "notes": "conservative Windows CUDA preset for low-VRAM contributors",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
+        "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["cuda"],
+        "estimated_vram_mb": 1200
+      }
+    },
+    {
+      "backend": "cuda",
+      "min_memory_gb": 16,
+      "max_memory_gb": 999,
+      "lighter": {
+        "name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "label": "Qwen 2.5 0.5B GGUF",
+        "notes": "safe default for capped Windows CUDA contributors",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
+        "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["cuda"],
+        "estimated_vram_mb": 1200
+      },
+      "recommended": {
+        "name": "Qwen/Qwen2.5-1.5B-Instruct",
+        "label": "Qwen 2.5 1.5B GGUF",
+        "notes": "larger Windows CUDA preset, shown only when cap-applied VRAM fits",
+        "source_kind": "huggingface-open",
+        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
+        "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["cuda"],
+        "estimated_vram_mb": 2200
       }
     },
     {
@@ -35,6 +93,8 @@
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 800
       },
       "recommended": {
@@ -44,6 +104,8 @@
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 1200
       }
     },
@@ -58,6 +120,8 @@
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 1200
       },
       "recommended": {
@@ -67,6 +131,8 @@
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 2200
       }
     },
@@ -81,6 +147,8 @@
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 1200
       },
       "recommended": {
@@ -90,6 +158,8 @@
         "source_kind": "huggingface-open",
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
         "sha256": "",
+        "format": "gguf",
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 2200
       }
     }
