@@ -273,12 +273,133 @@ fn display_public_key_hex(config: &Config) -> String {
         .unwrap_or_else(|| "unset".to_string())
 }
 
+fn run_nvidia_smi_query(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("nvidia-smi")
+        .args(args)
+        .output()
+        .map_err(|error| format!("nvidia-smi unavailable: {error}"))?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "nvidia-smi exited {}: {}",
+        output.status,
+        stderr.trim()
+    ))
+}
+
+fn first_nvidia_smi_value(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+fn max_nvidia_smi_u64(stdout: &str) -> Option<u64> {
+    stdout
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .max()
+}
+
+fn cuda_doctor_payload(
+    os: &str,
+    backend: Backend,
+    name_query: Result<String, String>,
+    memory_query: Result<String, String>,
+) -> serde_json::Value {
+    let gpu_name = name_query.as_deref().ok().and_then(first_nvidia_smi_value);
+    let memory_mb = memory_query.as_deref().ok().and_then(max_nvidia_smi_u64);
+    let nvidia_smi_available = name_query.is_ok() || memory_query.is_ok();
+    let cuda_device_available = gpu_name.is_some() || memory_mb.is_some();
+    let low_vram_profile = memory_mb.map(|memory| memory <= 4096).unwrap_or(false);
+    let driver_available = nvidia_smi_available;
+    let mut notes = Vec::new();
+
+    if !nvidia_smi_available {
+        notes.push(
+            "nvidia-smi is unavailable; install or repair the NVIDIA driver before CUDA jobs can be advertised"
+                .to_string(),
+        );
+    } else if !cuda_device_available {
+        notes.push(
+            "nvidia-smi responded, but no NVIDIA GPU rows were reported; this node should not advertise CUDA readiness"
+                .to_string(),
+        );
+    }
+
+    if low_vram_profile {
+        notes.push(
+            "low-VRAM CUDA profile selected; keep community workloads within the cap-applied model budget"
+                .to_string(),
+        );
+    }
+
+    if os == "windows" {
+        notes.push(
+            "LM Studio can be used on Windows without the full CUDA developer toolkit when its local OpenAI-compatible endpoint and loaded model probe successfully"
+                .to_string(),
+        );
+    }
+
+    if backend != Backend::Cuda {
+        notes.push(format!(
+            "selected backend is {}; CUDA diagnostics are informational unless CUDA is selected",
+            backend.as_str()
+        ));
+    }
+
+    let readiness = match (
+        backend,
+        nvidia_smi_available,
+        cuda_device_available,
+        memory_mb,
+    ) {
+        (Backend::Cuda, false, _, _) => "blocked-nvidia-smi-unavailable",
+        (Backend::Cuda, true, false, _) => "blocked-no-nvidia-gpu",
+        (Backend::Cuda, true, true, None) => "needs-vram-confirmation",
+        (Backend::Cuda, true, true, Some(_)) => "cuda-prerequisites-detected",
+        _ => "informational",
+    };
+
+    serde_json::json!({
+        "os": os,
+        "selected_backend": backend.as_str(),
+        "nvidia_smi_available": nvidia_smi_available,
+        "nvidia_driver_available": driver_available,
+        "cuda_device_available": cuda_device_available,
+        "cuda_device_name": gpu_name,
+        "cuda_vram_mb": memory_mb,
+        "cuda_low_vram_profile": low_vram_profile,
+        "runtime_readiness": readiness,
+        "lm_studio_without_cuda_toolkit_supported": os == "windows",
+        "notes": notes,
+        "name_probe_error": name_query.err(),
+        "memory_probe_error": memory_query.err(),
+    })
+}
+
+fn live_cuda_doctor_payload(backend: Backend) -> serde_json::Value {
+    cuda_doctor_payload(
+        env::consts::OS,
+        backend,
+        run_nvidia_smi_query(&["--query-gpu=name", "--format=csv,noheader"]),
+        run_nvidia_smi_query(&["--query-gpu=memory.total", "--format=csv,noheader,nounits"]),
+    )
+}
+
 fn doctor_payload(config: &Config) -> serde_json::Value {
     let resolved_path = resolved_config_path();
     let local_path = config::local_config_path();
     let home_path = config::config_path();
     let config_dir = config::config_dir();
     let model_dir = model::effective_model_dir(config);
+    let backend = resolved_backend(config);
+    let cuda = live_cuda_doctor_payload(backend);
 
     serde_json::json!({
         "config_dir": config_dir,
@@ -295,6 +416,7 @@ fn doctor_payload(config: &Config) -> serde_json::Value {
         "model_dir_writable": std::fs::create_dir_all(&model_dir).is_ok(),
         "active_model": active_model_name(config),
         "auth_token_present": config.auth_token.as_ref().map(|token| !token.trim().is_empty()).unwrap_or(false),
+        "cuda": cuda,
     })
 }
 
@@ -395,6 +517,63 @@ fn print_doctor_report(config: &Config, json: bool) {
             "no"
         }
     );
+    let cuda = &payload["cuda"];
+    println!(
+        "cuda.selectedBackend: {}",
+        cuda["selected_backend"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "cuda.nvidiaSmiAvailable: {}",
+        if cuda["nvidia_smi_available"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "cuda.driverAvailable: {}",
+        if cuda["nvidia_driver_available"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "cuda.deviceAvailable: {}",
+        if cuda["cuda_device_available"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "cuda.deviceName: {}",
+        cuda["cuda_device_name"].as_str().unwrap_or("none")
+    );
+    println!(
+        "cuda.vramMb: {}",
+        cuda["cuda_vram_mb"]
+            .as_u64()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    println!(
+        "cuda.lowVramProfile: {}",
+        if cuda["cuda_low_vram_profile"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "cuda.runtimeReadiness: {}",
+        cuda["runtime_readiness"].as_str().unwrap_or("unknown")
+    );
+    if let Some(notes) = cuda["notes"].as_array() {
+        for note in notes.iter().filter_map(|note| note.as_str()) {
+            println!("cuda.note: {note}");
+        }
+    }
 }
 
 fn print_logs_report(json: bool) {
@@ -2797,9 +2976,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_job_submission_payload, doctor_payload, job_is_terminal, job_status_path,
-        logs_payload, resolve_install_control_plane_url, Cli, Commands, JobsCommands,
-        PUBLIC_CONTROL_PLANE_URL,
+        build_job_submission_payload, cuda_doctor_payload, doctor_payload, job_is_terminal,
+        job_status_path, logs_payload, resolve_install_control_plane_url, Cli, Commands,
+        JobsCommands, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::types::Backend;
@@ -3093,6 +3272,52 @@ mod tests {
 
         std::env::remove_var("OPENGPU_HOME");
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn cuda_doctor_reports_windows_low_vram_readiness() {
+        let payload = cuda_doctor_payload(
+            "windows",
+            Backend::Cuda,
+            Ok("NVIDIA GeForce GTX 1050 Ti\n".to_string()),
+            Ok("4096\n".to_string()),
+        );
+
+        assert_eq!(payload["selected_backend"].as_str(), Some("cuda"));
+        assert_eq!(
+            payload["cuda_device_name"].as_str(),
+            Some("NVIDIA GeForce GTX 1050 Ti")
+        );
+        assert_eq!(payload["cuda_vram_mb"].as_u64(), Some(4096));
+        assert!(payload["cuda_low_vram_profile"].as_bool().unwrap_or(false));
+        assert_eq!(
+            payload["runtime_readiness"].as_str(),
+            Some("cuda-prerequisites-detected")
+        );
+        assert!(payload["lm_studio_without_cuda_toolkit_supported"]
+            .as_bool()
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn cuda_doctor_blocks_cuda_when_nvidia_smi_is_missing() {
+        let payload = cuda_doctor_payload(
+            "windows",
+            Backend::Cuda,
+            Err("nvidia-smi unavailable: not found".to_string()),
+            Err("nvidia-smi unavailable: not found".to_string()),
+        );
+
+        assert!(!payload["nvidia_smi_available"].as_bool().unwrap_or(true));
+        assert!(!payload["cuda_device_available"].as_bool().unwrap_or(true));
+        assert_eq!(
+            payload["runtime_readiness"].as_str(),
+            Some("blocked-nvidia-smi-unavailable")
+        );
+        assert!(payload["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
+            .unwrap_or("")
+            .contains("install or repair the NVIDIA driver")));
     }
 
     #[test]

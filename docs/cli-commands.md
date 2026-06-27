@@ -20,7 +20,7 @@ This is the current command surface for the Rust CLI.
 - `opengpu model import <path> --name <name> --backend cuda --vram-mb <mb>` - record an existing local model file with format, quantization, size, and compatibility metadata
 - `opengpu model remove <name>` - remove a cached model
 - `opengpu model prune --yes` - remove inactive cached models
-- `opengpu doctor` - inspect config paths and writability
+- `opengpu doctor` - inspect config paths, writability, CUDA prerequisite state, low-VRAM profile, and Windows LM Studio runtime guidance
 - `opengpu logs` - show local log source information
 - `opengpu update` - show the local install page and release preview URLs
 
