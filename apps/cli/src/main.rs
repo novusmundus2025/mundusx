@@ -24,7 +24,7 @@ use model::{
     ensure_effective_model_dir, import_model, list_models, prune_models, remove_model, use_model,
     ImportModelOptions, ModelRecord,
 };
-use model_catalog::{selection_for, ModelOption};
+use model_catalog::{selectable_options_for, selection_for, ModelOption};
 
 const PUBLIC_CONTROL_PLANE_URL: &str = "https://api.mundusx.ai";
 
@@ -1858,10 +1858,8 @@ enum ModelChoice {
 fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     let gb = detect_memory_gb();
     let selection = selection_for(backend, gb);
-    let options = [selection.lighter.clone(), selection.recommended.clone()]
-        .into_iter()
-        .filter(|option| ensure_catalog_model_fits_machine(&option.name, backend, config).is_ok())
-        .collect::<Vec<_>>();
+    let available_vram_mb = model_vram_budget_mb(config, backend);
+    let options = selectable_options_for(backend, gb, available_vram_mb);
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return options
@@ -1888,7 +1886,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
             "detected: {} / {}GB memory",
             selection.backend, selection.memory_gb
         );
-        if let Some(budget) = model_vram_budget_mb(config, backend) {
+        if let Some(budget) = available_vram_mb {
             println!(
                 "model budget: {budget} MB VRAM ({}% contribution cap)",
                 config.contribution_percent

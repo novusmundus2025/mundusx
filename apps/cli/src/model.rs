@@ -152,8 +152,32 @@ pub fn ensure_catalog_model_fits(
         return Ok(());
     };
 
+    if option.format.as_deref() != Some("gguf") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to download `{name}`: catalog entry is not a GGUF model"),
+        ));
+    }
+
     if backend != crate::types::Backend::Cuda {
+        if !option.supports_backend(backend) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing to download `{name}`: catalog entry is not compatible with {backend}"
+                ),
+            ));
+        }
         return Ok(());
+    }
+
+    if !option.supports_backend(backend) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to download `{name}`: catalog entry is not compatible with {backend}"
+            ),
+        ));
     }
 
     let Some(estimated_vram_mb) = option.estimated_vram_mb else {
@@ -759,6 +783,8 @@ mod tests {
             source_kind: "huggingface-open".to_string(),
             source_url: format!("file://{}", source_path.display()),
             sha256: String::new(),
+            format: Some("gguf".to_string()),
+            backend_compatibility: vec![crate::types::Backend::Auto],
             estimated_vram_mb: Some(1),
         };
 
