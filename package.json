@@ -19,6 +19,7 @@
     "test:cli-docs": "bash tests/cli-docs-surface.sh",
     "test:docs-site": "bash tests/public-docs-site.sh",
     "test:homebrew-formula": "bash tests/homebrew-formula.sh",
+    "test:install-ps1": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-ps1-local-release.ps1",
     "test:license": "bash tests/license-surface.sh",
     "test:shared-contract": "bash tests/shared-contract-surface.sh",
     "test:local-release-homebrew": "bash tests/local-release-preview-homebrew.sh",
