@@ -10,9 +10,16 @@ Install with:
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
+On Windows:
+
+```powershell
+.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download
+```
+
 Useful commands:
 
 ```bash
+opengpu install
 opengpu onboarding
 opengpu cap
 opengpu start
@@ -30,7 +37,7 @@ opengpu jobs wait <job_id> --timeout 300 --interval 2
 
 Startup flow:
 
-- For a fresh machine, review onboarding, set a contribution cap, and then run `opengpu start`
+- For a fresh machine, run `opengpu install` to choose public MundusX or private/custom control plane, save the contribution cap, then run `opengpu start`
 - `opengpu start` creates local state if needed, connects locally when the secure device identity is available, and marks the machine ready
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu cap` sets the contribution budget explicitly

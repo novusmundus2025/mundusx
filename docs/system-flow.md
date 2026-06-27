@@ -159,7 +159,7 @@ The contribution percent is a **cap**, not full ownership of the machine:
 
 - `20%` means light background contribution
 - `50%` means balanced contribution
-- `90%` means near-max contribution, still bounded by safety policy
+- community nodes are capped at `50%` maximum; higher dedicated-machine modes are intentionally not offered
 
 The agent should still enforce:
 

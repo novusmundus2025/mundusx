@@ -11,6 +11,8 @@ pub struct ModelOption {
     pub source_kind: String,
     pub source_url: String,
     pub sha256: String,
+    #[serde(default)]
+    pub estimated_vram_mb: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -96,6 +98,7 @@ fn fallback_preset() -> ModelPreset {
             source_kind: "huggingface-open".to_string(),
             source_url: "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors".to_string(),
             sha256: "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c".to_string(),
+            estimated_vram_mb: Some(800),
         },
         recommended: ModelOption {
             name: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
@@ -104,6 +107,7 @@ fn fallback_preset() -> ModelPreset {
             source_kind: "huggingface-open".to_string(),
             source_url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors".to_string(),
             sha256: "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe".to_string(),
+            estimated_vram_mb: Some(1200),
         },
     }
 }

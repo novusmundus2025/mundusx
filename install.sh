@@ -12,6 +12,7 @@ arch="$(uname -m)"
 case "$os" in
   darwin) platform="apple-darwin" ;;
   linux) platform="unknown-linux-gnu" ;;
+  mingw*|msys*|cygwin*) echo "Windows installs must use PowerShell: powershell -ExecutionPolicy Bypass -File .\\install.ps1" >&2; exit 1 ;;
   *) echo "unsupported operating system: $os" >&2; exit 1 ;;
 esac
 

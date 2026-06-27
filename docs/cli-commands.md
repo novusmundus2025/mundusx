@@ -4,7 +4,8 @@ This is the current command surface for the Rust CLI.
 
 ## Core Commands
 
-- `opengpu start` - create local state if needed, auto-detect the backend, connect locally when the secure device identity is available, and print a startup summary with the public key; if no cap is saved, it prints a hint to run `opengpu cap`
+- `opengpu start` - create local state if needed, auto-detect the backend, ask for a contribution cap on interactive first run, connect locally when the secure device identity is available, and print a startup summary with the public key
+- `opengpu install` - run the guided machine setup wizard, choose public MundusX or private/custom control plane, save a community contribution cap, show only models that fit that cap, and prepare the node for `opengpu start`
 - `opengpu onboarding` - review the contributor onboarding checklist
 - `opengpu onboarding --complete` - mark onboarding complete after review
 - `opengpu onboarding --reset` - reopen the onboarding checklist
@@ -47,6 +48,8 @@ These remain available, but they are hidden from the default `--help` output so 
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled.
 - The model commands manage the local model cache manifest and active selection, download official open presets from the reviewed catalog before caching or activating them, and can import contributor-supplied local GGUF files with compatibility metadata for node capability reporting.
 - `onboarding` is a local contributor review step that summarizes the secure device identity, hostname, model, policy, and credits setup; `start` prints it automatically until it is marked complete.
-- `cap` is the explicit command for choosing the Mac contribution budget before the node is treated as ready for routing.
+- `start` asks for the contribution budget on interactive first run; `cap` is the explicit command for changing it later.
+- Community contribution caps are limited to `20%`, `30%`, and `50%`.
+- `install` is the guided setup command after the binary is installed. Public mode saves the hosted MundusX control plane; private mode asks for a full custom URL; blank URL means public. The wizard also asks for the model and refuses choices that do not fit the selected contribution cap and detected machine capacity.
 - `start` only marks the node ready when the secure device identity is available.
 - Config inspection now happens through `status` and `doctor`; dedicated `config` subcommands are not part of the current CLI surface.

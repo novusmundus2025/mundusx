@@ -143,6 +143,45 @@ pub fn import_model(
     Ok(record)
 }
 
+pub fn ensure_catalog_model_fits(
+    name: &str,
+    backend: crate::types::Backend,
+    available_vram_mb: Option<u64>,
+) -> io::Result<()> {
+    let Some(option) = lookup_model(name) else {
+        return Ok(());
+    };
+
+    if backend != crate::types::Backend::Cuda {
+        return Ok(());
+    }
+
+    let Some(estimated_vram_mb) = option.estimated_vram_mb else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to download `{name}`: catalog is missing estimated VRAM metadata"),
+        ));
+    };
+
+    let Some(available_vram_mb) = available_vram_mb else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to download `{name}`: CUDA VRAM could not be detected"),
+        ));
+    };
+
+    if estimated_vram_mb > available_vram_mb {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to download `{name}`: estimated {estimated_vram_mb} MB VRAM exceeds available budget {available_vram_mb} MB"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn remove_model(config: &mut Config, name: &str, force: bool) -> io::Result<bool> {
     ensure_effective_model_dir(config);
     let mut models = list_models(config)?;
@@ -546,10 +585,15 @@ fn upsert_imported_model(
         estimated_vram_mb,
         options.available_vram_mb,
     );
+    let active = options.active && compatibility != "rejected";
 
     for model in models.iter_mut() {
         if model.name == name {
-            model.active = options.active || model.active;
+            model.active = if compatibility == "rejected" {
+                false
+            } else {
+                active || model.active
+            };
             model.cached_at = now.clone();
             model.model_dir = model_dir.clone();
             model.source_path = Some(options.path.display().to_string());
@@ -564,7 +608,7 @@ fn upsert_imported_model(
             model.estimated_vram_mb = Some(estimated_vram_mb);
             model.compatibility = Some(compatibility.clone());
             model.compatibility_reason = Some(compatibility_reason.clone());
-        } else if options.active {
+        } else if active {
             model.active = false;
         }
     }
@@ -572,7 +616,7 @@ fn upsert_imported_model(
     if !models.iter().any(|model| model.name == name) {
         models.push(ModelRecord {
             name: name.to_string(),
-            active: options.active,
+            active,
             cached_at: now,
             model_dir,
             source_path: Some(options.path.display().to_string()),
@@ -590,7 +634,7 @@ fn upsert_imported_model(
         });
     }
 
-    if options.active {
+    if active {
         config.active_model = Some(name.to_string());
     }
 
@@ -715,6 +759,7 @@ mod tests {
             source_kind: "huggingface-open".to_string(),
             source_url: format!("file://{}", source_path.display()),
             sha256: String::new(),
+            estimated_vram_mb: Some(1),
         };
 
         let downloaded =
@@ -726,6 +771,29 @@ mod tests {
         assert_eq!(fs::read(&dest).expect("dest"), b"model-bytes");
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_catalog_model_before_download_when_cuda_vram_is_too_small() {
+        let error = ensure_catalog_model_fits(
+            "Qwen/Qwen2.5-1.5B-Instruct",
+            crate::types::Backend::Cuda,
+            Some(512),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("refusing to download"));
+    }
+
+    #[test]
+    fn accepts_catalog_model_before_download_when_cuda_vram_fits() {
+        ensure_catalog_model_fits(
+            "Qwen/Qwen2.5-0.5B-Instruct",
+            crate::types::Backend::Cuda,
+            Some(4096),
+        )
+        .expect("model should fit");
     }
 
     #[test]
@@ -769,7 +837,7 @@ mod tests {
             ImportModelOptions {
                 name: None,
                 path: &source_path,
-                active: false,
+                active: true,
                 backend: crate::types::Backend::Cuda,
                 available_vram_mb: Some(1),
             },
@@ -777,6 +845,8 @@ mod tests {
         .expect("import model");
 
         assert_eq!(record.name, "too-large-q8_0");
+        assert!(!record.active);
+        assert_eq!(config.active_model, None);
         assert_eq!(record.compatibility.as_deref(), Some("rejected"));
         assert!(record
             .compatibility_reason
