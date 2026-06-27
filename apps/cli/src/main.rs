@@ -956,83 +956,57 @@ fn sanitize_for_path(name: &str) -> String {
         .to_string()
 }
 
-/// HTTP POST a JSON payload to an http:// control-plane URL.
+fn control_plane_endpoint(control_plane_url: &str, path: &str) -> Result<String, String> {
+    let base = control_plane_url.trim().trim_end_matches('/');
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err("control-plane-url must start with http:// or https://".to_string());
+    }
+    if !path.starts_with('/') {
+        return Err("control-plane API path must start with /".to_string());
+    }
+    Ok(format!("{base}{path}"))
+}
+
+fn read_control_plane_response(response: ureq::Response) -> Result<serde_json::Value, String> {
+    let body = response
+        .into_string()
+        .map_err(|error| format!("read failed: {error}"))?;
+    serde_json::from_str(&body).map_err(|error| error.to_string())
+}
+
+fn control_plane_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(status, response) => {
+            let body = response.into_string().unwrap_or_default();
+            if body.trim().is_empty() {
+                format!("HTTP {status}")
+            } else {
+                format!("HTTP {status}: {}", body.trim())
+            }
+        }
+        ureq::Error::Transport(error) => format!("request failed: {error}"),
+    }
+}
+
+/// HTTP POST a JSON payload to an http:// or https:// control-plane URL.
 fn http_post_json(
     control_plane_url: &str,
     path: &str,
     payload: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
     use std::time::Duration;
 
-    let url = control_plane_url.trim();
-    if url.starts_with("https://") {
-        return Err("remote job routing requires an http:// control-plane URL; \
-             the public control plane (https://api.mundusx.ai) is not reachable \
-             from the CLI over plain HTTP — configure a local or LAN control plane."
-            .to_string());
-    }
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "control-plane-url must start with http://".to_string())?;
-    let (host_port, _) = without_scheme
-        .split_once('/')
-        .unwrap_or((without_scheme, ""));
-    let (host, port_str) = host_port.split_once(':').unwrap_or((host_port, "80"));
-    let port: u16 = port_str
-        .parse()
-        .map_err(|_| "invalid control-plane port".to_string())?;
-
-    let body = serde_json::to_string(payload).map_err(|e| e.to_string())?;
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{body}",
-        body.len()
-    );
-
-    let timeout = Duration::from_secs(10);
-    let addr = format!("{host}:{port}");
-    let mut stream = TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .map_err(|_| format!("invalid address: {addr}"))?,
-        timeout,
-    )
-    .map_err(|error| format!("connect failed: {error}"))?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|error| format!("read timeout: {error}"))?;
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| format!("write failed: {error}"))?;
-
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|error| format!("read failed: {error}"))?;
-
-    let status_line = response
-        .lines()
-        .next()
-        .ok_or_else(|| "empty response".to_string())?;
-    let status_code = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| "malformed HTTP response".to_string())?;
-    if !(200..300).contains(&status_code) {
-        return Err(format!("HTTP {status_code}"));
-    }
-
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default();
-    serde_json::from_str(body).map_err(|e| e.to_string())
+    let endpoint = control_plane_endpoint(control_plane_url, path)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(10))
+        .build();
+    let response = agent
+        .post(&endpoint)
+        .set("Content-Type", "application/json")
+        .send_json(payload)
+        .map_err(control_plane_error)?;
+    read_control_plane_response(response)
 }
-
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     serde_json::to_string_pretty(value)
         .map(|output| {
@@ -1042,85 +1016,25 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
 }
 
 /// Fetch a JSON resource from the control plane using an operator bearer token.
-/// Only supports http:// URLs — the same constraint as the node agent.
+/// Supports both local http:// control planes and hosted https:// control planes.
 fn operator_get_json(
     control_plane_url: &str,
     path: &str,
     auth_token: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
     use std::time::Duration;
 
-    let url = control_plane_url.trim();
-    if url.starts_with("https://") {
-        return Err(
-            "CLI remote fetch only supports http://; set control-plane-url to an http:// address"
-                .to_string(),
-        );
+    let endpoint = control_plane_endpoint(control_plane_url, path)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(10))
+        .build();
+    let mut request = agent.get(&endpoint);
+    if let Some(token) = auth_token.filter(|token| !token.is_empty()) {
+        request = request.set("Authorization", &format!("Bearer {token}"));
     }
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "control-plane-url must start with http://".to_string())?;
-    let (host_port, _) = without_scheme
-        .split_once('/')
-        .unwrap_or((without_scheme, ""));
-    let (host, port_str) = host_port.split_once(':').unwrap_or((host_port, "80"));
-    let port: u16 = port_str
-        .parse()
-        .map_err(|_| "invalid control-plane port".to_string())?;
-
-    let auth_header = match auth_token {
-        Some(token) if !token.is_empty() => {
-            format!("Authorization: Bearer {token}\r\n")
-        }
-        _ => String::new(),
-    };
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\n{auth_header}Connection: close\r\n\r\n"
-    );
-
-    let timeout = Duration::from_secs(10);
-    let addr = format!("{host}:{port}");
-    let mut stream = TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .map_err(|_| format!("invalid address: {addr}"))?,
-        timeout,
-    )
-    .map_err(|error| format!("connect failed: {error}"))?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|error| format!("read timeout: {error}"))?;
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| format!("write failed: {error}"))?;
-
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|error| format!("read failed: {error}"))?;
-
-    let status_line = response
-        .lines()
-        .next()
-        .ok_or_else(|| "empty response".to_string())?;
-    let status_code = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| "malformed HTTP response".to_string())?;
-    if !(200..300).contains(&status_code) {
-        return Err(format!("HTTP {status_code}"));
-    }
-
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default();
-    serde_json::from_str(body).map_err(|error| error.to_string())
+    let response = request.call().map_err(control_plane_error)?;
+    read_control_plane_response(response)
 }
-
 fn colored_state(
     value: bool,
     active_color: Color,
@@ -2976,9 +2890,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_job_submission_payload, cuda_doctor_payload, doctor_payload, job_is_terminal,
-        job_status_path, logs_payload, resolve_install_control_plane_url, Cli, Commands,
-        JobsCommands, PUBLIC_CONTROL_PLANE_URL,
+        build_job_submission_payload, control_plane_endpoint, cuda_doctor_payload, doctor_payload,
+        job_is_terminal, job_status_path, logs_payload, resolve_install_control_plane_url, Cli,
+        Commands, JobsCommands, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::types::Backend;
@@ -3039,6 +2953,25 @@ mod tests {
             resolve_install_control_plane_url(false, false, Some("http://127.0.0.1:8787".into())),
             "http://127.0.0.1:8787"
         );
+    }
+
+    #[test]
+    fn control_plane_endpoint_accepts_https_and_local_http() {
+        assert_eq!(
+            control_plane_endpoint("https://api.mundusx.ai", "/v1/jobs").as_deref(),
+            Ok("https://api.mundusx.ai/v1/jobs")
+        );
+        assert_eq!(
+            control_plane_endpoint("http://127.0.0.1:8787/", "/v1/jobs/job_123").as_deref(),
+            Ok("http://127.0.0.1:8787/v1/jobs/job_123")
+        );
+    }
+
+    #[test]
+    fn control_plane_endpoint_rejects_invalid_urls_and_paths() {
+        assert!(control_plane_endpoint("api.mundusx.ai", "/v1/jobs").is_err());
+        assert!(control_plane_endpoint("ftp://api.mundusx.ai", "/v1/jobs").is_err());
+        assert!(control_plane_endpoint("https://api.mundusx.ai", "v1/jobs").is_err());
     }
 
     #[test]
