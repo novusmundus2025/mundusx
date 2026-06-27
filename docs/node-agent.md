@@ -100,6 +100,18 @@ opengpu config set control-plane-url http://127.0.0.1:8787
 
 The prototype agent does not speak TLS yet, so `https://` URLs will be rejected with a helpful error.
 
+## No-Auth Local Smoke
+
+Use the repository smoke script when you need to prove the local/UAT no-auth loop across the CLI, node agent, and sibling control-plane checkout:
+
+```bash
+./scripts/no-auth-e2e-smoke.sh
+```
+
+The script starts the control plane with `MUNDUSX_AUTH_DISABLED=true`, confirms `/health` reports `operator_auth_enforced=false`, seeds an isolated temporary `OPENGPU_HOME`, registers and heartbeats a signed node, submits a job without an operator token, lets the node agent claim and complete it, and polls the final result with `opengpu jobs wait`.
+
+By default it expects the sibling control-plane repo at `../control-plane` and uses local `http://127.0.0.1:8787`. Override `CONTROL_PLANE_REPO`, `CONTROL_PLANE_URL`, `CONTROL_PLANE_HOST`, `CONTROL_PLANE_PORT`, or `OPENGPU_SMOKE_HOME` for UAT/local variants.
+
 For contributor-side model switching and cleanup rules, see [docs/model-lifecycle.md](/Users/DBATALL/Documents/mundusx/docs/model-lifecycle.md).
 
 ## Policy Controls
