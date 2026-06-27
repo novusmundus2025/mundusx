@@ -138,6 +138,12 @@ enum Commands {
         /// Maximum tokens to generate
         #[arg(long, default_value_t = 512)]
         max_tokens: u32,
+        /// Maximum seconds to wait for a remote fallback job
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        /// Remote fallback poll interval in seconds
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -636,6 +642,9 @@ struct InferenceResult {
     output: String,
     node_label: String,
     model_name: Option<String>,
+    job_id: Option<String>,
+    status: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -651,8 +660,10 @@ fn run_inference_local_first(
     config: &Config,
     prompt: &str,
     model: Option<&str>,
-    _backend: crate::types::Backend,
+    backend: crate::types::Backend,
     max_tokens: u32,
+    timeout_secs: u64,
+    interval_secs: u64,
 ) -> Result<InferenceResult, String> {
     // --- 1. try local ---------------------------------------------------------
     // Honour OPENGPU_MODEL_DIR env var as an override (useful for pointing at
@@ -666,6 +677,9 @@ fn run_inference_local_first(
                 output,
                 node_label: "local".to_string(),
                 model_name,
+                job_id: None,
+                status: Some("completed".to_string()),
+                error: None,
             });
         }
         Err(local_err) => {
@@ -675,18 +689,32 @@ fn run_inference_local_first(
     }
 
     // --- 2. remote fallback via control plane ---------------------------------
-    let (request_id, job) = build_job_submission_payload(prompt, model, _backend, max_tokens);
+    let (request_id, job) = build_job_submission_payload(prompt, model, backend, max_tokens);
     match http_post_json(&config.control_plane_url, "/v1/jobs", &job) {
         Ok(record) => {
             let job_id = record["job_id"].as_str().unwrap_or(&request_id).to_string();
+            let completed = wait_for_job(config, &job_id, timeout_secs, interval_secs)
+                .map_err(|error| format!("remote job {job_id} did not complete: {error}"))?;
+            let status = job_state(&completed);
+            if matches!(status.as_str(), "failed" | "cancelled" | "canceled") {
+                let error = completed
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("remote job reached a failed terminal state");
+                return Err(format!("remote job {job_id} {status}: {error}"));
+            }
+            let output = remote_job_output(&completed)
+                .ok_or_else(|| format!("remote job {job_id} completed without output"))?;
             Ok(InferenceResult {
-                output: format!(
-                    "Job submitted to network (id: {job_id}).\n\
-                     A contributor node will pick it up shortly.\n\
-                     Remote job result polling is not yet supported in the CLI."
-                ),
+                output,
                 node_label: "network".to_string(),
                 model_name: model.map(|m| m.to_string()),
+                job_id: Some(job_id),
+                status: Some(status),
+                error: completed
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string()),
             })
         }
         Err(error) => Err(format!("network routing failed: {error}")),
@@ -758,6 +786,21 @@ fn job_is_terminal(payload: &serde_json::Value) -> bool {
         job_state(payload).as_str(),
         "completed" | "failed" | "cancelled" | "canceled"
     )
+}
+
+fn remote_job_output(payload: &serde_json::Value) -> Option<String> {
+    ["output", "final_output", "result"]
+        .iter()
+        .filter_map(|field| payload.get(*field))
+        .find_map(|value| {
+            value.as_str().map(|text| text.to_string()).or_else(|| {
+                if value.is_null() {
+                    None
+                } else {
+                    Some(value.to_string())
+                }
+            })
+        })
 }
 
 fn wait_for_job(
@@ -2762,11 +2805,20 @@ fn main() {
             model,
             backend,
             max_tokens,
+            timeout,
+            interval,
             json,
         } => {
             let config = current_config_or_default();
-            match run_inference_local_first(&config, &prompt, model.as_deref(), backend, max_tokens)
-            {
+            match run_inference_local_first(
+                &config,
+                &prompt,
+                model.as_deref(),
+                backend,
+                max_tokens,
+                timeout,
+                interval,
+            ) {
                 Ok(result) => {
                     if json {
                         let output = serde_json::json!({
@@ -2774,6 +2826,9 @@ fn main() {
                             "output": result.output,
                             "node": result.node_label,
                             "model": result.model_name,
+                            "job_id": result.job_id,
+                            "status": result.status,
+                            "error": result.error,
                         });
                         if let Err(error) = print_json(&output) {
                             eprintln!("{error}");
@@ -2783,6 +2838,12 @@ fn main() {
                         println!("node: {}", result.node_label);
                         if let Some(model_name) = &result.model_name {
                             println!("model: {model_name}");
+                        }
+                        if let Some(job_id) = &result.job_id {
+                            println!("jobId: {job_id}");
+                        }
+                        if let Some(status) = &result.status {
+                            println!("status: {status}");
                         }
                         println!();
                         println!("{}", result.output);
@@ -2891,8 +2952,8 @@ fn main() {
 mod tests {
     use super::{
         build_job_submission_payload, control_plane_endpoint, cuda_doctor_payload, doctor_payload,
-        job_is_terminal, job_status_path, logs_payload, resolve_install_control_plane_url, Cli,
-        Commands, JobsCommands, PUBLIC_CONTROL_PLANE_URL,
+        job_is_terminal, job_status_path, logs_payload, remote_job_output,
+        resolve_install_control_plane_url, Cli, Commands, JobsCommands, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::types::Backend;
@@ -3086,6 +3147,38 @@ mod tests {
     }
 
     #[test]
+    fn run_command_parses_remote_wait_options() {
+        let cli = Cli::try_parse_from([
+            "opengpu",
+            "run",
+            "--prompt",
+            "hello",
+            "--timeout",
+            "45",
+            "--interval",
+            "3",
+            "--json",
+        ])
+        .expect("run should parse");
+
+        match cli.command {
+            Commands::Run {
+                prompt,
+                timeout,
+                interval,
+                json,
+                ..
+            } => {
+                assert_eq!(prompt, "hello");
+                assert_eq!(timeout, 45);
+                assert_eq!(interval, 3);
+                assert!(json);
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
     fn job_submission_payload_matches_control_plane_contract() {
         let (_, payload) = build_job_submission_payload("hello", Some("smol"), Backend::Cuda, 64);
 
@@ -3116,6 +3209,28 @@ mod tests {
         assert!(job_is_terminal(&serde_json::json!({"status": "failed"})));
         assert!(!job_is_terminal(&serde_json::json!({"status": "queued"})));
         assert!(!job_is_terminal(&serde_json::json!({"state": "assigned"})));
+    }
+
+    #[test]
+    fn remote_job_output_accepts_final_output_fallbacks() {
+        assert_eq!(
+            remote_job_output(&serde_json::json!({"status": "completed", "output": "hello"})),
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            remote_job_output(&serde_json::json!({"status": "completed", "final_output": "done"})),
+            Some("done".to_string())
+        );
+        assert_eq!(
+            remote_job_output(
+                &serde_json::json!({"status": "completed", "result": {"text": "ok"}})
+            ),
+            Some(r#"{"text":"ok"}"#.to_string())
+        );
+        assert_eq!(
+            remote_job_output(&serde_json::json!({"status": "completed", "output": null})),
+            None
+        );
     }
 
     #[test]
