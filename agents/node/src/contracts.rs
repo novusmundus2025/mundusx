@@ -92,6 +92,7 @@ pub struct AgentRegistration {
     pub identity_trust_path: String,
     pub backend: Backend,
     pub contribution_percent: u8,
+    pub capabilities: NodeCapabilityAdvertisement,
     pub agent_version: String,
 }
 
@@ -112,6 +113,7 @@ pub struct Heartbeat {
     pub policy_allowed: bool,
     pub policy_reason: Option<String>,
     pub worker_health: WorkerHealthReport,
+    pub capabilities: NodeCapabilityAdvertisement,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,6 +225,41 @@ pub struct WorkerHealthReport {
     pub runtime_mode: String,
     pub checked_at: String,
     pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelCapability {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_vram_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeCapabilityAdvertisement {
+    pub backend: Backend,
+    pub contribution_percent: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_vram_mb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usable_vram_mb: Option<u32>,
+    pub runtime_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<ModelCapability>,
+    pub ready_for_jobs: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

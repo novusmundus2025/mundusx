@@ -150,7 +150,9 @@ fn save_json<T: Serialize>(path: PathBuf, value: &T) -> std::io::Result<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{AgentState, WorkerHealthReport};
+    use crate::contracts::{
+        AgentState, ModelCapability, NodeCapabilityAdvertisement, WorkerHealthReport,
+    };
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -209,6 +211,25 @@ mod tests {
                 runtime_mode: "native".to_string(),
                 checked_at: updated_at.to_string(),
                 notes: Vec::new(),
+            },
+            capabilities: NodeCapabilityAdvertisement {
+                backend: Backend::Auto,
+                contribution_percent: 20,
+                physical_vram_mb: None,
+                usable_vram_mb: None,
+                runtime_mode: "native".to_string(),
+                active_model: Some(ModelCapability {
+                    name: "llama3.1:8b".to_string(),
+                    path: Some("/tmp/models/llama3.1-8b.gguf".to_string()),
+                    format: Some("gguf".to_string()),
+                    quantization: None,
+                    size_bytes: None,
+                    estimated_vram_mb: None,
+                    compatibility: Some("accepted".to_string()),
+                    compatibility_reason: None,
+                }),
+                ready_for_jobs: true,
+                readiness_reason: None,
             },
         }
     }

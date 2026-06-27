@@ -41,6 +41,7 @@ message NodeHeartbeat {
   bool policy_allowed = 13;
   optional string policy_reason = 14;
   WorkerHealthReport worker_health = 15;
+  NodeCapabilityAdvertisement capabilities = 16;
 }
 
 message JobRequest {
@@ -105,7 +106,8 @@ message AgentRegistration {
   string identity_trust_path = 5;
   Backend backend = 6;
   uint32 contribution_percent = 7;
-  string agent_version = 8;
+  NodeCapabilityAdvertisement capabilities = 8;
+  string agent_version = 9;
 }
 
 message WorkerLaunchRequest {
@@ -156,4 +158,26 @@ message WorkerHealthReport {
   optional string cuda_device_name = 15;
   optional uint32 cuda_memory_mb = 16;
   bool cuda_low_vram_profile = 17;
+}
+
+message ModelCapability {
+  string name = 1;
+  optional string path = 2;
+  optional string format = 3;
+  optional string quantization = 4;
+  optional uint64 size_bytes = 5;
+  optional uint64 estimated_vram_mb = 6;
+  optional string compatibility = 7;
+  optional string compatibility_reason = 8;
+}
+
+message NodeCapabilityAdvertisement {
+  Backend backend = 1;
+  uint32 contribution_percent = 2;
+  optional uint32 physical_vram_mb = 3;
+  optional uint32 usable_vram_mb = 4;
+  string runtime_mode = 5;
+  optional ModelCapability active_model = 6;
+  bool ready_for_jobs = 7;
+  optional string readiness_reason = 8;
 }

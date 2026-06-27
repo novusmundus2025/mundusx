@@ -1,5 +1,6 @@
 use crate::contracts::{
-    Backend, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
+    Backend, ModelCapability, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerPolicyReport,
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,20 @@ struct CachedModelRecord {
     active: bool,
     #[serde(default)]
     source_path: Option<String>,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    quantization: Option<String>,
+    #[serde(default)]
+    size_bytes: Option<u64>,
+    #[serde(default)]
+    estimated_vram_mb: Option<u64>,
+    #[serde(default)]
+    compatibility: Option<String>,
+    #[serde(default)]
+    compatibility_reason: Option<String>,
 }
 
 fn sanitize_model_name(name: &str) -> String {
@@ -158,6 +173,47 @@ fn imported_model_path_from_cache(model_dir: &Path, model_name: Option<&str>) ->
                 }
             } else if record.active {
                 active_fallback = path;
+            }
+        }
+    }
+
+    active_fallback
+}
+
+pub fn active_model_capability(
+    model_dir: &Path,
+    model_name: Option<&str>,
+) -> Option<ModelCapability> {
+    let manifest_dir = model_dir.join(".opengpu");
+    let entries = fs::read_dir(manifest_dir).ok()?;
+    let mut active_fallback = None;
+
+    for entry in entries.flatten() {
+        if entry.file_type().ok()?.is_file()
+            && entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+        {
+            let raw = fs::read_to_string(entry.path()).ok()?;
+            let record = serde_json::from_str::<CachedModelRecord>(&raw).ok()?;
+            let capability = ModelCapability {
+                name: record.name.clone(),
+                path: record.source_path.clone(),
+                format: record.format.clone(),
+                quantization: record.quantization.clone(),
+                size_bytes: record.size_bytes,
+                estimated_vram_mb: record.estimated_vram_mb,
+                compatibility: record.compatibility.clone(),
+                compatibility_reason: record.compatibility_reason.clone(),
+            };
+
+            if model_name
+                .map(|name| record.name == name)
+                .unwrap_or(record.active)
+            {
+                return Some(capability);
+            }
+
+            if record.active {
+                active_fallback = Some(capability);
             }
         }
     }
