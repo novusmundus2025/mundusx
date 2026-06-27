@@ -35,7 +35,13 @@ Users should install the CLI from the localhost release preview and never need R
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
-That installer will download the matching release binary for the user's operating system and CPU architecture from the local release preview, with the current release channel focused on Apple Silicon Macs, then verify the checksum when available.
+On Windows, use the native PowerShell bootstrapper:
+
+```powershell
+.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download
+```
+
+The installer downloads the matching release binary for the user's operating system and CPU architecture from the local release preview, then verifies the checksum when available. After the binary is installed, `opengpu install` detects the machine profile, control-plane choice, community contribution cap, and model fit.
 
 See [docs/install-page.md](/Users/DBATALL/Documents/mundusx/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/mundusx/docs/install-strategy.md) for the distribution plan.
 The local install page also exposes a machine-readable manifest at `http://127.0.0.1:3002/install.json` for tooling and future public rollout work. The same dashboard also mirrors the future public-endpoint shape at `http://127.0.0.1:3002/public/install` and `http://127.0.0.1:3002/public/install.json`. The matching local release preview is also manifest-driven and serves `release-manifest.json` from `http://127.0.0.1:8788/releases/latest/download/`.
@@ -49,7 +55,7 @@ Release builds for the CLI are published from GitHub Actions on `cli-v*` tags wi
 - `apps/cli/src/routing.rs` for local selection scoring
 - `agents/node/src/main.rs` for the Rust node agent entrypoint
 - `agents/node/src/worker.rs` for the local worker subprocess scaffold
-- `install.sh` for one-click binary installation
+- `install.sh` and `install.ps1` for one-command binary installation
 - `packages/shared/src/index.ts` for cross-package types
 - `packages/proto/schema/opengpu.proto` for the wire contract
 
@@ -62,8 +68,7 @@ Route each request to the most suitable live node, rather than combining partial
 For a fresh contributor machine, review onboarding, set a contribution cap, and then start the node:
 
 ```bash
-opengpu onboarding
-opengpu cap
+opengpu install
 opengpu start
 opengpu status
 ```

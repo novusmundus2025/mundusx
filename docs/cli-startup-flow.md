@@ -20,6 +20,48 @@ On first run, the CLI:
 5. Stores the config in the preferred config directory, or falls back to a local `.opengpu/config.json` file if needed.
 6. If `OPENGPU_HOME` is set, that path wins over any repo-local fallback.
 
+## Install
+
+The platform bootstrapper installs the native `opengpu` binary only:
+
+- macOS/Linux use `install.sh`.
+- Windows uses `install.ps1`.
+- The bootstrapper selects the release asset for the operating system and CPU architecture.
+- The full contributor setup always happens inside `opengpu install`.
+
+When the user runs:
+
+```bash
+opengpu install
+```
+
+the CLI runs the guided machine setup wizard:
+
+1. Creates local config and secure device identity if needed.
+2. Detects the machine profile, including OS, CPU architecture, Apple Silicon or CUDA backend, NVIDIA GPU name, and CUDA VRAM when available.
+3. Asks which control plane to use:
+   - public MundusX, which saves the hosted MundusX API endpoint
+   - private / custom, which asks for a full `http://` or `https://` URL
+   - blank control-plane input defaults to public MundusX
+4. Asks how much of this machine's compute budget MundusX may use:
+   - `20%` light
+   - `30%` balanced
+   - `50%` strong
+5. Asks which model this node should run:
+   - lighter safe catalog model
+   - recommended safe catalog model
+   - local GGUF / LM Studio model file
+6. Filters model choices by the selected contribution cap and detected machine profile, then checks model fit before download or activation.
+7. Saves the selected control-plane URL, contribution cap, and active model.
+8. Prints the next step: `opengpu start`.
+
+Scripted installs can pass flags instead of using the prompts:
+
+```bash
+opengpu install --public --cap-percent 30
+opengpu install --private --control-plane-url http://127.0.0.1:8787 --cap-percent 30
+```
+
 ## Login
 
 When the user runs:
@@ -51,17 +93,14 @@ the CLI:
    - Apple Silicon `aarch64` on macOS becomes `M`
    - NVIDIA CUDA machines become `CUDA` when CUDA environment hints or `nvidia-smi` are available
 5. Optionally overrides that with `--m`.
-6. If no contribution cap is saved yet, prints a clear hint to run:
-   - `opengpu cap`
-   - the `cap` command opens the retro vertical selector for:
-     - `20%` light
-     - `30%` balanced
-     - `50%` strong
-     - `75%` aggressive
-     - `90%` max
-     - use the arrow keys and press Enter to confirm
-     - press `Ctrl-C` to cancel the cap selector cleanly
-7. If no active model is saved yet, caches a local model entry and marks it active.
+6. If no contribution cap is saved yet, asks the user to choose the budget on interactive terminals.
+   - `20%` light
+   - `30%` balanced
+   - `50%` strong
+   - use the arrow keys and press Enter to confirm
+   - press `Ctrl-C` to cancel the cap selector cleanly
+   - scripted or non-interactive runs still print the `opengpu cap` hint instead of choosing silently
+7. If no active model is saved yet, asks for a model choice, caches or imports it, and marks it active.
    - the starter model presets come from `apps/cli/config/official-models.json`
    - the starter presets point at public Hugging Face GGUF files compatible with the local Mac runtime, so no account is required for the default path
    - if the selected model is missing, the CLI downloads the public GGUF file and verifies the checksum when one is present in the catalog
@@ -172,6 +211,6 @@ opengpu onboarding --complete
 
 The onboarding command only marks the review step as complete; it does not change the device identity or control-plane state.
 
-When the contribution cap has not been saved yet, `opengpu cap` is the explicit command that records it before routing starts.
+When the contribution cap has not been saved yet, `opengpu start` asks for it on an interactive terminal. `opengpu cap` remains the explicit command for changing or resetting it later.
 
 Those deeper network behaviors will come later when the control plane and node agent are online.

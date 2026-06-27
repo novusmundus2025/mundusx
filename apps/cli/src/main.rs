@@ -20,11 +20,13 @@ use types::Backend;
 use config::{config_exists, load_config, resolved_config_path, save_config, Config};
 use identity::{device_id_for_identity, ensure_identity, load_identity, load_or_create_identity};
 use model::{
-    active_model_name, add_model, configured_model_dir_string, ensure_effective_model_dir,
-    import_model, list_models, prune_models, remove_model, use_model, ImportModelOptions,
-    ModelRecord,
+    active_model_name, add_model, configured_model_dir_string, ensure_catalog_model_fits,
+    ensure_effective_model_dir, import_model, list_models, prune_models, remove_model, use_model,
+    ImportModelOptions, ModelRecord,
 };
 use model_catalog::{selection_for, ModelOption};
+
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://api.mundusx.ai";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,6 +42,21 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Guided first-run setup for this contributor machine
+    Install {
+        /// Use the public MundusX control plane
+        #[arg(long)]
+        public: bool,
+        /// Configure a private/custom control plane
+        #[arg(long)]
+        private: bool,
+        /// Private/custom control-plane URL
+        #[arg(long)]
+        control_plane_url: Option<String>,
+        /// Contribution cap to save without opening the selector
+        #[arg(long)]
+        cap_percent: Option<u8>,
+    },
     /// Start the MundusX network
     Start,
     /// Join the MundusX network (boots local state on first use)
@@ -1402,6 +1419,14 @@ fn contribution_semantics(backend: Backend) -> &'static str {
     }
 }
 
+fn default_contribution_percent(backend: Backend) -> u8 {
+    match backend {
+        Backend::Cuda => 30,
+        Backend::M => 30,
+        Backend::Auto => 20,
+    }
+}
+
 fn detect_backend() -> Backend {
     if env::consts::OS == "macos" && env::consts::ARCH == "aarch64" {
         return Backend::M;
@@ -1422,25 +1447,251 @@ fn detect_backend() -> Backend {
     Backend::Auto
 }
 
+fn detect_cuda_gpu_name() -> Option<String> {
+    let output = Command::new("nvidia-smi")
+        .args(["--query-gpu=name", "--format=csv,noheader"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+fn detect_cuda_vram_mb() -> Option<u64> {
+    let output = Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .max()
+}
+
+fn install_profile_for(os: &str, arch: &str, backend: Backend) -> &'static str {
+    match (os, arch, backend) {
+        ("macos", "aarch64", Backend::M) => "macos-aarch64-apple-silicon",
+        ("windows", "x86_64", Backend::Cuda) => "windows-x86_64-cuda",
+        ("linux", "x86_64", Backend::Cuda) => "linux-x86_64-cuda",
+        ("linux", "aarch64", Backend::Cuda) => "linux-aarch64-cuda",
+        ("windows", "x86_64", _) => "windows-x86_64-generic",
+        ("linux", "x86_64", _) => "linux-x86_64-generic",
+        ("linux", "aarch64", _) => "linux-aarch64-generic",
+        ("macos", "x86_64", _) => "macos-x86_64-generic",
+        _ => "unsupported-or-generic",
+    }
+}
+
+struct MachineProfile {
+    os: &'static str,
+    arch: &'static str,
+    backend: Backend,
+    install_profile: &'static str,
+    cuda_gpu_name: Option<String>,
+    cuda_vram_mb: Option<u64>,
+}
+
+fn detect_machine_profile() -> MachineProfile {
+    let backend = detect_backend();
+    MachineProfile {
+        os: env::consts::OS,
+        arch: env::consts::ARCH,
+        backend,
+        install_profile: install_profile_for(env::consts::OS, env::consts::ARCH, backend),
+        cuda_gpu_name: if backend == Backend::Cuda {
+            detect_cuda_gpu_name()
+        } else {
+            None
+        },
+        cuda_vram_mb: if backend == Backend::Cuda {
+            detect_cuda_vram_mb()
+        } else {
+            None
+        },
+    }
+}
+
+fn contribution_vram_budget_mb(
+    total_vram_mb: Option<u64>,
+    contribution_percent: u8,
+) -> Option<u64> {
+    total_vram_mb.map(|total| total.saturating_mul(contribution_percent as u64) / 100)
+}
+
+fn model_vram_budget_mb(config: &Config, backend: Backend) -> Option<u64> {
+    if backend != Backend::Cuda {
+        return None;
+    }
+
+    contribution_vram_budget_mb(detect_cuda_vram_mb(), config.contribution_percent)
+}
+
+fn ensure_catalog_model_fits_machine(
+    name: &str,
+    backend: Backend,
+    config: &Config,
+) -> Result<(), String> {
+    let available_vram_mb = model_vram_budget_mb(config, backend);
+
+    ensure_catalog_model_fits(name, backend, available_vram_mb).map_err(|error| error.to_string())
+}
+
 enum PromptOutcome {
     Selected(u8),
     Cancelled,
 }
 
-fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
-    const OPTIONS: &[(u8, &str)] = &[
-        (20, "light"),
-        (30, "balanced"),
-        (50, "strong"),
-        (75, "aggressive"),
-        (90, "max"),
+enum ControlPlaneChoice {
+    Public,
+    Private,
+}
+
+fn prompt_control_plane_choice() -> ControlPlaneChoice {
+    const OPTIONS: &[(&str, &str)] = &[
+        ("Public MundusX", "use the hosted mundusx.ai control plane"),
+        ("Private / custom", "enter your own control-plane URL"),
     ];
+
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return ControlPlaneChoice::Public;
+    }
+
+    let mut selected = 0usize;
+    if enable_raw_mode().is_err() {
+        return ControlPlaneChoice::Public;
+    }
+
+    let render_menu = |selected: usize| {
+        print!("\x1b[2J\x1b[H");
+        println!("Which control plane should this node use?");
+        println!("-----------------------------------------");
+        for (index, (label, detail)) in OPTIONS.iter().enumerate() {
+            let marker = if index == selected { ">>" } else { "  " };
+            println!("{marker} {label} - {detail}");
+        }
+        println!();
+        println!("Use ↑/↓ and Enter");
+        let _ = io::stdout().flush();
+    };
+
+    render_menu(selected);
+
+    let result = loop {
+        match read() {
+            Ok(Event::Key(key)) => match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = disable_raw_mode();
+                    println!();
+                    eprintln!("cancelled");
+                    std::process::exit(130);
+                }
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    render_menu(selected);
+                }
+                KeyCode::Down => {
+                    if selected + 1 < OPTIONS.len() {
+                        selected += 1;
+                    }
+                    render_menu(selected);
+                }
+                KeyCode::Enter => break selected,
+                KeyCode::Esc => break 0,
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break 0,
+        }
+    };
+
+    let _ = disable_raw_mode();
+    if result == 1 {
+        ControlPlaneChoice::Private
+    } else {
+        ControlPlaneChoice::Public
+    }
+}
+
+fn read_private_control_plane_url() -> String {
+    loop {
+        print!("Private control-plane URL [blank for public MundusX]: ");
+        let _ = io::stdout().flush();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            eprintln!("failed to read control-plane URL");
+            std::process::exit(1);
+        }
+        let url = input.trim();
+        if url.is_empty() {
+            return PUBLIC_CONTROL_PLANE_URL.to_string();
+        }
+        if !url.is_empty() && (url.starts_with("http://") || url.starts_with("https://")) {
+            return url.to_string();
+        }
+        println!("Enter a full URL, for example http://127.0.0.1:8787, or leave blank for public MundusX");
+    }
+}
+
+fn resolve_install_control_plane_url(
+    public: bool,
+    private: bool,
+    control_plane_url: Option<String>,
+) -> String {
+    if public && private {
+        eprintln!("choose either --public or --private, not both");
+        std::process::exit(2);
+    }
+
+    if let Some(url) = control_plane_url {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return PUBLIC_CONTROL_PLANE_URL.to_string();
+        }
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return trimmed.to_string();
+        }
+        eprintln!("control-plane URL must start with http:// or https://");
+        std::process::exit(2);
+    }
+
+    if public {
+        return PUBLIC_CONTROL_PLANE_URL.to_string();
+    }
+
+    if private {
+        if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            return read_private_control_plane_url();
+        }
+        eprintln!("--private requires --control-plane-url in non-interactive mode");
+        std::process::exit(2);
+    }
+
+    match prompt_control_plane_choice() {
+        ControlPlaneChoice::Public => PUBLIC_CONTROL_PLANE_URL.to_string(),
+        ControlPlaneChoice::Private => read_private_control_plane_url(),
+    }
+}
+
+fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
+    const OPTIONS: &[(u8, &str)] = &[(20, "light"), (30, "balanced"), (50, "strong")];
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let mut input = String::new();
         if io::stdin().read_to_string(&mut input).is_ok() {
             let choice = input.trim();
-            const OPTIONS: [u8; 5] = [20, 30, 50, 75, 90];
+            const OPTIONS: [u8; 3] = [20, 30, 50];
             if let Ok(value) = choice.parse::<usize>() {
                 if (1..=OPTIONS.len()).contains(&value) {
                     return PromptOutcome::Selected(OPTIONS[value - 1]);
@@ -1510,8 +1761,8 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
 
 fn normalize_contribution_percent(percent: u8) -> Result<u8, String> {
     match percent {
-        20 | 30 | 50 | 75 | 90 => Ok(percent),
-        _ => Err("supported cap values are 20, 30, 50, 75, and 90".to_string()),
+        20 | 30 | 50 => Ok(percent),
+        _ => Err("supported community cap values are 20, 30, and 50".to_string()),
     }
 }
 
@@ -1520,8 +1771,6 @@ fn cap_label(percent: u8) -> &'static str {
         20 => "light",
         30 => "balanced",
         50 => "strong",
-        75 => "aggressive",
-        90 => "max",
         _ => "custom",
     }
 }
@@ -1541,7 +1790,7 @@ fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool
             "meaning: {}",
             contribution_semantics(resolved_backend(config))
         ),
-        "supported caps: 20 / 30 / 50 / 75 / 90".to_string(),
+        "supported community caps: 20 / 30 / 50".to_string(),
         "install page: localhost preview at http://127.0.0.1:3002/install".to_string(),
         "next step: run `opengpu start` after saving a cap".to_string(),
         format!(
@@ -1603,23 +1852,33 @@ fn detect_memory_gb() -> u64 {
 
 enum ModelChoice {
     Model(ModelOption),
-    LocalPath(String),
+    LocalGguf(String),
 }
 
-fn prompt_model_selection(backend: Backend) -> ModelChoice {
+fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     let gb = detect_memory_gb();
     let selection = selection_for(backend, gb);
+    let options = [selection.lighter.clone(), selection.recommended.clone()]
+        .into_iter()
+        .filter(|option| ensure_catalog_model_fits_machine(&option.name, backend, config).is_ok())
+        .collect::<Vec<_>>();
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return ModelChoice::Model(selection.recommended);
+        return options
+            .last()
+            .cloned()
+            .map(ModelChoice::Model)
+            .unwrap_or_else(|| ModelChoice::LocalGguf(String::new()));
     }
 
-    const LOCAL_OPT: usize = 2;
-    let options = [selection.lighter.clone(), selection.recommended.clone()];
-    let mut selected: usize = 1; // start on recommended
+    let mut selected: usize = options.len().saturating_sub(1);
 
     if enable_raw_mode().is_err() {
-        return ModelChoice::Model(selection.recommended);
+        return options
+            .last()
+            .cloned()
+            .map(ModelChoice::Model)
+            .unwrap_or_else(|| ModelChoice::LocalGguf(String::new()));
     }
 
     let render = |selected: usize| {
@@ -1629,6 +1888,12 @@ fn prompt_model_selection(backend: Backend) -> ModelChoice {
             "detected: {} / {}GB memory",
             selection.backend, selection.memory_gb
         );
+        if let Some(budget) = model_vram_budget_mb(config, backend) {
+            println!(
+                "model budget: {budget} MB VRAM ({}% contribution cap)",
+                config.contribution_percent
+            );
+        }
         println!("----------------------------------");
         for (i, option) in options.iter().enumerate() {
             let marker = if i == selected { ">>" } else { "  " };
@@ -1640,6 +1905,15 @@ fn prompt_model_selection(backend: Backend) -> ModelChoice {
                 option.notes
             );
         }
+        let marker = if selected == options.len() {
+            ">>"
+        } else {
+            "  "
+        };
+        println!(
+            "{marker} {}. Import local GGUF / LM Studio model",
+            options.len() + 1
+        );
         println!();
         println!("Use ↑/↓ and Enter — you must choose one");
         let _ = io::stdout().flush();
@@ -1661,7 +1935,7 @@ fn prompt_model_selection(backend: Backend) -> ModelChoice {
                     render(selected);
                 }
                 KeyCode::Down => {
-                    if selected + 1 < options.len() {
+                    if selected < options.len() {
                         selected += 1;
                     }
                     render(selected);
@@ -1676,9 +1950,9 @@ fn prompt_model_selection(backend: Backend) -> ModelChoice {
 
     let _ = disable_raw_mode();
 
-    if result == LOCAL_OPT {
+    if result == options.len() {
         print!("\x1b[2J\x1b[H");
-        print!("Path to your models directory: ");
+        print!("Path to local .gguf model file: ");
         let _ = io::stdout().flush();
         let mut path = String::new();
         let _ = io::stdin().read_line(&mut path);
@@ -1687,10 +1961,81 @@ fn prompt_model_selection(backend: Backend) -> ModelChoice {
             // still can't skip — fall back to recommended
             ModelChoice::Model(selection.recommended)
         } else {
-            ModelChoice::LocalPath(path)
+            ModelChoice::LocalGguf(path)
         }
     } else {
         ModelChoice::Model(options[result].clone())
+    }
+}
+
+fn apply_model_choice(config: &mut Config, choice: ModelChoice, active: bool) {
+    match choice {
+        ModelChoice::Model(model) => {
+            ensure_effective_model_dir(config);
+            let backend = resolved_backend(config);
+            if let Err(error) = ensure_catalog_model_fits_machine(&model.name, backend, config) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            let result = if active {
+                use_model(config, &model.name)
+            } else {
+                add_model(config, &model.name)
+            };
+            if let Err(error) = result {
+                eprintln!("failed to cache model `{}`: {error}", model.name);
+                std::process::exit(1);
+            }
+            print_model_event(
+                "MODEL SELECTED",
+                &model.name,
+                "model recorded in local cache",
+                Color::Cyan,
+                config,
+            );
+        }
+        ModelChoice::LocalGguf(path) => {
+            let backend = resolved_backend(config);
+            let available_vram_mb = model_vram_budget_mb(config, backend);
+            let path = std::path::PathBuf::from(path);
+            let record = match import_model(
+                config,
+                ImportModelOptions {
+                    name: None,
+                    path: &path,
+                    active,
+                    backend,
+                    available_vram_mb,
+                },
+            ) {
+                Ok(record) => record,
+                Err(error) => {
+                    eprintln!("failed to import model `{}`: {error}", path.display());
+                    std::process::exit(1);
+                }
+            };
+            if record.compatibility.as_deref() == Some("rejected") {
+                eprintln!(
+                    "model `{}` is not compatible: {}",
+                    record.name,
+                    record
+                        .compatibility_reason
+                        .as_deref()
+                        .unwrap_or("rejected by compatibility check")
+                );
+                std::process::exit(1);
+            }
+            print_model_event(
+                "MODEL IMPORTED",
+                &record.name,
+                record
+                    .compatibility_reason
+                    .as_deref()
+                    .unwrap_or("local model metadata recorded"),
+                Color::Cyan,
+                config,
+            );
+        }
     }
 }
 
@@ -1703,31 +2048,9 @@ fn run_init() -> Config {
         }
     };
 
+    let profile = detect_machine_profile();
     let mut config = config_from_identity(&identity);
-    config.backend_preference = detect_backend();
-
-    // model selection — mandatory, no skip
-    match prompt_model_selection(config.backend_preference) {
-        ModelChoice::Model(model) => {
-            ensure_effective_model_dir(&mut config);
-            if let Err(error) = use_model(&mut config, &model.name) {
-                eprintln!("failed to cache model `{}`: {error}", model.name);
-                std::process::exit(1);
-            }
-            print_model_event(
-                "MODEL SELECTED",
-                &model.name,
-                "starter model recorded in local cache",
-                Color::Cyan,
-                &config,
-            );
-        }
-        ModelChoice::LocalPath(path) => {
-            config.model_dir = Some(path);
-            config.active_model = None;
-            config.models = vec![];
-        }
-    }
+    config.backend_preference = profile.backend;
 
     match save_config(&config) {
         Ok(path) => {
@@ -1747,10 +2070,129 @@ fn run_init() -> Config {
     config
 }
 
+fn run_install(
+    public: bool,
+    private: bool,
+    control_plane_url: Option<String>,
+    cap_percent: Option<u8>,
+) {
+    let profile = detect_machine_profile();
+    let mut config = if config_exists() {
+        current_config_or_default()
+    } else {
+        match ensure_identity() {
+            Ok((identity, _, _)) => config_from_identity(&identity),
+            Err(error) => {
+                eprintln!("failed to initialize identity: {error}");
+                std::process::exit(1);
+            }
+        }
+    };
+    config.backend_preference = profile.backend;
+    let detected = resolved_backend(&config);
+    config.control_plane_url =
+        resolve_install_control_plane_url(public, private, control_plane_url);
+
+    let selected_cap = if let Some(value) = cap_percent {
+        match normalize_contribution_percent(value) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+    } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        println!(
+            "contributionQuestion: how much of this {} machine can MundusX use?",
+            detected.as_str()
+        );
+        println!("contributionMeaning: {}", contribution_semantics(detected));
+        match prompt_contribution_percent(default_contribution_percent(detected)) {
+            PromptOutcome::Selected(value) => Some(value),
+            PromptOutcome::Cancelled => None,
+        }
+    } else if config.contribution_percent == 0 {
+        Some(default_contribution_percent(detected))
+    } else {
+        None
+    };
+
+    if let Some(value) = selected_cap {
+        config.contribution_percent = value;
+    }
+
+    if active_model_name(&config).is_none()
+        || io::stdin().is_terminal() && io::stdout().is_terminal()
+    {
+        let backend = resolved_backend(&config);
+        let choice = prompt_model_selection(&config, backend);
+        apply_model_choice(&mut config, choice, true);
+    }
+
+    match save_config(&config) {
+        Ok(path) => {
+            let body = vec![
+                format!("machine: {} {}", profile.os, profile.arch),
+                format!("install profile: {}", profile.install_profile),
+                format!(
+                    "gpu: {}",
+                    profile.cuda_gpu_name.as_deref().unwrap_or("none detected")
+                ),
+                format!(
+                    "cuda vram: {}",
+                    profile
+                        .cuda_vram_mb
+                        .map(|value| format!("{value} MB"))
+                        .unwrap_or_else(|| "none detected".to_string())
+                ),
+                format!("control plane: {}", config.control_plane_url),
+                format!(
+                    "backend: {}",
+                    if config.backend_preference.is_auto() {
+                        detected.as_str()
+                    } else {
+                        config.backend_preference.as_str()
+                    }
+                ),
+                format!(
+                    "contribution cap: {}",
+                    if config.contribution_percent == 0 {
+                        "unset".to_string()
+                    } else {
+                        format!("{}%", config.contribution_percent)
+                    }
+                ),
+                format!(
+                    "active model: {}",
+                    active_model_name(&config).unwrap_or_else(|| "none".to_string())
+                ),
+                format!("config: {}", path.display()),
+                "next step: run `opengpu start`".to_string(),
+            ];
+            print_retro_panel(
+                "INSTALL COMPLETE",
+                "machine setup saved",
+                &body,
+                Color::Green,
+            );
+        }
+        Err(error) => {
+            eprintln!("failed to save install setup: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Install {
+            public,
+            private,
+            control_plane_url,
+            cap_percent,
+        } => run_install(public, private, control_plane_url, cap_percent),
         Commands::Start | Commands::Connect => {
             // auto-init on first run
             if !config_exists() {
@@ -1769,23 +2211,38 @@ fn main() {
                     false
                 }
             };
-            if active_model_name(&config).is_none() {
-                match prompt_model_selection(config.backend_preference) {
-                    ModelChoice::Model(model) => {
-                        ensure_effective_model_dir(&mut config);
-                        if let Err(error) = use_model(&mut config, &model.name) {
-                            eprintln!("failed to cache model `{}`: {error}", model.name);
-                            std::process::exit(1);
-                        }
+            if config.contribution_percent == 0
+                && io::stdin().is_terminal()
+                && io::stdout().is_terminal()
+            {
+                let detected = resolved_backend(&config);
+                println!(
+                    "contributionQuestion: how much of this {} machine can MundusX use?",
+                    detected.as_str()
+                );
+                println!("contributionMeaning: {}", contribution_semantics(detected));
+                match prompt_contribution_percent(default_contribution_percent(detected)) {
+                    PromptOutcome::Selected(value) => {
+                        config.contribution_percent = value;
                     }
-                    ModelChoice::LocalPath(path) => {
-                        config.model_dir = Some(path);
-                        config.active_model = None;
-                        config.models = vec![];
+                    PromptOutcome::Cancelled => {
+                        println!("capHint: run `opengpu cap` before starting contribution");
                     }
                 }
             }
+            if active_model_name(&config).is_none() {
+                let backend = resolved_backend(&config);
+                let choice = prompt_model_selection(&config, backend);
+                apply_model_choice(&mut config, choice, true);
+            }
             if let Some(active_model) = active_model_name(&config) {
+                let backend = resolved_backend(&config);
+                if let Err(error) =
+                    ensure_catalog_model_fits_machine(&active_model, backend, &config)
+                {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
                 if let Err(error) = use_model(&mut config, &active_model) {
                     eprintln!("failed to refresh active model `{active_model}`: {error}");
                     std::process::exit(1);
@@ -2061,6 +2518,11 @@ fn main() {
                     print_model_inventory(&config, &models, json);
                 }
                 ModelCommands::Use { name } => {
+                    let backend = resolved_backend(&config);
+                    if let Err(error) = ensure_catalog_model_fits_machine(&name, backend, &config) {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
                     if let Err(error) = use_model(&mut config, &name) {
                         eprintln!("failed to activate model `{name}`: {error}");
                         std::process::exit(1);
@@ -2078,6 +2540,11 @@ fn main() {
                     );
                 }
                 ModelCommands::Add { name } => {
+                    let backend = resolved_backend(&config);
+                    if let Err(error) = ensure_catalog_model_fits_machine(&name, backend, &config) {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
                     if let Err(error) = add_model(&mut config, &name) {
                         eprintln!("failed to cache model `{name}`: {error}");
                         std::process::exit(1);
@@ -2102,6 +2569,13 @@ fn main() {
                     activate,
                 } => {
                     let backend = backend.unwrap_or_else(detect_backend);
+                    let available_vram_mb = vram_mb.or_else(|| {
+                        if backend == Backend::Cuda {
+                            model_vram_budget_mb(&config, backend)
+                        } else {
+                            None
+                        }
+                    });
                     let path = std::path::PathBuf::from(path);
                     let record = match import_model(
                         &mut config,
@@ -2110,7 +2584,7 @@ fn main() {
                             path: &path,
                             active: activate,
                             backend,
-                            available_vram_mb: vram_mb,
+                            available_vram_mb,
                         },
                     ) {
                         Ok(record) => record,
@@ -2326,7 +2800,8 @@ fn main() {
 mod tests {
     use super::{
         build_job_submission_payload, doctor_payload, job_is_terminal, job_status_path,
-        logs_payload, Cli, Commands, JobsCommands,
+        logs_payload, resolve_install_control_plane_url, Cli, Commands, JobsCommands,
+        PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::types::Backend;
@@ -2355,6 +2830,38 @@ mod tests {
     fn logs_command_parses() {
         let cli = Cli::try_parse_from(["opengpu", "logs", "--json"]).expect("logs should parse");
         assert!(matches!(cli.command, Commands::Logs { json: true }));
+    }
+
+    #[test]
+    fn install_command_parses_public_cap() {
+        let cli = Cli::try_parse_from(["opengpu", "install", "--public", "--cap-percent", "30"])
+            .expect("install should parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Install {
+                public: true,
+                private: false,
+                control_plane_url: None,
+                cap_percent: Some(30),
+            }
+        ));
+    }
+
+    #[test]
+    fn install_public_uses_hosted_control_plane() {
+        assert_eq!(
+            resolve_install_control_plane_url(true, false, None),
+            PUBLIC_CONTROL_PLANE_URL
+        );
+        assert_eq!(
+            resolve_install_control_plane_url(false, false, Some(" ".into())),
+            PUBLIC_CONTROL_PLANE_URL
+        );
+        assert_eq!(
+            resolve_install_control_plane_url(false, false, Some("http://127.0.0.1:8787".into())),
+            "http://127.0.0.1:8787"
+        );
     }
 
     #[test]
@@ -2499,6 +3006,41 @@ mod tests {
         assert!(job_is_terminal(&serde_json::json!({"status": "failed"})));
         assert!(!job_is_terminal(&serde_json::json!({"status": "queued"})));
         assert!(!job_is_terminal(&serde_json::json!({"state": "assigned"})));
+    }
+
+    #[test]
+    fn default_contribution_percent_matches_backend_risk() {
+        assert_eq!(super::default_contribution_percent(Backend::Cuda), 30);
+        assert_eq!(super::default_contribution_percent(Backend::M), 30);
+        assert_eq!(super::default_contribution_percent(Backend::Auto), 20);
+    }
+
+    #[test]
+    fn contribution_percent_rejects_dedicated_machine_caps() {
+        assert_eq!(super::normalize_contribution_percent(20), Ok(20));
+        assert_eq!(super::normalize_contribution_percent(50), Ok(50));
+        assert!(super::normalize_contribution_percent(75).is_err());
+        assert!(super::normalize_contribution_percent(90).is_err());
+    }
+
+    #[test]
+    fn install_profile_routes_machine_families() {
+        assert_eq!(
+            super::install_profile_for("macos", "aarch64", Backend::M),
+            "macos-aarch64-apple-silicon"
+        );
+        assert_eq!(
+            super::install_profile_for("windows", "x86_64", Backend::Cuda),
+            "windows-x86_64-cuda"
+        );
+        assert_eq!(
+            super::install_profile_for("linux", "x86_64", Backend::Cuda),
+            "linux-x86_64-cuda"
+        );
+        assert_eq!(
+            super::install_profile_for("windows", "x86_64", Backend::Auto),
+            "windows-x86_64-generic"
+        );
     }
 
     #[test]

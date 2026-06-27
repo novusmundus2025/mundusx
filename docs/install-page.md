@@ -9,7 +9,7 @@ The install page should do one thing well:
 - explain that MundusX installs with one command
 - explain that the `opengpu` CLI is installed with one command
 - show the exact copy-paste install command
-- set expectations that the installer downloads a signed Mac-first release binary from localhost during development
+- set expectations that the installer downloads a signed platform release binary from localhost during development
 - point users to release notes and checksums
 
 ## Canonical Copy
@@ -18,6 +18,12 @@ The local page should present this command:
 
 ```bash
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
+```
+
+For Windows, the local page should present:
+
+```powershell
+.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download
 ```
 
 ## What The Page Is
@@ -48,6 +54,8 @@ For end-to-end localhost testing, point `install.sh` at a local release source w
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download
 ```
 
+For Windows localhost testing, pass the same release source with `-ReleaseBaseUrl`.
+
 ## What The Page Is Not
 
 - Not the installer itself
@@ -61,15 +69,15 @@ RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download
 2. The page shows the one-line install command.
 3. The command downloads the matching signed release binary.
 4. The installer verifies the checksum when available.
-5. The user runs `opengpu onboarding`.
-6. The user runs `opengpu cap` to choose the contribution budget.
+5. The user runs `opengpu install`.
+6. The CLI asks for control plane, contribution cap, and model selection.
 7. The user runs `opengpu start` to bring the machine online.
 
 ## Page Requirements
 
 - Keep the page short and readable.
 - Keep the command identical to the installer docs.
-- Keep the wording Mac-first until the release channel expands.
+- Keep the wording platform-aware once Windows assets are published.
 - Link to release notes and checksums when available.
 - Make the cap step obvious so a fresh contributor knows what to do before `start`.
 
@@ -78,6 +86,7 @@ RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download
 Any change to the local install page must be reviewed against:
 
 - `install.sh`
+- `install.ps1`
 - `docs/install-strategy.md`
 - `docs/who-runs-what.md`
 - `README.md`

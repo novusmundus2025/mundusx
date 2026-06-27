@@ -34,6 +34,7 @@ That static artifact now includes the same public-surface mirror paths as the lo
 - `/public/install`
 - `/public/install.json`
 - `/public/install.sh`
+- `/public/install.ps1`
 - `/public/release`
 - `/public/release.json`
 

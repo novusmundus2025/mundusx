@@ -2,12 +2,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputDir = path.resolve(process.argv[2] ?? path.join(repoRoot, "dist/public-docs-site"));
 const repoReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download";
 const repoReleaseNotesUrl = "https://github.com/mundusx/mundusx/releases/latest";
 const installScriptContents = fs.readFileSync(path.join(repoRoot, "install.sh"), "utf8");
+const installPowershellContents = fs.readFileSync(path.join(repoRoot, "install.ps1"), "utf8");
 
 const pages = [
   {
@@ -76,6 +78,7 @@ function writePublicInstallSurface() {
     product_name: "NovusX",
     audience: "public",
     install_script_href: "./install.sh",
+    install_powershell_href: "./install.ps1",
     release_base_url: repoReleaseBaseUrl,
     release_notes_url: repoReleaseNotesUrl,
     docs_home_href: "./docs/",
@@ -85,6 +88,7 @@ function writePublicInstallSurface() {
   };
 
   fs.writeFileSync(path.join(publicDir, "install.sh"), installScriptContents);
+  fs.writeFileSync(path.join(publicDir, "install.ps1"), installPowershellContents);
   fs.writeFileSync(path.join(publicDir, "install.json"), JSON.stringify(manifest, null, 2) + "\n");
   fs.writeFileSync(path.join(installDir, "index.html"), renderPublicInstallPage());
 }
@@ -406,7 +410,8 @@ function renderMarkdown(page, markdown) {
   const summaryBlocks = [];
   if (page.slug === "install") {
     summaryBlocks.push(
-      `<section><h2>Canonical command</h2><pre><code>RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh</code></pre></section>`,
+      `<section><h2>Canonical commands</h2><pre><code>RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
+.\\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download</code></pre></section>`,
     );
   }
   if (page.slug === "device-identity") {
@@ -585,10 +590,11 @@ function renderPublicInstallPage() {
     <div class="shell">
       <section class="hero">
         <span class="eyebrow">Public Install Endpoint</span>
-        <h1>Install NovusX on your Mac</h1>
-        <p class="lead">This Pages-backed install surface mirrors the future public endpoint shape. It hosts the reviewed installer script from this repo and points that script at the latest signed GitHub release artifacts.</p>
+        <h1>Install NovusX</h1>
+        <p class="lead">This Pages-backed install surface mirrors the future public endpoint shape. It hosts the reviewed installer scripts from this repo and points them at the latest signed GitHub release artifacts.</p>
         <div class="actions">
           <a class="primary" href="../install.sh">Download install.sh</a>
+          <a href="../install.ps1">Download install.ps1</a>
           <a href="../docs/install/">Install docs</a>
           <a href="../docs/release/">Release notes and distribution</a>
         </div>
@@ -597,15 +603,15 @@ function renderPublicInstallPage() {
       <section class="panel">
         <h2>One command</h2>
         <div class="command" id="install-command">Fetching ../install.json</div>
-        <p class="manifest" id="manifest-state">The public install shell loads its command and release source from <code>../install.json</code>.</p>
+        <p class="manifest" id="manifest-state">The public install surface loads its commands and release source from <code>../install.json</code>.</p>
       </section>
 
       <section class="panel">
         <h2>What this endpoint guarantees</h2>
         <div class="grid">
           <div class="card">
-            <h3>Repo-owned script</h3>
-            <p>The same checked-in <code>install.sh</code> from this repo is published at <code>/public/install.sh</code>.</p>
+            <h3>Repo-owned scripts</h3>
+            <p>The checked-in <code>install.sh</code> and <code>install.ps1</code> scripts are published under <code>/public</code>.</p>
           </div>
           <div class="card">
             <h3>Signed release source</h3>
@@ -621,9 +627,9 @@ function renderPublicInstallPage() {
       <section class="panel">
         <h2>Before you run it</h2>
         <ul>
-          <li>Apple Silicon Macs remain the primary release channel today.</li>
-          <li>The installer places <code>opengpu</code> into <code>$HOME/.local/bin</code> by default.</li>
-          <li>After install, use <code>opengpu cap</code> before <code>opengpu start</code> so the node budget is explicit.</li>
+          <li>Use the shell installer on macOS/Linux and the PowerShell installer on Windows.</li>
+          <li>The installer places <code>opengpu</code> or <code>opengpu.exe</code> into the platform default bin directory.</li>
+          <li>After install, use <code>opengpu install</code> before <code>opengpu start</code> so control plane, cap, and model selection are explicit.</li>
         </ul>
       </section>
     </div>
@@ -639,7 +645,13 @@ function renderPublicInstallPage() {
         }
         const manifest = await response.json();
         const installScriptUrl = new URL(manifest.install_script_href, manifestUrl).href;
-        const command = "curl -fsSL " + installScriptUrl + " | bash";
+        const installPowershellUrl = new URL(manifest.install_powershell_href, manifestUrl).href;
+        const command =
+          "macOS/Linux: curl -fsSL " +
+          installScriptUrl +
+          " | bash\nWindows: powershell -ExecutionPolicy Bypass -Command \"iwr " +
+          installPowershellUrl +
+          " -OutFile install.ps1; .\\install.ps1\"";
         commandNode.textContent = command;
         stateNode.textContent =
           "Manifest loaded from ../install.json • GitHub release source: " + manifest.release_base_url;
@@ -821,7 +833,7 @@ function renderPublicReleasePage() {
           </div>
           <div class="card">
             <h3>Install hand-off</h3>
-            <p>The public install surface and checked-in <code>install.sh</code> remain the supported way to consume that release channel.</p>
+            <p>The public install surface and checked-in installer scripts remain the supported way to consume that release channel.</p>
           </div>
         </div>
       </section>

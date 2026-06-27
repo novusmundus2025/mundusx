@@ -1,6 +1,6 @@
 # Install Strategy
 
-This page defines the recommended way to distribute `opengpu`, starting with the Mac-first localhost install page and binary installer, then expanding later.
+This page defines the recommended way to distribute `opengpu` with native one-command installers that download a signed release binary and hand off first-run setup to `opengpu install`.
 
 ## Guiding Principle
 
@@ -16,15 +16,33 @@ Use your own installer that downloads the correct release binary from the local 
 
 Recommended flow:
 
-- macOS (current focus): the local install page at `http://127.0.0.1:<port>/install` should show `RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh`
+- macOS/Linux: the local install page at `http://127.0.0.1:<port>/install` should show `RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh`
+- Windows: the local install page should show `.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download`
 - during localhost review, `scripts/local-release-preview.sh up` should build and serve the repo-managed preview that backs that command
 - the same local page should expose a machine-readable manifest at `http://127.0.0.1:<port>/install.json`
 - the same dashboard should also mirror the public-endpoint shape at `http://127.0.0.1:<port>/public/install` and `http://127.0.0.1:<port>/public/install.json`
 - the matching localhost release preview should expose a machine-readable manifest at `http://127.0.0.1:8788/releases/latest/download/release-manifest.json`
 - the repo-owned Pages artifact should mirror the public release/distribution surface at `/public/release` and `/public/release.json`
-- Linux and Windows: follow later, once the Mac release path is stable
 
 This should be the source of truth for release artifacts and checksums.
+
+### Machine Detection
+
+The setup flow must detect the machine family before selecting runtime defaults or release assets:
+
+- `macos-aarch64-apple-silicon` for Apple Silicon M-series nodes
+- `windows-x86_64-cuda` for Windows NVIDIA CUDA contributors
+- `linux-x86_64-cuda` and `linux-aarch64-cuda` for Linux NVIDIA CUDA contributors
+- generic Windows/Linux/macOS profiles when no supported accelerator is detected
+
+The same detection should drive:
+
+- which binary asset the installer downloads: `opengpu-aarch64-apple-darwin`, `opengpu-x86_64-unknown-linux-gnu`, or `opengpu-x86_64-pc-windows-msvc.exe`
+- whether CUDA, Apple Silicon, or generic setup instructions are shown
+- which model catalog options are offered
+- the model VRAM budget after applying the selected community contribution cap
+
+The binary bootstrapper does only platform and asset detection. The CLI setup wizard owns control-plane selection, contribution cap, backend preference, and model gating so every install path reaches the same policy.
 
 ### 2. macOS Convenience
 
@@ -41,7 +59,7 @@ Why:
 
 ### 3. Windows Convenience
 
-Add WinGet support first for mainstream Windows distribution.
+Use `install.ps1` as the direct Windows path and add WinGet as the convenience channel for mainstream Windows distribution.
 
 Why:
 
@@ -70,8 +88,8 @@ Recommended release targets:
 
 - `macos-aarch64`
 - `macos-x86_64` later if Intel support becomes necessary
-- `windows-x86_64` later
-- `linux-x86_64` later
+- `windows-x86_64`
+- `linux-x86_64`
 - `linux-aarch64` later if needed
 
 ## Release Checklist
