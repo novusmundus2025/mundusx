@@ -159,6 +159,8 @@ pub struct AgentRegistration {
     pub identity_trust_path: Option<String>,
     pub backend: Backend,
     pub contribution_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<NodeCapabilityAdvertisement>,
     pub agent_version: String,
 }
 
@@ -192,6 +194,41 @@ pub struct WorkerHealthReport {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelCapability {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_vram_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeCapabilityAdvertisement {
+    pub backend: Backend,
+    pub contribution_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_vram_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usable_vram_mb: Option<u32>,
+    pub runtime_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<ModelCapability>,
+    pub ready_for_jobs: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Heartbeat {
     pub node_id: String,
     pub backend: Backend,
@@ -215,6 +252,8 @@ pub struct Heartbeat {
     pub policy_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_health: Option<WorkerHealthReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<NodeCapabilityAdvertisement>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

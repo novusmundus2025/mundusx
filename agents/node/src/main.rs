@@ -7,7 +7,8 @@ mod worker;
 use clap::{Parser, Subcommand};
 use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
+    NodeCapabilityAdvertisement, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerPolicyReport,
 };
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
@@ -172,16 +173,87 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
 }
 
 fn operational_state(config: &AgentConfig) -> AgentState {
-    let (_, policy) = worker_readiness(config);
-    if !policy.allowed {
+    let (health, policy) = worker_readiness(config);
+    let capabilities = build_capabilities(config, &health, policy.allowed);
+    if !capabilities.ready_for_jobs {
         AgentState::Paused
     } else {
         resolved_state(config)
     }
 }
 
+fn cap_applied_vram_mb(physical_vram_mb: Option<u32>, contribution_percent: u8) -> Option<u32> {
+    physical_vram_mb.map(|vram| {
+        vram.saturating_mul(contribution_percent as u32)
+            .saturating_add(99)
+            / 100
+    })
+}
+
+fn build_capabilities(
+    config: &AgentConfig,
+    health: &WorkerHealthReport,
+    policy_allowed: bool,
+) -> NodeCapabilityAdvertisement {
+    let backend = resolved_backend(config);
+    let active_model = worker::active_model_capability(
+        &config.effective_model_dir(),
+        config.active_model.as_deref(),
+    )
+    .or_else(|| {
+        config
+            .active_model
+            .as_ref()
+            .map(|name| contracts::ModelCapability {
+                name: name.clone(),
+                path: health.model_path.clone(),
+                format: None,
+                quantization: None,
+                size_bytes: None,
+                estimated_vram_mb: None,
+                compatibility: None,
+                compatibility_reason: None,
+            })
+    });
+
+    let mut ready_for_jobs = policy_allowed && health.healthy;
+    let mut readiness_reason = None;
+    match active_model.as_ref() {
+        Some(model) if model.compatibility.as_deref() == Some("rejected") => {
+            ready_for_jobs = false;
+            readiness_reason = model
+                .compatibility_reason
+                .clone()
+                .or_else(|| Some("active model is not compatible with this node".to_string()));
+        }
+        Some(_) => {}
+        None => {
+            ready_for_jobs = false;
+            readiness_reason = Some("no active model is configured".to_string());
+        }
+    }
+
+    if !policy_allowed && readiness_reason.is_none() {
+        readiness_reason = Some("worker policy does not allow jobs".to_string());
+    } else if !health.healthy && readiness_reason.is_none() {
+        readiness_reason = Some("worker health is degraded".to_string());
+    }
+
+    NodeCapabilityAdvertisement {
+        backend,
+        contribution_percent: config.contribution_percent,
+        physical_vram_mb: health.cuda_memory_mb,
+        usable_vram_mb: cap_applied_vram_mb(health.cuda_memory_mb, config.contribution_percent),
+        runtime_mode: health.runtime_mode.clone(),
+        active_model,
+        ready_for_jobs,
+        readiness_reason,
+    }
+}
+
 fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> Heartbeat {
     let (health, policy) = worker_readiness(config);
+    let capabilities = build_capabilities(config, &health, policy.allowed);
     Heartbeat {
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
@@ -198,6 +270,7 @@ fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> 
         policy_allowed: policy.allowed,
         policy_reason: policy.reason,
         worker_health: health.clone(),
+        capabilities,
     }
 }
 
@@ -264,6 +337,7 @@ fn detect_available_gpu_percent(config: &AgentConfig) -> u32 {
 }
 
 fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentRegistration {
+    let (health, policy) = worker_readiness(config);
     AgentRegistration {
         node_id: config.device_id.clone(),
         public_key_fingerprint: identity.fingerprint.clone(),
@@ -272,6 +346,7 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
         identity_trust_path: identity::trust_path(),
         backend: resolved_backend(config),
         contribution_percent: config.contribution_percent,
+        capabilities: build_capabilities(config, &health, policy.allowed),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
@@ -915,6 +990,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn test_config() -> AgentConfig {
         AgentConfig {
@@ -932,6 +1008,55 @@ mod tests {
             active_model: Some("tiny-cuda".to_string()),
             models: vec!["tiny-cuda".to_string()],
         }
+    }
+
+    fn test_health(backend: Backend) -> WorkerHealthReport {
+        WorkerHealthReport {
+            healthy: true,
+            model_dir: "/tmp/models".to_string(),
+            model_name: Some("tiny-cuda".to_string()),
+            model_path: Some("/tmp/models/tiny.gguf".to_string()),
+            llama_cli_available: backend != Backend::Cuda,
+            blas_device_available: backend != Backend::Cuda,
+            cuda_device_available: backend == Backend::Cuda,
+            cuda_driver_available: backend == Backend::Cuda,
+            cuda_device_name: if backend == Backend::Cuda {
+                Some("NVIDIA GTX".to_string())
+            } else {
+                None
+            },
+            cuda_memory_mb: if backend == Backend::Cuda {
+                Some(4096)
+            } else {
+                None
+            },
+            cuda_low_vram_profile: backend == Backend::Cuda,
+            power_source: "ac".to_string(),
+            on_battery: false,
+            battery_percent: None,
+            runtime_mode: backend.as_str().to_string(),
+            checked_at: "1".to_string(),
+            notes: Vec::new(),
+        }
+    }
+
+    fn write_active_model_manifest(config: &AgentConfig, compatibility: &str) {
+        let manifest_dir = config.effective_model_dir().join(".opengpu");
+        fs::create_dir_all(&manifest_dir).expect("manifest dir");
+        let manifest = serde_json::json!({
+            "name": "tiny-cuda",
+            "active": true,
+            "cached_at": "1",
+            "model_dir": config.effective_model_dir(),
+            "source_path": "/tmp/models/tiny.gguf",
+            "format": "gguf",
+            "quantization": "Q4_K_M",
+            "size_bytes": 1048576,
+            "estimated_vram_mb": 1536,
+            "compatibility": compatibility,
+            "compatibility_reason": "test compatibility"
+        });
+        fs::write(manifest_dir.join("tiny-cuda.json"), manifest.to_string()).expect("manifest");
     }
 
     fn test_job() -> JobRecord {
@@ -1023,5 +1148,67 @@ mod tests {
         assert_eq!(completion.duration_ms, Some(13));
         assert_eq!(completion.model.as_deref(), Some("tiny-cuda"));
         assert_eq!(completion.runtime_mode.as_deref(), Some("cuda"));
+    }
+
+    #[test]
+    fn cuda_capability_advertises_cap_applied_model_budget() {
+        let mut config = test_config();
+        let temp =
+            std::env::temp_dir().join(format!("opengpu-capability-test-{}", now_unix_seconds()));
+        config.model_dir = Some(temp.display().to_string());
+        config.contribution_percent = 50;
+        write_active_model_manifest(&config, "accepted");
+
+        let capability = build_capabilities(&config, &test_health(Backend::Cuda), true);
+
+        assert_eq!(capability.backend, Backend::Cuda);
+        assert_eq!(capability.physical_vram_mb, Some(4096));
+        assert_eq!(capability.usable_vram_mb, Some(2048));
+        assert_eq!(capability.runtime_mode, "cuda");
+        assert_eq!(
+            capability
+                .active_model
+                .as_ref()
+                .map(|model| model.name.as_str()),
+            Some("tiny-cuda")
+        );
+        assert!(capability.ready_for_jobs);
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejected_active_model_is_not_advertised_ready() {
+        let mut config = test_config();
+        let temp = std::env::temp_dir().join(format!(
+            "opengpu-rejected-capability-test-{}",
+            now_unix_seconds()
+        ));
+        config.model_dir = Some(temp.display().to_string());
+        write_active_model_manifest(&config, "rejected");
+
+        let capability = build_capabilities(&config, &test_health(Backend::Cuda), true);
+
+        assert!(!capability.ready_for_jobs);
+        assert_eq!(
+            capability.readiness_reason.as_deref(),
+            Some("test compatibility")
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn generic_node_without_active_model_is_not_advertised_ready() {
+        let mut config = test_config();
+        config.backend_preference = Backend::Auto;
+        config.active_model = None;
+        config.models = Vec::new();
+
+        let capability = build_capabilities(&config, &test_health(Backend::Auto), true);
+
+        assert!(!capability.ready_for_jobs);
+        assert_eq!(
+            capability.readiness_reason.as_deref(),
+            Some("no active model is configured")
+        );
     }
 }
