@@ -35,6 +35,12 @@ opengpu jobs status <job_id>
 opengpu jobs wait <job_id> --timeout 300 --interval 2
 ```
 
+Local no-auth smoke:
+
+```bash
+./scripts/no-auth-e2e-smoke.sh
+```
+
 Startup flow:
 
 - For a fresh machine, review onboarding, set a contribution cap, and then run `opengpu start`; `opengpu install` guides the control-plane, cap, and model setup before start
@@ -49,5 +55,6 @@ Startup flow:
 - `opengpu status` shows the live local routing decision
 - `opengpu model import` records contributor-supplied local GGUF files and reports whether they fit the selected backend and VRAM budget
 - `opengpu jobs submit/status/wait` uses the async control-plane job API. `wait` is a CLI polling helper; the server still returns quickly and does not hold the request open.
+- `scripts/no-auth-e2e-smoke.sh` verifies the local/UAT no-auth lifecycle: disabled operator auth on `/health`, signed node registration and heartbeat, no-auth job submit, node-agent claim and completion, and final CLI polling.
 
 See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup-flow.md) for the full first-run sequence.
