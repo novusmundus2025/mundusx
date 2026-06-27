@@ -76,6 +76,26 @@ function Read-ChecksumHash {
   return ($content -split "\s+")[0].ToUpperInvariant()
 }
 
+function Copy-ReleaseFile {
+  param(
+    [string]$Source,
+    [string]$Destination
+  )
+
+  $uri = $null
+  if ([System.Uri]::TryCreate($Source, [System.UriKind]::Absolute, [ref]$uri) -and $uri.IsFile) {
+    Copy-Item -LiteralPath $uri.LocalPath -Destination $Destination
+    return
+  }
+
+  if (Test-Path -LiteralPath $Source) {
+    Copy-Item -LiteralPath $Source -Destination $Destination
+    return
+  }
+
+  Invoke-WebRequest -Uri $Source -OutFile $Destination
+}
+
 if ($Help) {
   Show-Usage
   exit 0
@@ -99,6 +119,7 @@ Write-Output "  profile: $profile"
 Write-Output "  gpu: $(if ($gpu) { $gpu.Name } else { 'none detected' })"
 Write-Output "  cuda vram: $(if ($gpu -and $gpu.VramMb) { "$($gpu.VramMb) MB" } else { 'none detected' })"
 Write-Output "  source: $releaseBase"
+Write-Output "  asset: $assetName"
 Write-Output "  install: $InstallDir"
 Write-Output ""
 
@@ -107,10 +128,10 @@ New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 try {
   Write-Output "Fetching opengpu..."
-  Invoke-WebRequest -Uri $releaseUrl -OutFile $tempExe
+  Copy-ReleaseFile -Source $releaseUrl -Destination $tempExe
 
   try {
-    Invoke-WebRequest -Uri $checksumUrl -OutFile $tempChecksum
+    Copy-ReleaseFile -Source $checksumUrl -Destination $tempChecksum
     Write-Output "Verifying checksum..."
     $expected = Read-ChecksumHash -Path $tempChecksum
     $actual = (Get-FileHash -Algorithm SHA256 -Path $tempExe).Hash.ToUpperInvariant()
