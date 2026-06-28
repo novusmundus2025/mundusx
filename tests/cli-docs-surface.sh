@@ -31,5 +31,9 @@ assert_contains "docs/cli-commands.md" 'download official open presets from the 
 assert_not_contains "docs/cli-commands.md" 'real model downloads are still a future step'
 assert_contains "README.md" 'For a fresh contributor machine, review onboarding, set a contribution cap, and then start the node:'
 assert_contains "apps/cli/README.md" 'For a fresh machine, review onboarding, set a contribution cap, and then run `opengpu start`'
+assert_contains "docs/install-strategy.md" 'Windows CLI releases should build on GitHub-hosted `windows-latest` runners with the stable Rust MSVC toolchain target `x86_64-pc-windows-msvc`'
+assert_contains "docs/install-strategy.md" 'opengpu-x86_64-pc-windows-msvc.exe'
+assert_contains "docs/install-strategy.md" 'Release signing secrets should stay shared across platform jobs and be provided only through GitHub Actions secrets'
+assert_contains "docs/install-strategy.md" 'add a `windows-latest` matrix row to `.github/workflows/release-cli.yml`'
 
 echo "cli docs match current model download behavior"
