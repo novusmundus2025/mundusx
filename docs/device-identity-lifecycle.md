@@ -25,6 +25,8 @@ The current macOS implementation keeps the private key encrypted-at-rest inside 
 
 `opengpu status` now reports the active `identityTrustPath` so you can see whether the machine is using `keychain` or `local-encrypted-fallback` on the current Mac.
 
+The macOS environment policy is defined in [docs/macos-identity-policy.md](macos-identity-policy.md). Local preview and UAT may use `keychain` or `local-encrypted-fallback`; enterprise pilots should require `keychain`; production should require non-exportable OS-backed signing when it lands, or an explicit exception for Keychain encrypted fallback.
+
 Windows now stores the Ed25519 private key as a DPAPI-protected blob in the local identity record. The CLI and node-agent keep `private_key_hex` empty, decrypt the protected blob only for local signing, and report `dpapi://mundusx/device-identity` as the trust path. Existing Windows identity files that still contain plaintext `private_key_hex` are rejected with re-enrollment guidance instead of being reused silently.
 
 The old plain file-backed prototype remains only for non-macOS and non-Windows development paths.
@@ -105,11 +107,12 @@ Do not use it as proof of uniqueness or as a payout target.
 - Windows: the app-visible identity record omits raw private-key bytes and uses DPAPI-protected key material for CLI and node-agent signing.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.
+- macOS fallback policy is explicit: `local-encrypted-fallback` is acceptable for local preview and UAT, visible as below enterprise target, and not the default production posture.
 
 ## Open Identity Follow-Ups
 
 - Linux protected device identity storage is tracked in [mundusx/mundusx#113](https://github.com/mundusx/mundusx/issues/113).
-- macOS non-exportable identity enforcement policy is tracked in [mundusx/mundusx#114](https://github.com/mundusx/mundusx/issues/114).
+- macOS non-exportable identity enforcement policy is documented in [docs/macos-identity-policy.md](macos-identity-policy.md).
 - Windows DPAPI storage is shipped, while TPM-backed or CNG / KSP-backed non-exportable signing remains the future enterprise target.
 
 ## Reinstall Behavior
