@@ -189,6 +189,8 @@ pub struct WorkerHealthReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery_percent: Option<u8>,
     pub runtime_mode: String,
+    #[serde(default)]
+    pub supported_runtime_modes: Vec<String>,
     pub checked_at: String,
     pub notes: Vec<String>,
 }
