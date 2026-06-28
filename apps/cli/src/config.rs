@@ -103,7 +103,15 @@ pub fn load_config() -> std::io::Result<Option<Config>> {
 }
 
 pub fn save_config(config: &Config) -> std::io::Result<PathBuf> {
-    let data = serde_json::to_string_pretty(config).expect("config serialization");
+    #[cfg(windows)]
+    let serialized_config = {
+        let mut config = config.clone();
+        config.auth_token = None;
+        config
+    };
+    #[cfg(not(windows))]
+    let serialized_config = config.clone();
+    let data = serde_json::to_string_pretty(&serialized_config).expect("config serialization");
     let mut last_success = None;
     let mut last_error = None;
 

@@ -48,8 +48,8 @@ Startup flow:
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu cap` sets the contribution budget explicitly
 - `opengpu update` prints the local install page and release preview URLs
-- `opengpu login` stores a local operator bearer token
-- `opengpu logout` clears that local token
+- `opengpu login` stores a local operator bearer token; on Windows the token is protected with DPAPI outside `config.json`
+- `opengpu logout` clears that local token and the protected Windows token blob
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available
 - `opengpu exit` leaves contribution mode; `opengpu disconnect` remains available as the explicit alias
 - `opengpu status` shows the live local routing decision
