@@ -213,6 +213,31 @@ mod tests {
     }
 
     #[test]
+    fn official_remote_catalog_entries_include_sha256() {
+        let catalog = load_catalog().expect("catalog");
+        for option in catalog
+            .presets
+            .iter()
+            .flat_map(|preset| [&preset.lighter, &preset.recommended])
+        {
+            if option.source_kind == "huggingface-open" && !option.source_url.starts_with("file://")
+            {
+                assert_eq!(
+                    option.sha256.len(),
+                    64,
+                    "{} should include a SHA-256 digest",
+                    option.name
+                );
+                assert!(
+                    option.sha256.chars().all(|ch| ch.is_ascii_hexdigit()),
+                    "{} should use hexadecimal SHA-256",
+                    option.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn filters_cuda_catalog_by_cap_applied_vram_budget() {
         let catalog = load_catalog().expect("catalog");
         let options = options_for_machine(&catalog, Backend::Cuda, 16, Some(2048));

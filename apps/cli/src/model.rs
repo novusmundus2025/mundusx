@@ -405,6 +405,14 @@ fn download_model_from_option(
         return Ok(false);
     }
 
+    let is_local_source = option.source_url.starts_with("file://");
+    if !is_local_source && option.sha256.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("refusing to download `{name}`: official remote model is missing sha256"),
+        ));
+    }
+
     let parent = dest.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
 
@@ -413,7 +421,7 @@ fn download_model_from_option(
         let _ = fs::remove_file(&tmp);
     }
 
-    if option.source_url.starts_with("file://") {
+    if is_local_source {
         let source_path = option.source_url.trim_start_matches("file://");
         fs::copy(source_path, &tmp)?;
     } else {
@@ -795,6 +803,29 @@ mod tests {
         let dest = model_file_path(&config, &option.name, &option);
         assert!(dest.exists());
         assert_eq!(fs::read(&dest).expect("dest"), b"model-bytes");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_remote_open_model_without_checksum_before_download() {
+        let (config, temp_dir) = temp_config();
+
+        let option = crate::model_catalog::ModelOption {
+            name: "Test/RemoteModel".to_string(),
+            label: "Test Remote Model".to_string(),
+            notes: "remote test source".to_string(),
+            source_kind: "huggingface-open".to_string(),
+            source_url: "https://example.invalid/model.gguf".to_string(),
+            sha256: String::new(),
+            format: Some("gguf".to_string()),
+            backend_compatibility: vec![crate::types::Backend::Auto],
+            estimated_vram_mb: Some(1),
+        };
+
+        let error = download_model_from_option(&config, &option.name, &option).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("missing sha256"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
