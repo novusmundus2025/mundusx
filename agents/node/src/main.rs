@@ -1035,6 +1035,7 @@ mod tests {
             on_battery: false,
             battery_percent: None,
             runtime_mode: backend.as_str().to_string(),
+            supported_runtime_modes: vec!["local".to_string()],
             checked_at: "1".to_string(),
             notes: Vec::new(),
         }

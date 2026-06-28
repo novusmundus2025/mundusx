@@ -126,6 +126,7 @@ start_control_plane() {
   (
     cd "$control_plane_repo"
     MUNDUSX_AUTH_DISABLED=true \
+      MUNDUSX_CONTROL_PLANE_HOME="$smoke_home/control-plane-home" \
       HOST="$control_plane_host" \
       PORT="$control_plane_port" \
       cargo run -p opengpu-control-plane
@@ -224,8 +225,8 @@ run_lifecycle() {
   echo "OK: job submitted $job_id"
 
   echo "Claiming and completing job through node-agent..."
-  OPENGPU_HOME="$smoke_home" PATH="$smoke_bin:$PATH" "$agent" run --once --json >"$claim_file" 2>&1
-  rg -q '"job_id":' "$claim_file" || die "node-agent did not claim or report a job"
+  OPENGPU_HOME="$smoke_home" PATH="$smoke_bin:$PATH" "$agent" run --once >"$claim_file" 2>&1
+  rg -q "jobPoll: claimed $job_id" "$claim_file" || die "node-agent did not claim or report a job"
 
   OPENGPU_HOME="$smoke_home" "$cli" jobs wait "$job_id" --timeout 20 --interval 1 --json >"$wait_file"
   [ "$(json_get status "$wait_file")" = "completed" ] || die "job did not complete"

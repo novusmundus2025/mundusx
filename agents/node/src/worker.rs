@@ -634,6 +634,17 @@ pub fn probe_worker_health(
         model_path.is_some() && llama_cli_available && blas_device_available
     };
 
+    let runtime_mode = if backend == Backend::Cuda {
+        "cuda".to_string()
+    } else {
+        "blas".to_string()
+    };
+    let supported_runtime_modes = if healthy {
+        vec!["local".to_string()]
+    } else {
+        Vec::new()
+    };
+
     WorkerHealthReport {
         healthy,
         model_dir: model_dir.display().to_string(),
@@ -649,11 +660,8 @@ pub fn probe_worker_health(
         power_source: power_state.source,
         on_battery: power_state.on_battery,
         battery_percent: power_state.battery_percent,
-        runtime_mode: if backend == Backend::Cuda {
-            "cuda".to_string()
-        } else {
-            "blas".to_string()
-        },
+        runtime_mode,
+        supported_runtime_modes,
         checked_at: now_unix_seconds(),
         notes,
     }

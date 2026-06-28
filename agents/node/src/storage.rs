@@ -209,6 +209,7 @@ mod tests {
                 on_battery: false,
                 battery_percent: Some(100),
                 runtime_mode: "native".to_string(),
+                supported_runtime_modes: vec!["local".to_string()],
                 checked_at: updated_at.to_string(),
                 notes: Vec::new(),
             },
