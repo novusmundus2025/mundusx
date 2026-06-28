@@ -102,14 +102,24 @@ ensure_local_keys() {
 decode_env_key() {
   local value="$1"
   local path="$2"
-  python3 - "$value" "$path" <<'PY'
+  local label="$3"
+  python3 - "$value" "$path" "$label" <<'PY'
 import base64
+import binascii
 import sys
 from pathlib import Path
 
 value = sys.argv[1]
 path = Path(sys.argv[2])
-  path.write_bytes(base64.b64decode(value))
+label = sys.argv[3]
+
+try:
+    key_bytes = base64.b64decode(value, validate=True)
+except binascii.Error as exc:
+    print(f"FAILED: invalid base64 release signing {label}: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+path.write_bytes(key_bytes)
 PY
 }
 
@@ -119,8 +129,8 @@ load_private_key_for_sign() {
     temp_dir="$(mktemp -d)"
     private_key_path="$temp_dir/private.pem"
     public_key_path="$temp_dir/public.pem"
-    decode_env_key "${OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64}" "$private_key_path"
-    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path"
+    decode_env_key "${OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64}" "$private_key_path" "private-key"
+    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path" "public-key"
     return 0
   fi
 
@@ -136,7 +146,7 @@ load_public_key_for_verify() {
     local temp_dir
     temp_dir="$(mktemp -d)"
     public_key_path="$temp_dir/public.pem"
-    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path"
+    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path" "public-key"
     return 0
   fi
 
