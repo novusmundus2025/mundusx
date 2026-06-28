@@ -18,14 +18,16 @@ Those components should only be able to ask the local system to sign a request.
 - Use non-exportable storage or an encrypted-at-rest sign-only fallback instead of a plain readable file:
 
 - macOS: current implementation tries to store the machine secret in Keychain and falls back to a machine-local encrypted secret when keychain access is unavailable; in both cases the private key stays encrypted-at-rest in the local identity record so the app never reads raw private-key bytes
-- Windows: TPM-backed or CNG / KSP-backed key storage
+- Windows: DPAPI-protected device identity storage, with TPM-backed or CNG / KSP-backed non-exportable keys as the future enterprise target
 - Linux: TPM / PKCS#11 / system keyring when available
 
 The current macOS implementation keeps the private key encrypted-at-rest inside the local identity record and only exposes sign operations to the CLI and agent. The Rust CLI and agent persist public metadata plus the encrypted key blob and nonce, but they never persist raw private-key bytes. The secret used to decrypt the key is stored in the macOS Keychain when possible and otherwise derived locally as a fallback so signing continues to work in constrained environments.
 
 `opengpu status` now reports the active `identityTrustPath` so you can see whether the machine is using `keychain` or `local-encrypted-fallback` on the current Mac.
 
-The old plain file-backed prototype remains only for non-macOS development paths.
+Windows now stores the Ed25519 private key as a DPAPI-protected blob in the local identity record. The CLI and node-agent keep `private_key_hex` empty, decrypt the protected blob only for local signing, and report `dpapi://mundusx/device-identity` as the trust path. Existing Windows identity files that still contain plaintext `private_key_hex` are rejected with re-enrollment guidance instead of being reused silently.
+
+The old plain file-backed prototype remains only for non-macOS and non-Windows development paths.
 
 ## Lifecycle
 
@@ -100,6 +102,7 @@ Do not use it as proof of uniqueness or as a payout target.
 ## Current Prototype Status
 
 - macOS: the app-visible identity record omits raw private-key bytes, and the secret uses Keychain when available with a local encrypted fallback when it is not.
+- Windows: the app-visible identity record omits raw private-key bytes and uses DPAPI-protected key material for CLI and node-agent signing.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.
 

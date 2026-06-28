@@ -1,12 +1,15 @@
 #[cfg(target_os = "macos")]
 #[path = "../../../tools/macos_identity.rs"]
 mod macos_identity;
+#[cfg(windows)]
+#[path = "../../../tools/windows_identity.rs"]
+mod windows_identity;
 
 use crate::config::config_dir;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 use ed25519_dalek::Signer;
 use ed25519_dalek::{SigningKey, VerifyingKey};
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -32,7 +35,12 @@ impl DeviceIdentity {
             return macos_secure_identity().expect("macOS secure identity");
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            return windows_secure_identity().expect("Windows secure identity");
+        }
+
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         {
             let signing_key = SigningKey::generate(&mut OsRng);
             let verifying_key = signing_key.verifying_key();
@@ -86,7 +94,12 @@ impl DeviceIdentity {
             return macos_sign_hex(message);
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            return windows_sign_hex(message);
+        }
+
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         {
             let signing_key = self.signing_key()?;
             let signature = signing_key.sign(message.as_bytes());
@@ -103,7 +116,12 @@ pub fn trust_path() -> String {
             .to_string();
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows_identity::trust_path().to_string()
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
     {
         "legacy-file".to_string()
     }
@@ -158,7 +176,17 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
         return Ok(Some(identity));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        if !resolved_identity_path().exists() {
+            return Ok(None);
+        }
+        let identity = windows_secure_identity()?;
+        let _ = save_identity(&identity)?;
+        return Ok(Some(identity));
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
     {
         let path = resolved_identity_path();
         if !path.exists() {
@@ -169,9 +197,7 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
         let identity: DeviceIdentity = serde_json::from_str(&raw)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         identity.verifying_key()?;
-        if !cfg!(target_os = "macos") || !identity.private_key_hex.trim().is_empty() {
-            identity.signing_key()?;
-        }
+        identity.signing_key()?;
         Ok(Some(identity))
     }
 }
@@ -253,4 +279,39 @@ fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
 #[cfg(target_os = "macos")]
 fn macos_sign_hex(message: &str) -> std::io::Result<String> {
     macos_identity::sign_message(&macos_storage_dir(), message.as_bytes())
+}
+
+#[cfg(windows)]
+fn windows_storage_dir() -> PathBuf {
+    if std::env::var_os("OPENGPU_HOME").is_some() {
+        return identity_dir();
+    }
+
+    let home = identity_dir();
+    if identity_path().exists() || !local_identity_path().exists() {
+        return home;
+    }
+
+    local_identity_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
+}
+
+#[cfg(windows)]
+fn windows_secure_identity() -> std::io::Result<DeviceIdentity> {
+    let secure = windows_identity::ensure_identity(&windows_storage_dir())?;
+    Ok(DeviceIdentity {
+        public_key_hex: secure.public_key_hex,
+        private_key_hex: String::new(),
+        fingerprint: secure.fingerprint,
+        keychain_label_hex: None,
+        encrypted_private_key_hex: secure.encrypted_private_key_hex,
+        nonce_hex: String::new(),
+    })
+}
+
+#[cfg(windows)]
+fn windows_sign_hex(message: &str) -> std::io::Result<String> {
+    windows_identity::sign_message(&windows_storage_dir(), message.as_bytes())
 }
