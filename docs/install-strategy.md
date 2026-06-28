@@ -105,6 +105,31 @@ Recommended release targets:
 - `linux-x86_64`
 - `linux-aarch64` later if needed
 
+## Windows Release Runner Decision
+
+Windows CLI releases should build on GitHub-hosted `windows-latest` runners with the stable Rust MSVC toolchain target `x86_64-pc-windows-msvc`. This keeps the production `.exe` build on a native Windows linker and runtime instead of relying on cross-compilation for the first enterprise Windows channel.
+
+The Windows matrix entry should produce:
+
+- `opengpu-x86_64-pc-windows-msvc.exe`
+- `opengpu-x86_64-pc-windows-msvc.exe.sha256`
+- `release-manifest.json`
+- `release-manifest.json.sig`
+
+The Windows job should follow the same release workflow contract as the existing Linux and Apple Silicon jobs:
+
+- install the stable Rust toolchain with the `x86_64-pc-windows-msvc` target
+- build `apps/cli/Cargo.toml` in release mode for that target
+- copy `target/x86_64-pc-windows-msvc/release/opengpu.exe` to `opengpu-x86_64-pc-windows-msvc.exe`
+- generate and verify the SHA-256 checksum before upload
+- run the repo packaging verifier against the Windows asset directory
+- run `scripts/release-signing.sh prepare` with `OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64` and `OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64`
+- upload the Windows `.exe`, `.sha256`, signed manifest, and manifest signature into the tagged GitHub release
+
+Release signing secrets should stay shared across platform jobs and be provided only through GitHub Actions secrets. A Windows release job must fail if the signing secrets are missing or malformed; generated local preview keys are only acceptable for localhost preview fixtures and must not sign tagged release artifacts.
+
+This decision unblocks the implementation issue for publishing `opengpu-x86_64-pc-windows-msvc.exe`: maintainers should add a `windows-latest` matrix row to `.github/workflows/release-cli.yml` rather than waiting on a separate runner/toolchain decision.
+
 ## Release Checklist
 
 ### Shared Requirements
