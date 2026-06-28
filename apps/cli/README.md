@@ -35,6 +35,19 @@ opengpu jobs status <job_id>
 opengpu jobs wait <job_id> --timeout 300 --interval 2
 ```
 
+Human-readable output supports cross-platform themes:
+
+```bash
+opengpu --theme reactor status
+opengpu --theme classic doctor
+NO_COLOR=1 opengpu status
+```
+
+- `reactor` uses branded red/gold accents when stdout is an interactive terminal.
+- `classic` keeps plain, structured text for PowerShell, Git Bash, macOS/Linux terminals, and logs.
+- `auto` is the default: it uses `reactor` on interactive terminals and falls back to `classic` for CI, non-TTY output, or `NO_COLOR`.
+- JSON output stays machine-stable and unstyled for commands such as `opengpu doctor --json`, `opengpu status --json`, and `opengpu jobs wait --json`.
+
 Local no-auth smoke:
 
 ```bash
