@@ -17,9 +17,15 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary_name: opengpu-x86_64-unknown-linux-gnu
+            executable_name: opengpu
           - os: macos-14
             target: aarch64-apple-darwin
             binary_name: opengpu-aarch64-apple-darwin
+            executable_name: opengpu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: opengpu-x86_64-pc-windows-msvc.exe
+            executable_name: opengpu.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -36,23 +42,44 @@ jobs:
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ matrix.target }}
 
       - name: Prepare binary
+        shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/opengpu ${{ matrix.binary_name }}
-          chmod +x ${{ matrix.binary_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.executable_name }} ${{ matrix.binary_name }}
+          if [[ "${{ matrix.os }}" != windows-* ]]; then
+            chmod +x ${{ matrix.binary_name }}
+          fi
 
       - name: Generate checksum
+        shell: bash
         run: |
-          shasum -a 256 ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
+          elif command -v sha256sum >/dev/null 2>&1; then
+            sha256sum ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
+          else
+            echo "checksum tooling not found (need shasum or sha256sum)" >&2
+            exit 1
+          fi
 
       - name: Verify checksum
+        shell: bash
         run: |
-          shasum -a 256 -c ${{ matrix.binary_name }}.sha256
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c ${{ matrix.binary_name }}.sha256
+          elif command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c ${{ matrix.binary_name }}.sha256
+          else
+            echo "checksum tooling not found (need shasum or sha256sum)" >&2
+            exit 1
+          fi
 
       - name: Verify packaging
+        shell: bash
         run: |
           ./scripts/verify-release-packaging.sh . ${{ matrix.binary_name }}
 
       - name: Prepare signed manifest
+        shell: bash
         env:
           OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
           OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
