@@ -24,6 +24,7 @@
     "test:macos-identity-policy": "bash tests/macos-identity-policy.sh",
     "test:shared-contract": "bash tests/shared-contract-surface.sh",
     "test:local-release-homebrew": "bash tests/local-release-preview-homebrew.sh",
+    "test:release-cli-workflow": "bash tests/release-cli-workflow.sh",
     "test:release-signing-ci-keys": "bash tests/release-signing-ci-keys.sh",
     "test:requestor-api": "bash tests/requestor-api-contract.sh",
     "smoke:local": "./scripts/localhost-smoke.sh"
