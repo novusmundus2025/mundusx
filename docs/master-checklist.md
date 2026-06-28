@@ -7,7 +7,7 @@ Use this document as the single working list:
 - when an item is done, mark it done here first
 - keep the phase docs for detail and architecture notes
 - do not add new work here without also deciding where it belongs in the repo
-- for a three-way comparison of implemented vs public launch vs federated network work, see [docs/gap-checklist.md](/Users/DBATALL/Documents/mundusx/docs/gap-checklist.md)
+- for a three-way comparison of implemented vs public launch vs federated network work, see [docs/gap-checklist.md](gap-checklist.md)
 
 ## Current Focus
 
@@ -23,6 +23,7 @@ Use this document as the single working list:
 - [ ] Public install endpoint behind `mundusx.ai`
 - [x] Signed release binaries published from tags
 - [x] Packaging checks on macOS and Linux release artifacts
+- [ ] Windows CLI release asset published from tags ([mundusx/mundusx#73](https://github.com/mundusx/mundusx/issues/73))
 - [ ] Homebrew tap or formula publishing
 - [ ] WinGet package publishing
 - [x] Final CLI help polish and error messaging
@@ -30,7 +31,9 @@ Use this document as the single working list:
 ### Device Identity
 
 - [ ] macOS non-exportable device key storage in OS secure storage
-- [ ] Windows/Linux non-exportable device key storage in OS secure storage
+- [x] Windows DPAPI-protected device identity and operator-token storage
+- [ ] Windows non-exportable key enforcement policy and implementation beyond DPAPI
+- [ ] Linux protected device identity storage
 - [x] Verify the live Supabase restore path in the project again after any schema or secret changes
 
 ### Control Plane
@@ -69,6 +72,16 @@ The following major pieces are already in place and should stay marked complete:
 - Local release preview helper and CLI help polish
 - Packaging checks on macOS and Linux release artifacts
 - Signed release binaries published from tags
+- Windows DPAPI-protected device identity and operator-token storage
+
+## Active Follow-Up Issues
+
+- Windows release asset: [mundusx/mundusx#73](https://github.com/mundusx/mundusx/issues/73)
+- Windows release runner and signing decision: [mundusx/mundusx#109](https://github.com/mundusx/mundusx/issues/109)
+- Homebrew channel publishing: [mundusx/mundusx#110](https://github.com/mundusx/mundusx/issues/110)
+- WinGet package publishing: [mundusx/mundusx#111](https://github.com/mundusx/mundusx/issues/111)
+- Linux protected identity storage: [mundusx/mundusx#113](https://github.com/mundusx/mundusx/issues/113)
+- macOS non-exportable identity enforcement policy: [mundusx/mundusx#114](https://github.com/mundusx/mundusx/issues/114)
 
 ## Tracking Rule
 

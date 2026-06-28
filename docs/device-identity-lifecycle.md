@@ -106,6 +106,12 @@ Do not use it as proof of uniqueness or as a payout target.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.
 
+## Open Identity Follow-Ups
+
+- Linux protected device identity storage is tracked in [mundusx/mundusx#113](https://github.com/mundusx/mundusx/issues/113).
+- macOS non-exportable identity enforcement policy is tracked in [mundusx/mundusx#114](https://github.com/mundusx/mundusx/issues/114).
+- Windows DPAPI storage is shipped, while TPM-backed or CNG / KSP-backed non-exportable signing remains the future enterprise target.
+
 ## Reinstall Behavior
 
 If the contributor removes and reinstalls the app, the device identity should be reused as long as the persistent MundusX data directory remains intact.
