@@ -4,9 +4,11 @@ use crate::contracts::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::env;
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -89,6 +91,21 @@ pub struct CudaDiagnostics {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TrustedExecutable {
+    pub path: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TrustedRuntimePaths {
+    #[serde(default)]
+    pub llama_cli: Option<TrustedExecutable>,
+    #[serde(default)]
+    pub nvidia_smi: Option<TrustedExecutable>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CachedModelRecord {
     name: String,
@@ -145,6 +162,91 @@ fn active_model_name_from_cache(model_dir: &Path) -> Option<String> {
         }
     }
     None
+}
+
+fn config_dir() -> PathBuf {
+    env::var_os("OPENGPU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|dir| dir.join(".opengpu")))
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
+}
+
+fn trusted_runtime_paths_path() -> PathBuf {
+    env::var_os("OPENGPU_TRUSTED_RUNTIME_PATHS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_dir().join("trusted-runtime-paths.json"))
+}
+
+fn load_trusted_runtime_paths() -> Result<Option<TrustedRuntimePaths>, String> {
+    let path = trusted_runtime_paths_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let config = serde_json::from_str::<TrustedRuntimePaths>(&raw)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+    Ok(Some(config))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        sha2::Digest::update(&mut hasher, &buffer[..read]);
+    }
+
+    Ok(format!("{:x}", sha2::Digest::finalize(hasher)))
+}
+
+fn verify_trusted_executable(name: &str, pinned: &TrustedExecutable) -> Result<PathBuf, String> {
+    let path = PathBuf::from(&pinned.path);
+    if !path.is_absolute() {
+        return Err(format!(
+            "untrusted {name}: pinned runtime path must be absolute"
+        ));
+    }
+    if !path.is_file() {
+        return Err(format!(
+            "missing {name}: trusted runtime path {} does not exist",
+            path.display()
+        ));
+    }
+    if let Some(expected) = pinned.sha256.as_deref() {
+        let actual = sha256_file(&path)?;
+        if !actual.eq_ignore_ascii_case(expected.trim()) {
+            return Err(format!(
+                "untrusted {name}: trusted runtime hash changed for {}",
+                path.display()
+            ));
+        }
+    }
+
+    Ok(path)
+}
+
+fn trusted_runtime_executable(name: &str) -> Result<PathBuf, String> {
+    let trusted = load_trusted_runtime_paths()?;
+    let pinned = trusted.as_ref().and_then(|paths| match name {
+        "llama-cli" => paths.llama_cli.as_ref(),
+        "nvidia-smi" => paths.nvidia_smi.as_ref(),
+        _ => None,
+    });
+
+    match pinned {
+        Some(pinned) => verify_trusted_executable(name, pinned),
+        None => Ok(PathBuf::from(name)),
+    }
 }
 
 fn imported_model_path_from_cache(model_dir: &Path, model_name: Option<&str>) -> Option<PathBuf> {
@@ -272,7 +374,8 @@ fn resolve_model_path(model_dir: &Path, model_name: Option<&str>) -> io::Result<
 }
 
 fn probe_llama_cli_devices() -> Result<String, String> {
-    let output = Command::new("llama-cli")
+    let llama_cli = trusted_runtime_executable("llama-cli")?;
+    let output = Command::new(&llama_cli)
         .arg("--list-devices")
         .output()
         .map_err(|error| format!("failed to launch llama-cli: {error}"))?;
@@ -341,7 +444,16 @@ fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
 }
 
 pub fn probe_cuda_diagnostics() -> CudaDiagnostics {
-    let output = Command::new("nvidia-smi")
+    let nvidia_smi = match trusted_runtime_executable("nvidia-smi") {
+        Ok(path) => path,
+        Err(error) => {
+            return CudaDiagnostics {
+                notes: vec![error],
+                ..CudaDiagnostics::default()
+            };
+        }
+    };
+    let output = Command::new(&nvidia_smi)
         .args([
             "--query-gpu=name,memory.total",
             "--format=csv,noheader,nounits",
@@ -426,7 +538,8 @@ fn run_llama_command(
     top_p: f32,
     seed: u64,
 ) -> Result<(String, String), String> {
-    let mut command = Command::new("llama-cli");
+    let llama_cli = trusted_runtime_executable("llama-cli")?;
+    let mut command = Command::new(&llama_cli);
     command
         .arg("-m")
         .arg(model_path)
@@ -812,6 +925,41 @@ pub fn launch_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn with_temp_runtime_home(test: impl FnOnce(&Path)) {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "opengpu-agent-runtime-paths-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let previous_home = env::var_os("OPENGPU_HOME");
+        let previous_paths = env::var_os("OPENGPU_TRUSTED_RUNTIME_PATHS");
+        env::set_var("OPENGPU_HOME", &temp_dir);
+        env::remove_var("OPENGPU_TRUSTED_RUNTIME_PATHS");
+
+        test(&temp_dir);
+
+        match previous_home {
+            Some(value) => env::set_var("OPENGPU_HOME", value),
+            None => env::remove_var("OPENGPU_HOME"),
+        }
+        match previous_paths {
+            Some(value) => env::set_var("OPENGPU_TRUSTED_RUNTIME_PATHS", value),
+            None => env::remove_var("OPENGPU_TRUSTED_RUNTIME_PATHS"),
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    fn write_trusted_paths(home: &Path, paths: TrustedRuntimePaths) {
+        fs::write(
+            home.join("trusted-runtime-paths.json"),
+            serde_json::to_string_pretty(&paths).expect("trusted paths json"),
+        )
+        .expect("trusted paths");
+    }
 
     #[test]
     fn parses_low_vram_cuda_device_from_nvidia_smi() {
@@ -868,5 +1016,71 @@ mod tests {
 
         assert_eq!(resolved, source_path);
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn trusted_runtime_uses_pinned_absolute_path() {
+        with_temp_runtime_home(|home| {
+            let runtime = home.join("trusted-llama-cli");
+            fs::write(&runtime, b"trusted runtime").expect("runtime file");
+            let digest = sha256_file(&runtime).expect("runtime hash");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: runtime.display().to_string(),
+                        sha256: Some(digest),
+                    }),
+                    nvidia_smi: None,
+                },
+            );
+
+            let resolved = trusted_runtime_executable("llama-cli").expect("trusted runtime");
+
+            assert_eq!(resolved, runtime);
+        });
+    }
+
+    #[test]
+    fn trusted_runtime_rejects_hash_change() {
+        with_temp_runtime_home(|home| {
+            let runtime = home.join("trusted-llama-cli");
+            fs::write(&runtime, b"trusted runtime").expect("runtime file");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: runtime.display().to_string(),
+                        sha256: Some("0".repeat(64)),
+                    }),
+                    nvidia_smi: None,
+                },
+            );
+
+            let error = trusted_runtime_executable("llama-cli").expect_err("hash must fail");
+
+            assert!(error.contains("untrusted llama-cli"));
+            assert!(error.contains("hash changed"));
+        });
+    }
+
+    #[test]
+    fn trusted_runtime_rejects_relative_path_lookup() {
+        with_temp_runtime_home(|home| {
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: "llama-cli".to_string(),
+                        sha256: None,
+                    }),
+                    nvidia_smi: None,
+                },
+            );
+
+            let error = trusted_runtime_executable("llama-cli").expect_err("relative path");
+
+            assert!(error.contains("pinned runtime path must be absolute"));
+        });
     }
 }
