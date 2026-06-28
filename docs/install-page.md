@@ -54,7 +54,7 @@ For end-to-end localhost testing, point `install.sh` at a local release source w
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download
 ```
 
-For Windows localhost testing, pass the same release source with `-ReleaseBaseUrl`.
+For Windows localhost testing with unsigned fixture artifacts, pass the same release source with `-ReleaseBaseUrl` and add `-AllowUnsignedLocalPreview`. Do not use the preview override for production or enterprise installs.
 
 ## What The Page Is Not
 
@@ -68,7 +68,7 @@ For Windows localhost testing, pass the same release source with `-ReleaseBaseUr
 1. User opens the install page.
 2. The page shows the one-line install command.
 3. The command downloads the matching signed release binary.
-4. The installer verifies the checksum when available.
+4. The installer verifies the checksum and requires the signed release manifest artifacts by default.
 5. The user runs `opengpu install`.
 6. The CLI asks for control plane, contribution cap, and model selection.
 7. The user runs `opengpu start` to bring the machine online.

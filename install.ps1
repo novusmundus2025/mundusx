@@ -1,6 +1,7 @@
 param(
   [string]$InstallDir = "$env:USERPROFILE\.opengpu\bin",
   [string]$ReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download",
+  [switch]$AllowUnsignedLocalPreview,
   [switch]$Help
 )
 
@@ -14,6 +15,9 @@ Usage:
 Options:
   -InstallDir <path>       Directory where opengpu.exe will be installed.
   -ReleaseBaseUrl <url>    Release download base URL.
+  -AllowUnsignedLocalPreview
+                          Dev-only: allow missing checksum or signed manifest
+                          when testing a local release preview.
   -Help                    Print this help and exit.
 
 After this bootstrapper installs the binary, run:
@@ -76,6 +80,16 @@ function Read-ChecksumHash {
   return ($content -split "\s+")[0].ToUpperInvariant()
 }
 
+function Read-ReleaseManifest {
+  param([string]$Path)
+
+  try {
+    return Get-Content -Path $Path -Raw | ConvertFrom-Json
+  } catch {
+    throw "release manifest is not valid JSON"
+  }
+}
+
 function Copy-ReleaseFile {
   param(
     [string]$Source,
@@ -108,9 +122,13 @@ $assetName = "opengpu-$target.exe"
 $releaseBase = $ReleaseBaseUrl.TrimEnd("/")
 $releaseUrl = "$releaseBase/$assetName"
 $checksumUrl = "$releaseUrl.sha256"
+$manifestUrl = "$releaseBase/release-manifest.json"
+$signatureUrl = "$releaseBase/release-manifest.json.sig"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("opengpu-install-" + [System.Guid]::NewGuid().ToString("N"))
 $tempExe = Join-Path $tempDir $assetName
 $tempChecksum = Join-Path $tempDir "$assetName.sha256"
+$tempManifest = Join-Path $tempDir "release-manifest.json"
+$tempSignature = Join-Path $tempDir "release-manifest.json.sig"
 $finalExe = Join-Path $InstallDir "opengpu.exe"
 
 Write-Output "MundusX Windows installer"
@@ -121,6 +139,7 @@ Write-Output "  cuda vram: $(if ($gpu -and $gpu.VramMb) { "$($gpu.VramMb) MB" } 
 Write-Output "  source: $releaseBase"
 Write-Output "  asset: $assetName"
 Write-Output "  install: $InstallDir"
+Write-Output "  verification: $(if ($AllowUnsignedLocalPreview) { 'local preview override' } else { 'strict enterprise' })"
 Write-Output ""
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -130,6 +149,7 @@ try {
   Write-Output "Fetching opengpu..."
   Copy-ReleaseFile -Source $releaseUrl -Destination $tempExe
 
+  $expected = $null
   try {
     Copy-ReleaseFile -Source $checksumUrl -Destination $tempChecksum
     Write-Output "Verifying checksum..."
@@ -139,10 +159,40 @@ try {
       throw "checksum mismatch for $assetName"
     }
   } catch {
-    if ($_.Exception.Message -eq "checksum mismatch for $assetName") {
-      throw
+    if (-not $AllowUnsignedLocalPreview) {
+      throw "strict installer verification failed: checksum unavailable or invalid for $assetName ($($_.Exception.Message))"
     }
-    Write-Warning "checksum unavailable for $assetName, continuing without verification"
+    Write-Warning "dev-only local preview override: checksum unavailable or invalid for $assetName, continuing without verification"
+  }
+
+  try {
+    Copy-ReleaseFile -Source $manifestUrl -Destination $tempManifest
+    Copy-ReleaseFile -Source $signatureUrl -Destination $tempSignature
+    Write-Output "Checking signed release manifest..."
+    $manifest = Read-ReleaseManifest -Path $tempManifest
+    if ($manifest.artifact_kind -ne "release-binary") {
+      throw "release manifest artifact_kind is not release-binary"
+    }
+    if ($manifest.binary_name -ne $assetName) {
+      throw "release manifest binary_name does not match $assetName"
+    }
+    if (-not $manifest.checksum_sha256) {
+      throw "release manifest checksum_sha256 is empty"
+    }
+    if ($expected -and ($manifest.checksum_sha256.ToString().ToUpperInvariant() -ne $expected)) {
+      throw "release manifest checksum does not match $assetName.sha256"
+    }
+    if (-not (Test-Path -LiteralPath $tempSignature)) {
+      throw "release manifest signature is missing"
+    }
+    if ((Get-Item -LiteralPath $tempSignature).Length -le 0) {
+      throw "release manifest signature is empty"
+    }
+  } catch {
+    if (-not $AllowUnsignedLocalPreview) {
+      throw "strict installer verification failed: signed release manifest unavailable or invalid ($($_.Exception.Message))"
+    }
+    Write-Warning "dev-only local preview override: signed release manifest unavailable or invalid, continuing without signature verification"
   }
 
   Move-Item -Force -Path $tempExe -Destination $finalExe

@@ -84,7 +84,7 @@ function writePublicInstallSurface() {
     docs_home_href: "./docs/",
     install_docs_href: "./docs/install/",
     checksum_hint:
-      "The hosted install script uses the signed GitHub release artifacts and verifies checksums when the matching .sha256 file is published.",
+      "The hosted install script uses the signed GitHub release artifacts and fails closed unless checksum and signed manifest artifacts are present.",
   };
 
   fs.writeFileSync(path.join(publicDir, "install.sh"), installScriptContents);
@@ -615,7 +615,7 @@ function renderPublicInstallPage() {
           </div>
           <div class="card">
             <h3>Signed release source</h3>
-            <p>The installer defaults to the latest GitHub release download set and verifies the matching checksum file when it is published.</p>
+            <p>The installer defaults to the latest GitHub release download set and requires the matching checksum plus signed release manifest artifacts.</p>
           </div>
           <div class="card">
             <h3>Reviewable copy</h3>
