@@ -21,6 +21,7 @@
     "test:homebrew-formula": "bash tests/homebrew-formula.sh",
     "test:install-ps1": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-ps1-local-release.ps1",
     "test:license": "bash tests/license-surface.sh",
+    "test:macos-identity-policy": "bash tests/macos-identity-policy.sh",
     "test:shared-contract": "bash tests/shared-contract-surface.sh",
     "test:local-release-homebrew": "bash tests/local-release-preview-homebrew.sh",
     "test:release-signing-ci-keys": "bash tests/release-signing-ci-keys.sh",

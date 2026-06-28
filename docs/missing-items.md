@@ -17,6 +17,7 @@ For broader next-step context, see [docs/pending-items.md](pending-items.md).
 - [x] Device identity keypair reuse
 - [x] macOS non-exportable device identity in encrypted-at-rest sign-only fallback
 - [ ] macOS non-exportable device key storage in OS secure storage
+- [x] macOS non-exportable identity enforcement policy
 - [x] Windows DPAPI-protected device identity and operator-token storage
 - [ ] Windows non-exportable key enforcement policy and implementation beyond DPAPI
 - [ ] Linux protected device identity storage
@@ -38,7 +39,7 @@ For broader next-step context, see [docs/pending-items.md](pending-items.md).
 - Homebrew channel publishing: [mundusx/mundusx#110](https://github.com/mundusx/mundusx/issues/110)
 - WinGet package publishing: [mundusx/mundusx#111](https://github.com/mundusx/mundusx/issues/111)
 - Linux protected identity storage: [mundusx/mundusx#113](https://github.com/mundusx/mundusx/issues/113)
-- macOS non-exportable identity enforcement policy: [mundusx/mundusx#114](https://github.com/mundusx/mundusx/issues/114)
+- macOS identity policy: [docs/macos-identity-policy.md](macos-identity-policy.md)
 
 ## Control Plane Phase
 
