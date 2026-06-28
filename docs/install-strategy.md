@@ -17,7 +17,7 @@ Use your own installer that downloads the correct release binary from the local 
 Recommended flow:
 
 - macOS/Linux: the local install page at `http://127.0.0.1:<port>/install` should show `RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh`
-- Windows: the local install page should show `.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download`
+- Windows: the local install page should show `.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download -AllowUnsignedLocalPreview` only for unsigned local preview fixtures; production installs must omit the override.
 - during localhost review, `scripts/local-release-preview.sh up` should build and serve the repo-managed preview that backs that command
 - the same local page should expose a machine-readable manifest at `http://127.0.0.1:<port>/install.json`
 - the same dashboard should also mirror the public-endpoint shape at `http://127.0.0.1:<port>/public/install` and `http://127.0.0.1:<port>/public/install.json`
@@ -25,6 +25,17 @@ Recommended flow:
 - the repo-owned Pages artifact should mirror the public release/distribution surface at `/public/release` and `/public/release.json`
 
 This should be the source of truth for release artifacts and checksums.
+
+### Enterprise Windows Verification
+
+The Windows PowerShell bootstrapper fails closed by default. A production install must provide:
+
+- `opengpu-x86_64-pc-windows-msvc.exe`
+- `opengpu-x86_64-pc-windows-msvc.exe.sha256`
+- `release-manifest.json`
+- `release-manifest.json.sig`
+
+The installer verifies the asset checksum, requires the signed manifest artifacts, and checks that the manifest names the same Windows binary and checksum. `-AllowUnsignedLocalPreview` is reserved for local development fixtures and must not be used for enterprise or production installs.
 
 ### Machine Detection
 
@@ -127,6 +138,7 @@ Ship when all of these are true:
 
 - `windows-x86_64` binary builds and runs on Windows
 - PowerShell bootstrapper downloads the correct release asset
+- PowerShell bootstrapper fails closed when checksum or signed manifest artifacts are missing
 - installer handles `.exe` placement and PATH setup
 - WinGet package installs the same release version
 - binary starts from a normal PowerShell or Terminal session

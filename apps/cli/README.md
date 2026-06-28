@@ -10,10 +10,10 @@ Install with:
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
-On Windows:
+On Windows local preview:
 
 ```powershell
-.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download
+.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download -AllowUnsignedLocalPreview
 ```
 
 Useful commands:
