@@ -44,6 +44,7 @@ On Windows, use the native PowerShell bootstrapper:
 The installer downloads the matching release binary for the user's operating system and CPU architecture from the local release preview, then verifies the checksum when available. After the binary is installed, `opengpu install` detects the machine profile, control-plane choice, community contribution cap, and model fit.
 
 See [docs/install-page.md](/Users/DBATALL/Documents/mundusx/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/mundusx/docs/install-strategy.md) for the distribution plan.
+For enterprise Windows rollout controls, see [docs/enterprise-windows-policy.md](/Users/DBATALL/Documents/mundusx/docs/enterprise-windows-policy.md).
 The local install page also exposes a machine-readable manifest at `http://127.0.0.1:3002/install.json` for tooling and future public rollout work. The same dashboard also mirrors the future public-endpoint shape at `http://127.0.0.1:3002/public/install` and `http://127.0.0.1:3002/public/install.json`. The matching local release preview is also manifest-driven and serves `release-manifest.json` from `http://127.0.0.1:8788/releases/latest/download/`.
 For a repo-owned public docs artifact, run `npm run build:docs-site` to generate the static site into `dist/public-docs-site`. That same build is what the GitHub Pages workflow deploys from `uat` and `main`, including the reviewable public mirror paths at `/public/docs`, `/public/install`, `/public/install.json`, `/public/install.sh`, `/public/release`, and `/public/release.json`.
 
@@ -110,6 +111,7 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup
 - [docs/device-identity-lifecycle.md](/Users/DBATALL/Documents/mundusx/docs/device-identity-lifecycle.md) for the recommended secure device key lifecycle
 - [docs/model-lifecycle.md](/Users/DBATALL/Documents/mundusx/docs/model-lifecycle.md) for contributor-side model cache, switch, and prune rules
 - [docs/install-strategy.md](/Users/DBATALL/Documents/mundusx/docs/install-strategy.md) for the cross-platform distribution plan
+- [docs/enterprise-windows-policy.md](/Users/DBATALL/Documents/mundusx/docs/enterprise-windows-policy.md) for enterprise Windows install and runtime controls
 - [docs/install-page.md](/Users/DBATALL/Documents/mundusx/docs/install-page.md) for the local install page copy and flow
 - `npm run build:docs-site` to generate the static public docs site preview from tracked markdown
 - [scripts/localhost-smoke.sh](/Users/DBATALL/Documents/mundusx/scripts/localhost-smoke.sh) for the one-shot localhost install and docs smoke test

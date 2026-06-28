@@ -37,6 +37,8 @@ The Windows PowerShell bootstrapper fails closed by default. A production instal
 
 The installer verifies the asset checksum, requires the signed manifest artifacts, and checks that the manifest names the same Windows binary and checksum. `-AllowUnsignedLocalPreview` is reserved for local development fixtures and must not be used for enterprise or production installs.
 
+The broader enterprise Windows rollout policy, including secret storage, model-source integrity, trusted runtime paths, rollback, and support boundaries, lives in [docs/enterprise-windows-policy.md](/Users/DBATALL/Documents/mundusx/docs/enterprise-windows-policy.md).
+
 ### Machine Detection
 
 The setup flow must detect the machine family before selecting runtime defaults or release assets:
