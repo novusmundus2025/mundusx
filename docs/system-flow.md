@@ -96,7 +96,7 @@ flowchart TD
 ### Operator requests
 
 - Human-facing control-plane routes use a bearer token when `OPENGPU_OPERATOR_TOKEN` is set.
-- The CLI stores that token locally with `opengpu login` and clears it with `opengpu logout`.
+- The CLI stores that token locally with `opengpu login` and clears it with `opengpu logout`; on Windows the token is DPAPI-protected outside `config.json`.
 - If the token is not configured on the control plane, the prototype keeps those routes open for local development.
 
 ## How The Control Plane Checks Requests

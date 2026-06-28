@@ -72,7 +72,7 @@ opengpu login
 
 the CLI:
 
-1. Saves an operator bearer token locally.
+1. Saves an operator bearer token locally. On Windows, the token is protected with DPAPI outside `config.json`.
 2. Keeps the machine ready for future control-plane calls.
 3. Supports either an explicit `--token` value or an interactive prompt.
 
@@ -141,7 +141,7 @@ the CLI:
 
 ## Operator Auth
 
-If the control plane starts with `OPENGPU_OPERATOR_TOKEN`, the human-facing API routes and browser health page require a matching bearer token. The CLI stores that token locally with `opengpu login`, and clears it with `opengpu logout`.
+If the control plane starts with `OPENGPU_OPERATOR_TOKEN`, the human-facing API routes and browser health page require a matching bearer token. The CLI stores that token locally with `opengpu login`, and clears it with `opengpu logout`. On Windows, the token is stored as a DPAPI-protected blob in the OpenGPU config directory, while `config.json` stays non-secret and safe to inspect.
 
 ## Connect
 

@@ -1,3 +1,4 @@
+mod auth_token;
 mod config;
 mod identity;
 mod model;
@@ -421,7 +422,7 @@ fn doctor_payload(config: &Config) -> serde_json::Value {
         "model_dir_exists": model_dir.exists(),
         "model_dir_writable": std::fs::create_dir_all(&model_dir).is_ok(),
         "active_model": active_model_name(config),
-        "auth_token_present": config.auth_token.as_ref().map(|token| !token.trim().is_empty()).unwrap_or(false),
+        "auth_token_present": auth_token::operator_token_present(config),
         "cuda": cuda,
     })
 }
@@ -768,7 +769,7 @@ fn get_job(config: &Config, job_id: &str) -> Result<serde_json::Value, String> {
     operator_get_json(
         &config.control_plane_url,
         &path,
-        config.auth_token.as_deref(),
+        auth_token::effective_operator_token(config).as_deref(),
     )
 }
 
@@ -1221,7 +1222,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     );
     println!(
         "authenticated: {}",
-        if config.auth_token.is_some() {
+        if auth_token::operator_token_present(config) {
             "yes"
         } else {
             "no"
@@ -2428,10 +2429,29 @@ fn main() {
                 std::process::exit(1);
             }
 
-            config.auth_token = Some(token);
+            #[cfg(windows)]
+            {
+                if let Err(error) = auth_token::store_operator_token(&token) {
+                    eprintln!("failed to store protected auth token: {error}");
+                    std::process::exit(1);
+                }
+                config.auth_token = None;
+            }
+            #[cfg(not(windows))]
+            {
+                config.auth_token = Some(token);
+            }
             match save_config(&config) {
                 Ok(path) => {
+                    #[cfg(windows)]
+                    let _ = &path;
                     println!("authenticated: yes");
+                    #[cfg(windows)]
+                    println!(
+                        "authTokenPath: {}",
+                        auth_token::protected_token_path().display()
+                    );
+                    #[cfg(not(windows))]
                     println!("authTokenPath: {}", path.display());
                 }
                 Err(error) => {
@@ -2442,6 +2462,10 @@ fn main() {
         }
         Commands::Logout => {
             let mut config = current_config_or_default();
+            if let Err(error) = auth_token::clear_operator_token() {
+                eprintln!("failed to clear protected auth token: {error}");
+                std::process::exit(1);
+            }
             config.auth_token = None;
             match save_config(&config) {
                 Ok(_) => {
@@ -2916,8 +2940,8 @@ fn main() {
         }
         Commands::Credits { json } => {
             let config = current_config_or_default();
-            let token = config.auth_token.as_deref();
-            match operator_get_json(&config.control_plane_url, "/v1/credits", token) {
+            let token = auth_token::effective_operator_token(&config);
+            match operator_get_json(&config.control_plane_url, "/v1/credits", token.as_deref()) {
                 Ok(payload) => {
                     if json {
                         if let Err(error) = print_json(&payload) {
