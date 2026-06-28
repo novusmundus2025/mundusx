@@ -37,7 +37,7 @@ The Windows PowerShell bootstrapper fails closed by default. A production instal
 
 The installer verifies the asset checksum, requires the signed manifest artifacts, and checks that the manifest names the same Windows binary and checksum. `-AllowUnsignedLocalPreview` is reserved for local development fixtures and must not be used for enterprise or production installs.
 
-The broader enterprise Windows rollout policy, including secret storage, model-source integrity, trusted runtime paths, rollback, and support boundaries, lives in [docs/enterprise-windows-policy.md](/Users/DBATALL/Documents/mundusx/docs/enterprise-windows-policy.md).
+The broader enterprise Windows rollout policy, including secret storage, model-source integrity, trusted runtime paths, rollback, and support boundaries, lives in [docs/enterprise-windows-policy.md](enterprise-windows-policy.md).
 
 ### Machine Detection
 
@@ -129,6 +129,13 @@ The Windows job should follow the same release workflow contract as the existing
 Release signing secrets should stay shared across platform jobs and be provided only through GitHub Actions secrets. A Windows release job must fail if the signing secrets are missing or malformed; generated local preview keys are only acceptable for localhost preview fixtures and must not sign tagged release artifacts.
 
 This decision unblocks the implementation issue for publishing `opengpu-x86_64-pc-windows-msvc.exe`: maintainers should add a `windows-latest` matrix row to `.github/workflows/release-cli.yml` rather than waiting on a separate runner/toolchain decision.
+
+Track the remaining release-channel implementation work in:
+
+- Windows release asset: [mundusx/mundusx#73](https://github.com/mundusx/mundusx/issues/73)
+- Windows release runner and signing decision record: [mundusx/mundusx#109](https://github.com/mundusx/mundusx/issues/109)
+- Homebrew channel publishing: [mundusx/mundusx#110](https://github.com/mundusx/mundusx/issues/110)
+- WinGet package publishing: [mundusx/mundusx#111](https://github.com/mundusx/mundusx/issues/111)
 
 ## Release Checklist
 
