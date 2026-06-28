@@ -4,11 +4,12 @@ mod identity;
 mod model;
 mod model_catalog;
 mod routing;
+mod theme;
 mod types;
 
 use clap::{Parser, Subcommand};
 use crossterm::event::{read, Event, KeyCode, KeyModifiers};
-use crossterm::style::{style, Color, Stylize};
+use crossterm::style::Color;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::Serialize;
 use std::env;
@@ -37,6 +38,9 @@ const PUBLIC_CONTROL_PLANE_URL: &str = "https://api.mundusx.ai";
     arg_required_else_help = true
 )]
 struct Cli {
+    /// Human-readable output theme. JSON output is never styled.
+    #[arg(long, global = true, value_enum, default_value_t = theme::ThemeSelection::Auto)]
+    theme: theme::ThemeSelection,
     #[command(subcommand)]
     command: Commands,
 }
@@ -451,134 +455,135 @@ fn print_doctor_report(config: &Config, json: bool) {
         return;
     }
 
-    println!(
-        "configDir: {}",
-        payload["config_dir"].as_str().unwrap_or("unknown")
+    theme::section("Doctor");
+    theme::field(
+        "configDir",
+        payload["config_dir"].as_str().unwrap_or("unknown"),
     );
-    println!(
-        "resolvedConfigPath: {}",
+    theme::field(
+        "resolvedConfigPath",
         payload["resolved_config_path"]
             .as_str()
-            .unwrap_or("unknown")
+            .unwrap_or("unknown"),
     );
-    println!(
-        "homeConfigPath: {}",
-        payload["home_config_path"].as_str().unwrap_or("unknown")
+    theme::field(
+        "homeConfigPath",
+        payload["home_config_path"].as_str().unwrap_or("unknown"),
     );
-    println!(
-        "localConfigPath: {}",
-        payload["local_config_path"].as_str().unwrap_or("unknown")
+    theme::field(
+        "localConfigPath",
+        payload["local_config_path"].as_str().unwrap_or("unknown"),
     );
-    println!(
-        "resolvedConfigExists: {}",
-        if payload["resolved_config_exists"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "resolvedConfigExists",
+        theme::boolean(
+            payload["resolved_config_exists"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "configDirWritable: {}",
-        if payload["config_dir_writable"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "configDirWritable",
+        theme::boolean(
+            payload["config_dir_writable"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "resolvedConfigParentWritable: {}",
-        if payload["resolved_config_parent_writable"]
-            .as_bool()
-            .unwrap_or(false)
-        {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "resolvedConfigParentWritable",
+        theme::boolean(
+            payload["resolved_config_parent_writable"]
+                .as_bool()
+                .unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "identityPath: {}",
-        payload["identity_path"].as_str().unwrap_or("unknown")
+    theme::field(
+        "identityPath",
+        payload["identity_path"].as_str().unwrap_or("unknown"),
     );
-    println!(
-        "modelDir: {}",
-        payload["model_dir"].as_str().unwrap_or("unknown")
+    theme::field(
+        "modelDir",
+        payload["model_dir"].as_str().unwrap_or("unknown"),
     );
-    println!(
-        "modelDirWritable: {}",
-        if payload["model_dir_writable"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "modelDirWritable",
+        theme::boolean(
+            payload["model_dir_writable"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "activeModel: {}",
-        payload["active_model"].as_str().unwrap_or("none")
+    theme::field(
+        "activeModel",
+        payload["active_model"].as_str().unwrap_or("none"),
     );
-    println!(
-        "authTokenPresent: {}",
-        if payload["auth_token_present"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "authTokenPresent",
+        theme::boolean(
+            payload["auth_token_present"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
     let cuda = &payload["cuda"];
-    println!(
-        "cuda.selectedBackend: {}",
-        cuda["selected_backend"].as_str().unwrap_or("unknown")
+    theme::section("CUDA diagnostics");
+    theme::field(
+        "cuda.selectedBackend",
+        cuda["selected_backend"].as_str().unwrap_or("unknown"),
     );
-    println!(
-        "cuda.nvidiaSmiAvailable: {}",
-        if cuda["nvidia_smi_available"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "cuda.nvidiaSmiAvailable",
+        theme::boolean(
+            cuda["nvidia_smi_available"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "cuda.driverAvailable: {}",
-        if cuda["nvidia_driver_available"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "cuda.driverAvailable",
+        theme::boolean(
+            cuda["nvidia_driver_available"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "cuda.deviceAvailable: {}",
-        if cuda["cuda_device_available"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "cuda.deviceAvailable",
+        theme::boolean(
+            cuda["cuda_device_available"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "cuda.deviceName: {}",
-        cuda["cuda_device_name"].as_str().unwrap_or("none")
+    theme::field(
+        "cuda.deviceName",
+        cuda["cuda_device_name"].as_str().unwrap_or("none"),
     );
-    println!(
-        "cuda.vramMb: {}",
+    theme::field(
+        "cuda.vramMb",
         cuda["cuda_vram_mb"]
             .as_u64()
             .map(|value| value.to_string())
-            .unwrap_or_else(|| "unknown".to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
     );
-    println!(
-        "cuda.lowVramProfile: {}",
-        if cuda["cuda_low_vram_profile"].as_bool().unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        }
+    theme::field(
+        "cuda.lowVramProfile",
+        theme::boolean(
+            cuda["cuda_low_vram_profile"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
     );
-    println!(
-        "cuda.runtimeReadiness: {}",
-        cuda["runtime_readiness"].as_str().unwrap_or("unknown")
+    theme::field(
+        "cuda.runtimeReadiness",
+        theme::status(cuda["runtime_readiness"].as_str().unwrap_or("unknown")),
     );
     if let Some(notes) = cuda["notes"].as_array() {
         for note in notes.iter().filter_map(|note| note.as_str()) {
-            println!("cuda.note: {note}");
+            theme::note(format!("cuda: {note}"));
         }
     }
 }
@@ -684,8 +689,8 @@ fn run_inference_local_first(
             });
         }
         Err(local_err) => {
-            eprintln!("local worker unavailable: {local_err}");
-            eprintln!("falling back to network routing...");
+            theme::warn(format!("local worker unavailable: {local_err}"));
+            theme::warn("falling back to network routing...");
         }
     }
 
@@ -834,17 +839,17 @@ fn print_job_response(payload: &serde_json::Value, json: bool) -> Result<(), Str
     }
 
     if let Some(job_id) = payload.get("job_id").and_then(|value| value.as_str()) {
-        println!("jobId: {job_id}");
+        theme::field("jobId", job_id);
     }
     if let Some(request_id) = payload.get("request_id").and_then(|value| value.as_str()) {
-        println!("requestId: {request_id}");
+        theme::field("requestId", request_id);
     }
-    println!("status: {}", job_state(payload));
+    theme::field("status", theme::status(&job_state(payload)));
     if let Some(output) = payload.get("output").and_then(|value| value.as_str()) {
-        println!("output: {output}");
+        theme::field("output", output);
     }
     if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
-        println!("error: {error}");
+        theme::field("error", error);
     }
     Ok(())
 }
@@ -1081,15 +1086,11 @@ fn operator_get_json(
 }
 fn colored_state(
     value: bool,
-    active_color: Color,
+    _active_color: Color,
     active_text: &str,
     inactive_text: &str,
 ) -> String {
-    if value {
-        style(active_text).with(active_color).to_string()
-    } else {
-        style(inactive_text).with(Color::DarkGrey).to_string()
-    }
+    theme::boolean(value, active_text, inactive_text)
 }
 
 #[derive(Clone, Debug)]
@@ -1209,75 +1210,73 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     let identity_ready = identity_ready();
     let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
     let provider_count = provider_count(config, &power, active_model.as_deref(), identity_ready);
-    println!("configPath: {}", path.display());
-    println!("deviceId: {}", config.device_id);
-    println!("publicKey: {}", display_public_key_hex(config));
-    println!(
-        "publicKeyFingerprint: {}",
-        display_public_key_fingerprint(config)
+    theme::section("Node status");
+    theme::field("configPath", path.display());
+    theme::field("deviceId", &config.device_id);
+    theme::field("publicKey", display_public_key_hex(config));
+    theme::field(
+        "publicKeyFingerprint",
+        display_public_key_fingerprint(config),
     );
-    println!(
-        "profileName: {}",
-        config.profile_name.as_deref().unwrap_or("unset")
+    theme::field(
+        "profileName",
+        config.profile_name.as_deref().unwrap_or("unset"),
     );
-    println!(
-        "authenticated: {}",
+    theme::field(
+        "authenticated",
         if auth_token::operator_token_present(config) {
             "yes"
         } else {
             "no"
-        }
+        },
     );
-    println!(
-        "connected: {}",
-        colored_state(config.connected, Color::Green, "yes", "no")
+    theme::field(
+        "connected",
+        colored_state(config.connected, Color::Green, "yes", "no"),
     );
-    println!(
-        "paused: {}",
-        colored_state(config.paused, Color::AnsiValue(208), "yes", "no")
+    theme::field(
+        "paused",
+        colored_state(config.paused, Color::AnsiValue(208), "yes", "no"),
     );
-    println!("backendPreference: {}", config.backend_preference);
-    println!("detectedBackend: {}", detected_backend);
-    println!(
-        "identityReady: {}",
-        if identity_ready { "yes" } else { "no" }
+    theme::field("backendPreference", config.backend_preference);
+    theme::field("detectedBackend", detected_backend);
+    theme::field("identityReady", theme::boolean(identity_ready, "yes", "no"));
+    theme::field("identityTrustPath", identity::trust_path());
+    theme::field("providerCount", provider_count);
+    theme::field("modelDir", configured_model_dir_string(config));
+    theme::field(
+        "activeModel",
+        active_model.clone().unwrap_or_else(|| "unset".to_string()),
     );
-    println!("identityTrustPath: {}", identity::trust_path());
-    println!("providerCount: {}", provider_count);
-    println!("modelDir: {}", configured_model_dir_string(config));
-    println!(
-        "activeModel: {}",
-        active_model.clone().unwrap_or_else(|| "unset".to_string())
-    );
-    println!(
-        "contributionPercent: {}",
+    theme::field(
+        "contributionPercent",
         if config.contribution_percent == 0 {
             "unset".to_string()
         } else {
             format!("{}%", config.contribution_percent)
-        }
+        },
     );
-    println!("controlPlaneUrl: {}", config.control_plane_url);
-    println!("powerSource: {}", power.source);
-    println!("onBattery: {}", if power.on_battery { "yes" } else { "no" });
-    println!(
-        "batteryPercent: {}",
+    theme::field("controlPlaneUrl", &config.control_plane_url);
+    theme::field("powerSource", &power.source);
+    theme::field("onBattery", theme::boolean(power.on_battery, "yes", "no"));
+    theme::field(
+        "batteryPercent",
         power
             .battery_percent
             .map(|value| format!("{value}%"))
-            .unwrap_or_else(|| "unknown".to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
     );
-    println!("policyAllowed: {}", if allowed { "yes" } else { "no" });
+    theme::field("policyAllowed", theme::boolean(allowed, "yes", "no"));
     if let Some(reason) = policy_reason(config, &power, active_model.as_deref(), identity_ready) {
-        println!("policyReason: {}", reason);
+        theme::field("policyReason", reason);
     }
-    println!(
-        "onboardingCompleted: {}",
+    theme::field(
+        "onboardingCompleted",
         if config.onboarding_completed {
             "yes"
         } else {
             "no"
-        }
+        },
     );
 }
 
@@ -1291,63 +1290,64 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     let identity_ready = identity_ready();
     let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
 
-    println!("startup ready for {}", config.device_id);
-    println!("publicKey: {}", display_public_key_hex(config));
-    println!(
-        "publicKeyFingerprint: {}",
-        display_public_key_fingerprint(config)
+    theme::section("Startup ready");
+    theme::field("deviceId", &config.device_id);
+    theme::field("publicKey", display_public_key_hex(config));
+    theme::field(
+        "publicKeyFingerprint",
+        display_public_key_fingerprint(config),
     );
-    println!("platform: {}-{}", env::consts::OS, env::consts::ARCH);
-    println!("cpuCores: {}", cores);
-    println!("backendPreference: {}", config.backend_preference);
-    println!("detectedBackend: {}", detected_backend);
-    println!(
-        "identityReady: {}",
-        if identity_ready { "yes" } else { "no" }
+    theme::field(
+        "platform",
+        format!("{}-{}", env::consts::OS, env::consts::ARCH),
     );
-    println!("identityTrustPath: {}", identity::trust_path());
-    println!("modelDir: {}", configured_model_dir_string(config));
-    println!(
-        "activeModel: {}",
-        active_model.clone().unwrap_or_else(|| "unset".to_string())
+    theme::field("cpuCores", cores);
+    theme::field("backendPreference", config.backend_preference);
+    theme::field("detectedBackend", detected_backend);
+    theme::field("identityReady", theme::boolean(identity_ready, "yes", "no"));
+    theme::field("identityTrustPath", identity::trust_path());
+    theme::field("modelDir", configured_model_dir_string(config));
+    theme::field(
+        "activeModel",
+        active_model.clone().unwrap_or_else(|| "unset".to_string()),
     );
-    println!(
-        "contributionPercent: {}",
+    theme::field(
+        "contributionPercent",
         if config.contribution_percent == 0 {
             "unset".to_string()
         } else {
             format!("{}%", config.contribution_percent)
-        }
+        },
     );
-    println!(
-        "connected: {}",
-        colored_state(config.connected, Color::Green, "yes", "no")
+    theme::field(
+        "connected",
+        colored_state(config.connected, Color::Green, "yes", "no"),
     );
-    println!(
-        "paused: {}",
-        colored_state(config.paused, Color::AnsiValue(208), "yes", "no")
+    theme::field(
+        "paused",
+        colored_state(config.paused, Color::AnsiValue(208), "yes", "no"),
     );
-    println!("configPath: {}", path.display());
-    println!("powerSource: {}", power.source);
-    println!("onBattery: {}", if power.on_battery { "yes" } else { "no" });
-    println!(
-        "batteryPercent: {}",
+    theme::field("configPath", path.display());
+    theme::field("powerSource", &power.source);
+    theme::field("onBattery", theme::boolean(power.on_battery, "yes", "no"));
+    theme::field(
+        "batteryPercent",
         power
             .battery_percent
             .map(|value| format!("{value}%"))
-            .unwrap_or_else(|| "unknown".to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
     );
-    println!("policyAllowed: {}", if allowed { "yes" } else { "no" });
+    theme::field("policyAllowed", theme::boolean(allowed, "yes", "no"));
     if let Some(reason) = policy_reason(config, &power, active_model.as_deref(), identity_ready) {
-        println!("policyReason: {}", reason);
+        theme::field("policyReason", reason);
     }
-    println!(
-        "onboardingCompleted: {}",
+    theme::field(
+        "onboardingCompleted",
         if config.onboarding_completed {
             "yes"
         } else {
             "no"
-        }
+        },
     );
 }
 
@@ -1516,36 +1516,7 @@ fn read_operator_token_from_prompt() -> Result<String, String> {
 }
 
 fn print_retro_panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
-    let mut width = title.chars().count().max(subtitle.chars().count());
-    for line in lines {
-        width = width.max(line.chars().count());
-    }
-    let inner_width = width + 2;
-    let top = format!("╭{}╮", "─".repeat(inner_width));
-    let bottom = format!("╰{}╯", "─".repeat(inner_width));
-    println!("{}", style(top).with(Color::DarkGrey));
-    println!(
-        "{}",
-        style(format!(
-            "│ {:<width$} │",
-            title.to_uppercase(),
-            width = width
-        ))
-        .with(accent)
-        .bold()
-    );
-    println!(
-        "{}",
-        style(format!("│ {:<width$} │", subtitle, width = width)).with(Color::DarkGrey)
-    );
-    println!(
-        "{}",
-        style(format!("├{}┤", "─".repeat(inner_width))).with(Color::DarkGrey)
-    );
-    for line in lines {
-        println!("│ {:<width$} │", line, width = width);
-    }
-    println!("{}", style(bottom).with(Color::DarkGrey));
+    theme::panel(title, subtitle, lines, accent);
 }
 
 fn contribution_semantics(backend: Backend) -> &'static str {
@@ -2320,6 +2291,7 @@ fn run_install(
 
 fn main() {
     let cli = Cli::parse();
+    theme::configure(cli.theme);
 
     match cli.command {
         Commands::Install {
@@ -2859,15 +2831,16 @@ fn main() {
                             std::process::exit(1);
                         }
                     } else {
-                        println!("node: {}", result.node_label);
+                        theme::section("Run result");
+                        theme::field("node", &result.node_label);
                         if let Some(model_name) = &result.model_name {
-                            println!("model: {model_name}");
+                            theme::field("model", model_name);
                         }
                         if let Some(job_id) = &result.job_id {
-                            println!("jobId: {job_id}");
+                            theme::field("jobId", job_id);
                         }
                         if let Some(status) = &result.status {
-                            println!("status: {status}");
+                            theme::field("status", theme::status(status));
                         }
                         println!();
                         println!("{}", result.output);
@@ -3000,6 +2973,15 @@ mod tests {
     fn doctor_command_parses() {
         let cli = Cli::try_parse_from(["opengpu", "doctor"]).expect("doctor should parse");
         assert!(matches!(cli.command, Commands::Doctor { json: false }));
+    }
+
+    #[test]
+    fn global_theme_flag_parses_without_changing_json_flags() {
+        let cli = Cli::try_parse_from(["opengpu", "--theme", "classic", "doctor", "--json"])
+            .expect("theme flag should parse");
+
+        assert_eq!(cli.theme, super::theme::ThemeSelection::Classic);
+        assert!(matches!(cli.command, Commands::Doctor { json: true }));
     }
 
     #[test]
