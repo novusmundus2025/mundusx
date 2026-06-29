@@ -9,7 +9,7 @@ mod types;
 
 use clap::{Parser, Subcommand};
 use crossterm::cursor::MoveTo;
-use crossterm::event::{read, Event, KeyCode, KeyModifiers};
+use crossterm::event::{poll, read, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::style::Color;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
@@ -259,6 +259,14 @@ fn current_config_or_default() -> Config {
 fn clear_menu_screen() {
     let mut stdout = io::stdout();
     let _ = execute!(stdout, Clear(ClearType::All), MoveTo(0, 0));
+}
+
+fn drain_pending_terminal_events() {
+    while matches!(poll(Duration::from_millis(0)), Ok(true)) {
+        if read().is_err() {
+            break;
+        }
+    }
 }
 
 fn resolved_backend(config: &Config) -> Backend {
@@ -1836,6 +1844,7 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
     if enable_raw_mode().is_err() {
         return ControlPlaneChoice::Public;
     }
+    drain_pending_terminal_events();
 
     let render_menu = |selected: usize| {
         clear_menu_screen();
@@ -1987,6 +1996,7 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
     if enable_raw_mode().is_err() {
         return PromptOutcome::Selected(default_percent);
     }
+    drain_pending_terminal_events();
 
     let render_menu = |selected: usize| {
         clear_menu_screen();
@@ -2201,6 +2211,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
             .map(ModelChoice::Model)
             .unwrap_or_else(|| ModelChoice::LocalGguf(String::new()));
     }
+    drain_pending_terminal_events();
 
     let render = |selected: usize| {
         clear_menu_screen();
@@ -2315,6 +2326,7 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
     if enable_raw_mode().is_err() {
         return options[0].clone();
     }
+    drain_pending_terminal_events();
 
     let render = |selected: usize| {
         clear_menu_screen();
