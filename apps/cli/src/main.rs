@@ -2229,7 +2229,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
             options.len() + 1
         );
         println!();
-        println!("Use ↑/↓ and Enter — you must choose one");
+        println!("Use ↑/↓ or Tab/Shift+Tab and Enter — you must choose one");
         let _ = io::stdout().flush();
     };
 
@@ -2244,11 +2244,11 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
                     eprintln!("cancelled");
                     std::process::exit(130);
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::BackTab => {
                     selected = selected.saturating_sub(1);
                     render(selected);
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Tab => {
                     if selected < options.len() {
                         selected += 1;
                     }
@@ -2351,7 +2351,7 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
             println!("     url: {}", option.source_url);
         }
         println!();
-        println!("Use ↑/↓ and Enter, or press a number — Ctrl-C cancels");
+        println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press a number — Ctrl-C cancels");
         let _ = io::stdout().flush();
     };
 
@@ -2366,11 +2366,11 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
                     eprintln!("cancelled");
                     std::process::exit(130);
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::BackTab => {
                     selected = selected.saturating_sub(1);
                     render(selected);
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Tab => {
                     if selected + 1 < options.len() {
                         selected += 1;
                     }
