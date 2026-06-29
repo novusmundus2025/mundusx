@@ -43,7 +43,7 @@ the CLI runs the guided machine setup wizard:
    - public MundusX, which saves the hosted MundusX API endpoint
    - private / custom, which asks for a full `http://` or `https://` URL
    - blank control-plane input defaults to public MundusX
-4. Asks how much of this machine's compute budget MundusX may use:
+4. Asks how much of this machine's compute budget MundusX may use, with quick picks plus custom whole-percent entry from `1%` through `80%`:
    - `20%` light
    - `30%` balanced
    - `50%` strong
@@ -101,6 +101,7 @@ the CLI:
    - `50%` strong
    - `65%` high
    - `80%` maximum
+   - custom whole-percent entry from `1%` through `80%`
    - use the arrow keys and press Enter to confirm
    - press `Ctrl-C` to cancel the cap selector cleanly
    - scripted or non-interactive runs still print the `opengpu cap` hint instead of choosing silently

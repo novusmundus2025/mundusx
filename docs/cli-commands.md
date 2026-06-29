@@ -50,7 +50,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - Official catalog entries must include GGUF format, backend compatibility, and conservative estimated VRAM metadata before review. CUDA entries should be sized against the cap-applied budget, so a 4 GB card at an 80% cap only sees models estimated at 3.2 GB VRAM or less; entries without VRAM metadata are not offered for CUDA auto-download.
 - `onboarding` is a local contributor review step that summarizes the secure device identity, hostname, model, policy, and credits setup; `start` prints it automatically until it is marked complete.
 - `start` asks for the contribution budget on interactive first run; `cap` is the explicit command for changing it later.
-- Community contribution caps are limited to `20%`, `30%`, `50%`, `65%`, and `80%`.
+- Community contribution quick picks are `20%`, `30%`, `50%`, `65%`, and `80%`; custom caps can be any whole percent from `1%` through `80%`.
 - `install` is the guided setup command after the binary is installed. Public mode saves the hosted MundusX control plane; private mode asks for a full custom URL; blank URL means public. The wizard also asks for the model and refuses choices that do not fit the selected contribution cap and detected machine capacity.
 - `start` only marks the node ready when the secure device identity is available.
 - Config inspection now happens through `status` and `doctor`; dedicated `config` subcommands are not part of the current CLI surface.

@@ -60,7 +60,7 @@ Startup flow:
 - `opengpu start` creates local state if needed, connects when the secure device identity is available, and starts the node agent in the background
 - `opengpu start --debug` runs the node agent in the foreground with logs for developer diagnostics
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
-- `opengpu cap` sets the contribution budget explicitly
+- `opengpu cap` sets the contribution budget explicitly, with quick picks and custom whole-percent values up to 80%
 - `opengpu update` prints the local install page and release preview URLs
 - `opengpu login` stores a local operator bearer token; on Windows the token is protected with DPAPI outside `config.json`
 - `opengpu logout` clears that local token and the protected Windows token blob
