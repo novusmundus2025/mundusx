@@ -8,9 +8,11 @@ mod theme;
 mod types;
 
 use clap::{Parser, Subcommand};
+use crossterm::cursor::MoveTo;
 use crossterm::event::{read, Event, KeyCode, KeyModifiers};
+use crossterm::execute;
 use crossterm::style::Color;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use serde::Serialize;
 use std::env;
 use std::io::{self, IsTerminal, Read, Write};
@@ -252,6 +254,11 @@ enum JobsCommands {
 
 fn current_config_or_default() -> Config {
     load_config().ok().flatten().unwrap_or_default()
+}
+
+fn clear_menu_screen() {
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, Clear(ClearType::All), MoveTo(0, 0));
 }
 
 fn resolved_backend(config: &Config) -> Backend {
@@ -1831,7 +1838,7 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
     }
 
     let render_menu = |selected: usize| {
-        print!("\x1b[2J\x1b[H");
+        clear_menu_screen();
         println!("Which control plane should this node use?");
         println!("-----------------------------------------");
         for (index, (label, detail)) in OPTIONS.iter().enumerate() {
@@ -1839,7 +1846,7 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
             println!("{marker} {label} - {detail}");
         }
         println!();
-        println!("Use ↑/↓ and Enter");
+        println!("Use ↑/↓ or Tab/Shift+Tab and Enter");
         let _ = io::stdout().flush();
     };
 
@@ -1854,11 +1861,11 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
                     eprintln!("cancelled");
                     std::process::exit(130);
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::BackTab => {
                     selected = selected.saturating_sub(1);
                     render_menu(selected);
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Tab => {
                     if selected + 1 < OPTIONS.len() {
                         selected += 1;
                     }
@@ -1982,7 +1989,7 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
     }
 
     let render_menu = |selected: usize| {
-        print!("\x1b[2J\x1b[H");
+        clear_menu_screen();
         println!("Contribution level");
         println!("-------------------");
         for (index, option) in OPTIONS.iter().enumerate() {
@@ -1993,7 +2000,7 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
             }
         }
         println!();
-        println!("Use ↑/↓ and Enter");
+        println!("Use ↑/↓ or Tab/Shift+Tab and Enter");
         let _ = io::stdout().flush();
     };
 
@@ -2007,11 +2014,11 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
                     println!();
                     return PromptOutcome::Cancelled;
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::BackTab => {
                     selected = selected.saturating_sub(1);
                     render_menu(selected);
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Tab => {
                     if selected + 1 < OPTIONS.len() {
                         selected += 1;
                     }
@@ -2196,7 +2203,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     }
 
     let render = |selected: usize| {
-        print!("\x1b[2J\x1b[H");
+        clear_menu_screen();
         println!("Which model should this node run?");
         println!(
             "detected: {} / {}GB memory",
@@ -2265,7 +2272,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     let _ = disable_raw_mode();
 
     if result == options.len() {
-        print!("\x1b[2J\x1b[H");
+        clear_menu_screen();
         print!("Path to local .gguf model file: ");
         let _ = io::stdout().flush();
         let mut path = String::new();
@@ -2310,7 +2317,7 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
     }
 
     let render = |selected: usize| {
-        print!("\x1b[2J\x1b[H");
+        clear_menu_screen();
         println!(
             "Choose official model to {}",
             if active {
