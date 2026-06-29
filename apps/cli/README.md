@@ -32,6 +32,7 @@ opengpu doctor
 opengpu model use
 opengpu model add
 opengpu model import ./models/local-model.gguf --name local-model --backend cuda --vram-mb 4096
+opengpu run --prompt <text>
 opengpu jobs submit --model <model> --prompt <text>
 opengpu jobs status <job_id>
 opengpu jobs wait <job_id> --timeout 300 --interval 2
@@ -71,6 +72,7 @@ Startup flow:
 - `opengpu status` shows the live local routing decision
 - `opengpu model use` and `opengpu model add` open the official model picker when no model name is passed
 - `opengpu model import` records contributor-supplied local GGUF files and reports whether they fit the selected backend and VRAM budget
+- `opengpu run` submits through the control-plane scheduler and waits for the result; the scheduler may assign the requestor node when it is the best eligible worker
 - `opengpu jobs submit/status/wait` uses the async control-plane job API. `wait` is a CLI polling helper; the server still returns quickly and does not hold the request open.
 - `scripts/no-auth-e2e-smoke.sh` verifies the local/UAT no-auth lifecycle: disabled operator auth on `/health`, signed node registration and heartbeat, no-auth job submit, node-agent claim and completion, and final CLI polling.
 
