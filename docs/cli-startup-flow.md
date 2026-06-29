@@ -4,7 +4,7 @@ This document describes what the CLI does when a user starts using it for the fi
 
 ## First Run
 
-The CLI does not start a long-running service by itself. Instead, it manages local state and prepares the machine to connect to the platform.
+The CLI owns the user-facing lifecycle. It manages local state and, when the user runs `opengpu start`, launches the installed node agent that connects the machine to the platform.
 
 On first run, the CLI:
 
@@ -138,6 +138,15 @@ the CLI:
    - `CUDA` means a routing budget for NVIDIA nodes, with low-VRAM cards kept to modest workloads
 12. Prints whether policy currently allows the Mac to accept work, including the power source, battery state, and identity readiness.
 13. Keeps the reused secure device identity attached to the local config when available.
+14. Starts the installed `opengpu-node-agent` companion binary in the background when the secure device identity is ready.
+
+For foreground diagnostics, run:
+
+```bash
+opengpu start --debug
+```
+
+Debug mode keeps the node agent attached to the terminal and prints the underlying agent logs. Direct `opengpu-node-agent run` remains an internal/developer entry point, not the normal contributor command.
 
 ## Operator Auth
 
@@ -174,7 +183,8 @@ the CLI:
 
 1. Marks the local config as disconnected.
 2. Pauses contribution.
-3. Leaves the identity and config in place for the next `start`.
+3. Stops the background node agent started by `opengpu start` when one is recorded.
+4. Leaves the identity and config in place for the next `start`.
 
 ## Status
 
@@ -191,15 +201,6 @@ the CLI:
 3. Treats the current machine as the active provider when connected and not paused.
 4. Prints local provider state, active model, model cache directory, and the active backend decision.
 5. Keeps sample node inventory out of the main status view for now.
-
-## What It Does Not Do Yet
-
-At this stage, the CLI does **not**:
-
-1. Start a background daemon.
-2. Talk to a live control plane.
-3. Register the machine with a server.
-4. Dispatch real jobs to remote nodes.
 
 ## Onboarding
 
