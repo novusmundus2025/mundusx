@@ -7,49 +7,94 @@ $installDir = Join-Path $fixtureRoot "bin"
 $assetName = "opengpu-x86_64-pc-windows-msvc.exe"
 $assetPath = Join-Path $releaseDir $assetName
 $checksumPath = "$assetPath.sha256"
+$runtimeAssetName = "llama-cli-x86_64-pc-windows-msvc-cuda.exe"
+$runtimeAssetPath = Join-Path $releaseDir $runtimeAssetName
+$runtimeChecksumPath = "$runtimeAssetPath.sha256"
+$opengpuHome = Join-Path $fixtureRoot "home"
 $manifestPath = Join-Path $releaseDir "release-manifest.json"
 $signaturePath = Join-Path $releaseDir "release-manifest.json.sig"
 
 try {
   New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $opengpuHome | Out-Null
 
   Set-Content -Path $assetPath -Value "fake opengpu windows binary" -NoNewline -Encoding ASCII
   $checksum = (Get-FileHash -Algorithm SHA256 -Path $assetPath).Hash.ToLowerInvariant()
   Set-Content -Path $checksumPath -Value "$checksum  $assetName`n" -NoNewline -Encoding ASCII
+  Set-Content -Path $runtimeAssetPath -Value "fake cuda llama runtime" -NoNewline -Encoding ASCII
+  $runtimeChecksum = (Get-FileHash -Algorithm SHA256 -Path $runtimeAssetPath).Hash.ToLowerInvariant()
+  Set-Content -Path $runtimeChecksumPath -Value "$runtimeChecksum  $runtimeAssetName`n" -NoNewline -Encoding ASCII
   @{
     artifact_kind = "release-binary"
     binary_name = $assetName
     checksum_sha256 = $checksum
+    runtime_assets = @(
+      @{
+        name = $runtimeAssetName
+        install_as = "llama-cli.exe"
+        kind = "llama-cpp-cuda-runtime"
+        checksum_sha256 = $runtimeChecksum
+      }
+    )
     generated_at = "2026-06-28T00:00:00Z"
     tag = "local-preview"
     version = "0.1.0"
   } | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding ASCII
   Set-Content -Path $signaturePath -Value "local preview signature fixture" -NoNewline -Encoding ASCII
 
+  $previousHome = $env:OPENGPU_HOME
+  $env:OPENGPU_HOME = $opengpuHome
+
   $output = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
     -InstallDir $installDir `
-    -ReleaseBaseUrl $releaseDir 2>&1
+    -ReleaseBaseUrl $releaseDir `
+    -InstallCudaRuntime 2>&1
 
   if ($LASTEXITCODE -ne 0) {
     throw "install.ps1 failed with checksum present: $output"
   }
 
   $installedExe = Join-Path $installDir "opengpu.exe"
+  $installedRuntime = Join-Path $installDir "llama-cli.exe"
   if (-not (Test-Path -LiteralPath $installedExe)) {
     throw "expected installer to write opengpu.exe"
+  }
+  if (-not (Test-Path -LiteralPath $installedRuntime)) {
+    throw "expected installer to write llama-cli.exe"
   }
 
   if ((Get-Content -Path $installedExe -Raw) -ne "fake opengpu windows binary") {
     throw "installed executable contents did not match release asset"
+  }
+  if ((Get-Content -Path $installedRuntime -Raw) -ne "fake cuda llama runtime") {
+    throw "installed runtime contents did not match release asset"
+  }
+
+  $trustedPath = Join-Path $opengpuHome "trusted-runtime-paths.json"
+  if (-not (Test-Path -LiteralPath $trustedPath)) {
+    throw "installer did not write trusted-runtime-paths.json"
+  }
+  $trusted = Get-Content -Path $trustedPath -Raw | ConvertFrom-Json
+  if ($trusted.llama_cli.path -ne ([System.IO.Path]::GetFullPath($installedRuntime))) {
+    throw "trusted runtime path did not point at installed llama-cli.exe"
+  }
+  if ($trusted.llama_cli.sha256 -ne $runtimeChecksum) {
+    throw "trusted runtime checksum did not match release asset"
   }
 
   $joinedOutput = $output -join "`n"
   if ($joinedOutput -notmatch [regex]::Escape($assetName)) {
     throw "installer output did not mention expected Windows asset name"
   }
+  if ($joinedOutput -notmatch [regex]::Escape($runtimeAssetName)) {
+    throw "installer output did not mention expected CUDA runtime asset name"
+  }
   if ($joinedOutput -notmatch "Verifying checksum") {
     throw "installer did not verify checksum"
+  }
+  if ($joinedOutput -notmatch "Verifying CUDA runtime checksum") {
+    throw "installer did not verify CUDA runtime checksum"
   }
   if ($joinedOutput -notmatch "Checking signed release manifest") {
     throw "installer did not check signed release manifest"
@@ -65,7 +110,8 @@ try {
   $ErrorActionPreference = "Continue"
   $missingChecksumOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
     -InstallDir $installDir `
-    -ReleaseBaseUrl $releaseDir 2>&1
+    -ReleaseBaseUrl $releaseDir `
+    -InstallCudaRuntime 2>&1
   $missingChecksumExitCode = $LASTEXITCODE
   $ErrorActionPreference = $previousErrorActionPreference
 
@@ -80,6 +126,7 @@ try {
   $previewOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
+    -InstallCudaRuntime `
     -AllowUnsignedLocalPreview 2>&1
 
   if ($LASTEXITCODE -ne 0) {
@@ -106,7 +153,8 @@ try {
   $ErrorActionPreference = "Continue"
   $missingManifestOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
     -InstallDir $installDir `
-    -ReleaseBaseUrl $releaseDir 2>&1
+    -ReleaseBaseUrl $releaseDir `
+    -InstallCudaRuntime 2>&1
   $missingManifestExitCode = $LASTEXITCODE
   $ErrorActionPreference = $previousErrorActionPreference
 
@@ -120,5 +168,8 @@ try {
 
   Write-Output "PASS: install.ps1 enforces strict Windows release verification with local preview override"
 } finally {
+  if (Get-Variable -Name previousHome -Scope Local -ErrorAction SilentlyContinue) {
+    $env:OPENGPU_HOME = $previousHome
+  }
   Remove-Item -Recurse -Force -LiteralPath $fixtureRoot -ErrorAction SilentlyContinue
 }

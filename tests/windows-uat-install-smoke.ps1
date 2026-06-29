@@ -11,6 +11,8 @@ $installDir = Join-Path $fixtureRoot "bin"
 $opengpuHome = Join-Path $fixtureRoot "home"
 $assetName = "opengpu-x86_64-pc-windows-msvc.exe"
 $assetPath = Join-Path $releaseDir $assetName
+$runtimeAssetName = "llama-cli-x86_64-pc-windows-msvc-cuda.exe"
+$runtimeAssetPath = Join-Path $releaseDir $runtimeAssetName
 $agentBuildPath = Join-Path $repoRoot "target\release\opengpu-node-agent.exe"
 $agentInstallPath = Join-Path $installDir "opengpu-node-agent.exe"
 
@@ -47,33 +49,61 @@ try {
   } | Out-Null
 
   Copy-Item -LiteralPath (Join-Path $repoRoot "target\release\opengpu.exe") -Destination $assetPath
+  Copy-Item -LiteralPath $agentBuildPath -Destination $runtimeAssetPath
   Copy-Item -LiteralPath $agentBuildPath -Destination $agentInstallPath
 
   $checksum = (Get-FileHash -Algorithm SHA256 -Path $assetPath).Hash.ToLowerInvariant()
   Set-Content -Path "$assetPath.sha256" -Value "$checksum  $assetName`n" -NoNewline -Encoding ASCII
+  $runtimeChecksum = (Get-FileHash -Algorithm SHA256 -Path $runtimeAssetPath).Hash.ToLowerInvariant()
+  Set-Content -Path "$runtimeAssetPath.sha256" -Value "$runtimeChecksum  $runtimeAssetName`n" -NoNewline -Encoding ASCII
   @{
     artifact_kind = "release-binary"
     binary_name = $assetName
     checksum_sha256 = $checksum
+    runtime_assets = @(
+      @{
+        name = $runtimeAssetName
+        install_as = "llama-cli.exe"
+        kind = "llama-cpp-cuda-runtime"
+        checksum_sha256 = $runtimeChecksum
+      }
+    )
     generated_at = "2026-06-29T00:00:00Z"
     tag = "uat-local-preview"
     version = "0.1.0"
   } | ConvertTo-Json | Set-Content -Path (Join-Path $releaseDir "release-manifest.json") -Encoding ASCII
   Set-Content -Path (Join-Path $releaseDir "release-manifest.json.sig") -Value "uat local preview signature fixture" -NoNewline -Encoding ASCII
 
+  $previousHome = $env:OPENGPU_HOME
+  $env:OPENGPU_HOME = $opengpuHome
+
   Invoke-Checked "install.ps1 local release install" {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
       -InstallDir $installDir `
-      -ReleaseBaseUrl $releaseDir
+      -ReleaseBaseUrl $releaseDir `
+      -InstallCudaRuntime
   } | Out-Null
 
   $installedExe = Join-Path $installDir "opengpu.exe"
+  $installedRuntime = Join-Path $installDir "llama-cli.exe"
   if (-not (Test-Path -LiteralPath $installedExe)) {
     throw "install.ps1 did not install opengpu.exe"
   }
+  if (-not (Test-Path -LiteralPath $installedRuntime)) {
+    throw "install.ps1 did not install llama-cli.exe"
+  }
 
-  $previousHome = $env:OPENGPU_HOME
-  $env:OPENGPU_HOME = $opengpuHome
+  $trustedPath = Join-Path $opengpuHome "trusted-runtime-paths.json"
+  if (-not (Test-Path -LiteralPath $trustedPath)) {
+    throw "install.ps1 did not write trusted-runtime-paths.json"
+  }
+  $trusted = Get-Content -Path $trustedPath -Raw | ConvertFrom-Json
+  if ($trusted.llama_cli.path -ne ([System.IO.Path]::GetFullPath($installedRuntime))) {
+    throw "trusted runtime path does not point at installed llama-cli.exe"
+  }
+  if ($trusted.llama_cli.sha256 -ne $runtimeChecksum) {
+    throw "trusted runtime checksum does not match staged runtime asset"
+  }
 
   $modelDir = Join-Path $opengpuHome "models"
   New-Item -ItemType Directory -Force -Path $modelDir | Out-Null

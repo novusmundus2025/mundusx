@@ -32,10 +32,12 @@ The Windows PowerShell bootstrapper fails closed by default. A production instal
 
 - `opengpu-x86_64-pc-windows-msvc.exe`
 - `opengpu-x86_64-pc-windows-msvc.exe.sha256`
+- `llama-cli-x86_64-pc-windows-msvc-cuda.exe`
+- `llama-cli-x86_64-pc-windows-msvc-cuda.exe.sha256`
 - `release-manifest.json`
 - `release-manifest.json.sig`
 
-The installer verifies the asset checksum, requires the signed manifest artifacts, and checks that the manifest names the same Windows binary and checksum. `-AllowUnsignedLocalPreview` is reserved for local development fixtures and must not be used for enterprise or production installs.
+The installer verifies the CLI asset checksum, requires the signed manifest artifacts, and checks that the manifest names the same Windows binary and checksum. On CUDA-capable Windows hosts, it also requires a `runtime_assets` manifest entry for `llama-cli-x86_64-pc-windows-msvc-cuda.exe`, verifies that runtime checksum, installs it as `llama-cli.exe`, and pins the absolute path plus SHA-256 in `trusted-runtime-paths.json`. `-AllowUnsignedLocalPreview` is reserved for local development fixtures and must not be used for enterprise or production installs.
 
 The broader enterprise Windows rollout policy, including secret storage, model-source integrity, trusted runtime paths, rollback, and support boundaries, lives in [docs/enterprise-windows-policy.md](enterprise-windows-policy.md).
 
@@ -47,10 +49,11 @@ For UAT, Windows can be verified against a local preview release source before t
 npm run test:windows-uat-install
 ```
 
-The smoke builds the current `opengpu.exe` and `opengpu-node-agent.exe`, stages `opengpu-x86_64-pc-windows-msvc.exe` with a checksum and manifest in a temporary release directory, installs it through `install.ps1`, and uses an isolated `OPENGPU_HOME`. It then verifies:
+The smoke builds the current `opengpu.exe` and `opengpu-node-agent.exe`, stages `opengpu-x86_64-pc-windows-msvc.exe` and `llama-cli-x86_64-pc-windows-msvc-cuda.exe` with checksums and a manifest in a temporary release directory, installs them through `install.ps1`, and uses an isolated `OPENGPU_HOME`. It then verifies:
 
 - `opengpu install --private --control-plane-url http://127.0.0.1:8787 --cap-percent 30` writes the UAT/local control-plane URL
 - `opengpu login` creates the Windows DPAPI-protected `operator-token.dpapi` blob
+- `trusted-runtime-paths.json` pins the installed CUDA `llama-cli.exe` path and checksum
 - `config.json` does not contain the plaintext operator token
 - `opengpu doctor --json` reports the protected token as present
 - `opengpu-node-agent health --json` returns health and policy payloads that operators can act on
@@ -131,6 +134,8 @@ The Windows matrix entry should produce:
 
 - `opengpu-x86_64-pc-windows-msvc.exe`
 - `opengpu-x86_64-pc-windows-msvc.exe.sha256`
+- `llama-cli-x86_64-pc-windows-msvc-cuda.exe`
+- `llama-cli-x86_64-pc-windows-msvc-cuda.exe.sha256`
 - `release-manifest.json`
 - `release-manifest.json.sig`
 
@@ -139,10 +144,11 @@ The Windows job should follow the same release workflow contract as the existing
 - install the stable Rust toolchain with the `x86_64-pc-windows-msvc` target
 - build `apps/cli/Cargo.toml` in release mode for that target
 - copy `target/x86_64-pc-windows-msvc/release/opengpu.exe` to `opengpu-x86_64-pc-windows-msvc.exe`
+- attach a Windows CUDA llama.cpp runtime as `llama-cli-x86_64-pc-windows-msvc-cuda.exe`
 - generate and verify the SHA-256 checksum before upload
 - run the repo packaging verifier against the Windows asset directory
 - run `scripts/release-signing.sh prepare` with `OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64` and `OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64`
-- upload the Windows `.exe`, `.sha256`, signed manifest, and manifest signature into the tagged GitHub release
+- upload the Windows CLI/runtime `.exe` files, `.sha256` files, signed manifest, and manifest signature into the tagged GitHub release
 
 Release signing secrets should stay shared across platform jobs and be provided only through GitHub Actions secrets. A Windows release job must fail if the signing secrets are missing or malformed; generated local preview keys are only acceptable for localhost preview fixtures and must not sign tagged release artifacts.
 
@@ -191,6 +197,7 @@ Ship when all of these are true:
 - `windows-x86_64` binary builds and runs on Windows
 - PowerShell bootstrapper downloads the correct release asset
 - PowerShell bootstrapper fails closed when checksum or signed manifest artifacts are missing
+- CUDA hosts receive a checksum-verified `llama-cli.exe` pinned in `trusted-runtime-paths.json`
 - installer handles `.exe` placement and PATH setup
 - WinGet package installs the same release version
 - binary starts from a normal PowerShell or Terminal session

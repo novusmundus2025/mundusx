@@ -2,6 +2,7 @@ param(
   [string]$InstallDir = "$env:USERPROFILE\.opengpu\bin",
   [string]$ReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download",
   [switch]$AllowUnsignedLocalPreview,
+  [switch]$InstallCudaRuntime,
   [switch]$Help
 )
 
@@ -15,6 +16,7 @@ Usage:
 Options:
   -InstallDir <path>       Directory where opengpu.exe will be installed.
   -ReleaseBaseUrl <url>    Release download base URL.
+  -InstallCudaRuntime      Force CUDA llama runtime installation and pinning.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
                           when testing a local release preview.
@@ -90,6 +92,93 @@ function Read-ReleaseManifest {
   }
 }
 
+function Get-OpenGpuHome {
+  if ($env:OPENGPU_HOME) {
+    return $env:OPENGPU_HOME
+  }
+
+  return (Join-Path $env:USERPROFILE ".opengpu")
+}
+
+function ConvertTo-Hashtable {
+  param([object]$Value)
+
+  if ($null -eq $Value) {
+    return $null
+  }
+
+  if ($Value -is [System.Collections.IDictionary]) {
+    $table = [ordered]@{}
+    foreach ($key in $Value.Keys) {
+      $table[$key] = ConvertTo-Hashtable -Value $Value[$key]
+    }
+    return $table
+  }
+
+  if ($Value -is [System.Management.Automation.PSCustomObject]) {
+    $table = [ordered]@{}
+    foreach ($property in $Value.PSObject.Properties) {
+      $table[$property.Name] = ConvertTo-Hashtable -Value $property.Value
+    }
+    return $table
+  }
+
+  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+    $items = @()
+    foreach ($item in $Value) {
+      $items += ConvertTo-Hashtable -Value $item
+    }
+    return $items
+  }
+
+  return $Value
+}
+
+function Find-ManifestRuntimeAsset {
+  param(
+    [object]$Manifest,
+    [string]$Name
+  )
+
+  if (-not $Manifest -or -not $Manifest.runtime_assets) {
+    return $null
+  }
+
+  foreach ($asset in @($Manifest.runtime_assets)) {
+    if ($asset.name -eq $Name) {
+      return $asset
+    }
+  }
+
+  return $null
+}
+
+function Save-TrustedRuntimePath {
+  param(
+    [string]$RuntimeName,
+    [string]$RuntimePath,
+    [string]$Checksum
+  )
+
+  $opengpuHome = Get-OpenGpuHome
+  New-Item -ItemType Directory -Force -Path $opengpuHome | Out-Null
+  $trustedPath = Join-Path $opengpuHome "trusted-runtime-paths.json"
+  $trusted = [ordered]@{}
+
+  if (Test-Path -LiteralPath $trustedPath) {
+    $existing = Get-Content -Path $trustedPath -Raw | ConvertFrom-Json
+    $trusted = ConvertTo-Hashtable -Value $existing
+  }
+
+  $trusted[$RuntimeName] = [ordered]@{
+    path = [System.IO.Path]::GetFullPath($RuntimePath)
+    sha256 = $Checksum.ToLowerInvariant()
+  }
+
+  $trusted | ConvertTo-Json -Depth 8 | Set-Content -Path $trustedPath -Encoding ASCII
+  return $trustedPath
+}
+
 function Copy-ReleaseFile {
   param(
     [string]$Source,
@@ -119,6 +208,8 @@ $target = Get-WindowsTarget
 $gpu = Find-NvidiaGpu
 $profile = if ($gpu) { "windows-x86_64-cuda" } else { "windows-x86_64-generic" }
 $assetName = "opengpu-$target.exe"
+$cudaRuntimeRequired = [bool]($gpu -or $InstallCudaRuntime)
+$cudaRuntimeAssetName = "llama-cli-$target-cuda.exe"
 $releaseBase = $ReleaseBaseUrl.TrimEnd("/")
 $releaseUrl = "$releaseBase/$assetName"
 $checksumUrl = "$releaseUrl.sha256"
@@ -129,7 +220,13 @@ $tempExe = Join-Path $tempDir $assetName
 $tempChecksum = Join-Path $tempDir "$assetName.sha256"
 $tempManifest = Join-Path $tempDir "release-manifest.json"
 $tempSignature = Join-Path $tempDir "release-manifest.json.sig"
+$tempCudaRuntime = Join-Path $tempDir $cudaRuntimeAssetName
+$tempCudaRuntimeChecksum = Join-Path $tempDir "$cudaRuntimeAssetName.sha256"
 $finalExe = Join-Path $InstallDir "opengpu.exe"
+$finalCudaRuntime = Join-Path $InstallDir "llama-cli.exe"
+$manifest = $null
+$trustedRuntimePath = $null
+$runtimeExpected = $null
 
 Write-Output "MundusX Windows installer"
 Write-Output "  target: $target"
@@ -138,6 +235,7 @@ Write-Output "  gpu: $(if ($gpu) { $gpu.Name } else { 'none detected' })"
 Write-Output "  cuda vram: $(if ($gpu -and $gpu.VramMb) { "$($gpu.VramMb) MB" } else { 'none detected' })"
 Write-Output "  source: $releaseBase"
 Write-Output "  asset: $assetName"
+Write-Output "  cuda runtime: $(if ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { 'not required' })"
 Write-Output "  install: $InstallDir"
 Write-Output "  verification: $(if ($AllowUnsignedLocalPreview) { 'local preview override' } else { 'strict enterprise' })"
 Write-Output ""
@@ -194,14 +292,43 @@ try {
     }
     Write-Warning "dev-only local preview override: signed release manifest unavailable or invalid, continuing without signature verification"
   }
+  if ($cudaRuntimeRequired) {
+    $runtimeManifestAsset = Find-ManifestRuntimeAsset -Manifest $manifest -Name $cudaRuntimeAssetName
+    if (-not $runtimeManifestAsset -or -not $runtimeManifestAsset.checksum_sha256) {
+      throw "strict installer verification failed: CUDA runtime asset $cudaRuntimeAssetName is missing from release manifest"
+    }
+
+    Write-Output "Fetching CUDA llama runtime..."
+    Copy-ReleaseFile -Source "$releaseBase/$cudaRuntimeAssetName" -Destination $tempCudaRuntime
+    Copy-ReleaseFile -Source "$releaseBase/$cudaRuntimeAssetName.sha256" -Destination $tempCudaRuntimeChecksum
+    Write-Output "Verifying CUDA runtime checksum..."
+    $runtimeExpected = Read-ChecksumHash -Path $tempCudaRuntimeChecksum
+    $runtimeManifestChecksum = $runtimeManifestAsset.checksum_sha256.ToString().ToUpperInvariant()
+    if ($runtimeManifestChecksum -ne $runtimeExpected) {
+      throw "release manifest checksum does not match $cudaRuntimeAssetName.sha256"
+    }
+    $runtimeActual = (Get-FileHash -Algorithm SHA256 -Path $tempCudaRuntime).Hash.ToUpperInvariant()
+    if ($runtimeExpected -ne $runtimeActual) {
+      throw "checksum mismatch for $cudaRuntimeAssetName"
+    }
+  }
 
   Move-Item -Force -Path $tempExe -Destination $finalExe
+
+  if ($cudaRuntimeRequired) {
+    Move-Item -Force -Path $tempCudaRuntime -Destination $finalCudaRuntime
+    $trustedRuntimePath = Save-TrustedRuntimePath -RuntimeName "llama_cli" -RuntimePath $finalCudaRuntime -Checksum $runtimeExpected
+  }
 } finally {
   Remove-Item -Recurse -Force -Path $tempDir -ErrorAction SilentlyContinue
 }
 
 Write-Output ""
 Write-Output "Installed opengpu to $finalExe"
+if ($cudaRuntimeRequired) {
+  Write-Output "Installed CUDA llama runtime to $finalCudaRuntime"
+  Write-Output "Pinned trusted runtime path in $trustedRuntimePath"
+}
 
 $pathEntries = ($env:PATH -split ";") | ForEach-Object { $_.TrimEnd("\") }
 $normalizedInstallDir = (Resolve-Path -Path $InstallDir).Path.TrimEnd("\")
