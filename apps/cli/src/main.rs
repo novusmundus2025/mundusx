@@ -70,8 +70,11 @@ enum Commands {
     },
     /// Start the MundusX network
     Start {
-        /// Run the node agent in the foreground with logs for debugging
-        #[arg(long)]
+        /// Run the node agent in the background and return after verified startup
+        #[arg(long, conflicts_with = "debug")]
+        background: bool,
+        /// Run the foreground session with explicit diagnostic labeling
+        #[arg(long, conflicts_with = "background")]
         debug: bool,
     },
     /// Join the MundusX network (boots local state on first use)
@@ -1387,7 +1390,108 @@ fn stop_background_node_agent() -> Result<Option<u32>, String> {
     result.map(|_| Some(pid))
 }
 
-fn launch_node_agent(debug: bool) -> Result<(), String> {
+#[derive(Clone, Copy)]
+enum AgentLaunchMode {
+    Foreground,
+    ForegroundDebug,
+    Background,
+}
+
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
+fn enable_session_raw_mode() -> Option<RawModeGuard> {
+    match enable_raw_mode() {
+        Ok(()) => Some(RawModeGuard),
+        Err(error) => {
+            eprintln!("agentInputWarning: failed to enable raw terminal input: {error}");
+            None
+        }
+    }
+}
+
+fn mark_disconnected() -> Result<Config, String> {
+    let mut config = current_config_or_default();
+    config.connected = false;
+    config.paused = true;
+    save_config(&config).map_err(|error| format!("failed to save disconnect state: {error}"))?;
+    Ok(config)
+}
+
+fn run_node_agent_foreground(
+    mut command: Command,
+    agent: PathBuf,
+    debug: bool,
+) -> Result<(), String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    println!(
+        "agentMode: {}",
+        if debug {
+            "foreground debug"
+        } else {
+            "foreground"
+        }
+    );
+    println!("agentCommand: {} run", agent.display());
+    println!("agentHint: press Esc or Ctrl-C to disconnect");
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to run node agent `{}`: {error}", agent.display()))?;
+    let pid = child.id();
+    write_node_agent_pid(pid)?;
+
+    let _raw_mode = enable_session_raw_mode();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| {
+            format!(
+                "failed to inspect node agent `{}`: {error}",
+                agent.display()
+            )
+        })? {
+            remove_node_agent_pid();
+            if status.success() {
+                return Ok(());
+            }
+            return Err(format!("node agent exited with {status}"));
+        }
+
+        match poll(Duration::from_millis(200)) {
+            Ok(true) => match read() {
+                Ok(Event::Key(event))
+                    if event.code == KeyCode::Esc
+                        || event.code == KeyCode::Char('c')
+                            && event.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    let _ = stop_process_by_pid(pid);
+                    remove_node_agent_pid();
+                    let config = mark_disconnected()?;
+                    println!("disconnected {}", config.device_id);
+                    println!("connected: no");
+                    println!("paused: yes");
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("agentInputWarning: failed to read terminal input: {error}")
+                }
+            },
+            Ok(false) => {}
+            Err(error) => eprintln!("agentInputWarning: failed to poll terminal input: {error}"),
+        }
+    }
+}
+
+fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
     let agent = resolve_node_agent_executable();
     let mut command = Command::new(&agent);
     command.arg("run");
@@ -1396,20 +1500,14 @@ fn launch_node_agent(debug: bool) -> Result<(), String> {
         eprintln!("agentStopWarning: {error}");
     }
 
-    if debug {
-        command
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        println!("agentMode: foreground debug");
-        println!("agentCommand: {} run", agent.display());
-        let status = command
-            .status()
-            .map_err(|error| format!("failed to run node agent `{}`: {error}", agent.display()))?;
-        if status.success() {
-            return Ok(());
+    match mode {
+        AgentLaunchMode::Foreground => {
+            return run_node_agent_foreground(command, agent, false);
         }
-        return Err(format!("node agent exited with {status}"));
+        AgentLaunchMode::ForegroundDebug => {
+            return run_node_agent_foreground(command, agent, true);
+        }
+        AgentLaunchMode::Background => {}
     }
 
     let log_path = node_agent_log_path();
@@ -1452,10 +1550,12 @@ fn launch_node_agent(debug: bool) -> Result<(), String> {
     let pid = child.id();
 
     thread::sleep(Duration::from_millis(750));
-    if let Some(status) = child
-        .try_wait()
-        .map_err(|error| format!("failed to inspect node agent `{}`: {error}", agent.display()))?
-    {
+    if let Some(status) = child.try_wait().map_err(|error| {
+        format!(
+            "failed to inspect node agent `{}`: {error}",
+            agent.display()
+        )
+    })? {
         remove_node_agent_pid();
         return Err(format!(
             "node agent exited immediately with {status}; see `{}` and `{}`",
@@ -2599,7 +2699,7 @@ fn run_install(
     }
 }
 
-fn run_start_or_connect(debug: bool) {
+fn run_start_or_connect(mode: AgentLaunchMode) {
     // auto-init on first run
     if !config_exists() {
         run_init();
@@ -2674,10 +2774,10 @@ fn run_start_or_connect(debug: bool) {
                 );
             }
             if identity_ready {
-                if let Err(error) = launch_node_agent(debug) {
+                if let Err(error) = launch_node_agent(mode) {
                     eprintln!("{error}");
                     eprintln!(
-                        "agentHint: ensure `opengpu-node-agent` is installed beside `opengpu`, or run `opengpu start --debug` for foreground diagnostics"
+                        "agentHint: ensure `opengpu-node-agent` is installed beside `opengpu`, or run `opengpu start --background` to use daemon mode"
                     );
                     std::process::exit(1);
                 }
@@ -2701,8 +2801,17 @@ fn main() {
             control_plane_url,
             cap_percent,
         } => run_install(public, private, control_plane_url, cap_percent),
-        Commands::Start { debug } => run_start_or_connect(debug),
-        Commands::Connect => run_start_or_connect(false),
+        Commands::Start { background, debug } => {
+            let mode = if background {
+                AgentLaunchMode::Background
+            } else if debug {
+                AgentLaunchMode::ForegroundDebug
+            } else {
+                AgentLaunchMode::Foreground
+            };
+            run_start_or_connect(mode)
+        }
+        Commands::Connect => run_start_or_connect(AgentLaunchMode::Background),
         Commands::Login { token } => {
             let mut config = current_config_or_default();
             let token = match token {
@@ -3331,7 +3440,26 @@ mod tests {
     #[test]
     fn start_debug_flag_parses() {
         let cli = Cli::try_parse_from(["opengpu", "start", "--debug"]).expect("start should parse");
-        assert!(matches!(cli.command, Commands::Start { debug: true }));
+        assert!(matches!(
+            cli.command,
+            Commands::Start {
+                background: false,
+                debug: true
+            }
+        ));
+    }
+
+    #[test]
+    fn start_background_flag_parses() {
+        let cli =
+            Cli::try_parse_from(["opengpu", "start", "--background"]).expect("start should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Start {
+                background: true,
+                debug: false
+            }
+        ));
     }
 
     #[test]

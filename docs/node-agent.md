@@ -68,7 +68,7 @@ opengpu-agent heartbeat --json
 
 Expected health behavior:
 
-- `opengpu start` auto-selects `cuda` when NVIDIA environment hints or `nvidia-smi` identify a CUDA-capable machine.
+- `opengpu start` auto-selects `cuda` when NVIDIA environment hints or `nvidia-smi` identify a CUDA-capable machine and keeps the foreground contribution session open.
 - `cudaDeviceAvailable: yes` means `nvidia-smi` found at least one NVIDIA GPU.
 - `cudaDriverAvailable: yes` means the NVIDIA driver/runtime probe completed successfully.
 - `cudaMemoryMb` reports the largest detected GPU memory total.
