@@ -533,18 +533,27 @@ fn probe_power_state() -> PowerState {
 fn run_llama_command(
     model_path: &Path,
     prompt: &str,
+    backend: Backend,
     max_tokens: u32,
     temperature: f32,
     top_p: f32,
     seed: u64,
 ) -> Result<(String, String), String> {
     let llama_cli = trusted_runtime_executable("llama-cli")?;
+    let runtime_mode = match backend {
+        Backend::Cuda => "cuda",
+        _ => "blas",
+    };
+    let device = match backend {
+        Backend::Cuda => "CUDA",
+        _ => "BLAS",
+    };
     let mut command = Command::new(&llama_cli);
     command
         .arg("-m")
         .arg(model_path)
         .arg("--device")
-        .arg("BLAS")
+        .arg(device)
         .arg("--simple-io")
         .arg("--single-turn")
         .arg("--no-display-prompt")
@@ -586,7 +595,7 @@ fn run_llama_command(
         .to_string();
     let generated = extract_llama_response(prompt, &transcript);
 
-    Ok((generated, "blas".to_string()))
+    Ok((generated, runtime_mode.to_string()))
 }
 
 pub fn probe_worker_health(
@@ -762,7 +771,10 @@ fn extract_llama_response(prompt: &str, transcript: &str) -> String {
     }
 }
 
-fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchResponse, String> {
+fn run_llama_request(
+    request: &WorkerLaunchRequest,
+    backend: Backend,
+) -> Result<WorkerLaunchResponse, String> {
     let model_dir = env::var_os("OPENGPU_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -790,8 +802,15 @@ fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespon
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
     let seed = request.seed.unwrap_or(42);
 
-    let (generated, runtime_mode) =
-        run_llama_command(&model_path, &prompt, max_tokens, temperature, top_p, seed)?;
+    let (generated, runtime_mode) = run_llama_command(
+        &model_path,
+        &prompt,
+        backend,
+        max_tokens,
+        temperature,
+        top_p,
+        seed,
+    )?;
 
     Ok(WorkerLaunchResponse {
         job_id: request.job_id.clone(),
@@ -802,7 +821,7 @@ fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespon
             model_path.display(),
         ),
         error: None,
-        backend: Backend::M,
+        backend,
         node_id: request.node_id.clone(),
         model: Some(model_name),
         runtime_mode: Some(runtime_mode),
@@ -811,8 +830,8 @@ fn run_llama_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespon
 
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
-    if backend == Backend::M {
-        return match run_llama_request(request) {
+    if matches!(backend, Backend::M | Backend::Cuda) {
+        return match run_llama_request(request, backend) {
             Ok(response) => response,
             Err(error) => WorkerLaunchResponse {
                 job_id: request.job_id.clone(),
@@ -1024,6 +1043,52 @@ mod tests {
 
         assert_eq!(resolved, source_path);
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn cuda_worker_uses_llama_runtime_instead_of_m_only_rejection() {
+        with_temp_runtime_home(|home| {
+            let model_dir = home.join("models");
+            let model_cache = model_dir.join("qwen");
+            fs::create_dir_all(&model_cache).expect("model dir");
+            fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: home.join("missing-llama-cli").display().to_string(),
+                        sha256: None,
+                    }),
+                    nvidia_smi: None,
+                },
+            );
+            let previous_model_dir = env::var_os("OPENGPU_MODEL_DIR");
+            env::set_var("OPENGPU_MODEL_DIR", &model_dir);
+
+            let response = execute_request(&WorkerLaunchRequest {
+                job_id: "job-1".to_string(),
+                node_id: "node-1".to_string(),
+                backend: Backend::Cuda,
+                prompt: "hello".to_string(),
+                model: Some("qwen".to_string()),
+                system_prompt: None,
+                max_tokens: Some(4),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                seed: Some(42),
+            });
+
+            match previous_model_dir {
+                Some(value) => env::set_var("OPENGPU_MODEL_DIR", value),
+                None => env::remove_var("OPENGPU_MODEL_DIR"),
+            }
+
+            assert_eq!(response.backend, Backend::Cuda);
+            assert_eq!(response.runtime_mode.as_deref(), Some("cuda"));
+            let error = response.error.expect("missing llama-cli error");
+            assert!(error.contains("missing llama-cli"));
+            assert!(!error.contains("Mac M-only worker"));
+        });
     }
 
     #[test]
