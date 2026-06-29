@@ -15,7 +15,9 @@ This is the current command surface for the Rust CLI.
 - `opengpu status` - show local state, detected backend, local provider status, and local policy readiness
 - `opengpu exit` - leave local contribution mode and pause the machine
 - `opengpu model list` - show the local model cache and active model
+- `opengpu model use` - open the official model picker, download/cache the selected model, and mark it active
 - `opengpu model use <name>` - activate a cached model, or download an official open preset first and then activate it
+- `opengpu model add` - open the official model picker and download/cache the selected model without switching active model
 - `opengpu model add <name>` - add a model to the local cache, downloading an official open preset first when available
 - `opengpu model import <path> --name <name> --backend cuda --vram-mb <mb>` - record an existing local model file with format, quantization, size, and compatibility metadata
 - `opengpu model remove <name>` - remove a cached model
@@ -47,6 +49,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet, and whether it is using Keychain or the local encrypted fallback.
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled. On Windows, `login` stores the token in a DPAPI-protected blob outside `config.json`, and `logout` removes that protected token.
 - The model commands manage the local model cache manifest and active selection, download official open presets from the reviewed catalog before caching or activating them, and can import contributor-supplied local GGUF files with compatibility metadata for node capability reporting.
+- Bare `model use` and `model add` show an arrow-key official model picker with provider/source URL, backend compatibility, estimated VRAM, and cap-fit context; passing an exact name remains available for scripts.
 - Official catalog entries must include GGUF format, backend compatibility, and conservative estimated VRAM metadata before review. CUDA entries should be sized against the cap-applied budget, so a 4 GB card at an 80% cap only sees models estimated at 3.2 GB VRAM or less; entries without VRAM metadata are not offered for CUDA auto-download.
 - `onboarding` is a local contributor review step that summarizes the secure device identity, hostname, model, policy, and credits setup; `start` prints it automatically until it is marked complete.
 - `start` asks for the contribution budget on interactive first run; `cap` is the explicit command for changing it later.
