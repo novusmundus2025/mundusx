@@ -6,7 +6,7 @@ You install one thing and run one command:
 
 ```
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
-opengpu connect
+opengpu start
 ```
 
 ### What runs on your machine

@@ -1200,6 +1200,11 @@ mod tests {
     #[test]
     fn generic_node_without_active_model_is_not_advertised_ready() {
         let mut config = test_config();
+        let temp = std::env::temp_dir().join(format!(
+            "opengpu-generic-capability-test-{}",
+            now_unix_seconds()
+        ));
+        config.model_dir = Some(temp.display().to_string());
         config.backend_preference = Backend::Auto;
         config.active_model = None;
         config.models = Vec::new();
@@ -1211,5 +1216,6 @@ mod tests {
             capability.readiness_reason.as_deref(),
             Some("no active model is configured")
         );
+        let _ = fs::remove_dir_all(temp);
     }
 }

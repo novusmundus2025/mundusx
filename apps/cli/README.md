@@ -57,14 +57,15 @@ Local no-auth smoke:
 Startup flow:
 
 - For a fresh machine, review onboarding, set a contribution cap, and then run `opengpu start`; `opengpu install` guides the control-plane, cap, and model setup before start
-- `opengpu start` creates local state if needed, connects locally when the secure device identity is available, and marks the machine ready
+- `opengpu start` creates local state if needed, connects when the secure device identity is available, and starts the node agent in the background
+- `opengpu start --debug` runs the node agent in the foreground with logs for developer diagnostics
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu cap` sets the contribution budget explicitly
 - `opengpu update` prints the local install page and release preview URLs
 - `opengpu login` stores a local operator bearer token; on Windows the token is protected with DPAPI outside `config.json`
 - `opengpu logout` clears that local token and the protected Windows token blob
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available
-- `opengpu exit` leaves contribution mode; `opengpu disconnect` remains available as the explicit alias
+- `opengpu exit` leaves contribution mode and stops the recorded background agent; `opengpu disconnect` remains available as the explicit alias
 - `opengpu status` shows the live local routing decision
 - `opengpu model import` records contributor-supplied local GGUF files and reports whether they fit the selected backend and VRAM budget
 - `opengpu jobs submit/status/wait` uses the async control-plane job API. `wait` is a CLI polling helper; the server still returns quickly and does not hold the request open.

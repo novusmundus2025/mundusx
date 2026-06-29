@@ -14,7 +14,8 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde::Serialize;
 use std::env;
 use std::io::{self, IsTerminal, Read, Write};
-use std::process::Command;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use types::Backend;
@@ -63,7 +64,11 @@ enum Commands {
         cap_percent: Option<u8>,
     },
     /// Start the MundusX network
-    Start,
+    Start {
+        /// Run the node agent in the foreground with logs for debugging
+        #[arg(long)]
+        debug: bool,
+    },
     /// Join the MundusX network (boots local state on first use)
     Connect,
     /// Store local operator auth state
@@ -1351,6 +1356,148 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     );
 }
 
+fn companion_node_agent_name() -> &'static str {
+    if cfg!(windows) {
+        "opengpu-node-agent.exe"
+    } else {
+        "opengpu-node-agent"
+    }
+}
+
+fn resolve_node_agent_executable() -> PathBuf {
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            let companion = parent.join(companion_node_agent_name());
+            if companion.exists() {
+                return companion;
+            }
+        }
+    }
+
+    PathBuf::from(companion_node_agent_name())
+}
+
+fn node_agent_pid_path() -> PathBuf {
+    config::config_dir().join("node-agent.pid")
+}
+
+fn write_node_agent_pid(pid: u32) -> Result<(), String> {
+    let path = node_agent_pid_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create agent pid directory: {error}"))?;
+    }
+    std::fs::write(&path, pid.to_string()).map_err(|error| {
+        format!(
+            "failed to write agent pid file `{}`: {error}",
+            path.display()
+        )
+    })
+}
+
+fn remove_node_agent_pid() {
+    let _ = std::fs::remove_file(node_agent_pid_path());
+}
+
+fn stop_process_by_pid(pid: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("failed to run taskkill for agent pid {pid}: {error}"))?;
+
+    #[cfg(not(windows))]
+    let status = Command::new("kill")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("failed to run kill for agent pid {pid}: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("agent stop command exited with {status}"))
+    }
+}
+
+fn stop_background_node_agent() -> Result<Option<u32>, String> {
+    let path = node_agent_pid_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "failed to read agent pid file `{}`: {error}",
+            path.display()
+        )
+    })?;
+    let pid = raw
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| format!("invalid agent pid file `{}`: {error}", path.display()))?;
+
+    let result = stop_process_by_pid(pid);
+    remove_node_agent_pid();
+    result.map(|_| Some(pid))
+}
+
+fn launch_node_agent(debug: bool) -> Result<(), String> {
+    let agent = resolve_node_agent_executable();
+    let mut command = Command::new(&agent);
+    command.arg("run");
+
+    if let Err(error) = stop_background_node_agent() {
+        eprintln!("agentStopWarning: {error}");
+    }
+
+    if debug {
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        println!("agentMode: foreground debug");
+        println!("agentCommand: {} run", agent.display());
+        let status = command
+            .status()
+            .map_err(|error| format!("failed to run node agent `{}`: {error}", agent.display()))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("node agent exited with {status}"));
+    }
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let child = command
+        .spawn()
+        .map_err(|error| format!("failed to start node agent `{}`: {error}", agent.display()))?;
+    let pid = child.id();
+    if let Err(error) = write_node_agent_pid(pid) {
+        let _ = stop_process_by_pid(pid);
+        return Err(error);
+    }
+    println!("agent: started");
+    println!("agentPid: {}", pid);
+    println!("agentMode: background");
+    Ok(())
+}
+
 fn current_hostname() -> String {
     std::process::Command::new("hostname")
         .output()
@@ -2289,6 +2436,97 @@ fn run_install(
     }
 }
 
+fn run_start_or_connect(debug: bool) {
+    // auto-init on first run
+    if !config_exists() {
+        run_init();
+    }
+
+    let mut config = current_config_or_default();
+    let identity_ready = match load_or_create_identity() {
+        Ok((identity, _, _)) => {
+            config.device_id = device_id_for_identity(&identity);
+            config.public_key_fingerprint = Some(identity.fingerprint);
+            true
+        }
+        Err(error) => {
+            eprintln!("failed to load secure device identity: {error}");
+            false
+        }
+    };
+    if config.contribution_percent == 0 && io::stdin().is_terminal() && io::stdout().is_terminal() {
+        let detected = resolved_backend(&config);
+        println!(
+            "contributionQuestion: how much of this {} machine can MundusX use?",
+            detected.as_str()
+        );
+        println!("contributionMeaning: {}", contribution_semantics(detected));
+        match prompt_contribution_percent(default_contribution_percent(detected)) {
+            PromptOutcome::Selected(value) => {
+                config.contribution_percent = value;
+            }
+            PromptOutcome::Cancelled => {
+                println!("capHint: run `opengpu cap` before starting contribution");
+            }
+        }
+    }
+    if active_model_name(&config).is_none() {
+        let backend = resolved_backend(&config);
+        let choice = prompt_model_selection(&config, backend);
+        apply_model_choice(&mut config, choice, true);
+    }
+    if let Some(active_model) = active_model_name(&config) {
+        let backend = resolved_backend(&config);
+        if let Err(error) = ensure_catalog_model_fits_machine(&active_model, backend, &config) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        if let Err(error) = use_model(&mut config, &active_model) {
+            eprintln!("failed to refresh active model `{active_model}`: {error}");
+            std::process::exit(1);
+        }
+    }
+    config.connected = identity_ready;
+    config.paused = !identity_ready;
+
+    match save_config(&config) {
+        Ok(_) => {
+            print_startup_summary(&config, &resolved_config_path());
+            println!(
+                "contributionMeaning: {}",
+                contribution_semantics(config.backend_preference)
+            );
+            if config.contribution_percent == 0 {
+                println!("capHint: run `opengpu cap` to choose the contribution budget");
+            }
+            if !identity_ready {
+                println!(
+                    "identityHint: secure device identity is unavailable; the node is not online yet"
+                );
+            }
+            if !config.onboarding_completed {
+                print_onboarding_checklist(&config, &resolved_config_path(), false);
+                println!(
+                    "onboardingHint: run `opengpu onboarding --complete` after you review the checklist"
+                );
+            }
+            if identity_ready {
+                if let Err(error) = launch_node_agent(debug) {
+                    eprintln!("{error}");
+                    eprintln!(
+                        "agentHint: ensure `opengpu-node-agent` is installed beside `opengpu`, or run `opengpu start --debug` for foreground diagnostics"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("failed to save config: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     theme::configure(cli.theme);
@@ -2300,92 +2538,8 @@ fn main() {
             control_plane_url,
             cap_percent,
         } => run_install(public, private, control_plane_url, cap_percent),
-        Commands::Start | Commands::Connect => {
-            // auto-init on first run
-            if !config_exists() {
-                run_init();
-            }
-
-            let mut config = current_config_or_default();
-            let identity_ready = match load_or_create_identity() {
-                Ok((identity, _, _)) => {
-                    config.device_id = device_id_for_identity(&identity);
-                    config.public_key_fingerprint = Some(identity.fingerprint);
-                    true
-                }
-                Err(error) => {
-                    eprintln!("failed to load secure device identity: {error}");
-                    false
-                }
-            };
-            if config.contribution_percent == 0
-                && io::stdin().is_terminal()
-                && io::stdout().is_terminal()
-            {
-                let detected = resolved_backend(&config);
-                println!(
-                    "contributionQuestion: how much of this {} machine can MundusX use?",
-                    detected.as_str()
-                );
-                println!("contributionMeaning: {}", contribution_semantics(detected));
-                match prompt_contribution_percent(default_contribution_percent(detected)) {
-                    PromptOutcome::Selected(value) => {
-                        config.contribution_percent = value;
-                    }
-                    PromptOutcome::Cancelled => {
-                        println!("capHint: run `opengpu cap` before starting contribution");
-                    }
-                }
-            }
-            if active_model_name(&config).is_none() {
-                let backend = resolved_backend(&config);
-                let choice = prompt_model_selection(&config, backend);
-                apply_model_choice(&mut config, choice, true);
-            }
-            if let Some(active_model) = active_model_name(&config) {
-                let backend = resolved_backend(&config);
-                if let Err(error) =
-                    ensure_catalog_model_fits_machine(&active_model, backend, &config)
-                {
-                    eprintln!("{error}");
-                    std::process::exit(1);
-                }
-                if let Err(error) = use_model(&mut config, &active_model) {
-                    eprintln!("failed to refresh active model `{active_model}`: {error}");
-                    std::process::exit(1);
-                }
-            }
-            config.connected = identity_ready;
-            config.paused = !identity_ready;
-
-            match save_config(&config) {
-                Ok(_) => {
-                    print_startup_summary(&config, &resolved_config_path());
-                    println!(
-                        "contributionMeaning: {}",
-                        contribution_semantics(config.backend_preference)
-                    );
-                    if config.contribution_percent == 0 {
-                        println!("capHint: run `opengpu cap` to choose the contribution budget");
-                    }
-                    if !identity_ready {
-                        println!(
-                            "identityHint: secure device identity is unavailable; the node is not online yet"
-                        );
-                    }
-                    if !config.onboarding_completed {
-                        print_onboarding_checklist(&config, &resolved_config_path(), false);
-                        println!(
-                            "onboardingHint: run `opengpu onboarding --complete` after you review the checklist"
-                        );
-                    }
-                }
-                Err(error) => {
-                    eprintln!("failed to save config: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
+        Commands::Start { debug } => run_start_or_connect(debug),
+        Commands::Connect => run_start_or_connect(false),
         Commands::Login { token } => {
             let mut config = current_config_or_default();
             let token = match token {
@@ -2567,12 +2721,24 @@ fn main() {
 
             let mut config = current_config_or_default();
             config.connected = false;
-            config.paused = false;
+            config.paused = true;
 
             match save_config(&config) {
                 Ok(_) => {
                     println!("disconnected {}", config.device_id);
                     println!("connected: no");
+                    println!("paused: yes");
+                    match stop_background_node_agent() {
+                        Ok(Some(pid)) => {
+                            println!("agent: stopped");
+                            println!("agentPid: {pid}");
+                        }
+                        Ok(None) => println!("agent: not running"),
+                        Err(error) => {
+                            eprintln!("agentStop: {error}");
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 Err(error) => {
                     eprintln!("failed to save config: {error}");
@@ -2988,6 +3154,12 @@ mod tests {
     fn logs_command_parses() {
         let cli = Cli::try_parse_from(["opengpu", "logs", "--json"]).expect("logs should parse");
         assert!(matches!(cli.command, Commands::Logs { json: true }));
+    }
+
+    #[test]
+    fn start_debug_flag_parses() {
+        let cli = Cli::try_parse_from(["opengpu", "start", "--debug"]).expect("start should parse");
+        assert!(matches!(cli.command, Commands::Start { debug: true }));
     }
 
     #[test]
