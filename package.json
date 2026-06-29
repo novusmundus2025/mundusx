@@ -20,6 +20,7 @@
     "test:docs-site": "bash tests/public-docs-site.sh",
     "test:homebrew-formula": "bash tests/homebrew-formula.sh",
     "test:install-ps1": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-ps1-local-release.ps1",
+    "test:windows-uat-install": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows-uat-install-smoke.ps1",
     "test:license": "bash tests/license-surface.sh",
     "test:macos-identity-policy": "bash tests/macos-identity-policy.sh",
     "test:shared-contract": "bash tests/shared-contract-surface.sh",

@@ -39,6 +39,24 @@ The installer verifies the asset checksum, requires the signed manifest artifact
 
 The broader enterprise Windows rollout policy, including secret storage, model-source integrity, trusted runtime paths, rollback, and support boundaries, lives in [docs/enterprise-windows-policy.md](enterprise-windows-policy.md).
 
+### Windows UAT Install Smoke
+
+For UAT, Windows can be verified against a local preview release source before the public GitHub release asset is published. Run the repository smoke from a Windows x64 host:
+
+```powershell
+npm run test:windows-uat-install
+```
+
+The smoke builds the current `opengpu.exe` and `opengpu-node-agent.exe`, stages `opengpu-x86_64-pc-windows-msvc.exe` with a checksum and manifest in a temporary release directory, installs it through `install.ps1`, and uses an isolated `OPENGPU_HOME`. It then verifies:
+
+- `opengpu install --private --control-plane-url http://127.0.0.1:8787 --cap-percent 30` writes the UAT/local control-plane URL
+- `opengpu login` creates the Windows DPAPI-protected `operator-token.dpapi` blob
+- `config.json` does not contain the plaintext operator token
+- `opengpu doctor --json` reports the protected token as present
+- `opengpu-node-agent health --json` returns health and policy payloads that operators can act on
+
+This smoke does not replace the public Windows release asset work in [mundusx/mundusx#73](https://github.com/mundusx/mundusx/issues/73). It proves the UAT/local-preview install path while public distribution remains tracked separately.
+
 ### Machine Detection
 
 The setup flow must detect the machine family before selecting runtime defaults or release assets:
