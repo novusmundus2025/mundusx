@@ -563,23 +563,18 @@ fn run_llama_command(
         Backend::Cuda => "cuda",
         _ => "blas",
     };
-    let device = match backend {
-        Backend::Cuda => "CUDA",
-        _ => "BLAS",
-    };
     let mut command = Command::new(&llama_cli);
+    command.arg("-m").arg(model_path);
+    if matches!(backend, Backend::Cuda) {
+        command.arg("--device").arg("CUDA0");
+    }
     command
-        .arg("-m")
-        .arg(model_path)
-        .arg("--device")
-        .arg(device)
         .arg("--simple-io")
-        .arg("--single-turn")
         .arg("--no-display-prompt")
         .arg("--no-perf")
         .arg("--log-disable")
-        .arg("--color")
-        .arg("off")
+        .arg("-c")
+        .arg("512")
         .arg("--threads")
         .arg("2")
         .arg("--threads-batch")
@@ -604,7 +599,7 @@ fn run_llama_command(
         return Err(format!(
             "llama-cli exited {} — {}",
             output.status.code().unwrap_or(-1),
-            stderr.lines().next().unwrap_or("no stderr")
+            first_actionable_stderr_line(&stderr)
         ));
     }
 
@@ -615,6 +610,19 @@ fn run_llama_command(
     let generated = extract_llama_response(prompt, &transcript);
 
     Ok((generated, runtime_mode.to_string()))
+}
+
+fn first_actionable_stderr_line(stderr: &str) -> &str {
+    stderr
+        .lines()
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("ggml_cuda_init:")
+                && !trimmed.starts_with("  Device ")
+        })
+        .or_else(|| stderr.lines().find(|line| !line.trim().is_empty()))
+        .unwrap_or("no stderr")
 }
 
 pub fn probe_worker_health(

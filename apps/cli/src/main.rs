@@ -699,7 +699,7 @@ fn run_inference_local_first(
     let model_dir = std::env::var_os("OPENGPU_MODEL_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| model::effective_model_dir(config));
-    match run_local_inference(&model_dir, prompt, model, max_tokens) {
+    match run_local_inference(&model_dir, prompt, model, backend, max_tokens) {
         Ok((output, model_name)) => {
             return Ok(InferenceResult {
                 output,
@@ -882,6 +882,7 @@ fn run_local_inference(
     model_dir: &std::path::Path,
     prompt: &str,
     model_name: Option<&str>,
+    backend: Backend,
     max_tokens: u32,
 ) -> Result<(String, Option<String>), String> {
     // resolve model path
@@ -903,18 +904,18 @@ fn run_local_inference(
     }
 
     // run inference
-    let output = Command::new("llama-cli")
-        .arg("-m")
-        .arg(&model_path)
-        .arg("--device")
-        .arg("BLAS")
+    let mut command = Command::new("llama-cli");
+    command.arg("-m").arg(&model_path);
+    if matches!(backend, Backend::Cuda) {
+        command.arg("--device").arg("CUDA0");
+    }
+    let output = command
         .arg("--simple-io")
-        .arg("--single-turn")
         .arg("--no-display-prompt")
         .arg("--no-perf")
         .arg("--log-disable")
-        .arg("--color")
-        .arg("off")
+        .arg("-c")
+        .arg("512")
         .arg("-p")
         .arg(prompt)
         .arg("-n")
@@ -929,7 +930,7 @@ fn run_local_inference(
         return Err(format!(
             "llama-cli exited {} — {}",
             output.status.code().unwrap_or(-1),
-            stderr.lines().next().unwrap_or("no output")
+            first_actionable_stderr_line(&stderr)
         ));
     }
 
@@ -939,6 +940,19 @@ fn run_local_inference(
         .to_string();
 
     Ok((transcript, detected_name))
+}
+
+fn first_actionable_stderr_line(stderr: &str) -> &str {
+    stderr
+        .lines()
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("ggml_cuda_init:")
+                && !trimmed.starts_with("  Device ")
+        })
+        .or_else(|| stderr.lines().find(|line| !line.trim().is_empty()))
+        .unwrap_or("no stderr")
 }
 
 fn resolve_local_model_path(
