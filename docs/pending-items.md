@@ -9,7 +9,7 @@ For the single working checklist, see [docs/master-checklist.md](master-checklis
 1. **Port secure device identity to all platforms**
    - macOS uses encrypted-at-rest device identity metadata and Keychain when available, with environment rules in [docs/macos-identity-policy.md](macos-identity-policy.md)
    - Windows now protects device identity and operator tokens with DPAPI; the remaining Windows work is the stricter non-exportable key policy and implementation beyond DPAPI
-   - Linux still needs a protected sign-only identity path instead of the file-backed development prototype ([mundusx/mundusx#113](https://github.com/mundusx/mundusx/issues/113))
+   - Linux now protects device identity with encrypted-at-rest metadata and Secret Service when available; the remaining Linux work is stricter non-exportable TPM, PKCS#11, or kernel-keyring signing policy beyond the fallback path
 
 2. **Define the federated governance model**
    - document the top-level standards / clearing-house org
@@ -26,7 +26,7 @@ For the single working checklist, see [docs/master-checklist.md](master-checklis
 ## Why These Are Pending
 
 - The Mac-first core runtime is now working end to end, so the remaining work is mostly platform expansion and productization.
-- Secure device identity now avoids plaintext private-key persistence on macOS and Windows. Linux still needs protected storage, macOS has explicit environment policy for fallback storage, and Windows still needs clear enterprise enforcement policy beyond DPAPI.
+- Secure device identity now avoids plaintext private-key persistence on macOS, Windows, and Linux. macOS and Linux both have visible fallback storage paths for constrained hosts, while Windows and Linux still need stricter enterprise enforcement policy beyond their current protected storage.
 - Onboarding and governance are still design-heavy product layers rather than runtime plumbing.
 - The public install endpoint and package-manager publishing are still required before public rollout.
 
