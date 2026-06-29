@@ -34,11 +34,16 @@ case "$arch" in
 esac
 
 asset_name="${BIN_NAME}-${target}"
+agent_asset_name="opengpu-node-agent-${target}"
 release_url="${RELEASE_BASE_URL%/}/${asset_name}"
 checksum_url="${release_url}.sha256"
+agent_url="${RELEASE_BASE_URL%/}/${agent_asset_name}"
+agent_checksum_url="${agent_url}.sha256"
 tmp_dir="$(mktemp -d)"
 tmp_bin="${tmp_dir}/${asset_name}"
 tmp_checksum="${tmp_dir}/${asset_name}.sha256"
+tmp_agent="${tmp_dir}/${agent_asset_name}"
+tmp_agent_checksum="${tmp_dir}/${agent_asset_name}.sha256"
 cleanup() {
   rm -rf "$tmp_dir"
 }
@@ -60,30 +65,44 @@ download_to() {
   fi
 }
 
+verify_checksum() {
+  local checksum_file="$1"
+
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "$tmp_dir" && shasum -a 256 -c "$(basename "$checksum_file")")
+  elif command -v sha256sum >/dev/null 2>&1; then
+    (cd "$tmp_dir" && sha256sum -c "$(basename "$checksum_file")")
+  else
+    echo "checksum tooling not found (need shasum or sha256sum)" >&2
+    exit 1
+  fi
+}
+
 echo "MundusX installer"
 echo "  target: ${target}"
 echo "  source: ${RELEASE_BASE_URL%/}"
+echo "  node agent: ${agent_asset_name}"
 echo "  install: ${INSTALL_DIR}"
 echo
 echo "Fetching ${BIN_NAME}..."
 download_to "$release_url" "$tmp_bin"
 
-if download_to "$checksum_url" "$tmp_checksum"; then
-  echo "Verifying checksum..."
-  if command -v shasum >/dev/null 2>&1; then
-    (cd "$tmp_dir" && shasum -a 256 -c "$(basename "$tmp_checksum")")
-  elif command -v sha256sum >/dev/null 2>&1; then
-    (cd "$tmp_dir" && sha256sum -c "$(basename "$tmp_checksum")")
-  else
-    echo "checksum verification skipped: no shasum or sha256sum available" >&2
-  fi
-else
-  echo "checksum unavailable for ${asset_name}, continuing without verification" >&2
-fi
+download_to "$checksum_url" "$tmp_checksum"
+echo "Verifying checksum..."
+verify_checksum "$tmp_checksum"
+
+echo "Fetching opengpu-node-agent..."
+download_to "$agent_url" "$tmp_agent"
+download_to "$agent_checksum_url" "$tmp_agent_checksum"
+echo "Verifying node agent checksum..."
+verify_checksum "$tmp_agent_checksum"
 
 chmod +x "$tmp_bin"
+chmod +x "$tmp_agent"
 mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
+mv "$tmp_agent" "$INSTALL_DIR/opengpu-node-agent"
 
 echo
 echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
+echo "Installed opengpu-node-agent to ${INSTALL_DIR}/opengpu-node-agent"
 echo "If needed, add ${INSTALL_DIR} to your PATH."

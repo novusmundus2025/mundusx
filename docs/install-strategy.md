@@ -81,6 +81,24 @@ The same detection should drive:
 
 The binary bootstrapper does only platform and asset detection. The CLI setup wizard owns control-plane selection, contribution cap, backend preference, and model gating so every install path reaches the same policy.
 
+### Cross-Platform Contributor Bundle
+
+Every supported release target must publish a platform-matched node-agent asset next to the CLI binary:
+
+- `opengpu-node-agent-aarch64-apple-darwin`
+- `opengpu-node-agent-x86_64-unknown-linux-gnu`
+- `opengpu-node-agent-x86_64-pc-windows-msvc.exe`
+
+The POSIX bootstrapper installs `opengpu-node-agent` beside `opengpu` and fails if the node-agent asset or checksum is missing. That keeps macOS and Linux contributor installs from looking complete while the executable needed for `opengpu start` is absent. Windows follows the same rule through `install.ps1`, which installs `opengpu-node-agent.exe` beside `opengpu.exe`.
+
+Runtime bundles remain platform-specific release assets:
+
+- Apple Silicon M-series releases must include a compatible `llama.cpp` runtime bundle before M-series nodes are advertised as ready.
+- Linux CUDA releases must include CUDA llama runtime binaries and required shared libraries before CUDA nodes are advertised as ready.
+- Windows CUDA releases must include `llama-runtime-x86_64-pc-windows-msvc-cuda.zip`, which the PowerShell bootstrapper verifies, extracts, and pins in `trusted-runtime-paths.json`.
+
+If a required runtime bundle is not available for a target, the installer or `opengpu doctor` / node-agent health path must fail that profile early with a clear missing-runtime diagnostic instead of allowing the node to advertise ready capacity.
+
 ### 2. macOS Convenience
 
 Add a Homebrew tap or formula for users who prefer `brew`.
