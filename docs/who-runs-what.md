@@ -14,7 +14,7 @@ opengpu start
 | Component | Binary | What it does |
 |---|---|---|
 | **CLI** | `opengpu` | The only thing you interact with. Handles connect, disconnect, status, update. |
-| **Node Agent** | started by CLI | Runs in the background. Sends heartbeats, reports capability, picks up and runs jobs. |
+| **Node Agent** | started by CLI | Runs under the foreground `opengpu start` session by default, or in the background with `opengpu start --background`. Sends heartbeats, reports capability, picks up and runs jobs. |
 | **Worker** | spawned per job | Short-lived subprocess launched by the agent when a job is assigned. Runs the actual model inference. |
 
 ### What you do NOT run
@@ -78,7 +78,7 @@ You run and maintain the shared infrastructure that all nodes connect to.
 | | User | Company |
 |---|---|---|
 | Installs | `opengpu` CLI | Control plane, dashboard, infra |
-| Runs always | Node agent (background) | Control plane API |
+| Runs always | Node agent foreground session or background daemon | Control plane API |
 | Runs per job | Worker subprocess | — |
 | Maintains | Nothing — just keep connected | All shared infrastructure |
 | Pays for | Nothing (contributor) | Hosting, bandwidth, build infra |
@@ -94,7 +94,7 @@ Users contribute their hardware and run code on their machines. For them to trus
 | Component | Why |
 |---|---|
 | **CLI** (`opengpu`) | Runs on the user's machine. They must be able to audit every command — connect, disconnect, what data is sent. |
-| **Node Agent** | Runs persistently in the background. Users need to verify it isn't mining, exfiltrating data, or abusing resources beyond what they agreed to. |
+| **Node Agent** | Runs persistently while the contribution session or background daemon is active. Users need to verify it isn't mining, exfiltrating data, or abusing resources beyond what they agreed to. |
 | **Worker (M-series)** | Executes jobs on the user's machine. Must be auditable to confirm it only runs inference and nothing else. |
 | **Install script** | The first thing a user runs. A closed install script is a red flag — must be readable before execution. |
 | **Protobuf / shared contracts** | Defines exactly what data flows between nodes and the control plane. Transparency here builds protocol trust. |

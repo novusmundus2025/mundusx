@@ -143,9 +143,17 @@ the CLI:
    - `CUDA` means a routing budget for NVIDIA nodes, with low-VRAM cards kept to modest workloads
 12. Prints whether policy currently allows the Mac to accept work, including the power source, battery state, and identity readiness.
 13. Keeps the reused secure device identity attached to the local config when available.
-14. Starts the installed `opengpu-node-agent` companion binary in the background when the secure device identity is ready.
+14. Starts the installed `opengpu-node-agent` companion binary in a foreground contribution session when the secure device identity is ready.
+15. Keeps the terminal attached so status and worker logs remain visible.
+16. Treats `Esc` or `Ctrl-C` as a graceful disconnect: local state is saved as disconnected and paused, and the node agent is stopped.
 
-For foreground diagnostics, run:
+For daemon mode, run:
+
+```bash
+opengpu start --background
+```
+
+For explicit foreground diagnostics, run:
 
 ```bash
 opengpu start --debug
@@ -188,7 +196,7 @@ the CLI:
 
 1. Marks the local config as disconnected.
 2. Pauses contribution.
-3. Stops the background node agent started by `opengpu start` when one is recorded.
+3. Stops the recorded node agent when one is running.
 4. Leaves the identity and config in place for the next `start`.
 
 ## Status

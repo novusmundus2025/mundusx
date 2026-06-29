@@ -60,8 +60,9 @@ Local no-auth smoke:
 Startup flow:
 
 - For a fresh machine, review onboarding, set a contribution cap, and then run `opengpu start`; `opengpu install` guides the control-plane, cap, and model setup before start
-- `opengpu start` creates local state if needed, connects when the secure device identity is available, and starts the node agent in the background
-- `opengpu start --debug` runs the node agent in the foreground with logs for developer diagnostics
+- `opengpu start` creates local state if needed, connects when the secure device identity is available, and keeps a foreground contribution session open until `Esc` or `Ctrl-C`
+- `opengpu start --background` starts the node agent in daemon mode and returns after startup is verified
+- `opengpu start --debug` runs the foreground contribution session with explicit diagnostic labeling
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu cap` sets the contribution budget explicitly, with quick picks and custom whole-percent values up to 80%
 - `opengpu update` prints the local install page and release preview URLs

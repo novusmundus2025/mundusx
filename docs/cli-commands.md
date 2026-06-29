@@ -4,7 +4,8 @@ This is the current command surface for the Rust CLI.
 
 ## Core Commands
 
-- `opengpu start` - create local state if needed, auto-detect the backend, ask for a contribution cap on interactive first run, connect locally when the secure device identity is available, and print a startup summary with the public key
+- `opengpu start` - create local state if needed, auto-detect the backend, ask for a contribution cap on interactive first run, connect locally when the secure device identity is available, print a startup summary with the public key, and keep a foreground contribution session open
+- `opengpu start --background` - start the node agent in daemon mode and return after startup is verified
 - `opengpu install` - run the guided machine setup wizard, choose public MundusX or private/custom control plane, save a community contribution cap, show only models that fit that cap, and prepare the node for `opengpu start`
 - `opengpu onboarding` - review the contributor onboarding checklist
 - `opengpu onboarding --complete` - mark onboarding complete after review
@@ -43,7 +44,7 @@ These remain available, but they are hidden from the default `--help` output so 
 
 - The CLI currently operates on local state only.
 - Real control-plane calls and node registration will come later.
-- The active `opengpu start` session can be aborted with `Ctrl-C`, which rolls local state back to disconnected and paused.
+- The active `opengpu start` foreground session can be stopped with `Esc` or `Ctrl-C`, which rolls local state back to disconnected and paused.
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected and policy allows it.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
 - `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet, and whether it is using Keychain or the local encrypted fallback.
