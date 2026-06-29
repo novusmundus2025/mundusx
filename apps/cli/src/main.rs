@@ -1390,6 +1390,50 @@ fn stop_background_node_agent() -> Result<Option<u32>, String> {
     result.map(|_| Some(pid))
 }
 
+fn send_node_agent_stop() -> Result<(), String> {
+    let agent = resolve_node_agent_executable();
+    let status = Command::new(&agent)
+        .arg("stop")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| {
+            format!(
+                "failed to run node agent stop `{}`: {error}",
+                agent.display()
+            )
+        })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("node agent stop exited with {status}"))
+    }
+}
+
+fn disconnect_node_agent() -> Result<Option<u32>, String> {
+    let stop_result = send_node_agent_stop();
+    let process_result = stop_background_node_agent();
+
+    match (stop_result, process_result) {
+        (Ok(()), Ok(pid)) => Ok(pid),
+        (Err(stop_error), Ok(pid)) => {
+            if pid.is_some() {
+                Err(format!(
+                    "sent local stop but failed to publish final heartbeat: {stop_error}"
+                ))
+            } else {
+                Err(stop_error)
+            }
+        }
+        (Ok(()), Err(process_error)) => Err(process_error),
+        (Err(stop_error), Err(process_error)) => Err(format!(
+            "{stop_error}; also failed to stop process: {process_error}"
+        )),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum AgentLaunchMode {
     Foreground,
@@ -1472,9 +1516,12 @@ fn run_node_agent_foreground(
                         || event.code == KeyCode::Char('c')
                             && event.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
+                    let config = mark_disconnected()?;
+                    if let Err(error) = send_node_agent_stop() {
+                        eprintln!("agentStopWarning: {error}");
+                    }
                     let _ = stop_process_by_pid(pid);
                     remove_node_agent_pid();
-                    let config = mark_disconnected()?;
                     println!("disconnected {}", config.device_id);
                     println!("connected: no");
                     println!("paused: yes");
@@ -3000,7 +3047,7 @@ fn main() {
                     println!("disconnected {}", config.device_id);
                     println!("connected: no");
                     println!("paused: yes");
-                    match stop_background_node_agent() {
+                    match disconnect_node_agent() {
                         Ok(Some(pid)) => {
                             println!("agent: stopped");
                             println!("agentPid: {pid}");
