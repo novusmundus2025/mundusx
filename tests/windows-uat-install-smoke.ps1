@@ -11,10 +11,12 @@ $installDir = Join-Path $fixtureRoot "bin"
 $opengpuHome = Join-Path $fixtureRoot "home"
 $assetName = "opengpu-x86_64-pc-windows-msvc.exe"
 $assetPath = Join-Path $releaseDir $assetName
-$runtimeAssetName = "llama-cli-x86_64-pc-windows-msvc-cuda.exe"
+$agentAssetName = "opengpu-node-agent-x86_64-pc-windows-msvc.exe"
+$agentAssetPath = Join-Path $releaseDir $agentAssetName
+$runtimeAssetName = "llama-runtime-x86_64-pc-windows-msvc-cuda.zip"
 $runtimeAssetPath = Join-Path $releaseDir $runtimeAssetName
+$runtimeFixtureDir = Join-Path $fixtureRoot "runtime-fixture"
 $agentBuildPath = Join-Path $repoRoot "target\release\opengpu-node-agent.exe"
-$agentInstallPath = Join-Path $installDir "opengpu-node-agent.exe"
 
 function Invoke-Checked {
   param(
@@ -49,22 +51,36 @@ try {
   } | Out-Null
 
   Copy-Item -LiteralPath (Join-Path $repoRoot "target\release\opengpu.exe") -Destination $assetPath
-  Copy-Item -LiteralPath $agentBuildPath -Destination $runtimeAssetPath
-  Copy-Item -LiteralPath $agentBuildPath -Destination $agentInstallPath
+  Copy-Item -LiteralPath $agentBuildPath -Destination $agentAssetPath
+  New-Item -ItemType Directory -Force -Path $runtimeFixtureDir | Out-Null
+  Copy-Item -LiteralPath $agentBuildPath -Destination (Join-Path $runtimeFixtureDir "llama-cli.exe")
+  Set-Content -Path (Join-Path $runtimeFixtureDir "cudart64_11.dll") -Value "uat cuda runtime fixture" -NoNewline -Encoding ASCII
+  Compress-Archive -Path (Join-Path $runtimeFixtureDir "*") -DestinationPath $runtimeAssetPath -Force
 
   $checksum = (Get-FileHash -Algorithm SHA256 -Path $assetPath).Hash.ToLowerInvariant()
   Set-Content -Path "$assetPath.sha256" -Value "$checksum  $assetName`n" -NoNewline -Encoding ASCII
+  $agentChecksum = (Get-FileHash -Algorithm SHA256 -Path $agentAssetPath).Hash.ToLowerInvariant()
+  Set-Content -Path "$agentAssetPath.sha256" -Value "$agentChecksum  $agentAssetName`n" -NoNewline -Encoding ASCII
   $runtimeChecksum = (Get-FileHash -Algorithm SHA256 -Path $runtimeAssetPath).Hash.ToLowerInvariant()
   Set-Content -Path "$runtimeAssetPath.sha256" -Value "$runtimeChecksum  $runtimeAssetName`n" -NoNewline -Encoding ASCII
+  $runtimeExeChecksum = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $runtimeFixtureDir "llama-cli.exe")).Hash.ToLowerInvariant()
   @{
     artifact_kind = "release-binary"
     binary_name = $assetName
     checksum_sha256 = $checksum
+    assets = @(
+      @{
+        name = $agentAssetName
+        install_as = "opengpu-node-agent.exe"
+        kind = "node-agent-binary"
+        checksum_sha256 = $agentChecksum
+      }
+    )
     runtime_assets = @(
       @{
         name = $runtimeAssetName
-        install_as = "llama-cli.exe"
-        kind = "llama-cpp-cuda-runtime"
+        install_as = "runtimes/llama"
+        kind = "llama-cpp-cuda-runtime-bundle"
         checksum_sha256 = $runtimeChecksum
       }
     )
@@ -85,12 +101,20 @@ try {
   } | Out-Null
 
   $installedExe = Join-Path $installDir "opengpu.exe"
-  $installedRuntime = Join-Path $installDir "llama-cli.exe"
+  $agentInstallPath = Join-Path $installDir "opengpu-node-agent.exe"
+  $installedRuntime = Join-Path $opengpuHome "runtimes\llama\llama-cli.exe"
+  $installedRuntimeDll = Join-Path $opengpuHome "runtimes\llama\cudart64_11.dll"
   if (-not (Test-Path -LiteralPath $installedExe)) {
     throw "install.ps1 did not install opengpu.exe"
   }
+  if (-not (Test-Path -LiteralPath $agentInstallPath)) {
+    throw "install.ps1 did not install opengpu-node-agent.exe"
+  }
   if (-not (Test-Path -LiteralPath $installedRuntime)) {
     throw "install.ps1 did not install llama-cli.exe"
+  }
+  if (-not (Test-Path -LiteralPath $installedRuntimeDll)) {
+    throw "install.ps1 did not extract CUDA runtime DLLs"
   }
 
   $trustedPath = Join-Path $opengpuHome "trusted-runtime-paths.json"
@@ -101,8 +125,8 @@ try {
   if ($trusted.llama_cli.path -ne ([System.IO.Path]::GetFullPath($installedRuntime))) {
     throw "trusted runtime path does not point at installed llama-cli.exe"
   }
-  if ($trusted.llama_cli.sha256 -ne $runtimeChecksum) {
-    throw "trusted runtime checksum does not match staged runtime asset"
+  if ($trusted.llama_cli.sha256 -ne $runtimeExeChecksum) {
+    throw "trusted runtime checksum does not match extracted llama-cli.exe"
   }
 
   $modelDir = Join-Path $opengpuHome "models"
