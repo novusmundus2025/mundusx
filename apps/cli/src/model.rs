@@ -1,8 +1,9 @@
 use crate::config::{config_dir, Config};
 use crate::model_catalog::{lookup_model, ModelOption};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -461,41 +462,27 @@ fn download_model_from_option(
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
-    if let Ok(output) = Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(path)
-        .output()
-    {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            let digest = raw.split_whitespace().next().unwrap_or("").trim();
-            if digest.eq_ignore_ascii_case(expected) {
-                return Ok(());
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("checksum mismatch for {}", path.display()),
-            ));
+    let expected = expected.trim();
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
         }
+        hasher.update(&buffer[..read]);
     }
 
-    if let Ok(output) = Command::new("sha256sum").arg(path).output() {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            let digest = raw.split_whitespace().next().unwrap_or("").trim();
-            if digest.eq_ignore_ascii_case(expected) {
-                return Ok(());
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("checksum mismatch for {}", path.display()),
-            ));
-        }
+    let digest = format!("{:x}", hasher.finalize());
+    if digest.eq_ignore_ascii_case(expected) {
+        return Ok(());
     }
 
     Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "could not verify checksum: shasum or sha256sum not available",
+        io::ErrorKind::InvalidData,
+        format!("checksum mismatch for {}", path.display()),
     ))
 }
 
@@ -804,6 +791,39 @@ mod tests {
         assert!(dest.exists());
         assert_eq!(fs::read(&dest).expect("dest"), b"model-bytes");
 
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn verifies_sha256_without_external_tools() {
+        let (_config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let path = temp_dir.join("checksum.gguf");
+        fs::write(&path, b"model").expect("model");
+
+        verify_sha256(
+            &path,
+            "9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4",
+        )
+        .expect("checksum should verify");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_sha256_mismatch_without_external_tools() {
+        let (_config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let path = temp_dir.join("checksum-mismatch.gguf");
+        fs::write(&path, b"model").expect("model");
+
+        let error = verify_sha256(
+            &path,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect_err("checksum should fail");
+
+        assert!(error.to_string().contains("checksum mismatch"));
         let _ = fs::remove_dir_all(&temp_dir);
     }
 

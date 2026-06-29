@@ -2351,7 +2351,7 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
             println!("     url: {}", option.source_url);
         }
         println!();
-        println!("Use ↑/↓ and Enter — Ctrl-C cancels");
+        println!("Use ↑/↓ and Enter, or press a number — Ctrl-C cancels");
         let _ = io::stdout().flush();
     };
 
@@ -2375,6 +2375,17 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
                         selected += 1;
                     }
                     render(selected);
+                }
+                KeyCode::Char(value) if value.is_ascii_digit() => {
+                    if let Some(index) = value
+                        .to_digit(10)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .and_then(|value| value.checked_sub(1))
+                    {
+                        if index < options.len() {
+                            break index;
+                        }
+                    }
                 }
                 KeyCode::Enter => break selected,
                 KeyCode::Esc => break selected,
