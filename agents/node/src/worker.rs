@@ -393,6 +393,25 @@ fn probe_llama_cli_devices() -> Result<String, String> {
     Ok(stdout)
 }
 
+fn probe_llama_cli_available() -> Result<(), String> {
+    let llama_cli = trusted_runtime_executable("llama-cli")?;
+    let output = Command::new(&llama_cli)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("failed to launch llama-cli: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "llama-cli --version exited {} — {}",
+            output.status.code().unwrap_or(-1),
+            stderr.lines().next().unwrap_or("no stderr")
+        ));
+    }
+
+    Ok(())
+}
+
 fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
     let mut best: Option<(String, u32)> = None;
 
@@ -615,8 +634,12 @@ pub fn probe_worker_health(
         Err(error) => notes.push(format!("model cache missing: {error}")),
     }
 
-    if backend != Backend::Cuda {
-        match probe_llama_cli_devices() {
+    match backend {
+        Backend::Cuda => match probe_llama_cli_available() {
+            Ok(()) => llama_cli_available = true,
+            Err(error) => notes.push(error),
+        },
+        _ => match probe_llama_cli_devices() {
             Ok(stdout) => {
                 llama_cli_available = true;
                 blas_device_available = stdout.lines().any(|line| line.contains("BLAS"));
@@ -625,7 +648,7 @@ pub fn probe_worker_health(
                 }
             }
             Err(error) => notes.push(error),
-        }
+        },
     }
 
     if backend == Backend::Cuda {
@@ -638,7 +661,10 @@ pub fn probe_worker_health(
     }
 
     let healthy = if backend == Backend::Cuda {
-        cuda.device_available && cuda.driver_available
+        model_path.is_some()
+            && llama_cli_available
+            && cuda.device_available
+            && cuda.driver_available
     } else {
         model_path.is_some() && llama_cli_available && blas_device_available
     };
@@ -965,7 +991,10 @@ mod tests {
         let previous_home = env::var_os("OPENGPU_HOME");
         let previous_paths = env::var_os("OPENGPU_TRUSTED_RUNTIME_PATHS");
         env::set_var("OPENGPU_HOME", &temp_dir);
-        env::remove_var("OPENGPU_TRUSTED_RUNTIME_PATHS");
+        env::set_var(
+            "OPENGPU_TRUSTED_RUNTIME_PATHS",
+            temp_dir.join("trusted-runtime-paths.json"),
+        );
 
         test(&temp_dir);
 
@@ -1088,6 +1117,40 @@ mod tests {
             let error = response.error.expect("missing llama-cli error");
             assert!(error.contains("missing llama-cli"));
             assert!(!error.contains("Mac M-only worker"));
+        });
+    }
+
+    #[test]
+    fn cuda_health_requires_llama_runtime_before_advertising_local_support() {
+        with_temp_runtime_home(|home| {
+            let model_dir = home.join("models");
+            let model_cache = model_dir.join("qwen");
+            fs::create_dir_all(&model_cache).expect("model dir");
+            fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: home.join("missing-llama-cli").display().to_string(),
+                        sha256: None,
+                    }),
+                    nvidia_smi: None,
+                },
+            );
+
+            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::Cuda);
+
+            assert!(!health.healthy);
+            assert!(!health.llama_cli_available);
+            assert_eq!(
+                health.model_path.as_deref(),
+                Some(model_cache.join("model.gguf").to_str().unwrap())
+            );
+            assert!(health.supported_runtime_modes.is_empty());
+            assert!(health
+                .notes
+                .iter()
+                .any(|note| note.contains("missing llama-cli")));
         });
     }
 
