@@ -33,7 +33,7 @@ use model_catalog::{
     selectable_catalog_options_for, selectable_options_for, selection_for, ModelOption,
 };
 
-const PUBLIC_CONTROL_PLANE_URL: &str = "https://api.mundusx.ai";
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -3322,8 +3322,8 @@ mod tests {
     #[test]
     fn control_plane_endpoint_accepts_https_and_local_http() {
         assert_eq!(
-            control_plane_endpoint("https://api.mundusx.ai", "/v1/jobs").as_deref(),
-            Ok("https://api.mundusx.ai/v1/jobs")
+            control_plane_endpoint("https://uat.mundusx.ai", "/v1/jobs").as_deref(),
+            Ok("https://uat.mundusx.ai/v1/jobs")
         );
         assert_eq!(
             control_plane_endpoint("http://127.0.0.1:8787/", "/v1/jobs/job_123").as_deref(),
@@ -3333,9 +3333,9 @@ mod tests {
 
     #[test]
     fn control_plane_endpoint_rejects_invalid_urls_and_paths() {
-        assert!(control_plane_endpoint("api.mundusx.ai", "/v1/jobs").is_err());
-        assert!(control_plane_endpoint("ftp://api.mundusx.ai", "/v1/jobs").is_err());
-        assert!(control_plane_endpoint("https://api.mundusx.ai", "v1/jobs").is_err());
+        assert!(control_plane_endpoint("uat.mundusx.ai", "/v1/jobs").is_err());
+        assert!(control_plane_endpoint("ftp://uat.mundusx.ai", "/v1/jobs").is_err());
+        assert!(control_plane_endpoint("https://uat.mundusx.ai", "v1/jobs").is_err());
     }
 
     #[test]

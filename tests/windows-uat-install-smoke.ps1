@@ -142,7 +142,7 @@ try {
     paused = $false
     backend_preference = "auto"
     contribution_percent = 0
-    control_plane_url = "https://api.mundusx.ai"
+    control_plane_url = "https://uat.mundusx.ai"
     active_model = "uat-local-fixture"
     models = @("uat-local-fixture")
     model_dir = $modelDir

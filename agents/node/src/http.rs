@@ -209,9 +209,9 @@ mod tests {
 
     #[test]
     fn control_plane_endpoint_accepts_https_and_local_http() {
-        let hosted = control_plane_endpoint("https://api.mundusx.ai", "/v1/register")
+        let hosted = control_plane_endpoint("https://uat.mundusx.ai", "/v1/register")
             .expect("hosted endpoint");
-        assert_eq!(hosted.url, "https://api.mundusx.ai/v1/register");
+        assert_eq!(hosted.url, "https://uat.mundusx.ai/v1/register");
         assert_eq!(hosted.path, "/v1/register");
 
         let local = control_plane_endpoint("http://127.0.0.1:8787/", "/v1/heartbeat")
@@ -222,9 +222,9 @@ mod tests {
 
     #[test]
     fn control_plane_endpoint_rejects_invalid_urls_and_paths() {
-        assert!(control_plane_endpoint("api.mundusx.ai", "/v1/register").is_err());
-        assert!(control_plane_endpoint("ftp://api.mundusx.ai", "/v1/register").is_err());
-        assert!(control_plane_endpoint("https://api.mundusx.ai", "v1/register").is_err());
+        assert!(control_plane_endpoint("uat.mundusx.ai", "/v1/register").is_err());
+        assert!(control_plane_endpoint("ftp://uat.mundusx.ai", "/v1/register").is_err());
+        assert!(control_plane_endpoint("https://uat.mundusx.ai", "v1/register").is_err());
     }
 
     #[test]
