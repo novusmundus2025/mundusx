@@ -47,6 +47,8 @@ the CLI runs the guided machine setup wizard:
    - `20%` light
    - `30%` balanced
    - `50%` strong
+   - `65%` high
+   - `80%` maximum
 5. Asks which model this node should run:
    - lighter safe catalog model
    - recommended safe catalog model
@@ -97,6 +99,8 @@ the CLI:
    - `20%` light
    - `30%` balanced
    - `50%` strong
+   - `65%` high
+   - `80%` maximum
    - use the arrow keys and press Enter to confirm
    - press `Ctrl-C` to cancel the cap selector cleanly
    - scripted or non-interactive runs still print the `opengpu cap` hint instead of choosing silently
