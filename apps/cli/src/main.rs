@@ -1940,12 +1940,13 @@ fn resolve_install_control_plane_url(
 }
 
 fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
-    const OPTIONS: &[(u8, &str)] = &[
-        (20, "light"),
-        (30, "balanced"),
-        (50, "strong"),
-        (65, "high"),
-        (80, "maximum"),
+    const OPTIONS: &[Option<(u8, &str)>] = &[
+        Some((20, "light")),
+        Some((30, "balanced")),
+        Some((50, "strong")),
+        Some((65, "high")),
+        Some((80, "maximum")),
+        None,
     ];
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -1953,9 +1954,12 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
         if io::stdin().read_to_string(&mut input).is_ok() {
             let choice = input.trim();
             const OPTIONS: [u8; 5] = [20, 30, 50, 65, 80];
-            if let Ok(value) = choice.parse::<usize>() {
-                if (1..=OPTIONS.len()).contains(&value) {
-                    return PromptOutcome::Selected(OPTIONS[value - 1]);
+            if let Ok(value) = choice.parse::<u16>() {
+                if (1..=OPTIONS.len() as u16).contains(&value) {
+                    return PromptOutcome::Selected(OPTIONS[value as usize - 1]);
+                }
+                if let Ok(percent) = normalize_contribution_percent(value) {
+                    return PromptOutcome::Selected(percent);
                 }
             }
         }
@@ -1964,7 +1968,11 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
 
     let mut selected = OPTIONS
         .iter()
-        .position(|(percent, _)| *percent == default_percent)
+        .position(|option| {
+            option
+                .map(|(percent, _)| percent == default_percent)
+                .unwrap_or(false)
+        })
         .unwrap_or(1);
 
     if enable_raw_mode().is_err() {
@@ -1975,9 +1983,12 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
         print!("\x1b[2J\x1b[H");
         println!("Contribution level");
         println!("-------------------");
-        for (index, (percent, label)) in OPTIONS.iter().enumerate() {
+        for (index, option) in OPTIONS.iter().enumerate() {
             let marker = if index == selected { ">>" } else { "  " };
-            println!("{marker} {percent:>2}% - {label}");
+            match option {
+                Some((percent, label)) => println!("{marker} {percent:>2}% - {label}"),
+                None => println!("{marker} custom - type exact percent (1-80)"),
+            }
         }
         println!();
         println!("Use ↑/↓ and Enter");
@@ -2004,7 +2015,21 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
                     }
                     render_menu(selected);
                 }
-                KeyCode::Enter => break Some(OPTIONS[selected].0),
+                KeyCode::Enter => match OPTIONS[selected] {
+                    Some((percent, _)) => break Some(percent),
+                    None => {
+                        let _ = disable_raw_mode();
+                        match read_custom_contribution_percent() {
+                            Some(value) => break Some(value),
+                            None => {
+                                if enable_raw_mode().is_err() {
+                                    break Some(default_percent);
+                                }
+                                render_menu(selected);
+                            }
+                        }
+                    }
+                },
                 KeyCode::Esc => break None,
                 _ => {}
             },
@@ -2020,10 +2045,36 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
     }
 }
 
-fn normalize_contribution_percent(percent: u8) -> Result<u8, String> {
-    match percent {
-        20 | 30 | 50 | 65 | 80 => Ok(percent),
-        _ => Err("supported community cap values are 20, 30, 50, 65, and 80".to_string()),
+fn read_custom_contribution_percent() -> Option<u8> {
+    loop {
+        print!("Custom contribution percent (1-80, blank to go back): ");
+        let _ = io::stdout().flush();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            eprintln!("failed to read contribution percent");
+            return None;
+        }
+        let value = input.trim();
+        if value.is_empty() {
+            return None;
+        }
+        match value.parse::<u16>() {
+            Ok(value) => match normalize_contribution_percent(value) {
+                Ok(value) => return Some(value),
+                Err(error) => println!("{error}"),
+            },
+            Err(_) => {
+                println!("contribution cap must be a whole number from 1 to 80");
+            }
+        }
+    }
+}
+
+fn normalize_contribution_percent(percent: u16) -> Result<u8, String> {
+    if (1..=80).contains(&percent) {
+        Ok(percent as u8)
+    } else {
+        Err("contribution cap must be between 1 and 80".to_string())
     }
 }
 
@@ -2053,7 +2104,7 @@ fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool
             "meaning: {}",
             contribution_semantics(resolved_backend(config))
         ),
-        "supported community caps: 20 / 30 / 50 / 65 / 80".to_string(),
+        "quick caps: 20 / 30 / 50 / 65 / 80; custom caps: 1-80".to_string(),
         "install page: localhost preview at http://127.0.0.1:3002/install".to_string(),
         "next step: run `opengpu start` after saving a cap".to_string(),
         format!(
@@ -2355,7 +2406,7 @@ fn run_install(
         resolve_install_control_plane_url(public, private, control_plane_url);
 
     let selected_cap = if let Some(value) = cap_percent {
-        match normalize_contribution_percent(value) {
+        match normalize_contribution_percent(u16::from(value)) {
             Ok(value) => Some(value),
             Err(error) => {
                 eprintln!("{error}");
@@ -2672,7 +2723,7 @@ fn main() {
                 config.contribution_percent = 0;
                 None
             } else if let Some(value) = percent {
-                let value = match normalize_contribution_percent(value) {
+                let value = match normalize_contribution_percent(u16::from(value)) {
                     Ok(value) => value,
                     Err(error) => {
                         eprintln!("{error}");
@@ -3428,12 +3479,14 @@ mod tests {
 
     #[test]
     fn contribution_percent_rejects_dedicated_machine_caps() {
+        assert!(super::normalize_contribution_percent(0).is_err());
+        assert_eq!(super::normalize_contribution_percent(1), Ok(1));
         assert_eq!(super::normalize_contribution_percent(20), Ok(20));
         assert_eq!(super::normalize_contribution_percent(30), Ok(30));
         assert_eq!(super::normalize_contribution_percent(50), Ok(50));
         assert_eq!(super::normalize_contribution_percent(65), Ok(65));
+        assert_eq!(super::normalize_contribution_percent(75), Ok(75));
         assert_eq!(super::normalize_contribution_percent(80), Ok(80));
-        assert!(super::normalize_contribution_percent(75).is_err());
         assert!(super::normalize_contribution_percent(81).is_err());
     }
 
