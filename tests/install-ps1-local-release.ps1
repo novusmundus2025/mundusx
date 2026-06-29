@@ -7,9 +7,13 @@ $installDir = Join-Path $fixtureRoot "bin"
 $assetName = "opengpu-x86_64-pc-windows-msvc.exe"
 $assetPath = Join-Path $releaseDir $assetName
 $checksumPath = "$assetPath.sha256"
-$runtimeAssetName = "llama-cli-x86_64-pc-windows-msvc-cuda.exe"
+$agentAssetName = "opengpu-node-agent-x86_64-pc-windows-msvc.exe"
+$agentAssetPath = Join-Path $releaseDir $agentAssetName
+$agentChecksumPath = "$agentAssetPath.sha256"
+$runtimeAssetName = "llama-runtime-x86_64-pc-windows-msvc-cuda.zip"
 $runtimeAssetPath = Join-Path $releaseDir $runtimeAssetName
 $runtimeChecksumPath = "$runtimeAssetPath.sha256"
+$runtimeFixtureDir = Join-Path $fixtureRoot "runtime-fixture"
 $opengpuHome = Join-Path $fixtureRoot "home"
 $manifestPath = Join-Path $releaseDir "release-manifest.json"
 $signaturePath = Join-Path $releaseDir "release-manifest.json.sig"
@@ -22,18 +26,33 @@ try {
   Set-Content -Path $assetPath -Value "fake opengpu windows binary" -NoNewline -Encoding ASCII
   $checksum = (Get-FileHash -Algorithm SHA256 -Path $assetPath).Hash.ToLowerInvariant()
   Set-Content -Path $checksumPath -Value "$checksum  $assetName`n" -NoNewline -Encoding ASCII
-  Set-Content -Path $runtimeAssetPath -Value "fake cuda llama runtime" -NoNewline -Encoding ASCII
+  Set-Content -Path $agentAssetPath -Value "fake node agent windows binary" -NoNewline -Encoding ASCII
+  $agentChecksum = (Get-FileHash -Algorithm SHA256 -Path $agentAssetPath).Hash.ToLowerInvariant()
+  Set-Content -Path $agentChecksumPath -Value "$agentChecksum  $agentAssetName`n" -NoNewline -Encoding ASCII
+  New-Item -ItemType Directory -Force -Path $runtimeFixtureDir | Out-Null
+  Set-Content -Path (Join-Path $runtimeFixtureDir "llama-cli.exe") -Value "fake cuda llama runtime" -NoNewline -Encoding ASCII
+  Set-Content -Path (Join-Path $runtimeFixtureDir "cudart64_11.dll") -Value "fake cuda runtime dll" -NoNewline -Encoding ASCII
+  Compress-Archive -Path (Join-Path $runtimeFixtureDir "*") -DestinationPath $runtimeAssetPath -Force
+  $runtimeExeChecksum = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $runtimeFixtureDir "llama-cli.exe")).Hash.ToLowerInvariant()
   $runtimeChecksum = (Get-FileHash -Algorithm SHA256 -Path $runtimeAssetPath).Hash.ToLowerInvariant()
   Set-Content -Path $runtimeChecksumPath -Value "$runtimeChecksum  $runtimeAssetName`n" -NoNewline -Encoding ASCII
   @{
     artifact_kind = "release-binary"
     binary_name = $assetName
     checksum_sha256 = $checksum
+    assets = @(
+      @{
+        name = $agentAssetName
+        install_as = "opengpu-node-agent.exe"
+        kind = "node-agent-binary"
+        checksum_sha256 = $agentChecksum
+      }
+    )
     runtime_assets = @(
       @{
         name = $runtimeAssetName
-        install_as = "llama-cli.exe"
-        kind = "llama-cpp-cuda-runtime"
+        install_as = "runtimes/llama"
+        kind = "llama-cpp-cuda-runtime-bundle"
         checksum_sha256 = $runtimeChecksum
       }
     )
@@ -56,12 +75,20 @@ try {
   }
 
   $installedExe = Join-Path $installDir "opengpu.exe"
-  $installedRuntime = Join-Path $installDir "llama-cli.exe"
+  $installedAgent = Join-Path $installDir "opengpu-node-agent.exe"
+  $installedRuntime = Join-Path $opengpuHome "runtimes\llama\llama-cli.exe"
+  $installedRuntimeDll = Join-Path $opengpuHome "runtimes\llama\cudart64_11.dll"
   if (-not (Test-Path -LiteralPath $installedExe)) {
     throw "expected installer to write opengpu.exe"
   }
+  if (-not (Test-Path -LiteralPath $installedAgent)) {
+    throw "expected installer to write opengpu-node-agent.exe"
+  }
   if (-not (Test-Path -LiteralPath $installedRuntime)) {
     throw "expected installer to write llama-cli.exe"
+  }
+  if (-not (Test-Path -LiteralPath $installedRuntimeDll)) {
+    throw "expected installer to extract CUDA runtime DLLs"
   }
 
   if ((Get-Content -Path $installedExe -Raw) -ne "fake opengpu windows binary") {
@@ -69,6 +96,9 @@ try {
   }
   if ((Get-Content -Path $installedRuntime -Raw) -ne "fake cuda llama runtime") {
     throw "installed runtime contents did not match release asset"
+  }
+  if ((Get-Content -Path $installedAgent -Raw) -ne "fake node agent windows binary") {
+    throw "installed node agent contents did not match release asset"
   }
 
   $trustedPath = Join-Path $opengpuHome "trusted-runtime-paths.json"
@@ -79,8 +109,8 @@ try {
   if ($trusted.llama_cli.path -ne ([System.IO.Path]::GetFullPath($installedRuntime))) {
     throw "trusted runtime path did not point at installed llama-cli.exe"
   }
-  if ($trusted.llama_cli.sha256 -ne $runtimeChecksum) {
-    throw "trusted runtime checksum did not match release asset"
+  if ($trusted.llama_cli.sha256 -ne $runtimeExeChecksum) {
+    throw "trusted runtime checksum did not match extracted llama-cli.exe"
   }
 
   $joinedOutput = $output -join "`n"
@@ -89,6 +119,9 @@ try {
   }
   if ($joinedOutput -notmatch [regex]::Escape($runtimeAssetName)) {
     throw "installer output did not mention expected CUDA runtime asset name"
+  }
+  if ($joinedOutput -notmatch [regex]::Escape($agentAssetName)) {
+    throw "installer output did not mention expected node agent asset name"
   }
   if ($joinedOutput -notmatch "Verifying checksum") {
     throw "installer did not verify checksum"

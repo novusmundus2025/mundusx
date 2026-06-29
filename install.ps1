@@ -153,6 +153,32 @@ function Find-ManifestRuntimeAsset {
   return $null
 }
 
+function Find-ManifestReleaseAsset {
+  param(
+    [object]$Manifest,
+    [string]$Name
+  )
+
+  if ($Manifest -and $Manifest.binary_name -eq $Name) {
+    return [pscustomobject]@{
+      name = $Manifest.binary_name
+      checksum_sha256 = $Manifest.checksum_sha256
+    }
+  }
+
+  if (-not $Manifest -or -not $Manifest.assets) {
+    return $null
+  }
+
+  foreach ($asset in @($Manifest.assets)) {
+    if ($asset.name -eq $Name) {
+      return $asset
+    }
+  }
+
+  return $null
+}
+
 function Save-TrustedRuntimePath {
   param(
     [string]$RuntimeName,
@@ -199,6 +225,38 @@ function Copy-ReleaseFile {
   Invoke-WebRequest -Uri $Source -OutFile $Destination
 }
 
+function Verify-ReleaseAsset {
+  param(
+    [string]$ReleaseBase,
+    [string]$AssetName,
+    [string]$Destination,
+    [object]$ManifestAsset
+  )
+
+  if (-not $ManifestAsset -or -not $ManifestAsset.checksum_sha256) {
+    if (-not $AllowUnsignedLocalPreview) {
+      throw "strict installer verification failed: release asset $AssetName is missing from release manifest"
+    }
+    Write-Warning "dev-only local preview override: release asset $AssetName is missing from release manifest, continuing with checksum verification"
+  }
+
+  $checksumDestination = "$Destination.sha256"
+  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName" -Destination $Destination
+  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName.sha256" -Destination $checksumDestination
+  $expected = Read-ChecksumHash -Path $checksumDestination
+  if ($ManifestAsset -and $ManifestAsset.checksum_sha256) {
+    $manifestChecksum = $ManifestAsset.checksum_sha256.ToString().ToUpperInvariant()
+    if ($manifestChecksum -ne $expected) {
+      throw "release manifest checksum does not match $AssetName.sha256"
+    }
+  }
+  $actual = (Get-FileHash -Algorithm SHA256 -Path $Destination).Hash.ToUpperInvariant()
+  if ($expected -ne $actual) {
+    throw "checksum mismatch for $AssetName"
+  }
+  return $expected
+}
+
 if ($Help) {
   Show-Usage
   exit 0
@@ -208,8 +266,9 @@ $target = Get-WindowsTarget
 $gpu = Find-NvidiaGpu
 $profile = if ($gpu) { "windows-x86_64-cuda" } else { "windows-x86_64-generic" }
 $assetName = "opengpu-$target.exe"
+$agentAssetName = "opengpu-node-agent-$target.exe"
 $cudaRuntimeRequired = [bool]($gpu -or $InstallCudaRuntime)
-$cudaRuntimeAssetName = "llama-cli-$target-cuda.exe"
+$cudaRuntimeAssetName = "llama-runtime-$target-cuda.zip"
 $releaseBase = $ReleaseBaseUrl.TrimEnd("/")
 $releaseUrl = "$releaseBase/$assetName"
 $checksumUrl = "$releaseUrl.sha256"
@@ -220,12 +279,15 @@ $tempExe = Join-Path $tempDir $assetName
 $tempChecksum = Join-Path $tempDir "$assetName.sha256"
 $tempManifest = Join-Path $tempDir "release-manifest.json"
 $tempSignature = Join-Path $tempDir "release-manifest.json.sig"
+$tempAgent = Join-Path $tempDir $agentAssetName
 $tempCudaRuntime = Join-Path $tempDir $cudaRuntimeAssetName
-$tempCudaRuntimeChecksum = Join-Path $tempDir "$cudaRuntimeAssetName.sha256"
 $finalExe = Join-Path $InstallDir "opengpu.exe"
-$finalCudaRuntime = Join-Path $InstallDir "llama-cli.exe"
+$finalAgent = Join-Path $InstallDir "opengpu-node-agent.exe"
+$runtimeInstallDir = Join-Path (Get-OpenGpuHome) "runtimes\llama"
+$finalCudaRuntime = Join-Path $runtimeInstallDir "llama-cli.exe"
 $manifest = $null
 $trustedRuntimePath = $null
+$agentExpected = $null
 $runtimeExpected = $null
 
 Write-Output "MundusX Windows installer"
@@ -235,6 +297,7 @@ Write-Output "  gpu: $(if ($gpu) { $gpu.Name } else { 'none detected' })"
 Write-Output "  cuda vram: $(if ($gpu -and $gpu.VramMb) { "$($gpu.VramMb) MB" } else { 'none detected' })"
 Write-Output "  source: $releaseBase"
 Write-Output "  asset: $assetName"
+Write-Output "  node agent: $agentAssetName"
 Write-Output "  cuda runtime: $(if ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { 'not required' })"
 Write-Output "  install: $InstallDir"
 Write-Output "  verification: $(if ($AllowUnsignedLocalPreview) { 'local preview override' } else { 'strict enterprise' })"
@@ -294,30 +357,34 @@ try {
   }
   if ($cudaRuntimeRequired) {
     $runtimeManifestAsset = Find-ManifestRuntimeAsset -Manifest $manifest -Name $cudaRuntimeAssetName
-    if (-not $runtimeManifestAsset -or -not $runtimeManifestAsset.checksum_sha256) {
-      throw "strict installer verification failed: CUDA runtime asset $cudaRuntimeAssetName is missing from release manifest"
-    }
-
     Write-Output "Fetching CUDA llama runtime..."
-    Copy-ReleaseFile -Source "$releaseBase/$cudaRuntimeAssetName" -Destination $tempCudaRuntime
-    Copy-ReleaseFile -Source "$releaseBase/$cudaRuntimeAssetName.sha256" -Destination $tempCudaRuntimeChecksum
     Write-Output "Verifying CUDA runtime checksum..."
-    $runtimeExpected = Read-ChecksumHash -Path $tempCudaRuntimeChecksum
-    $runtimeManifestChecksum = $runtimeManifestAsset.checksum_sha256.ToString().ToUpperInvariant()
-    if ($runtimeManifestChecksum -ne $runtimeExpected) {
-      throw "release manifest checksum does not match $cudaRuntimeAssetName.sha256"
-    }
-    $runtimeActual = (Get-FileHash -Algorithm SHA256 -Path $tempCudaRuntime).Hash.ToUpperInvariant()
-    if ($runtimeExpected -ne $runtimeActual) {
-      throw "checksum mismatch for $cudaRuntimeAssetName"
-    }
+    $runtimeExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $cudaRuntimeAssetName -Destination $tempCudaRuntime -ManifestAsset $runtimeManifestAsset
   }
 
+  $agentManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $agentAssetName
+  Write-Output "Fetching node agent..."
+  Write-Output "Verifying node agent checksum..."
+  $agentExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $agentAssetName -Destination $tempAgent -ManifestAsset $agentManifestAsset
+
   Move-Item -Force -Path $tempExe -Destination $finalExe
+  Move-Item -Force -Path $tempAgent -Destination $finalAgent
 
   if ($cudaRuntimeRequired) {
-    Move-Item -Force -Path $tempCudaRuntime -Destination $finalCudaRuntime
-    $trustedRuntimePath = Save-TrustedRuntimePath -RuntimeName "llama_cli" -RuntimePath $finalCudaRuntime -Checksum $runtimeExpected
+    if (Test-Path -LiteralPath $runtimeInstallDir) {
+      Remove-Item -Recurse -Force -LiteralPath $runtimeInstallDir
+    }
+    New-Item -ItemType Directory -Force -Path $runtimeInstallDir | Out-Null
+    Expand-Archive -LiteralPath $tempCudaRuntime -DestinationPath $runtimeInstallDir -Force
+    if (-not (Test-Path -LiteralPath $finalCudaRuntime)) {
+      $foundRuntime = Get-ChildItem -Path $runtimeInstallDir -Recurse -Filter "llama-cli.exe" | Select-Object -First 1
+      if (-not $foundRuntime) {
+        throw "CUDA runtime bundle did not contain llama-cli.exe"
+      }
+      Copy-Item -LiteralPath $foundRuntime.FullName -Destination $finalCudaRuntime
+    }
+    $runtimeExeChecksum = (Get-FileHash -Algorithm SHA256 -Path $finalCudaRuntime).Hash.ToUpperInvariant()
+    $trustedRuntimePath = Save-TrustedRuntimePath -RuntimeName "llama_cli" -RuntimePath $finalCudaRuntime -Checksum $runtimeExeChecksum
   }
 } finally {
   Remove-Item -Recurse -Force -Path $tempDir -ErrorAction SilentlyContinue
@@ -325,8 +392,10 @@ try {
 
 Write-Output ""
 Write-Output "Installed opengpu to $finalExe"
+Write-Output "Installed node agent to $finalAgent"
 if ($cudaRuntimeRequired) {
-  Write-Output "Installed CUDA llama runtime to $finalCudaRuntime"
+  Write-Output "Installed CUDA llama runtime bundle to $runtimeInstallDir"
+  Write-Output "Runtime bundle checksum: $($runtimeExpected.ToLowerInvariant())"
   Write-Output "Pinned trusted runtime path in $trustedRuntimePath"
 }
 

@@ -18,12 +18,14 @@ A production release source must publish all of these artifacts together:
 
 - `opengpu-x86_64-pc-windows-msvc.exe`
 - `opengpu-x86_64-pc-windows-msvc.exe.sha256`
-- `llama-cli-x86_64-pc-windows-msvc-cuda.exe`
-- `llama-cli-x86_64-pc-windows-msvc-cuda.exe.sha256`
+- `opengpu-node-agent-x86_64-pc-windows-msvc.exe`
+- `opengpu-node-agent-x86_64-pc-windows-msvc.exe.sha256`
+- `llama-runtime-x86_64-pc-windows-msvc-cuda.zip`
+- `llama-runtime-x86_64-pc-windows-msvc-cuda.zip.sha256`
 - `release-manifest.json`
 - `release-manifest.json.sig`
 
-The bootstrapper must fail closed when the checksum, manifest, signature, expected artifact kind, expected binary name, expected checksum, CUDA runtime asset, or CUDA runtime checksum is missing or mismatched. The signed release manifest must include a `runtime_assets` entry for the Windows CUDA llama.cpp runtime before CUDA hosts are considered installable. `-AllowUnsignedLocalPreview` is reserved for unsigned localhost fixtures and must not be used for enterprise rollout, UAT against hosted releases, or production installs.
+The bootstrapper must fail closed when the checksum, manifest, signature, expected artifact kind, expected binary name, expected checksum, node-agent asset, CUDA runtime bundle, or CUDA runtime checksum is missing or mismatched. The signed release manifest must include an `assets` entry for the Windows node agent and a `runtime_assets` entry for the Windows CUDA llama.cpp runtime bundle before CUDA hosts are considered installable. `-AllowUnsignedLocalPreview` is reserved for unsigned localhost fixtures and must not be used for enterprise rollout, UAT against hosted releases, or production installs.
 
 ## Secret Storage
 
@@ -55,7 +57,7 @@ Windows worker and diagnostic paths must not depend on unqualified `PATH` lookup
 Minimum expectations:
 
 - Worker launch uses a stored absolute executable path rather than `llama-cli` or similar bare command names.
-- The Windows bootstrapper installs the signed CUDA runtime asset as `llama-cli.exe` and records its absolute path plus SHA-256 in `trusted-runtime-paths.json`.
+- The Windows bootstrapper installs the signed node agent, extracts the signed CUDA runtime bundle, and records the extracted `llama-cli.exe` absolute path plus SHA-256 in `trusted-runtime-paths.json`.
 - Diagnostics distinguish a missing runtime, an untrusted runtime, and a runtime execution failure.
 - Runtime path changes are detected and reported before the node advertises ready capability.
 - Publisher signature or hash validation should be used where practical for installed runtime tools.
