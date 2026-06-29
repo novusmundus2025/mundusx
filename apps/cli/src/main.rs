@@ -3190,10 +3190,12 @@ fn main() {
             json,
         } => {
             let config = current_config_or_default();
+            let default_model = active_model_name(&config);
+            let requested_model = model.as_deref().or(default_model.as_deref());
             match run_inference_local_first(
                 &config,
                 &prompt,
-                model.as_deref(),
+                requested_model,
                 backend,
                 max_tokens,
                 timeout,
@@ -3245,8 +3247,12 @@ fn main() {
                     backend,
                     max_tokens,
                     json,
-                } => submit_job(&config, &prompt, model.as_deref(), backend, max_tokens)
-                    .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
+                } => {
+                    let default_model = active_model_name(&config);
+                    let requested_model = model.as_deref().or(default_model.as_deref());
+                    submit_job(&config, &prompt, requested_model, backend, max_tokens)
+                }
+                .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
                 JobsCommands::Status { job_id, json } => get_job(&config, &job_id)
                     .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
                 JobsCommands::Wait {
@@ -3616,6 +3622,17 @@ mod tests {
             }
             _ => panic!("expected run command"),
         }
+    }
+
+    #[test]
+    fn omitted_request_model_uses_active_model() {
+        let mut config = Config::default();
+        config.active_model = Some("Qwen/Qwen2.5-0.5B-Instruct".to_string());
+
+        let default_model = super::active_model_name(&config);
+        let requested_model = None.or(default_model.as_deref());
+
+        assert_eq!(requested_model, Some("Qwen/Qwen2.5-0.5B-Instruct"));
     }
 
     #[test]
