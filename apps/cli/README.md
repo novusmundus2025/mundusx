@@ -29,6 +29,8 @@ opengpu status
 opengpu nodes
 opengpu exit
 opengpu doctor
+opengpu model use
+opengpu model add
 opengpu model import ./models/local-model.gguf --name local-model --backend cuda --vram-mb 4096
 opengpu jobs submit --model <model> --prompt <text>
 opengpu jobs status <job_id>
@@ -67,6 +69,7 @@ Startup flow:
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available
 - `opengpu exit` leaves contribution mode and stops the recorded background agent; `opengpu disconnect` remains available as the explicit alias
 - `opengpu status` shows the live local routing decision
+- `opengpu model use` and `opengpu model add` open the official model picker when no model name is passed
 - `opengpu model import` records contributor-supplied local GGUF files and reports whether they fit the selected backend and VRAM budget
 - `opengpu jobs submit/status/wait` uses the async control-plane job API. `wait` is a CLI polling helper; the server still returns quickly and does not hold the request open.
 - `scripts/no-auth-e2e-smoke.sh` verifies the local/UAT no-auth lifecycle: disabled operator auth on `/health`, signed node registration and heartbeat, no-auth job submit, node-agent claim and completion, and final CLI polling.

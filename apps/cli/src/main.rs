@@ -27,7 +27,9 @@ use model::{
     ensure_effective_model_dir, import_model, list_models, prune_models, remove_model, use_model,
     ImportModelOptions, ModelRecord,
 };
-use model_catalog::{selectable_options_for, selection_for, ModelOption};
+use model_catalog::{
+    selectable_catalog_options_for, selectable_options_for, selection_for, ModelOption,
+};
 
 const PUBLIC_CONTROL_PLANE_URL: &str = "https://api.mundusx.ai";
 
@@ -178,9 +180,9 @@ enum ModelCommands {
         json: bool,
     },
     /// Download or cache a model and mark it active
-    Use { name: String },
+    Use { name: Option<String> },
     /// Download or cache a model without switching to it
-    Add { name: String },
+    Add { name: Option<String> },
     /// Import an existing local model file and record compatibility metadata
     Import {
         path: String,
@@ -2280,6 +2282,117 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     }
 }
 
+fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        eprintln!(
+            "model name is required in non-interactive mode; pass `opengpu model {} <official-model-name>`",
+            if active { "use" } else { "add" }
+        );
+        std::process::exit(2);
+    }
+
+    let backend = resolved_backend(config);
+    let available_vram_mb = model_vram_budget_mb(config, backend);
+    let options = selectable_catalog_options_for(backend, available_vram_mb);
+
+    if options.is_empty() {
+        eprintln!("no official models fit this machine and contribution cap");
+        if backend == Backend::Cuda {
+            eprintln!("capHint: raise the cap with `opengpu cap` or check CUDA runtime health");
+        }
+        std::process::exit(1);
+    }
+
+    let mut selected = 0usize;
+
+    if enable_raw_mode().is_err() {
+        return options[0].clone();
+    }
+
+    let render = |selected: usize| {
+        print!("\x1b[2J\x1b[H");
+        println!(
+            "Choose official model to {}",
+            if active {
+                "download and activate"
+            } else {
+                "download"
+            }
+        );
+        println!("backend: {}", backend);
+        if let Some(budget) = available_vram_mb {
+            println!(
+                "model budget: {budget} MB VRAM ({}% contribution cap)",
+                config.contribution_percent
+            );
+        }
+        println!("----------------------------------");
+        for (i, option) in options.iter().enumerate() {
+            let marker = if i == selected { ">>" } else { "  " };
+            let estimated = option
+                .estimated_vram_mb
+                .map(|value| format!("{value} MB VRAM"))
+                .unwrap_or_else(|| "VRAM unknown".to_string());
+            let backends = if option.backend_compatibility.is_empty() {
+                "auto".to_string()
+            } else {
+                option
+                    .backend_compatibility
+                    .iter()
+                    .map(|backend| backend.as_str())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            };
+            println!("{marker} {}. {} [{}]", i + 1, option.label, option.name);
+            println!(
+                "     provider: {} | fit: ok | backends: {} | {}",
+                option.source_kind, backends, estimated
+            );
+            println!("     url: {}", option.source_url);
+        }
+        println!();
+        println!("Use ↑/↓ and Enter — Ctrl-C cancels");
+        let _ = io::stdout().flush();
+    };
+
+    render(selected);
+
+    let result = loop {
+        match read() {
+            Ok(Event::Key(key)) => match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = disable_raw_mode();
+                    println!();
+                    eprintln!("cancelled");
+                    std::process::exit(130);
+                }
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    render(selected);
+                }
+                KeyCode::Down => {
+                    if selected + 1 < options.len() {
+                        selected += 1;
+                    }
+                    render(selected);
+                }
+                KeyCode::Enter => break selected,
+                KeyCode::Esc => break selected,
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break selected,
+        }
+    };
+
+    let _ = disable_raw_mode();
+    options[result].clone()
+}
+
+fn model_name_for_command(config: &Config, name: Option<String>, active: bool) -> String {
+    name.unwrap_or_else(|| prompt_official_model_selection(config, active).name)
+}
+
 fn apply_model_choice(config: &mut Config, choice: ModelChoice, active: bool) {
     match choice {
         ModelChoice::Model(model) => {
@@ -2873,6 +2986,7 @@ fn main() {
                     print_model_inventory(&config, &models, json);
                 }
                 ModelCommands::Use { name } => {
+                    let name = model_name_for_command(&config, name, true);
                     let backend = resolved_backend(&config);
                     if let Err(error) = ensure_catalog_model_fits_machine(&name, backend, &config) {
                         eprintln!("{error}");
@@ -2895,6 +3009,7 @@ fn main() {
                     );
                 }
                 ModelCommands::Add { name } => {
+                    let name = model_name_for_command(&config, name, false);
                     let backend = resolved_backend(&config);
                     if let Err(error) = ensure_catalog_model_fits_machine(&name, backend, &config) {
                         eprintln!("{error}");
@@ -3346,6 +3461,50 @@ mod tests {
                 assert!(activate);
             }
             _ => panic!("expected model import command"),
+        }
+    }
+
+    #[test]
+    fn model_use_and_add_allow_picker_without_name() {
+        let use_cli = Cli::try_parse_from(["opengpu", "model", "use"])
+            .expect("model use should allow picker");
+        assert!(matches!(
+            use_cli.command,
+            Commands::Model {
+                command: super::ModelCommands::Use { name: None }
+            }
+        ));
+
+        let add_cli = Cli::try_parse_from(["opengpu", "model", "add"])
+            .expect("model add should allow picker");
+        assert!(matches!(
+            add_cli.command,
+            Commands::Model {
+                command: super::ModelCommands::Add { name: None }
+            }
+        ));
+    }
+
+    #[test]
+    fn model_use_and_add_keep_direct_name_input() {
+        let use_cli =
+            Cli::try_parse_from(["opengpu", "model", "use", "Qwen/Qwen2.5-0.5B-Instruct"])
+                .expect("model use direct name should parse");
+        match use_cli.command {
+            Commands::Model {
+                command: super::ModelCommands::Use { name },
+            } => assert_eq!(name.as_deref(), Some("Qwen/Qwen2.5-0.5B-Instruct")),
+            _ => panic!("expected model use command"),
+        }
+
+        let add_cli =
+            Cli::try_parse_from(["opengpu", "model", "add", "Qwen/Qwen2.5-0.5B-Instruct"])
+                .expect("model add direct name should parse");
+        match add_cli.command {
+            Commands::Model {
+                command: super::ModelCommands::Add { name },
+            } => assert_eq!(name.as_deref(), Some("Qwen/Qwen2.5-0.5B-Instruct")),
+            _ => panic!("expected model add command"),
         }
     }
 

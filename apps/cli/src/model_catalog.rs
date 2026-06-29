@@ -142,12 +142,51 @@ pub fn selectable_options_for(
     options_for_machine(&catalog, backend, memory_gb, available_vram_mb)
 }
 
-pub fn lookup_model(name: &str) -> Option<ModelOption> {
-    let catalog = load_catalog().ok()?;
-    catalog
+fn unique_catalog_options(catalog: &ModelCatalog) -> Vec<ModelOption> {
+    let mut options = Vec::new();
+
+    for option in catalog
         .presets
         .iter()
         .flat_map(|preset| [preset.lighter.clone(), preset.recommended.clone()])
+    {
+        if options
+            .iter()
+            .any(|existing: &ModelOption| existing.name == option.name)
+        {
+            continue;
+        }
+        options.push(option);
+    }
+
+    options
+}
+
+pub fn selectable_catalog_options_for(
+    backend: Backend,
+    available_vram_mb: Option<u64>,
+) -> Vec<ModelOption> {
+    let catalog = load_catalog().unwrap_or_else(|_| fallback_catalog());
+    unique_catalog_options(&catalog)
+        .into_iter()
+        .filter(|option| option.supports_backend(backend))
+        .filter(|option| {
+            if backend != Backend::Cuda {
+                return true;
+            }
+
+            match (option.estimated_vram_mb, available_vram_mb) {
+                (Some(estimated), Some(available)) => estimated <= available,
+                _ => false,
+            }
+        })
+        .collect()
+}
+
+pub fn lookup_model(name: &str) -> Option<ModelOption> {
+    let catalog = load_catalog().ok()?;
+    unique_catalog_options(&catalog)
+        .into_iter()
         .find(|option| option.name == name)
 }
 
@@ -255,6 +294,28 @@ mod tests {
         assert!(!options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-1.5B-Instruct"));
+    }
+
+    #[test]
+    fn selectable_catalog_options_include_all_unique_fitting_official_models() {
+        let options = selectable_catalog_options_for(Backend::Cuda, Some(4096));
+
+        assert!(options
+            .iter()
+            .any(|option| option.name == "HuggingFaceTB/SmolLM2-135M-Instruct"));
+        assert!(options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-0.5B-Instruct"));
+        assert!(options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-1.5B-Instruct"));
+        assert_eq!(
+            options
+                .iter()
+                .filter(|option| option.name == "Qwen/Qwen2.5-0.5B-Instruct")
+                .count(),
+            1
+        );
     }
 
     #[test]
