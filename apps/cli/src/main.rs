@@ -15,6 +15,7 @@ use crossterm::style::Color;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use serde::Serialize;
 use std::env;
+use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -1312,6 +1313,14 @@ fn node_agent_pid_path() -> PathBuf {
     config::config_dir().join("node-agent.pid")
 }
 
+fn node_agent_log_path() -> PathBuf {
+    config::config_dir().join("node-agent.log")
+}
+
+fn node_agent_error_log_path() -> PathBuf {
+    config::config_dir().join("node-agent.err.log")
+}
+
 fn write_node_agent_pid(pid: u32) -> Result<(), String> {
     let path = node_agent_pid_path();
     if let Some(parent) = path.parent() {
@@ -1403,10 +1412,32 @@ fn launch_node_agent(debug: bool) -> Result<(), String> {
         return Err(format!("node agent exited with {status}"));
     }
 
+    let log_path = node_agent_log_path();
+    let error_log_path = node_agent_error_log_path();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create agent log directory: {error}"))?;
+    }
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("failed to open agent log `{}`: {error}", log_path.display()))?;
+    let stderr = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&error_log_path)
+        .map_err(|error| {
+            format!(
+                "failed to open agent error log `{}`: {error}",
+                error_log_path.display()
+            )
+        })?;
+
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
 
     #[cfg(windows)]
     {
@@ -1415,10 +1446,24 @@ fn launch_node_agent(debug: bool) -> Result<(), String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start node agent `{}`: {error}", agent.display()))?;
     let pid = child.id();
+
+    thread::sleep(Duration::from_millis(750));
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|error| format!("failed to inspect node agent `{}`: {error}", agent.display()))?
+    {
+        remove_node_agent_pid();
+        return Err(format!(
+            "node agent exited immediately with {status}; see `{}` and `{}`",
+            log_path.display(),
+            error_log_path.display()
+        ));
+    }
+
     if let Err(error) = write_node_agent_pid(pid) {
         let _ = stop_process_by_pid(pid);
         return Err(error);
@@ -1426,6 +1471,8 @@ fn launch_node_agent(debug: bool) -> Result<(), String> {
     println!("agent: started");
     println!("agentPid: {}", pid);
     println!("agentMode: background");
+    println!("agentLog: {}", log_path.display());
+    println!("agentErrorLog: {}", error_log_path.display());
     Ok(())
 }
 
