@@ -19,7 +19,7 @@ Those components should only be able to ask the local system to sign a request.
 
 - macOS: current implementation tries to store the machine secret in Keychain and falls back to a machine-local encrypted secret when keychain access is unavailable; in both cases the private key stays encrypted-at-rest in the local identity record so the app never reads raw private-key bytes
 - Windows: DPAPI-protected device identity storage, with TPM-backed or CNG / KSP-backed non-exportable keys as the future enterprise target
-- Linux: TPM / PKCS#11 / system keyring when available
+- Linux: Secret Service-backed encrypted identity storage when available, with a visible local encrypted fallback for constrained local/UAT hosts; TPM / PKCS#11 / kernel keyring remains the future stricter enterprise target
 
 The current macOS implementation keeps the private key encrypted-at-rest inside the local identity record and only exposes sign operations to the CLI and agent. The Rust CLI and agent persist public metadata plus the encrypted key blob and nonce, but they never persist raw private-key bytes. The secret used to decrypt the key is stored in the macOS Keychain when possible and otherwise derived locally as a fallback so signing continues to work in constrained environments.
 
@@ -29,7 +29,9 @@ The macOS environment policy is defined in [docs/macos-identity-policy.md](macos
 
 Windows now stores the Ed25519 private key as a DPAPI-protected blob in the local identity record. The CLI and node-agent keep `private_key_hex` empty, decrypt the protected blob only for local signing, and report `dpapi://mundusx/device-identity` as the trust path. Existing Windows identity files that still contain plaintext `private_key_hex` are rejected with re-enrollment guidance instead of being reused silently.
 
-The old plain file-backed prototype remains only for non-macOS and non-Windows development paths.
+Linux now stores the Ed25519 private key as an encrypted blob in the local identity record. The CLI and node-agent keep `private_key_hex` empty, use `secret-tool` / Secret Service for the decrypting machine secret when available, and report `secret-service://mundusx/device-identity` as the trust path. Hosts without Secret Service use `local-encrypted-fallback://mundusx/device-identity` so local and UAT smoke flows still work, but operators should treat that path as below enterprise target. Existing Linux identity files that still contain plaintext `private_key_hex` are rejected with re-enrollment guidance instead of being reused silently.
+
+The old plain file-backed prototype remains only for non-macOS, non-Linux, and non-Windows development paths.
 
 ## Lifecycle
 
@@ -105,13 +107,14 @@ Do not use it as proof of uniqueness or as a payout target.
 
 - macOS: the app-visible identity record omits raw private-key bytes, and the secret uses Keychain when available with a local encrypted fallback when it is not.
 - Windows: the app-visible identity record omits raw private-key bytes and uses DPAPI-protected key material for CLI and node-agent signing.
+- Linux: the app-visible identity record omits raw private-key bytes and uses Secret Service-backed encrypted key material when available, with a visible local encrypted fallback.
 - Other platforms: still use the file-backed prototype for development convenience.
 - The long-term design is still non-exportable OS-backed storage everywhere.
 - macOS fallback policy is explicit: `local-encrypted-fallback` is acceptable for local preview and UAT, visible as below enterprise target, and not the default production posture.
 
 ## Open Identity Follow-Ups
 
-- Linux protected device identity storage is tracked in [mundusx/mundusx#113](https://github.com/mundusx/mundusx/issues/113).
+- Linux stricter non-exportable signing through TPM, PKCS#11, or kernel keyring remains the future enterprise target beyond the current Secret Service encrypted path.
 - macOS non-exportable identity enforcement policy is documented in [docs/macos-identity-policy.md](macos-identity-policy.md).
 - Windows DPAPI storage is shipped, while TPM-backed or CNG / KSP-backed non-exportable signing remains the future enterprise target.
 

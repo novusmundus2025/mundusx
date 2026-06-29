@@ -34,7 +34,8 @@ Use this document as the single working list:
 - [x] macOS non-exportable identity enforcement policy
 - [x] Windows DPAPI-protected device identity and operator-token storage
 - [ ] Windows non-exportable key enforcement policy and implementation beyond DPAPI
-- [ ] Linux protected device identity storage
+- [x] Linux protected device identity storage
+- [ ] Linux non-exportable key enforcement policy beyond Secret Service fallback
 - [x] Verify the live Supabase restore path in the project again after any schema or secret changes
 
 ### Control Plane
@@ -74,6 +75,7 @@ The following major pieces are already in place and should stay marked complete:
 - Packaging checks on macOS and Linux release artifacts
 - Signed release binaries published from tags
 - Windows DPAPI-protected device identity and operator-token storage
+- Linux Secret Service-backed protected device identity storage
 
 ## Active Follow-Up Issues
 
@@ -81,7 +83,6 @@ The following major pieces are already in place and should stay marked complete:
 - Windows release runner and signing decision: [mundusx/mundusx#109](https://github.com/mundusx/mundusx/issues/109)
 - Homebrew channel publishing: [mundusx/mundusx#110](https://github.com/mundusx/mundusx/issues/110)
 - WinGet package publishing: [mundusx/mundusx#111](https://github.com/mundusx/mundusx/issues/111)
-- Linux protected identity storage: [mundusx/mundusx#113](https://github.com/mundusx/mundusx/issues/113)
 - macOS identity policy: [docs/macos-identity-policy.md](macos-identity-policy.md)
 
 ## Tracking Rule
