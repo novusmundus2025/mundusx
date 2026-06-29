@@ -1940,13 +1940,19 @@ fn resolve_install_control_plane_url(
 }
 
 fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
-    const OPTIONS: &[(u8, &str)] = &[(20, "light"), (30, "balanced"), (50, "strong")];
+    const OPTIONS: &[(u8, &str)] = &[
+        (20, "light"),
+        (30, "balanced"),
+        (50, "strong"),
+        (65, "high"),
+        (80, "maximum"),
+    ];
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let mut input = String::new();
         if io::stdin().read_to_string(&mut input).is_ok() {
             let choice = input.trim();
-            const OPTIONS: [u8; 3] = [20, 30, 50];
+            const OPTIONS: [u8; 5] = [20, 30, 50, 65, 80];
             if let Ok(value) = choice.parse::<usize>() {
                 if (1..=OPTIONS.len()).contains(&value) {
                     return PromptOutcome::Selected(OPTIONS[value - 1]);
@@ -2016,8 +2022,8 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
 
 fn normalize_contribution_percent(percent: u8) -> Result<u8, String> {
     match percent {
-        20 | 30 | 50 => Ok(percent),
-        _ => Err("supported community cap values are 20, 30, and 50".to_string()),
+        20 | 30 | 50 | 65 | 80 => Ok(percent),
+        _ => Err("supported community cap values are 20, 30, 50, 65, and 80".to_string()),
     }
 }
 
@@ -2026,6 +2032,8 @@ fn cap_label(percent: u8) -> &'static str {
         20 => "light",
         30 => "balanced",
         50 => "strong",
+        65 => "high",
+        80 => "maximum",
         _ => "custom",
     }
 }
@@ -2045,7 +2053,7 @@ fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool
             "meaning: {}",
             contribution_semantics(resolved_backend(config))
         ),
-        "supported community caps: 20 / 30 / 50".to_string(),
+        "supported community caps: 20 / 30 / 50 / 65 / 80".to_string(),
         "install page: localhost preview at http://127.0.0.1:3002/install".to_string(),
         "next step: run `opengpu start` after saving a cap".to_string(),
         format!(
@@ -3421,9 +3429,12 @@ mod tests {
     #[test]
     fn contribution_percent_rejects_dedicated_machine_caps() {
         assert_eq!(super::normalize_contribution_percent(20), Ok(20));
+        assert_eq!(super::normalize_contribution_percent(30), Ok(30));
         assert_eq!(super::normalize_contribution_percent(50), Ok(50));
+        assert_eq!(super::normalize_contribution_percent(65), Ok(65));
+        assert_eq!(super::normalize_contribution_percent(80), Ok(80));
         assert!(super::normalize_contribution_percent(75).is_err());
-        assert!(super::normalize_contribution_percent(90).is_err());
+        assert!(super::normalize_contribution_percent(81).is_err());
     }
 
     #[test]
