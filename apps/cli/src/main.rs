@@ -138,7 +138,7 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
-    /// Run an inference request — tries local worker first, falls back to network
+    /// Run an inference request through the control-plane scheduler
     Run {
         /// The prompt to send
         #[arg(long, short = 'p')]
@@ -152,7 +152,7 @@ enum Commands {
         /// Maximum tokens to generate
         #[arg(long, default_value_t = 512)]
         max_tokens: u32,
-        /// Maximum seconds to wait for a remote fallback job
+        /// Maximum seconds to wait for the control-plane job
         #[arg(long, default_value_t = 300)]
         timeout: u64,
         /// Remote fallback poll interval in seconds
@@ -663,7 +663,7 @@ fn config_from_identity(identity: &identity::DeviceIdentity) -> Config {
 }
 
 // ---------------------------------------------------------------------------
-// Local-first inference
+// Control-plane inference
 // ---------------------------------------------------------------------------
 
 struct InferenceResult {
@@ -682,9 +682,8 @@ struct LocalModelManifestRecord {
     source_path: Option<String>,
 }
 
-/// Try running inference locally via llama-cli, then fall back to the
-/// control plane if local is unavailable.
-fn run_inference_local_first(
+/// Submit through the control plane and wait for the scheduler result.
+fn run_inference_via_control_plane(
     config: &Config,
     prompt: &str,
     model: Option<&str>,
@@ -693,30 +692,6 @@ fn run_inference_local_first(
     timeout_secs: u64,
     interval_secs: u64,
 ) -> Result<InferenceResult, String> {
-    // --- 1. try local ---------------------------------------------------------
-    // Honour OPENGPU_MODEL_DIR env var as an override (useful for pointing at
-    // LM Studio or other external model directories without changing config).
-    let model_dir = std::env::var_os("OPENGPU_MODEL_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| model::effective_model_dir(config));
-    match run_local_inference(&model_dir, prompt, model, backend, max_tokens) {
-        Ok((output, model_name)) => {
-            return Ok(InferenceResult {
-                output,
-                node_label: "local".to_string(),
-                model_name,
-                job_id: None,
-                status: Some("completed".to_string()),
-                error: None,
-            });
-        }
-        Err(local_err) => {
-            theme::warn(format!("local worker unavailable: {local_err}"));
-            theme::warn("falling back to network routing...");
-        }
-    }
-
-    // --- 2. remote fallback via control plane ---------------------------------
     let (request_id, job) = build_job_submission_payload(prompt, model, backend, max_tokens);
     match http_post_json(&config.control_plane_url, "/v1/jobs", &job) {
         Ok(record) => {
@@ -735,7 +710,11 @@ fn run_inference_local_first(
                 .ok_or_else(|| format!("remote job {job_id} completed without output"))?;
             Ok(InferenceResult {
                 output,
-                node_label: "network".to_string(),
+                node_label: completed
+                    .get("assigned_node_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("control-plane")
+                    .to_string(),
                 model_name: model.map(|m| m.to_string()),
                 job_id: Some(job_id),
                 status: Some(status),
@@ -874,85 +853,6 @@ fn print_job_response(payload: &serde_json::Value, json: bool) -> Result<(), Str
         theme::field("error", error);
     }
     Ok(())
-}
-
-/// Find a GGUF model file under `model_dir`, optionally matching `model_name`,
-/// then invoke `llama-cli` and return (output, model_name).
-fn run_local_inference(
-    model_dir: &std::path::Path,
-    prompt: &str,
-    model_name: Option<&str>,
-    backend: Backend,
-    max_tokens: u32,
-) -> Result<(String, Option<String>), String> {
-    // resolve model path
-    let model_path = resolve_local_model_path(model_dir, model_name)
-        .map_err(|error| format!("no cached model: {error}"))?;
-
-    let detected_name = model_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.to_string());
-
-    // check llama-cli is available
-    let which = Command::new("llama-cli")
-        .arg("--version")
-        .output()
-        .map_err(|_| "llama-cli not found in PATH".to_string())?;
-    if !which.status.success() {
-        return Err("llama-cli --version failed".to_string());
-    }
-
-    // run inference
-    let mut command = Command::new("llama-cli");
-    command.arg("-m").arg(&model_path);
-    if matches!(backend, Backend::Cuda) {
-        command.arg("--device").arg("CUDA0");
-    }
-    let output = command
-        .arg("--simple-io")
-        .arg("--no-display-prompt")
-        .arg("--no-perf")
-        .arg("--log-disable")
-        .arg("-c")
-        .arg("512")
-        .arg("-p")
-        .arg(prompt)
-        .arg("-n")
-        .arg(max_tokens.to_string())
-        .arg("--seed")
-        .arg("42")
-        .output()
-        .map_err(|error| format!("failed to launch llama-cli: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "llama-cli exited {} — {}",
-            output.status.code().unwrap_or(-1),
-            first_actionable_stderr_line(&stderr)
-        ));
-    }
-
-    let transcript = String::from_utf8(output.stdout)
-        .map_err(|error| error.to_string())?
-        .trim()
-        .to_string();
-
-    Ok((transcript, detected_name))
-}
-
-fn first_actionable_stderr_line(stderr: &str) -> &str {
-    stderr
-        .lines()
-        .find(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty()
-                && !trimmed.starts_with("ggml_cuda_init:")
-                && !trimmed.starts_with("  Device ")
-        })
-        .or_else(|| stderr.lines().find(|line| !line.trim().is_empty()))
-        .unwrap_or("no stderr")
 }
 
 fn resolve_local_model_path(
@@ -3192,7 +3092,7 @@ fn main() {
             let config = current_config_or_default();
             let default_model = active_model_name(&config);
             let requested_model = model.as_deref().or(default_model.as_deref());
-            match run_inference_local_first(
+            match run_inference_via_control_plane(
                 &config,
                 &prompt,
                 requested_model,
@@ -3207,6 +3107,7 @@ fn main() {
                             "prompt": prompt,
                             "output": result.output,
                             "node": result.node_label,
+                            "assigned_node": result.node_label,
                             "model": result.model_name,
                             "job_id": result.job_id,
                             "status": result.status,
@@ -3218,7 +3119,7 @@ fn main() {
                         }
                     } else {
                         theme::section("Run result");
-                        theme::field("node", &result.node_label);
+                        theme::field("assignedNode", &result.node_label);
                         if let Some(model_name) = &result.model_name {
                             theme::field("model", model_name);
                         }
