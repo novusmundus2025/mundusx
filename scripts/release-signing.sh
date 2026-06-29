@@ -33,6 +33,16 @@ private_key_path="${artifact_dir}/.signing/private.pem"
 public_key_path="${artifact_dir}/.signing/public.pem"
 generated_keys=0
 
+python_cmd() {
+  if command -v python3 >/dev/null 2>&1; then
+    printf 'python3\n'
+  elif command -v python >/dev/null 2>&1; then
+    printf 'python\n'
+  else
+    die "python3 or python is required"
+  fi
+}
+
 normalize_text() {
   local value="$1"
   if [ -n "$value" ]; then
@@ -43,24 +53,42 @@ normalize_text() {
 }
 
 checksum_for_binary() {
-  local checksum_path="$artifact_dir/$binary_name.sha256"
+  local name="${1:-$binary_name}"
+  local checksum_path="$artifact_dir/$name.sha256"
   [ -f "$checksum_path" ] || die "missing checksum file: $checksum_path"
 
   awk '{print $1}' "$checksum_path" | head -n 1
 }
 
+node_agent_name_for_binary() {
+  case "$binary_name" in
+    opengpu-*) printf 'opengpu-node-agent-%s\n' "${binary_name#opengpu-}" ;;
+    *) printf '' ;;
+  esac
+}
+
 create_manifest() {
-  local checksum tag_text version_text generated_at
-  checksum="$(checksum_for_binary)"
+  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as
+  checksum="$(checksum_for_binary "$binary_name")"
   tag_text="$(normalize_text "$tag_name")"
   version_text="$(normalize_text "$version")"
-  generated_at="$(python3 - <<'PY'
+  agent_name="$(node_agent_name_for_binary)"
+  agent_checksum=""
+  agent_install_as=""
+  if [ -n "$agent_name" ] && [ -f "$artifact_dir/$agent_name" ]; then
+    agent_checksum="$(checksum_for_binary "$agent_name")"
+    case "$agent_name" in
+      *.exe) agent_install_as="opengpu-node-agent.exe" ;;
+      *) agent_install_as="opengpu-node-agent" ;;
+    esac
+  fi
+  generated_at="$("$(python_cmd)" - <<'PY'
 from datetime import datetime, timezone
 print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  python3 - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -71,6 +99,9 @@ checksum = sys.argv[3]
 tag = sys.argv[4]
 version = sys.argv[5]
 generated_at = sys.argv[6]
+agent_name = sys.argv[7]
+agent_checksum = sys.argv[8]
+agent_install_as = sys.argv[9]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -80,6 +111,15 @@ payload = {
     "tag": tag,
     "version": version,
 }
+if agent_name and agent_checksum:
+    payload["assets"] = [
+        {
+            "name": agent_name,
+            "install_as": agent_install_as,
+            "kind": "node-agent-binary",
+            "checksum_sha256": agent_checksum,
+        }
+    ]
 manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
 }
@@ -103,7 +143,7 @@ decode_env_key() {
   local value="$1"
   local path="$2"
   local label="$3"
-  python3 - "$value" "$path" "$label" <<'PY'
+  "$(python_cmd)" - "$value" "$path" "$label" <<'PY'
 import base64
 import binascii
 import sys
