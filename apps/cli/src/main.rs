@@ -800,18 +800,24 @@ fn job_is_terminal(payload: &serde_json::Value) -> bool {
 }
 
 fn remote_job_output(payload: &serde_json::Value) -> Option<String> {
-    ["output", "final_output", "result"]
-        .iter()
-        .filter_map(|field| payload.get(*field))
-        .find_map(|value| {
-            value.as_str().map(|text| text.to_string()).or_else(|| {
-                if value.is_null() {
-                    None
-                } else {
-                    Some(value.to_string())
-                }
+    fn output_from(value: &serde_json::Value) -> Option<String> {
+        ["output", "final_output", "result"]
+            .iter()
+            .filter_map(|field| value.get(*field))
+            .find_map(|value| {
+                value.as_str().map(|text| text.to_string()).or_else(|| {
+                    if value.is_null() {
+                        None
+                    } else {
+                        Some(value.to_string())
+                    }
+                })
             })
-        })
+    }
+
+    output_from(payload)
+        .or_else(|| payload.get("job").and_then(output_from))
+        .or_else(|| payload.pointer("/job/graph").and_then(output_from))
 }
 
 fn wait_for_job(
@@ -3810,6 +3816,18 @@ mod tests {
                 &serde_json::json!({"status": "completed", "result": {"text": "ok"}})
             ),
             Some(r#"{"text":"ok"}"#.to_string())
+        );
+        assert_eq!(
+            remote_job_output(
+                &serde_json::json!({"status": "completed", "job": {"output": "nested"}})
+            ),
+            Some("nested".to_string())
+        );
+        assert_eq!(
+            remote_job_output(
+                &serde_json::json!({"status": "completed", "job": {"graph": {"final_output": "graph"}}})
+            ),
+            Some("graph".to_string())
         );
         assert_eq!(
             remote_job_output(&serde_json::json!({"status": "completed", "output": null})),

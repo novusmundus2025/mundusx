@@ -131,7 +131,7 @@ struct CachedModelRecord {
 fn sanitize_model_name(name: &str) -> String {
     let mut output = String::with_capacity(name.len());
     for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
             output.push(ch.to_ascii_lowercase());
         } else {
             output.push('_');
@@ -264,7 +264,8 @@ fn imported_model_path_from_cache(model_dir: &Path, model_name: Option<&str>) ->
                 .source_path
                 .as_ref()
                 .map(PathBuf::from)
-                .filter(|path| path.is_file());
+                .filter(|path| path.is_file())
+                .or_else(|| cached_model_file_from_manifest(model_dir, &record));
 
             if model_name
                 .map(|name| record.name == name)
@@ -282,6 +283,21 @@ fn imported_model_path_from_cache(model_dir: &Path, model_name: Option<&str>) ->
     active_fallback
 }
 
+fn cached_model_file_from_manifest(
+    model_dir: &Path,
+    record: &CachedModelRecord,
+) -> Option<PathBuf> {
+    record
+        .file_name
+        .as_ref()
+        .map(|file_name| {
+            model_dir
+                .join(sanitize_model_name(&record.name))
+                .join(file_name)
+        })
+        .filter(|path| path.is_file())
+}
+
 pub fn active_model_capability(
     model_dir: &Path,
     model_name: Option<&str>,
@@ -296,9 +312,14 @@ pub fn active_model_capability(
         {
             let raw = fs::read_to_string(entry.path()).ok()?;
             let record = serde_json::from_str::<CachedModelRecord>(&raw).ok()?;
+            let resolved_path = record.source_path.clone().or_else(|| {
+                cached_model_file_from_manifest(model_dir, &record)
+                    .map(|path| path.display().to_string())
+            });
+
             let capability = ModelCapability {
                 name: record.name.clone(),
-                path: record.source_path.clone(),
+                path: resolved_path,
                 format: record.format.clone(),
                 quantization: record.quantization.clone(),
                 size_bytes: record.size_bytes,
@@ -569,10 +590,10 @@ fn run_llama_command(
         command.arg("--device").arg("CUDA0");
     }
     command
+        .arg("--no-conversation")
         .arg("--simple-io")
         .arg("--no-display-prompt")
         .arg("--no-perf")
-        .arg("--log-disable")
         .arg("-c")
         .arg("512")
         .arg("--threads")
@@ -762,6 +783,16 @@ pub fn probe_worker_policy(
 }
 
 fn extract_llama_response(prompt: &str, transcript: &str) -> String {
+    let generated_before_logs = transcript
+        .lines()
+        .map(str::trim)
+        .take_while(|line| !is_llama_diagnostic_line(line))
+        .filter(|line| !line.is_empty() && !line.starts_with('>'))
+        .collect::<Vec<_>>();
+    if !generated_before_logs.is_empty() {
+        return generated_before_logs.join("\n");
+    }
+
     let mut seen_prompt = false;
     let mut lines = Vec::new();
 
@@ -803,6 +834,27 @@ fn extract_llama_response(prompt: &str, transcript: &str) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+fn is_llama_diagnostic_line(line: &str) -> bool {
+    line.starts_with("ggml_")
+        || line.starts_with("build:")
+        || line.starts_with("main:")
+        || line.starts_with("llama_")
+        || line.starts_with("common_")
+        || line.starts_with("print_info:")
+        || line.starts_with("load:")
+        || line.starts_with("load_tensors:")
+        || line.starts_with("system_info:")
+        || line.starts_with("sampler ")
+        || line.starts_with("sampler\t")
+        || line.starts_with("sampler params:")
+        || line.starts_with("sampler chain:")
+        || line.starts_with("generate:")
+        || line.starts_with("llama_perf_")
+        || line.starts_with("  Device ")
+        || line.starts_with("Available devices:")
+        || line.starts_with('\t')
 }
 
 fn run_llama_request(
@@ -1080,6 +1132,46 @@ mod tests {
 
         assert_eq!(resolved, source_path);
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn resolves_downloaded_model_from_cli_cache_directory() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "opengpu-agent-downloaded-model-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let manifest_dir = temp_dir.join(".opengpu");
+        fs::create_dir_all(&manifest_dir).expect("manifest dir");
+        let cache_dir = temp_dir.join("qwen_qwen2_5-0_5b-instruct");
+        fs::create_dir_all(&cache_dir).expect("cache dir");
+        let model_path = cache_dir.join("qwen2.5-0.5b-instruct-q5_k_m.gguf");
+        fs::write(&model_path, b"model").expect("model file");
+        fs::write(
+            manifest_dir.join("qwen_qwen2_5-0_5b-instruct.json"),
+            serde_json::json!({
+                "name": "Qwen/Qwen2.5-0.5B-Instruct",
+                "active": true,
+                "cached_at": "1",
+                "model_dir": temp_dir,
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+
+        let resolved = resolve_model_path(&temp_dir, Some("Qwen/Qwen2.5-0.5B-Instruct"))
+            .expect("resolve downloaded model");
+
+        assert_eq!(resolved, model_path);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn extracts_generated_text_before_llama_diagnostics() {
+        let transcript = " 4. What is the answer to\r\n\r\nggml_cuda_init: found 1 CUDA devices:\r\nbuild: 4500\r\nllama_perf_context_print: total time = 1 ms\r\n";
+
+        let generated = extract_llama_response("The answer to 2+2 is", transcript);
+
+        assert_eq!(generated, "4. What is the answer to");
     }
 
     #[test]
