@@ -755,11 +755,14 @@ fn default_max_tokens_for_prompt(prompt: &str) -> u32 {
     let trimmed = prompt.trim();
     let lower = trimmed.to_ascii_lowercase();
 
+    if looks_like_short_computation(trimmed) {
+        return 4;
+    }
+
     if lower.contains("one word")
         || lower.contains("one number")
         || lower.contains("answer only")
         || lower.contains("final number")
-        || looks_like_short_computation(trimmed)
     {
         return 16;
     }
@@ -3878,11 +3881,17 @@ mod tests {
 
     #[test]
     fn run_defaults_short_math_prompts_to_small_generation_budget() {
-        assert_eq!(super::effective_max_tokens("The answer to 500+31 is", None), 16);
+        assert_eq!(super::effective_max_tokens("The answer to 500+31 is", None), 4);
+        assert_eq!(super::effective_max_tokens("500+31=", None), 4);
+    }
+
+    #[test]
+    fn run_defaults_answer_only_prompts_to_short_generation_budget() {
         assert_eq!(
             super::effective_max_tokens("Answer only with the number: 421+31=", None),
-            16
+            4
         );
+        assert_eq!(super::effective_max_tokens("Answer only with one word", None), 16);
     }
 
     #[test]
