@@ -95,6 +95,8 @@ enum Commands {
     },
     /// Set or review the contributor cap
     Cap {
+        /// Set the cap directly without using the selector
+        value: Option<u8>,
         /// Set the cap directly instead of using the selector
         #[arg(long)]
         percent: Option<u8>,
@@ -2994,9 +2996,17 @@ fn main() {
                 println!("onboardingHint: rerun with --complete once the checklist looks good");
             }
         }
-        Commands::Cap { percent, reset } => {
-            if percent.is_some() && reset {
-                eprintln!("choose either --percent or --reset, not both");
+        Commands::Cap {
+            value,
+            percent,
+            reset,
+        } => {
+            if reset && (value.is_some() || percent.is_some()) {
+                eprintln!("choose either a cap percent or --reset, not both");
+                std::process::exit(1);
+            }
+            if value.is_some() && percent.is_some() {
+                eprintln!("choose either positional percent or --percent, not both");
                 std::process::exit(1);
             }
 
@@ -3004,7 +3014,7 @@ fn main() {
             let selected = if reset {
                 config.contribution_percent = 0;
                 None
-            } else if let Some(value) = percent {
+            } else if let Some(value) = value.or(percent) {
                 let value = match normalize_contribution_percent(u16::from(value)) {
                     Ok(value) => value,
                     Err(error) => {
@@ -3543,6 +3553,35 @@ mod tests {
                 private: false,
                 control_plane_url: None,
                 cap_percent: Some(30),
+            }
+        ));
+    }
+
+    #[test]
+    fn cap_command_parses_positional_percent() {
+        let cli = Cli::try_parse_from(["opengpu", "cap", "80"]).expect("cap should parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Cap {
+                value: Some(80),
+                percent: None,
+                reset: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn cap_command_parses_percent_flag() {
+        let cli =
+            Cli::try_parse_from(["opengpu", "cap", "--percent", "80"]).expect("cap should parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Cap {
+                value: None,
+                percent: Some(80),
+                reset: false,
             }
         ));
     }
