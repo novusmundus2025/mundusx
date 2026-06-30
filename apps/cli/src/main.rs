@@ -7,7 +7,7 @@ mod routing;
 mod theme;
 mod types;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::cursor::MoveTo;
 use crossterm::event::{poll, read, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
@@ -22,6 +22,23 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use types::Backend;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ExecutionMode {
+    Single,
+    Auto,
+    Decompose,
+}
+
+impl ExecutionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Auto => "auto",
+            Self::Decompose => "decompose",
+        }
+    }
+}
 
 use config::{config_exists, load_config, resolved_config_path, save_config, Config};
 use identity::{device_id_for_identity, ensure_identity, load_identity, load_or_create_identity};
@@ -158,6 +175,12 @@ enum Commands {
         /// Maximum tokens to generate (auto-selected when omitted)
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Let the control plane split eligible work into validated subjobs
+        #[arg(long)]
+        decompose: bool,
+        /// Control whether the control plane may decompose work
+        #[arg(long, value_enum)]
+        execution_mode: Option<ExecutionMode>,
         /// Maximum seconds to wait for the control-plane job
         #[arg(long, default_value_t = 300)]
         timeout: u64,
@@ -232,6 +255,12 @@ enum JobsCommands {
         /// Maximum tokens to generate (auto-selected when omitted)
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Let the control plane split eligible work into validated subjobs
+        #[arg(long)]
+        decompose: bool,
+        /// Control whether the control plane may decompose work
+        #[arg(long, value_enum)]
+        execution_mode: Option<ExecutionMode>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -695,10 +724,12 @@ fn run_inference_via_control_plane(
     model: Option<&str>,
     backend: crate::types::Backend,
     max_tokens: u32,
+    execution_mode: ExecutionMode,
     timeout_secs: u64,
     interval_secs: u64,
 ) -> Result<InferenceResult, String> {
-    let (request_id, job) = build_job_submission_payload(prompt, model, backend, max_tokens);
+    let (request_id, job) =
+        build_job_submission_payload(prompt, model, backend, max_tokens, execution_mode);
     match http_post_json(&config.control_plane_url, "/v1/jobs", &job) {
         Ok(record) => {
             let job_id = record["job_id"].as_str().unwrap_or(&request_id).to_string();
@@ -739,12 +770,14 @@ fn build_job_submission_payload(
     model: Option<&str>,
     backend: Backend,
     max_tokens: u32,
+    execution_mode: ExecutionMode,
 ) -> (String, serde_json::Value) {
     let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
     let job = serde_json::json!({
         "request_id": request_id,
         "prompt": prompt,
         "preferred_backend": backend.as_str(),
+        "execution_mode": execution_mode.as_str(),
         "model": model,
         "max_tokens": max_tokens,
     });
@@ -795,14 +828,26 @@ fn effective_max_tokens(prompt: &str, max_tokens: Option<u32>) -> u32 {
         .max(1)
 }
 
+fn effective_execution_mode(
+    decompose: bool,
+    execution_mode: Option<ExecutionMode>,
+) -> ExecutionMode {
+    if decompose {
+        ExecutionMode::Decompose
+    } else {
+        execution_mode.unwrap_or(ExecutionMode::Single)
+    }
+}
+
 fn submit_job(
     config: &Config,
     prompt: &str,
     model: Option<&str>,
     backend: Backend,
     max_tokens: u32,
+    execution_mode: ExecutionMode,
 ) -> Result<serde_json::Value, String> {
-    let (_, job) = build_job_submission_payload(prompt, model, backend, max_tokens);
+    let (_, job) = build_job_submission_payload(prompt, model, backend, max_tokens, execution_mode);
     http_post_json(&config.control_plane_url, "/v1/jobs", &job)
 }
 
@@ -3364,6 +3409,8 @@ fn main() {
             model,
             backend,
             max_tokens,
+            decompose,
+            execution_mode,
             timeout,
             interval,
             json,
@@ -3372,12 +3419,14 @@ fn main() {
             let default_model = active_model_name(&config);
             let requested_model = model.as_deref().or(default_model.as_deref());
             let max_tokens = effective_max_tokens(&prompt, max_tokens);
+            let execution_mode = effective_execution_mode(decompose, execution_mode);
             match run_inference_via_control_plane(
                 &config,
                 &prompt,
                 requested_model,
                 backend,
                 max_tokens,
+                execution_mode,
                 timeout,
                 interval,
             ) {
@@ -3427,12 +3476,22 @@ fn main() {
                     model,
                     backend,
                     max_tokens,
+                    decompose,
+                    execution_mode,
                     json,
                 } => {
                     let default_model = active_model_name(&config);
                     let requested_model = model.as_deref().or(default_model.as_deref());
                     let max_tokens = effective_max_tokens(&prompt, max_tokens);
-                    submit_job(&config, &prompt, requested_model, backend, max_tokens)
+                    let execution_mode = effective_execution_mode(decompose, execution_mode);
+                    submit_job(
+                        &config,
+                        &prompt,
+                        requested_model,
+                        backend,
+                        max_tokens,
+                        execution_mode,
+                    )
                 }
                 .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
                 JobsCommands::Status { job_id, json } => get_job(&config, &job_id)
@@ -3522,7 +3581,8 @@ mod tests {
     use super::{
         build_job_submission_payload, control_plane_endpoint, cuda_doctor_payload, doctor_payload,
         job_is_terminal, job_status_path, logs_payload, remote_job_output,
-        resolve_install_control_plane_url, Cli, Commands, JobsCommands, PUBLIC_CONTROL_PLANE_URL,
+        resolve_install_control_plane_url, Cli, Commands, ExecutionMode, JobsCommands,
+        PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::types::Backend;
@@ -3693,6 +3753,8 @@ mod tests {
                         model,
                         backend,
                         max_tokens,
+                        decompose,
+                        execution_mode,
                         json,
                     },
             } => {
@@ -3700,6 +3762,8 @@ mod tests {
                 assert_eq!(model.as_deref(), Some("smol"));
                 assert_eq!(backend, Backend::Cuda);
                 assert_eq!(max_tokens, Some(64));
+                assert!(!decompose);
+                assert_eq!(execution_mode, None);
                 assert!(json);
             }
             _ => panic!("expected jobs submit command"),
@@ -3833,6 +3897,7 @@ mod tests {
             "45",
             "--interval",
             "3",
+            "--decompose",
             "--json",
         ])
         .expect("run should parse");
@@ -3842,12 +3907,14 @@ mod tests {
                 prompt,
                 timeout,
                 interval,
+                decompose,
                 json,
                 ..
             } => {
                 assert_eq!(prompt, "hello");
                 assert_eq!(timeout, 45);
                 assert_eq!(interval, 3);
+                assert!(decompose);
                 assert!(json);
             }
             _ => panic!("expected run command"),
@@ -3867,7 +3934,13 @@ mod tests {
 
     #[test]
     fn job_submission_payload_matches_control_plane_contract() {
-        let (_, payload) = build_job_submission_payload("hello", Some("smol"), Backend::Cuda, 64);
+        let (_, payload) = build_job_submission_payload(
+            "hello",
+            Some("smol"),
+            Backend::Cuda,
+            64,
+            ExecutionMode::Auto,
+        );
 
         assert!(payload["request_id"]
             .as_str()
@@ -3876,12 +3949,16 @@ mod tests {
         assert_eq!(payload["prompt"].as_str(), Some("hello"));
         assert_eq!(payload["model"].as_str(), Some("smol"));
         assert_eq!(payload["preferred_backend"].as_str(), Some("cuda"));
+        assert_eq!(payload["execution_mode"].as_str(), Some("auto"));
         assert_eq!(payload["max_tokens"].as_u64(), Some(64));
     }
 
     #[test]
     fn run_defaults_short_math_prompts_to_small_generation_budget() {
-        assert_eq!(super::effective_max_tokens("The answer to 500+31 is", None), 4);
+        assert_eq!(
+            super::effective_max_tokens("The answer to 500+31 is", None),
+            4
+        );
         assert_eq!(super::effective_max_tokens("500+31=", None), 4);
     }
 
@@ -3891,7 +3968,10 @@ mod tests {
             super::effective_max_tokens("Answer only with the number: 421+31=", None),
             4
         );
-        assert_eq!(super::effective_max_tokens("Answer only with one word", None), 16);
+        assert_eq!(
+            super::effective_max_tokens("Answer only with one word", None),
+            16
+        );
     }
 
     #[test]
