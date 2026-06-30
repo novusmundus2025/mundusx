@@ -14,14 +14,14 @@ const installPowershellContents = fs.readFileSync(path.join(repoRoot, "install.p
 const pages = [
   {
     slug: "",
-    title: "NovusX Docs",
+    title: "MundusX Docs",
     sourcePath: null,
     intro:
       "Public-facing documentation for install, device identity, and release flow previews in the MundusX repo.",
   },
   {
     slug: "install",
-    title: "Install NovusX",
+    title: "Install MundusX",
     sourcePath: path.join(repoRoot, "docs/install-page.md"),
     intro: "Canonical install flow and command for the current localhost-first release path.",
   },
@@ -29,7 +29,7 @@ const pages = [
     slug: "device-identity",
     title: "Device Identity Lifecycle",
     sourcePath: path.join(repoRoot, "docs/device-identity-lifecycle.md"),
-    intro: "How contributor identity is stored, reused, and reset across the NovusX lifecycle.",
+    intro: "How contributor identity is stored, reused, and reset across the MundusX lifecycle.",
   },
   {
     slug: "release",
@@ -75,7 +75,7 @@ function writePublicInstallSurface() {
 
   const manifest = {
     kind: "install-manifest",
-    product_name: "NovusX",
+    product_name: "MundusX",
     audience: "public",
     install_script_href: "./install.sh",
     install_powershell_href: "./install.ps1",
@@ -100,7 +100,7 @@ function writePublicReleaseSurface() {
 
   const manifest = {
     kind: "release-channel",
-    product_name: "NovusX",
+    product_name: "MundusX",
     audience: "public",
     release_base_url: repoReleaseBaseUrl,
     release_notes_url: repoReleaseNotesUrl,
@@ -416,7 +416,7 @@ function renderMarkdown(page, markdown) {
   }
   if (page.slug === "device-identity") {
     summaryBlocks.push(
-      `<section><h2>Current stance</h2><p>NovusX should prefer non-exportable device keys so the CLI, agent, and worker can request signatures without reading raw private-key bytes.</p></section>`,
+      `<section><h2>Current stance</h2><p>MundusX should prefer non-exportable device keys so the CLI, agent, and worker can request signatures without reading raw private-key bytes.</p></section>`,
     );
   }
 
@@ -457,7 +457,7 @@ function renderPublicInstallPage() {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Install NovusX</title>
+    <title>Install MundusX</title>
     <style>
       :root {
         color-scheme: light;
@@ -590,7 +590,7 @@ function renderPublicInstallPage() {
     <div class="shell">
       <section class="hero">
         <span class="eyebrow">Public Install Endpoint</span>
-        <h1>Install NovusX</h1>
+        <h1>Install MundusX</h1>
         <p class="lead">This Pages-backed install surface mirrors the future public endpoint shape. It hosts the reviewed installer scripts from this repo and points them at the latest signed GitHub release artifacts.</p>
         <div class="actions">
           <a class="primary" href="../install.sh">Download install.sh</a>
