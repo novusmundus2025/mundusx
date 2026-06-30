@@ -103,6 +103,13 @@ pub fn add_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
 pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     ensure_effective_model_dir(config);
     let _ = download_model_if_available(config, name)?;
+    let cached_path = cached_model_path(config, name)?;
+    if cached_path.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("model `{name}` is not cached; download or import it before activating"),
+        ));
+    }
     let mut models = list_models(config)?;
     let record = upsert_model(config, &mut models, name, true)?;
     sync_config_models(config, &models);
@@ -304,6 +311,68 @@ fn source_filename(source_url: &str) -> String {
 
 fn model_file_path(config: &Config, name: &str, option: &ModelOption) -> PathBuf {
     model_cache_dir(config, name).join(source_filename(&option.source_url))
+}
+
+fn cached_model_path(config: &Config, name: &str) -> io::Result<Option<PathBuf>> {
+    if let Some(option) = lookup_model(name) {
+        let path = model_file_path(config, name, &option);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+
+    for model in list_models(config)? {
+        if model.name != name {
+            continue;
+        }
+
+        if let Some(path) = model
+            .source_path
+            .as_ref()
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+        {
+            return Ok(Some(path));
+        }
+
+        if let Some(path) = model.file_name.as_ref().map(|file_name| {
+            effective_model_dir(config)
+                .join(sanitize_model_name(&model.name))
+                .join(file_name)
+        }) {
+            if path.is_file() {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    let cache_dir = model_cache_dir(config, name);
+    if cache_dir.exists() {
+        let mut files = Vec::new();
+        collect_gguf_files(&cache_dir, &mut files)?;
+        files.sort();
+        return Ok(files.into_iter().next());
+    }
+
+    Ok(None)
+}
+
+fn collect_gguf_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_gguf_files(&path, files)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("gguf") {
+            files.push(path);
+        }
+    }
+
+    Ok(())
 }
 
 fn model_format(path: &Path) -> Option<String> {
@@ -745,6 +814,10 @@ mod tests {
         let added_path = manifest_path(&config, "llama3.1:8b");
         assert!(added_path.exists());
 
+        let cache_dir = model_cache_dir(&config, "llama3.1:8b");
+        fs::create_dir_all(&cache_dir).expect("cache dir");
+        fs::write(cache_dir.join("llama3.1-q4_k_m.gguf"), b"model").expect("model");
+
         let active = use_model(&mut config, "llama3.1:8b").expect("use model");
         assert_eq!(active.name, "llama3.1:8b");
         assert_eq!(config.active_model.as_deref(), Some("llama3.1:8b"));
@@ -760,6 +833,20 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "llama3.1:8b");
         assert!(models[0].active);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn use_model_rejects_manifest_without_cached_file() {
+        let (mut config, temp_dir) = temp_config();
+
+        add_model(&mut config, "Missing/Model").expect("add manifest");
+        let error = use_model(&mut config, "Missing/Model")
+            .expect_err("missing model file should not activate");
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(config.active_model, None);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
