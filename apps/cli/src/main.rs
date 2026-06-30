@@ -708,6 +708,7 @@ struct InferenceResult {
     job_id: Option<String>,
     status: Option<String>,
     error: Option<String>,
+    job_payload: serde_json::Value,
 }
 
 #[derive(serde::Deserialize)]
@@ -759,6 +760,7 @@ fn run_inference_via_control_plane(
                     .get("error")
                     .and_then(|value| value.as_str())
                     .map(|value| value.to_string()),
+                job_payload: completed,
             })
         }
         Err(error) => Err(format!("network routing failed: {error}")),
@@ -890,6 +892,120 @@ fn job_is_terminal(payload: &serde_json::Value) -> bool {
     )
 }
 
+fn job_plan_payload(payload: &serde_json::Value) -> &serde_json::Value {
+    payload.get("job").unwrap_or(payload)
+}
+
+fn graph_nodes(payload: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    job_plan_payload(payload)
+        .pointer("/graph/nodes")
+        .and_then(|value| value.as_array())
+}
+
+fn graph_progress_counts(payload: &serde_json::Value) -> Option<(usize, usize, usize)> {
+    let nodes = graph_nodes(payload)?;
+    if nodes.is_empty() {
+        return None;
+    }
+
+    let completed = nodes
+        .iter()
+        .filter(|node| {
+            node.get("status")
+                .and_then(|value| value.as_str())
+                .map(|status| status.eq_ignore_ascii_case("completed"))
+                .unwrap_or(false)
+        })
+        .count();
+    let running = nodes
+        .iter()
+        .filter(|node| {
+            node.get("status")
+                .and_then(|value| value.as_str())
+                .map(|status| status.eq_ignore_ascii_case("running"))
+                .unwrap_or(false)
+        })
+        .count();
+
+    Some((completed, running, nodes.len()))
+}
+
+fn print_job_plan_progress(payload: &serde_json::Value) {
+    let job = job_plan_payload(payload);
+    let graph_enabled = job
+        .get("graph_execution_enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let Some(nodes) = graph_nodes(payload) else {
+        return;
+    };
+    if nodes.is_empty() {
+        return;
+    }
+
+    let strategy = job
+        .pointer("/plan/strategy")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unplanned");
+    let summary = job
+        .pointer("/plan/summary")
+        .and_then(|value| value.as_str())
+        .unwrap_or("No planner summary recorded.");
+    let mode = job
+        .get("execution_mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("single");
+    let (completed, running, total) = graph_progress_counts(payload).unwrap_or((0, 0, nodes.len()));
+
+    println!();
+    theme::section("Job plan");
+    theme::field("executionMode", mode);
+    theme::field("strategy", strategy);
+    theme::field(
+        "progress",
+        format!("{completed}/{total} completed, {running} running"),
+    );
+    theme::field(
+        "graphExecution",
+        if graph_enabled { "enabled" } else { "advisory" },
+    );
+    println!("{summary}");
+
+    for (index, node) in nodes.iter().enumerate() {
+        let name = node
+            .get("name")
+            .and_then(|value| value.as_str())
+            .or_else(|| node.get("id").and_then(|value| value.as_str()))
+            .unwrap_or("planned job");
+        let status = node
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        let blocked_by = node
+            .get("blocked_by")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let suffix = if blocked_by.is_empty() {
+            String::new()
+        } else {
+            format!(" blocked by {}", blocked_by.join(", "))
+        };
+        println!(
+            "  {}. [{}] {}{}",
+            index + 1,
+            theme::status(status),
+            name,
+            suffix
+        );
+    }
+}
+
 fn remote_job_output(payload: &serde_json::Value) -> Option<String> {
     fn output_from(value: &serde_json::Value) -> Option<String> {
         ["output", "final_output", "result"]
@@ -953,6 +1069,7 @@ fn print_job_response(payload: &serde_json::Value, json: bool) -> Result<(), Str
     if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
         theme::field("error", error);
     }
+    print_job_plan_progress(payload);
     Ok(())
 }
 
@@ -3458,6 +3575,7 @@ fn main() {
                         if let Some(status) = &result.status {
                             theme::field("status", theme::status(status));
                         }
+                        print_job_plan_progress(&result.job_payload);
                         println!();
                         println!("{}", result.output);
                     }
@@ -3580,7 +3698,7 @@ fn main() {
 mod tests {
     use super::{
         build_job_submission_payload, control_plane_endpoint, cuda_doctor_payload, doctor_payload,
-        job_is_terminal, job_status_path, logs_payload, remote_job_output,
+        graph_progress_counts, job_is_terminal, job_status_path, logs_payload, remote_job_output,
         resolve_install_control_plane_url, Cli, Commands, ExecutionMode, JobsCommands,
         PUBLIC_CONTROL_PLANE_URL,
     };
@@ -4041,6 +4159,21 @@ mod tests {
             remote_job_output(&serde_json::json!({"status": "completed", "output": null})),
             None
         );
+    }
+
+    #[test]
+    fn graph_progress_counts_completed_and_running_nodes() {
+        let payload = serde_json::json!({
+            "graph": {
+                "nodes": [
+                    {"name": "Origins", "status": "completed"},
+                    {"name": "Modern era", "status": "running"},
+                    {"name": "Final synthesis", "status": "waiting"}
+                ]
+            }
+        });
+
+        assert_eq!(graph_progress_counts(&payload), Some((1, 1, 3)));
     }
 
     #[test]
