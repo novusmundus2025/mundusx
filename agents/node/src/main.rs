@@ -41,6 +41,8 @@ enum Commands {
         once: bool,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        verbose: bool,
         #[arg(long, default_value_t = 5)]
         interval_seconds: u64,
     },
@@ -393,10 +395,19 @@ fn emit_json_line<T: Serialize>(value: &T) {
     }
 }
 
+fn green(text: impl AsRef<str>) -> String {
+    format!("\x1b[32m{}\x1b[0m", text.as_ref())
+}
+
+fn red(text: impl AsRef<str>) -> String {
+    format!("\x1b[31m{}\x1b[0m", text.as_ref())
+}
+
 fn send_registration(
     config: &AgentConfig,
     identity: &DeviceIdentity,
     registration: &AgentRegistration,
+    verbose: bool,
 ) {
     match http::signed_post_json(
         &config.control_plane_url,
@@ -405,15 +416,24 @@ fn send_registration(
         identity,
         registration,
     ) {
-        Ok(response) => println!(
-            "controlPlaneRegister: ok ({})",
-            response.lines().next().unwrap_or("no response line")
-        ),
+        Ok(response) => {
+            if verbose {
+                println!(
+                    "controlPlaneRegister: ok ({})",
+                    response.lines().next().unwrap_or("no response line")
+                );
+            }
+        }
         Err(error) => eprintln!("controlPlaneRegister: {error}"),
     }
 }
 
-fn send_heartbeat(config: &AgentConfig, identity: &DeviceIdentity, heartbeat: &Heartbeat) {
+fn send_heartbeat(
+    config: &AgentConfig,
+    identity: &DeviceIdentity,
+    heartbeat: &Heartbeat,
+    verbose: bool,
+) {
     match http::signed_post_json(
         &config.control_plane_url,
         "/v1/heartbeat",
@@ -421,10 +441,14 @@ fn send_heartbeat(config: &AgentConfig, identity: &DeviceIdentity, heartbeat: &H
         identity,
         heartbeat,
     ) {
-        Ok(response) => println!(
-            "controlPlaneHeartbeat: ok ({})",
-            response.lines().next().unwrap_or("no response line")
-        ),
+        Ok(response) => {
+            if verbose {
+                println!(
+                    "controlPlaneHeartbeat: ok ({})",
+                    response.lines().next().unwrap_or("no response line")
+                );
+            }
+        }
         Err(error) => eprintln!("controlPlaneHeartbeat: {error}"),
     }
 }
@@ -678,7 +702,7 @@ fn start_busy_heartbeat_supervisor(
                 let heartbeat = build_heartbeat_with_state(&config, AgentState::Busy);
                 let _ = save_agent_state(&heartbeat);
                 let _ = save_heartbeat(&heartbeat);
-                send_heartbeat(&config, &identity, &heartbeat);
+                send_heartbeat(&config, &identity, &heartbeat, false);
             }
         }
     });
@@ -691,24 +715,30 @@ fn stop_busy_heartbeat_supervisor(stop_tx: mpsc::Sender<()>, handle: thread::Joi
     let _ = handle.join();
 }
 
-fn process_pending_job(config: &AgentConfig, json: bool) {
+fn process_pending_job(config: &AgentConfig, json: bool, verbose: bool) {
     let identity = load_identity_or_exit();
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
-        println!(
-            "jobPoll: skipped ({})",
-            policy.reason.as_deref().unwrap_or("policy denied launch")
-        );
+        if verbose {
+            println!(
+                "jobPoll: skipped ({})",
+                policy.reason.as_deref().unwrap_or("policy denied launch")
+            );
+        }
         let policy_heartbeat = build_heartbeat_with_state(config, AgentState::Paused);
         let _ = save_agent_state(&policy_heartbeat);
         let _ = save_heartbeat(&policy_heartbeat);
-        send_heartbeat(config, &identity, &policy_heartbeat);
+        send_heartbeat(config, &identity, &policy_heartbeat, verbose);
         return;
     }
 
-    println!("jobPoll: checking control plane");
+    if verbose {
+        println!("jobPoll: checking control plane");
+    }
     let Some(job) = claim_next_job(config, &identity) else {
-        println!("jobPoll: none");
+        if verbose {
+            println!("jobPoll: none");
+        }
         return;
     };
 
@@ -717,7 +747,7 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
     let busy_heartbeat = build_heartbeat_with_state(config, AgentState::Busy);
     let _ = save_agent_state(&busy_heartbeat);
     let _ = save_heartbeat(&busy_heartbeat);
-    send_heartbeat(config, &identity, &busy_heartbeat);
+    send_heartbeat(config, &identity, &busy_heartbeat, verbose);
 
     let request = WorkerLaunchRequest {
         job_id: job.job_id.clone(),
@@ -760,7 +790,7 @@ fn process_pending_job(config: &AgentConfig, json: bool) {
     let ready_heartbeat = build_heartbeat_with_state(config, resolved_state(config));
     let _ = save_agent_state(&ready_heartbeat);
     let _ = save_heartbeat(&ready_heartbeat);
-    send_heartbeat(config, &identity, &ready_heartbeat);
+    send_heartbeat(config, &identity, &ready_heartbeat, verbose);
 }
 
 fn print_status(json: bool) {
@@ -803,7 +833,7 @@ fn print_status(json: bool) {
     );
 }
 
-fn run_agent(once: bool, json: bool, interval_seconds: u64) {
+fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let config = load_config_or_exit();
     let identity = load_identity_or_exit();
     let registration = build_registration(&config, &identity);
@@ -847,11 +877,11 @@ fn run_agent(once: bool, json: bool, interval_seconds: u64) {
         std::process::exit(1);
     }
 
-    send_registration(&config, &identity, &registration);
-    send_heartbeat(&config, &identity, &heartbeat);
-    process_pending_job(&config, json);
+    send_registration(&config, &identity, &registration, verbose);
+    send_heartbeat(&config, &identity, &heartbeat, verbose);
+    process_pending_job(&config, json, verbose);
 
-    println!("agent ready");
+    println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
 
     if once {
@@ -869,9 +899,11 @@ fn run_agent(once: bool, json: bool, interval_seconds: u64) {
             eprintln!("failed to save heartbeat: {error}");
             break;
         }
-        send_heartbeat(&config, &identity, &heartbeat);
-        println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
-        process_pending_job(&config, json);
+        send_heartbeat(&config, &identity, &heartbeat, verbose);
+        if verbose {
+            println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
+        }
+        process_pending_job(&config, json, verbose);
         let _ = io::stdout().flush();
     }
 }
@@ -934,9 +966,9 @@ fn stop_agent() {
     }
 
     let identity = load_identity_or_exit();
-    send_heartbeat(&config, &identity, &heartbeat);
+    send_heartbeat(&config, &identity, &heartbeat, false);
 
-    println!("stopped agent for {}", config.device_id);
+    println!("{}", red(format!("disconnected {}", config.device_id)));
     println!("connected: no");
     println!("paused: yes");
 }
@@ -948,8 +980,9 @@ fn main() {
         Commands::Run {
             once,
             json,
+            verbose,
             interval_seconds,
-        } => run_agent(once, json, interval_seconds),
+        } => run_agent(once, json, verbose, interval_seconds),
         Commands::Register { json } => print_registration(json),
         Commands::Heartbeat { once, json } => print_heartbeat(once, json),
         Commands::LaunchWorker {
