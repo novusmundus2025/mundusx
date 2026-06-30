@@ -26,7 +26,7 @@ if (!binaryName || !checksum || !version) {
 }
 
 const formula = `class Opengpu < Formula
-  desc "NovusX contributor CLI"
+  desc "MundusX contributor CLI"
   homepage "https://github.com/mundusx/mundusx"
   url "${binaryUrl}"
   version "${version}"
