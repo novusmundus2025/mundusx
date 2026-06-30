@@ -802,7 +802,32 @@ fn default_max_tokens_for_prompt(prompt: &str) -> u32 {
         return 16;
     }
 
+    if looks_like_long_form_prompt(&lower) {
+        return 768;
+    }
+
     128
+}
+
+fn looks_like_long_form_prompt(lower_prompt: &str) -> bool {
+    let markers = [
+        "detailed history",
+        "history of",
+        "from its origins to today",
+        "comprehensive",
+        "in detail",
+        "detailed",
+        "full history",
+        "deep dive",
+        "report",
+        "overview",
+        "timeline",
+        "write an article",
+        "write a history",
+        "explain the history",
+    ];
+
+    markers.iter().any(|marker| lower_prompt.contains(marker))
 }
 
 fn looks_like_short_computation(prompt: &str) -> bool {
@@ -1046,12 +1071,52 @@ fn wait_for_job(
             return Ok(payload);
         }
         if Instant::now() >= deadline {
+            let detail = timeout_job_detail(&payload);
             return Err(format!(
-                "timed out waiting for job {job_id} while status was {}",
-                job_state(&payload)
+                "timed out waiting for job {job_id} while status was {}{detail}",
+                job_state(&payload),
             ));
         }
         thread::sleep(interval);
+    }
+}
+
+fn timeout_job_detail(payload: &serde_json::Value) -> String {
+    let job = job_plan_payload(payload);
+    let mut details = Vec::new();
+
+    if let Some(node_id) = job.get("assigned_node_id").and_then(|value| value.as_str()) {
+        details.push(format!("assignedNode={node_id}"));
+    }
+
+    if let Some(active_node_id) = job
+        .get("active_graph_node_id")
+        .and_then(|value| value.as_str())
+    {
+        details.push(format!("activeChunk={active_node_id}"));
+    }
+
+    if let Some(nodes) = graph_nodes(payload) {
+        if let Some(node) = nodes.iter().find(|node| {
+            node.get("status")
+                .and_then(|value| value.as_str())
+                .map(|status| status.eq_ignore_ascii_case("running"))
+                .unwrap_or(false)
+        }) {
+            if let Some(name) = node
+                .get("name")
+                .and_then(|value| value.as_str())
+                .or_else(|| node.get("id").and_then(|value| value.as_str()))
+            {
+                details.push(format!("runningChunk={name}"));
+            }
+        }
+    }
+
+    if details.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", details.join(", "))
     }
 }
 
@@ -4105,6 +4170,21 @@ mod tests {
     }
 
     #[test]
+    fn run_defaults_long_form_prompts_to_larger_generation_budget() {
+        assert_eq!(
+            super::effective_max_tokens(
+                "Give me a detailed history of Microsoft from its origins to today.",
+                None
+            ),
+            768
+        );
+        assert_eq!(
+            super::effective_max_tokens("Write a comprehensive report about GPU markets", None),
+            768
+        );
+    }
+
+    #[test]
     fn explicit_max_tokens_override_auto_budget() {
         assert_eq!(
             super::effective_max_tokens("The answer to 500+31 is", Some(512)),
@@ -4162,6 +4242,28 @@ mod tests {
         assert_eq!(
             remote_job_output(&serde_json::json!({"status": "completed", "output": null})),
             None
+        );
+    }
+
+    #[test]
+    fn timeout_detail_reports_assigned_node_and_running_chunk() {
+        let payload = serde_json::json!({
+            "job": {
+                "status": "assigned",
+                "assigned_node_id": "node-1",
+                "active_graph_node_id": "job.origins",
+                "graph": {
+                    "nodes": [
+                        {"id": "job.origins", "name": "Origins and founders", "status": "running"},
+                        {"id": "job.final_merge", "name": "Final synthesis", "status": "waiting"}
+                    ]
+                }
+            }
+        });
+
+        assert_eq!(
+            super::timeout_job_detail(&payload),
+            " (assignedNode=node-1, activeChunk=job.origins, runningChunk=Origins and founders)"
         );
     }
 
