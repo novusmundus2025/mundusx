@@ -1472,6 +1472,10 @@ fn run_node_agent_foreground(
     agent: PathBuf,
     debug: bool,
 ) -> Result<(), String> {
+    if debug {
+        command.arg("--verbose");
+    }
+
     command
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
