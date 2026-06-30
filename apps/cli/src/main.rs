@@ -955,6 +955,57 @@ fn graph_progress_counts(payload: &serde_json::Value) -> Option<(usize, usize, u
     Some((completed, running, nodes.len()))
 }
 
+fn active_graph_node_name(payload: &serde_json::Value) -> Option<String> {
+    let job = job_plan_payload(payload);
+    let active_id = job
+        .get("active_graph_node_id")
+        .and_then(|value| value.as_str())?;
+
+    graph_nodes(payload)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node.get("id").and_then(|value| value.as_str()) == Some(active_id))
+        })
+        .and_then(|node| {
+            node.get("name")
+                .and_then(|value| value.as_str())
+                .or_else(|| node.get("id").and_then(|value| value.as_str()))
+        })
+        .map(str::to_string)
+        .or_else(|| Some(active_id.to_string()))
+}
+
+fn job_wait_progress_signature(payload: &serde_json::Value) -> Option<String> {
+    let job = job_plan_payload(payload);
+    let graph_enabled = job
+        .get("graph_execution_enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !graph_enabled {
+        return None;
+    }
+
+    let (completed, running, total) = graph_progress_counts(payload)?;
+    let active =
+        active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
+    Some(format!(
+        "{}|{completed}|{running}|{total}|{active}",
+        job_state(payload)
+    ))
+}
+
+fn print_job_wait_progress(payload: &serde_json::Value) {
+    if let Some((completed, running, total)) = graph_progress_counts(payload) {
+        let active =
+            active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
+        eprintln!(
+            "job progress: status={} chunks={completed}/{total} completed, {running} running, active={active}",
+            theme::status(&job_state(payload)),
+        );
+    }
+}
+
 fn print_job_plan_progress(payload: &serde_json::Value) {
     let job = job_plan_payload(payload);
     let graph_enabled = job
@@ -1064,11 +1115,17 @@ fn wait_for_job(
 ) -> Result<serde_json::Value, String> {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let interval = Duration::from_secs(interval_secs.max(1));
+    let mut last_progress_signature: Option<String> = None;
 
     loop {
         let payload = get_job(config, job_id)?;
         if job_is_terminal(&payload) {
             return Ok(payload);
+        }
+        let progress_signature = job_wait_progress_signature(&payload);
+        if progress_signature.is_some() && progress_signature != last_progress_signature {
+            print_job_wait_progress(&payload);
+            last_progress_signature = progress_signature;
         }
         if Instant::now() >= deadline {
             let detail = timeout_job_detail(&payload);
@@ -3766,8 +3823,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_job_submission_payload, control_plane_endpoint, cuda_doctor_payload, doctor_payload,
-        graph_progress_counts, job_is_terminal, job_status_path, logs_payload, remote_job_output,
+        active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
+        cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
+        job_status_path, job_wait_progress_signature, logs_payload, remote_job_output,
         resolve_install_control_plane_url, Cli, Commands, ExecutionMode, JobsCommands,
         PUBLIC_CONTROL_PLANE_URL,
     };
@@ -4209,6 +4267,34 @@ mod tests {
         assert!(job_is_terminal(&serde_json::json!({"status": "failed"})));
         assert!(!job_is_terminal(&serde_json::json!({"status": "queued"})));
         assert!(!job_is_terminal(&serde_json::json!({"state": "assigned"})));
+    }
+
+    #[test]
+    fn graph_wait_progress_signature_tracks_chunk_progress() {
+        let payload = serde_json::json!({
+            "status": "queued",
+            "job": {
+                "status": "queued",
+                "graph_execution_enabled": true,
+                "active_graph_node_id": "job.early_development",
+                "graph": {
+                    "nodes": [
+                        {"id": "job.origins", "name": "Origins", "status": "completed"},
+                        {"id": "job.early_development", "name": "Early development", "status": "running"},
+                        {"id": "job.final", "name": "Final synthesis", "status": "waiting"}
+                    ]
+                }
+            }
+        });
+
+        assert_eq!(
+            active_graph_node_name(&payload).as_deref(),
+            Some("Early development")
+        );
+        assert_eq!(
+            job_wait_progress_signature(&payload).as_deref(),
+            Some("queued|1|1|3|Early development")
+        );
     }
 
     #[test]
