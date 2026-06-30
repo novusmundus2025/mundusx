@@ -155,9 +155,9 @@ enum Commands {
         /// Preferred backend
         #[arg(long, default_value = "auto")]
         backend: Backend,
-        /// Maximum tokens to generate
-        #[arg(long, default_value_t = 512)]
-        max_tokens: u32,
+        /// Maximum tokens to generate (auto-selected when omitted)
+        #[arg(long)]
+        max_tokens: Option<u32>,
         /// Maximum seconds to wait for the control-plane job
         #[arg(long, default_value_t = 300)]
         timeout: u64,
@@ -229,9 +229,9 @@ enum JobsCommands {
         /// Preferred backend
         #[arg(long, default_value = "auto")]
         backend: Backend,
-        /// Maximum tokens to generate
-        #[arg(long, default_value_t = 512)]
-        max_tokens: u32,
+        /// Maximum tokens to generate (auto-selected when omitted)
+        #[arg(long)]
+        max_tokens: Option<u32>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -749,6 +749,47 @@ fn build_job_submission_payload(
         "max_tokens": max_tokens,
     });
     (request_id, job)
+}
+
+fn default_max_tokens_for_prompt(prompt: &str) -> u32 {
+    let trimmed = prompt.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if lower.contains("one word")
+        || lower.contains("one number")
+        || lower.contains("answer only")
+        || lower.contains("final number")
+        || looks_like_short_computation(trimmed)
+    {
+        return 16;
+    }
+
+    128
+}
+
+fn looks_like_short_computation(prompt: &str) -> bool {
+    let compact: String = prompt.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if compact.len() > 80 {
+        return false;
+    }
+
+    let has_digit = compact.chars().any(|ch| ch.is_ascii_digit());
+    let has_operator = compact
+        .chars()
+        .any(|ch| matches!(ch, '+' | '-' | '*' | '/' | '=' | '×' | '÷'));
+    if !has_digit || !has_operator {
+        return false;
+    }
+
+    compact
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || "+-*/=().?:,'\"×÷".contains(ch))
+}
+
+fn effective_max_tokens(prompt: &str, max_tokens: Option<u32>) -> u32 {
+    max_tokens
+        .unwrap_or_else(|| default_max_tokens_for_prompt(prompt))
+        .max(1)
 }
 
 fn submit_job(
@@ -3327,6 +3368,7 @@ fn main() {
             let config = current_config_or_default();
             let default_model = active_model_name(&config);
             let requested_model = model.as_deref().or(default_model.as_deref());
+            let max_tokens = effective_max_tokens(&prompt, max_tokens);
             match run_inference_via_control_plane(
                 &config,
                 &prompt,
@@ -3386,6 +3428,7 @@ fn main() {
                 } => {
                     let default_model = active_model_name(&config);
                     let requested_model = model.as_deref().or(default_model.as_deref());
+                    let max_tokens = effective_max_tokens(&prompt, max_tokens);
                     submit_job(&config, &prompt, requested_model, backend, max_tokens)
                 }
                 .and_then(|payload| print_job_response(&payload, json).map(|_| payload)),
@@ -3653,7 +3696,7 @@ mod tests {
                 assert_eq!(prompt, "hello");
                 assert_eq!(model.as_deref(), Some("smol"));
                 assert_eq!(backend, Backend::Cuda);
-                assert_eq!(max_tokens, 64);
+                assert_eq!(max_tokens, Some(64));
                 assert!(json);
             }
             _ => panic!("expected jobs submit command"),
@@ -3831,6 +3874,31 @@ mod tests {
         assert_eq!(payload["model"].as_str(), Some("smol"));
         assert_eq!(payload["preferred_backend"].as_str(), Some("cuda"));
         assert_eq!(payload["max_tokens"].as_u64(), Some(64));
+    }
+
+    #[test]
+    fn run_defaults_short_math_prompts_to_small_generation_budget() {
+        assert_eq!(super::effective_max_tokens("The answer to 500+31 is", None), 16);
+        assert_eq!(
+            super::effective_max_tokens("Answer only with the number: 421+31=", None),
+            16
+        );
+    }
+
+    #[test]
+    fn run_defaults_normal_prompts_to_concise_generation_budget() {
+        assert_eq!(
+            super::effective_max_tokens("Explain why local inference can be slow", None),
+            128
+        );
+    }
+
+    #[test]
+    fn explicit_max_tokens_override_auto_budget() {
+        assert_eq!(
+            super::effective_max_tokens("The answer to 500+31 is", Some(512)),
+            512
+        );
     }
 
     #[test]
