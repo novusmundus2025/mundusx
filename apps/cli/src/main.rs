@@ -962,13 +962,17 @@ fn print_job_plan_progress(payload: &serde_json::Value) {
     theme::field("executionMode", mode);
     theme::field("strategy", strategy);
     theme::field(
-        "progress",
-        format!("{completed}/{total} completed, {running} running"),
-    );
-    theme::field(
         "graphExecution",
         if graph_enabled { "enabled" } else { "advisory" },
     );
+    if graph_enabled {
+        theme::field(
+            "progress",
+            format!("{completed}/{total} completed, {running} running"),
+        );
+    } else {
+        theme::field("progress", "not chunked; plan recorded only");
+    }
     println!("{summary}");
 
     for (index, node) in nodes.iter().enumerate() {
