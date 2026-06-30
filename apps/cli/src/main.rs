@@ -2128,7 +2128,7 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
             }
         }
         println!();
-        println!("Use ↑/↓ or Tab/Shift+Tab and Enter");
+        println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press 1-5");
         let _ = io::stdout().flush();
     };
 
@@ -2151,6 +2151,18 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
                         selected += 1;
                     }
                     render_menu(selected);
+                }
+                KeyCode::Char(value) if value.is_ascii_digit() => {
+                    if let Some(index) = value
+                        .to_digit(10)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .and_then(|value| value.checked_sub(1))
+                    {
+                        if index < OPTIONS.len() {
+                            selected = index;
+                            render_menu(selected);
+                        }
+                    }
                 }
                 KeyCode::Enter => match OPTIONS[selected] {
                     Some((percent, _)) => break Some(percent),
