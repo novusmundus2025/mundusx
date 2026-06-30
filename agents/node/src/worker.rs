@@ -370,14 +370,12 @@ fn resolve_model_path(model_dir: &Path, model_name: Option<&str>) -> io::Result<
     let mut search_dirs = Vec::new();
     if let Some(name) = model_name {
         search_dirs.push(model_dir.join(sanitize_model_name(name)));
+    } else if let Some(active_name) = active_model_name_from_cache(model_dir) {
+        search_dirs.push(model_dir.join(sanitize_model_name(&active_name)));
     }
-    if let Some(active_name) = active_model_name_from_cache(model_dir) {
-        let active_dir = model_dir.join(sanitize_model_name(&active_name));
-        if !search_dirs.iter().any(|dir| dir == &active_dir) {
-            search_dirs.push(active_dir);
-        }
+    if search_dirs.is_empty() {
+        search_dirs.push(model_dir.to_path_buf());
     }
-    search_dirs.push(model_dir.to_path_buf());
 
     let mut files = Vec::new();
     for dir in search_dirs {
@@ -1162,6 +1160,37 @@ mod tests {
             .expect("resolve downloaded model");
 
         assert_eq!(resolved, model_path);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn missing_requested_model_does_not_fallback_to_other_cache() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "opengpu-agent-missing-requested-model-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let manifest_dir = temp_dir.join(".opengpu");
+        fs::create_dir_all(&manifest_dir).expect("manifest dir");
+        let smol_dir = temp_dir.join("huggingfacetb_smollm2-135m-instruct");
+        fs::create_dir_all(&smol_dir).expect("smol dir");
+        fs::write(smol_dir.join("SmolLM2-135M-Instruct.Q4_K_M.gguf"), b"model")
+            .expect("smol model");
+        fs::write(
+            manifest_dir.join("qwen_qwen2_5-3b-instruct.json"),
+            serde_json::json!({
+                "name": "Qwen/Qwen2.5-3B-Instruct",
+                "active": true,
+                "cached_at": "1",
+                "model_dir": temp_dir,
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+
+        let error = resolve_model_path(&temp_dir, Some("Qwen/Qwen2.5-3B-Instruct"))
+            .expect_err("missing requested model should not fallback");
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
