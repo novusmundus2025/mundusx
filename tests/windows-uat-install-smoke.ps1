@@ -101,11 +101,15 @@ try {
   } | Out-Null
 
   $installedExe = Join-Path $installDir "opengpu.exe"
+  $compatExe = Join-Path $installDir "mundusx.exe"
   $agentInstallPath = Join-Path $installDir "opengpu-node-agent.exe"
   $installedRuntime = Join-Path $opengpuHome "runtimes\llama\llama-cli.exe"
   $installedRuntimeDll = Join-Path $opengpuHome "runtimes\llama\cudart64_11.dll"
   if (-not (Test-Path -LiteralPath $installedExe)) {
     throw "install.ps1 did not install opengpu.exe"
+  }
+  if (-not (Test-Path -LiteralPath $compatExe)) {
+    throw "install.ps1 did not install mundusx.exe compatibility alias"
   }
   if (-not (Test-Path -LiteralPath $agentInstallPath)) {
     throw "install.ps1 did not install opengpu-node-agent.exe"

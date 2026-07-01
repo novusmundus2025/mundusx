@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO="mundusx/mundusx"
 BIN_NAME="opengpu"
+COMPAT_BIN_NAME="mundusx"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
 
@@ -101,8 +102,10 @@ chmod +x "$tmp_bin"
 chmod +x "$tmp_agent"
 mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
 mv "$tmp_agent" "$INSTALL_DIR/opengpu-node-agent"
+ln -sf "$BIN_NAME" "$INSTALL_DIR/$COMPAT_BIN_NAME"
 
 echo
 echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
+echo "Installed ${COMPAT_BIN_NAME} compatibility alias to ${INSTALL_DIR}/${COMPAT_BIN_NAME}"
 echo "Installed opengpu-node-agent to ${INSTALL_DIR}/opengpu-node-agent"
 echo "If needed, add ${INSTALL_DIR} to your PATH."

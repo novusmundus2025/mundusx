@@ -282,6 +282,7 @@ $tempSignature = Join-Path $tempDir "release-manifest.json.sig"
 $tempAgent = Join-Path $tempDir $agentAssetName
 $tempCudaRuntime = Join-Path $tempDir $cudaRuntimeAssetName
 $finalExe = Join-Path $InstallDir "opengpu.exe"
+$compatExe = Join-Path $InstallDir "mundusx.exe"
 $finalAgent = Join-Path $InstallDir "opengpu-node-agent.exe"
 $runtimeInstallDir = Join-Path (Get-OpenGpuHome) "runtimes\llama"
 $finalCudaRuntime = Join-Path $runtimeInstallDir "llama-cli.exe"
@@ -368,6 +369,7 @@ try {
   $agentExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $agentAssetName -Destination $tempAgent -ManifestAsset $agentManifestAsset
 
   Move-Item -Force -Path $tempExe -Destination $finalExe
+  Copy-Item -Force -LiteralPath $finalExe -Destination $compatExe
   Move-Item -Force -Path $tempAgent -Destination $finalAgent
 
   if ($cudaRuntimeRequired) {
@@ -392,6 +394,7 @@ try {
 
 Write-Output ""
 Write-Output "Installed opengpu to $finalExe"
+Write-Output "Installed mundusx compatibility alias to $compatExe"
 Write-Output "Installed node agent to $finalAgent"
 if ($cudaRuntimeRequired) {
   Write-Output "Installed CUDA llama runtime bundle to $runtimeInstallDir"
