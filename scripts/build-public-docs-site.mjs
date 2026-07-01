@@ -628,7 +628,7 @@ function renderPublicInstallPage() {
         <h2>Before you run it</h2>
         <ul>
           <li>Use the shell installer on macOS/Linux and the PowerShell installer on Windows.</li>
-          <li>The installer places <code>opengpu</code> or <code>opengpu.exe</code> into the platform default bin directory.</li>
+          <li>The installer places <code>opengpu</code> or <code>opengpu.exe</code> into the platform default bin directory, with <code>mundusx</code> or <code>mundusx.exe</code> retained as a compatibility alias.</li>
           <li>After install, use <code>opengpu install</code> before <code>opengpu start</code> so control plane, cap, and model selection are explicit.</li>
         </ul>
       </section>

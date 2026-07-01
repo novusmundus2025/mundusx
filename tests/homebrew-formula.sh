@@ -45,5 +45,7 @@ grep -F "url \"$binary_url\"" "$formula_path" >/dev/null
 grep -F "sha256 \"$checksum\"" "$formula_path" >/dev/null
 grep -F 'version "0.1.0"' "$formula_path" >/dev/null
 grep -F 'bin.install "opengpu-aarch64-apple-darwin" => "opengpu"' "$formula_path" >/dev/null
+grep -F 'bin.install_symlink "opengpu" => "mundusx"' "$formula_path" >/dev/null
+grep -F 'shell_output("#{bin}/mundusx --version")' "$formula_path" >/dev/null
 
 echo "Homebrew formula renderer verified."

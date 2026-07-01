@@ -34,10 +34,12 @@ const formula = `class Opengpu < Formula
 
   def install
     bin.install "${binaryName}" => "opengpu"
+    bin.install_symlink "opengpu" => "mundusx"
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/opengpu --version")
+    assert_match version.to_s, shell_output("#{bin}/mundusx --version")
   end
 end
 `;

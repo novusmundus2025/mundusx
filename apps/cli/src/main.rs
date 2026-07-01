@@ -13,14 +13,14 @@ use crossterm::event::{poll, read, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::style::Color;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use types::Backend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -150,6 +150,12 @@ enum Commands {
     Credits {
         #[arg(long)]
         json: bool,
+        /// Entries per local log page
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+        /// Page number within the current local credit log, newest first
+        #[arg(long, default_value_t = 0)]
+        page: usize,
     },
     /// Submit and inspect async control-plane jobs
     Jobs {
@@ -1419,6 +1425,335 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
             println!("{output}");
         })
         .map_err(|error| error.to_string())
+}
+
+const CREDIT_LOG_WINDOW_MILLIS: u64 = 30 * 60 * 1000;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LocalCreditTotals {
+    node_id: String,
+    remaining_credits: f64,
+    earned_credits: f64,
+    used_credits: f64,
+    ledger_entries: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CreditLogSync {
+    current_log_path: Option<PathBuf>,
+    current_entries: Vec<serde_json::Value>,
+    appended_entries: usize,
+    page: usize,
+    limit: usize,
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn current_node_id(config: &Config) -> String {
+    load_identity()
+        .ok()
+        .flatten()
+        .map(|identity| device_id_for_identity(&identity))
+        .unwrap_or_else(|| config.device_id.clone())
+}
+
+fn credit_log_timestamp(path: &std::path::Path) -> Option<u64> {
+    let name = path.file_name()?.to_str()?;
+    name.strip_prefix("data_")?
+        .strip_suffix("_credit.log")?
+        .parse::<u64>()
+        .ok()
+}
+
+fn credit_log_files() -> Vec<PathBuf> {
+    let mut files = std::fs::read_dir(config::config_dir())
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .filter(|path| credit_log_timestamp(path).is_some())
+        .collect::<Vec<_>>();
+    files.sort_by_key(|path| credit_log_timestamp(path).unwrap_or(0));
+    files
+}
+
+fn credit_entry_key(entry: &serde_json::Value) -> Option<String> {
+    entry
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            Some(format!(
+                "{}|{}|{}|{}",
+                entry
+                    .get("job_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(""),
+                entry
+                    .get("device_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(""),
+                entry
+                    .get("created_at")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(""),
+                entry
+                    .get("amount")
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ))
+        })
+}
+
+fn logged_credit_key(log_entry: &serde_json::Value) -> Option<String> {
+    log_entry
+        .get("ledger")
+        .and_then(credit_entry_key)
+        .or_else(|| credit_entry_key(log_entry))
+}
+
+fn read_credit_log_entries(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|raw| {
+            raw.lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn known_logged_credit_keys(files: &[PathBuf]) -> std::collections::BTreeSet<String> {
+    files
+        .iter()
+        .flat_map(|path| read_credit_log_entries(path))
+        .filter_map(|entry| logged_credit_key(&entry))
+        .collect()
+}
+
+fn local_credit_entries<'a>(
+    payload: &'a serde_json::Value,
+    node_id: &str,
+) -> Vec<&'a serde_json::Value> {
+    payload
+        .get("ledger")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.get("device_id").and_then(|value| value.as_str()) == Some(node_id))
+        .collect()
+}
+
+fn round_credits(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn local_credit_totals(payload: &serde_json::Value, node_id: &str) -> LocalCreditTotals {
+    let entries = local_credit_entries(payload, node_id);
+    let earned_credits = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .get("amount")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0)
+        })
+        .filter(|amount| *amount > 0.0)
+        .sum::<f64>();
+    let used_credits = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .get("amount")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0)
+        })
+        .filter(|amount| *amount < 0.0)
+        .map(f64::abs)
+        .sum::<f64>();
+    let remaining_credits = payload
+        .get("by_node")
+        .and_then(|value| value.get(node_id))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(earned_credits - used_credits);
+
+    LocalCreditTotals {
+        node_id: node_id.to_string(),
+        remaining_credits: round_credits(remaining_credits),
+        earned_credits: round_credits(earned_credits),
+        used_credits: round_credits(used_credits),
+        ledger_entries: entries.len(),
+    }
+}
+
+fn paged_current_credit_entries(
+    entries: &[serde_json::Value],
+    page: usize,
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    let limit = limit.max(1);
+    entries
+        .iter()
+        .rev()
+        .skip(page.saturating_mul(limit))
+        .take(limit)
+        .cloned()
+        .collect()
+}
+
+fn sync_local_credit_log(
+    payload: &serde_json::Value,
+    node_id: &str,
+    page: usize,
+    limit: usize,
+    now_ms: u64,
+) -> Result<CreditLogSync, String> {
+    let local_entries = local_credit_entries(payload, node_id);
+    let existing_files = credit_log_files();
+    let known_keys = known_logged_credit_keys(&existing_files);
+    let new_entries = local_entries
+        .into_iter()
+        .filter(|entry| {
+            credit_entry_key(entry)
+                .map(|key| !known_keys.contains(&key))
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut current_log_path = existing_files.last().cloned();
+    if !new_entries.is_empty() {
+        let should_rotate = current_log_path
+            .as_deref()
+            .and_then(credit_log_timestamp)
+            .map(|started_at| now_ms.saturating_sub(started_at) >= CREDIT_LOG_WINDOW_MILLIS)
+            .unwrap_or(true);
+        if should_rotate {
+            current_log_path = Some(config::config_dir().join(format!("data_{now_ms}_credit.log")));
+        }
+        let path = current_log_path
+            .as_ref()
+            .ok_or_else(|| "credit log path unavailable".to_string())?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create credit log directory: {error}"))?;
+        }
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| format!("failed to open credit log `{}`: {error}", path.display()))?;
+        for entry in &new_entries {
+            let line = serde_json::json!({
+                "synced_at_millis": now_ms,
+                "node_id": node_id,
+                "ledger": entry,
+            });
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&line).map_err(|error| error.to_string())?
+            )
+            .map_err(|error| format!("failed to write credit log: {error}"))?;
+        }
+    }
+
+    let current_entries = current_log_path
+        .as_deref()
+        .map(read_credit_log_entries)
+        .unwrap_or_default();
+    Ok(CreditLogSync {
+        current_log_path,
+        current_entries: paged_current_credit_entries(&current_entries, page, limit),
+        appended_entries: new_entries.len(),
+        page,
+        limit: limit.max(1),
+    })
+}
+
+fn local_credits_payload(
+    payload: &serde_json::Value,
+    node_id: &str,
+    sync: &CreditLogSync,
+) -> serde_json::Value {
+    let totals = local_credit_totals(payload, node_id);
+    serde_json::json!({
+        "node_id": totals.node_id,
+        "remaining_credits": totals.remaining_credits,
+        "earned_credits": totals.earned_credits,
+        "used_credits": totals.used_credits,
+        "ledger_entries": totals.ledger_entries,
+        "current_log": sync.current_log_path.as_ref().map(|path| path.display().to_string()),
+        "current_log_entries": sync.current_entries,
+        "appended_entries": sync.appended_entries,
+        "page": sync.page,
+        "limit": sync.limit,
+    })
+}
+
+fn print_local_credits_report(payload: &serde_json::Value) {
+    println!(
+        "nodeId: {}",
+        payload["node_id"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "remainingCredits: {:.2}",
+        payload["remaining_credits"].as_f64().unwrap_or(0.0)
+    );
+    println!(
+        "earnedCredits: {:.2}",
+        payload["earned_credits"].as_f64().unwrap_or(0.0)
+    );
+    println!(
+        "usedCredits: {:.2}",
+        payload["used_credits"].as_f64().unwrap_or(0.0)
+    );
+    println!(
+        "currentLog: {}",
+        payload["current_log"].as_str().unwrap_or("none")
+    );
+    println!(
+        "logPage: {} limit {}",
+        payload["page"].as_u64().unwrap_or(0),
+        payload["limit"].as_u64().unwrap_or(0)
+    );
+    if let Some(entries) = payload["current_log_entries"].as_array() {
+        if entries.is_empty() {
+            println!("entries: none");
+        } else {
+            println!("entries:");
+            for entry in entries {
+                let ledger = entry.get("ledger").unwrap_or(entry);
+                let amount = ledger
+                    .get("amount")
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0);
+                let currency = ledger
+                    .get("currency")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("credits");
+                let job_id = ledger
+                    .get("job_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown-job");
+                let created_at = ledger
+                    .get("created_at")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown-time");
+                let graph_node_id = ledger
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get("graph_node_id"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("job");
+                println!("  {created_at} {amount:.2} {currency} {job_id} {graph_node_id}");
+            }
+        }
+    }
 }
 
 /// Fetch a JSON resource from the control plane using an operator bearer token.
@@ -3863,30 +4198,34 @@ fn main() {
                 }
             }
         }
-        Commands::Credits { json } => {
+        Commands::Credits { json, limit, page } => {
             let config = current_config_or_default();
+            let node_id = current_node_id(&config);
             let token = auth_token::effective_operator_token(&config);
             match operator_get_json(&config.control_plane_url, "/v1/credits", token.as_deref()) {
                 Ok(payload) => {
+                    let sync = match sync_local_credit_log(
+                        &payload,
+                        &node_id,
+                        page,
+                        limit,
+                        now_millis(),
+                    ) {
+                        Ok(sync) => sync,
+                        Err(error) => {
+                            eprintln!("failed to sync local credit log: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let local_payload = local_credits_payload(&payload, &node_id, &sync);
                     if json {
-                        if let Err(error) = print_json(&payload) {
+                        if let Err(error) = print_json(&local_payload) {
                             eprintln!("failed to print json: {error}");
                             std::process::exit(1);
                         }
                         return;
                     }
-                    let total = payload["total"].as_f64().unwrap_or(0.0);
-                    println!("total: {total:.2}");
-                    if let Some(by_node) = payload["by_node"].as_object() {
-                        if by_node.is_empty() {
-                            println!("byNode: none");
-                        } else {
-                            for (node_id, amount) in by_node {
-                                let amount = amount.as_f64().unwrap_or(0.0);
-                                println!("  {node_id}: {amount:.2}");
-                            }
-                        }
-                    }
+                    print_local_credits_report(&local_payload);
                 }
                 Err(error) => {
                     eprintln!("failed to fetch credits: {error}");
@@ -3942,6 +4281,20 @@ mod tests {
     fn logs_command_parses() {
         let cli = Cli::try_parse_from(["opengpu", "logs", "--json"]).expect("logs should parse");
         assert!(matches!(cli.command, Commands::Logs { json: true }));
+    }
+
+    #[test]
+    fn credits_command_parses_local_pagination_flags() {
+        let cli = Cli::try_parse_from(["opengpu", "credits", "--limit", "10", "--page", "2"])
+            .expect("credits should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Credits {
+                json: false,
+                limit: 10,
+                page: 2,
+            }
+        ));
     }
 
     #[test]
@@ -4642,6 +4995,88 @@ mod tests {
         assert_eq!(
             payload["heartbeat_log_path"].as_str(),
             temp.join("heartbeat.jsonl").to_str()
+        );
+
+        std::env::remove_var("OPENGPU_HOME");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn local_credit_totals_filter_to_current_node() {
+        let payload = serde_json::json!({
+            "by_node": {
+                "node-current": 2.5,
+                "node-other": 99.0
+            },
+            "ledger": [
+                {"id": "earn-1", "device_id": "node-current", "amount": 3.0, "currency": "credits", "created_at": "1"},
+                {"id": "use-1", "device_id": "node-current", "amount": -0.5, "currency": "credits", "created_at": "2"},
+                {"id": "earn-2", "device_id": "node-other", "amount": 99.0, "currency": "credits", "created_at": "3"}
+            ]
+        });
+
+        let totals = super::local_credit_totals(&payload, "node-current");
+
+        assert_eq!(totals.node_id, "node-current");
+        assert_eq!(totals.remaining_credits, 2.5);
+        assert_eq!(totals.earned_credits, 3.0);
+        assert_eq!(totals.used_credits, 0.5);
+        assert_eq!(totals.ledger_entries, 2);
+    }
+
+    #[test]
+    fn credit_log_sync_rotates_after_thirty_minutes_and_skips_duplicates() {
+        let _guard = env_lock().lock().expect("env lock");
+        let temp = std::env::temp_dir().join(format!(
+            "opengpu-cli-credits-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir");
+        std::env::set_var("OPENGPU_HOME", &temp);
+
+        let first_payload = serde_json::json!({
+            "ledger": [
+                {"id": "scope", "device_id": "node-current", "job_id": "job-1", "amount": 1.0, "currency": "credits", "created_at": "1"},
+                {"id": "backend", "device_id": "node-current", "job_id": "job-1", "amount": 2.0, "currency": "credits", "created_at": "2"},
+                {"id": "other", "device_id": "node-other", "job_id": "job-1", "amount": 3.0, "currency": "credits", "created_at": "3"}
+            ]
+        });
+
+        let first = super::sync_local_credit_log(&first_payload, "node-current", 0, 1, 1_000)
+            .expect("first sync");
+        assert_eq!(first.appended_entries, 2);
+        assert_eq!(first.current_entries.len(), 1);
+        assert_eq!(
+            first.current_entries[0]["ledger"]["id"].as_str(),
+            Some("backend")
+        );
+
+        let duplicate = super::sync_local_credit_log(&first_payload, "node-current", 0, 25, 1_500)
+            .expect("duplicate sync");
+        assert_eq!(duplicate.appended_entries, 0);
+        assert_eq!(super::credit_log_files().len(), 1);
+
+        let rotated_payload = serde_json::json!({
+            "ledger": [
+                {"id": "scope", "device_id": "node-current", "job_id": "job-1", "amount": 1.0, "currency": "credits", "created_at": "1"},
+                {"id": "backend", "device_id": "node-current", "job_id": "job-1", "amount": 2.0, "currency": "credits", "created_at": "2"},
+                {"id": "frontend", "device_id": "node-current", "job_id": "job-1", "amount": 4.0, "currency": "credits", "created_at": "3"}
+            ]
+        });
+        let rotated = super::sync_local_credit_log(
+            &rotated_payload,
+            "node-current",
+            0,
+            25,
+            1_000 + super::CREDIT_LOG_WINDOW_MILLIS + 1,
+        )
+        .expect("rotated sync");
+        assert_eq!(rotated.appended_entries, 1);
+        assert_eq!(super::credit_log_files().len(), 2);
+        assert_eq!(
+            rotated.current_entries[0]["ledger"]["id"].as_str(),
+            Some("frontend")
         );
 
         std::env::remove_var("OPENGPU_HOME");

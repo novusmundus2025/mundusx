@@ -75,11 +75,15 @@ try {
   }
 
   $installedExe = Join-Path $installDir "opengpu.exe"
+  $compatExe = Join-Path $installDir "mundusx.exe"
   $installedAgent = Join-Path $installDir "opengpu-node-agent.exe"
   $installedRuntime = Join-Path $opengpuHome "runtimes\llama\llama-cli.exe"
   $installedRuntimeDll = Join-Path $opengpuHome "runtimes\llama\cudart64_11.dll"
   if (-not (Test-Path -LiteralPath $installedExe)) {
     throw "expected installer to write opengpu.exe"
+  }
+  if (-not (Test-Path -LiteralPath $compatExe)) {
+    throw "expected installer to write mundusx.exe compatibility alias"
   }
   if (-not (Test-Path -LiteralPath $installedAgent)) {
     throw "expected installer to write opengpu-node-agent.exe"
@@ -93,6 +97,9 @@ try {
 
   if ((Get-Content -Path $installedExe -Raw) -ne "fake opengpu windows binary") {
     throw "installed executable contents did not match release asset"
+  }
+  if ((Get-Content -Path $compatExe -Raw) -ne "fake opengpu windows binary") {
+    throw "compatibility executable contents did not match release asset"
   }
   if ((Get-Content -Path $installedRuntime -Raw) -ne "fake cuda llama runtime") {
     throw "installed runtime contents did not match release asset"
@@ -138,6 +145,7 @@ try {
 
   Remove-Item -LiteralPath $checksumPath -Force
   Remove-Item -LiteralPath $installedExe -Force
+  Remove-Item -LiteralPath $compatExe -Force
 
   $previousErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
@@ -168,6 +176,9 @@ try {
 
   if (-not (Test-Path -LiteralPath $installedExe)) {
     throw "expected installer to write opengpu.exe with local preview override"
+  }
+  if (-not (Test-Path -LiteralPath $compatExe)) {
+    throw "expected installer to write mundusx.exe with local preview override"
   }
 
   $joinedPreviewOutput = $previewOutput -join "`n"

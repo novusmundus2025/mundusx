@@ -89,7 +89,7 @@ Every supported release target must publish a platform-matched node-agent asset 
 - `opengpu-node-agent-x86_64-unknown-linux-gnu`
 - `opengpu-node-agent-x86_64-pc-windows-msvc.exe`
 
-The POSIX bootstrapper installs `opengpu-node-agent` beside `opengpu` and fails if the node-agent asset or checksum is missing. That keeps macOS and Linux contributor installs from looking complete while the executable needed for `opengpu start` is absent. Windows follows the same rule through `install.ps1`, which installs `opengpu-node-agent.exe` beside `opengpu.exe`.
+The POSIX bootstrapper installs `opengpu-node-agent` beside `opengpu` and fails if the node-agent asset or checksum is missing. It also writes a `mundusx` compatibility alias that points at `opengpu` while OpenGPU is the primary command. That keeps macOS and Linux contributor installs from looking complete while the executable needed for `opengpu start` is absent. Windows follows the same rule through `install.ps1`, which installs `opengpu-node-agent.exe` beside `opengpu.exe` and copies `mundusx.exe` as the compatibility command.
 
 Runtime bundles remain platform-specific release assets:
 
