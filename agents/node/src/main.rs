@@ -477,6 +477,9 @@ fn launch_worker_process(
                 println!("status: {}", response.status);
                 println!("backend: {}", response.backend);
                 println!("output: {}", response.output);
+                if let Some(error) = response.error.as_deref() {
+                    println!("error: {error}");
+                }
             }
             Ok(response)
         }
@@ -623,6 +626,23 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
     }
 }
 
+fn job_status_label(status: contracts::JobStatus) -> &'static str {
+    match status {
+        contracts::JobStatus::Queued => "queued",
+        contracts::JobStatus::Assigned => "assigned",
+        contracts::JobStatus::Completed => "completed",
+        contracts::JobStatus::Failed => "failed",
+    }
+}
+
+fn control_plane_completion_message(record: &JobRecord, completion: &JobCompletion) -> String {
+    format!(
+        "controlPlaneComplete: accepted {} {}",
+        job_status_label(completion.status),
+        record.job_id
+    )
+}
+
 fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &JobCompletion) {
     match signed_post_json_body::<_, JobRecord>(
         &config.control_plane_url,
@@ -631,7 +651,7 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
         identity,
         completion,
     ) {
-        Ok(record) => println!("controlPlaneComplete: ok {}", record.job_id),
+        Ok(record) => println!("{}", control_plane_completion_message(&record, completion)),
         Err(error) => eprintln!("controlPlaneComplete: {error}"),
     }
 }
@@ -1164,6 +1184,28 @@ mod tests {
             Some("worker returned failed status")
         );
         assert_eq!(completion.duration_ms, Some(7));
+    }
+
+    #[test]
+    fn control_plane_completion_message_includes_reported_status() {
+        let job = test_job();
+        let completion = JobCompletion {
+            job_id: "job-1".to_string(),
+            node_id: "node-1".to_string(),
+            worker_id: "worker-1".to_string(),
+            backend: Backend::Cuda,
+            status: contracts::JobStatus::Failed,
+            output: None,
+            error: Some("runtime failed".to_string()),
+            duration_ms: Some(9),
+            model: Some("tiny-cuda".to_string()),
+            runtime_mode: Some("cuda".to_string()),
+        };
+
+        assert_eq!(
+            control_plane_completion_message(&job, &completion),
+            "controlPlaneComplete: accepted failed job-1"
+        );
     }
 
     #[test]
