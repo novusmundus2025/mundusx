@@ -976,6 +976,31 @@ fn active_graph_node_name(payload: &serde_json::Value) -> Option<String> {
         .or_else(|| Some(active_id.to_string()))
 }
 
+fn active_graph_node(payload: &serde_json::Value) -> Option<&serde_json::Value> {
+    let job = job_plan_payload(payload);
+    let active_id = job
+        .get("active_graph_node_id")
+        .and_then(|value| value.as_str())?;
+
+    graph_nodes(payload).and_then(|nodes| {
+        nodes
+            .iter()
+            .find(|node| node.get("id").and_then(|value| value.as_str()) == Some(active_id))
+    })
+}
+
+fn active_graph_action_label(payload: &serde_json::Value) -> &'static str {
+    active_graph_node(payload)
+        .map(|node| {
+            if graph_node_is_reducer(node) {
+                "merging"
+            } else {
+                "processing"
+            }
+        })
+        .unwrap_or("waiting")
+}
+
 fn job_wait_progress_signature(payload: &serde_json::Value) -> Option<String> {
     let job = job_plan_payload(payload);
     let graph_enabled = job
@@ -989,8 +1014,9 @@ fn job_wait_progress_signature(payload: &serde_json::Value) -> Option<String> {
     let (completed, running, total) = graph_progress_counts(payload)?;
     let active =
         active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
+    let action = active_graph_action_label(payload);
     Some(format!(
-        "{}|{completed}|{running}|{total}|{active}",
+        "{}|{completed}|{running}|{total}|{action}|{active}",
         job_state(payload)
     ))
 }
@@ -999,8 +1025,9 @@ fn print_job_wait_progress(payload: &serde_json::Value) {
     if let Some((completed, running, total)) = graph_progress_counts(payload) {
         let active =
             active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
+        let action = active_graph_action_label(payload);
         eprintln!(
-            "job progress: status={} chunks={completed}/{total} completed, {running} running, active={active}",
+            "job progress: status={} chunks={completed}/{total} done, {running} running, {action}={active}",
             theme::status(&job_state(payload)),
         );
     }
@@ -1016,6 +1043,47 @@ fn graph_node_dependency_suffix(status: &str, blocked_by: &[&str]) -> String {
         format!(" waiting for {dependencies}")
     } else {
         format!(" blocked by {dependencies}")
+    }
+}
+
+fn graph_node_is_reducer(node: &serde_json::Value) -> bool {
+    let responsibility = node
+        .get("responsibility")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let name = node
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let id = node
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    responsibility.contains("merge")
+        || name.contains("final synthesis")
+        || name.contains("final answer")
+        || id.contains("final")
+        || id.contains("merge")
+}
+
+fn graph_node_display_status(node: &serde_json::Value) -> &'static str {
+    let status = node
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+
+    match status.to_ascii_lowercase().as_str() {
+        "completed" => "done",
+        "running" if graph_node_is_reducer(node) => "merging",
+        "running" => "processing",
+        "failed" => "failed",
+        "waiting" => "waiting",
+        "ready" => "ready",
+        _ => "unknown",
     }
 }
 
@@ -1088,7 +1156,7 @@ fn print_job_plan_progress(payload: &serde_json::Value) {
         println!(
             "  {}. [{}] {}{}",
             index + 1,
-            theme::status(status),
+            theme::status(graph_node_display_status(node)),
             name,
             suffix
         );
@@ -4302,8 +4370,33 @@ mod tests {
         );
         assert_eq!(
             job_wait_progress_signature(&payload).as_deref(),
-            Some("queued|1|1|3|Early development")
+            Some("queued|1|1|3|processing|Early development")
         );
+    }
+
+    #[test]
+    fn graph_progress_labels_processing_and_merging_nodes() {
+        let processing = serde_json::json!({
+            "id": "job.origins",
+            "name": "Origins and founders",
+            "status": "running",
+            "responsibility": "research"
+        });
+        let merging = serde_json::json!({
+            "id": "job.final",
+            "name": "Final synthesis",
+            "status": "running",
+            "responsibility": "merge"
+        });
+        let completed = serde_json::json!({
+            "id": "job.origins",
+            "name": "Origins and founders",
+            "status": "completed"
+        });
+
+        assert_eq!(super::graph_node_display_status(&processing), "processing");
+        assert_eq!(super::graph_node_display_status(&merging), "merging");
+        assert_eq!(super::graph_node_display_status(&completed), "done");
     }
 
     #[test]
