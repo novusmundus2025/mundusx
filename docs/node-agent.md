@@ -23,7 +23,7 @@ The node agent is the background service that lives on a provider machine.
 - `config.json` - user and provider settings
 - `identity.json` - public device metadata, fingerprint, and encrypted device identity blob
 - `agent-state.json` - last heartbeat snapshot
-- `heartbeat.jsonl` - local heartbeat history, automatically pruned to the latest 30 minutes
+- `heartbeat.jsonl` - local heartbeat history, automatically reset every 30 minutes
 
 ## Current Behavior
 
