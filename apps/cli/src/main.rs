@@ -1006,6 +1006,19 @@ fn print_job_wait_progress(payload: &serde_json::Value) {
     }
 }
 
+fn graph_node_dependency_suffix(status: &str, blocked_by: &[&str]) -> String {
+    if blocked_by.is_empty() {
+        return String::new();
+    }
+
+    let dependencies = blocked_by.join(", ");
+    if status.eq_ignore_ascii_case("waiting") {
+        format!(" waiting for {dependencies}")
+    } else {
+        format!(" blocked by {dependencies}")
+    }
+}
+
 fn print_job_plan_progress(payload: &serde_json::Value) {
     let job = job_plan_payload(payload);
     let graph_enabled = job
@@ -1071,11 +1084,7 @@ fn print_job_plan_progress(payload: &serde_json::Value) {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let suffix = if blocked_by.is_empty() {
-            String::new()
-        } else {
-            format!(" blocked by {}", blocked_by.join(", "))
-        };
+        let suffix = graph_node_dependency_suffix(status, &blocked_by);
         println!(
             "  {}. [{}] {}{}",
             index + 1,
@@ -4366,6 +4375,21 @@ mod tests {
         });
 
         assert_eq!(graph_progress_counts(&payload), Some((1, 1, 3)));
+    }
+
+    #[test]
+    fn waiting_graph_nodes_use_dependency_wording_not_blocked_wording() {
+        let dependencies = vec!["job.origins", "job.early_development"];
+
+        assert_eq!(
+            super::graph_node_dependency_suffix("waiting", &dependencies),
+            " waiting for job.origins, job.early_development"
+        );
+        assert_eq!(
+            super::graph_node_dependency_suffix("failed", &dependencies),
+            " blocked by job.origins, job.early_development"
+        );
+        assert_eq!(super::graph_node_dependency_suffix("waiting", &[]), "");
     }
 
     #[test]
