@@ -5,7 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-const HEARTBEAT_LOG_RETENTION_SECONDS: i64 = 30 * 60;
+const HEARTBEAT_LOG_TTL_SECONDS: i64 = 30 * 60;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -114,7 +114,7 @@ pub fn save_heartbeat(heartbeat: &Heartbeat) -> std::io::Result<PathBuf> {
     } else {
         String::new()
     };
-    let pruned = prune_heartbeat_log(&existing, &line, HEARTBEAT_LOG_RETENTION_SECONDS);
+    let pruned = reset_expired_heartbeat_log(&existing, &line, HEARTBEAT_LOG_TTL_SECONDS);
     fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -124,26 +124,28 @@ pub fn save_heartbeat(heartbeat: &Heartbeat) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn prune_heartbeat_log(existing: &str, new_line: &str, retention_seconds: i64) -> String {
+fn reset_expired_heartbeat_log(existing: &str, new_line: &str, ttl_seconds: i64) -> String {
     let Some(current_timestamp) = heartbeat_line_timestamp(new_line) else {
         return format!("{new_line}\n");
     };
-    let cutoff = current_timestamp.saturating_sub(retention_seconds);
-    let mut lines = existing
+    let valid_existing = existing
         .lines()
-        .chain(std::iter::once(new_line))
-        .filter(|line| {
-            heartbeat_line_timestamp(line)
-                .map(|timestamp| timestamp >= cutoff)
-                .unwrap_or(false)
-        })
-        .map(str::to_string)
+        .filter_map(|line| heartbeat_line_timestamp(line).map(|timestamp| (timestamp, line)))
         .collect::<Vec<_>>();
 
-    if lines.is_empty() {
-        lines.push(new_line.to_string());
+    let Some((first_timestamp, _)) = valid_existing.first() else {
+        return format!("{new_line}\n");
+    };
+
+    if current_timestamp.saturating_sub(*first_timestamp) >= ttl_seconds {
+        return format!("{new_line}\n");
     }
 
+    let mut lines = valid_existing
+        .into_iter()
+        .map(|(_, line)| line.to_string())
+        .collect::<Vec<_>>();
+    lines.push(new_line.to_string());
     format!("{}\n", lines.join("\n"))
 }
 
@@ -295,22 +297,35 @@ mod tests {
     }
 
     #[test]
-    fn save_heartbeat_keeps_only_recent_heartbeat_history() {
+    fn save_heartbeat_resets_history_after_thirty_minutes() {
         with_temp_home(|| {
             save_heartbeat(&heartbeat("1000")).unwrap();
-            save_heartbeat(&heartbeat("2700")).unwrap();
+            save_heartbeat(&heartbeat("1700")).unwrap();
             save_heartbeat(&heartbeat("2801")).unwrap();
 
             let raw = fs::read_to_string(heartbeat_log_path()).unwrap();
             assert!(!raw.contains(r#""updated_at":"1000""#));
-            assert!(raw.contains(r#""updated_at":"2700""#));
+            assert!(!raw.contains(r#""updated_at":"1700""#));
             assert!(raw.contains(r#""updated_at":"2801""#));
+        });
+    }
+
+    #[test]
+    fn save_heartbeat_keeps_history_until_thirty_minutes() {
+        with_temp_home(|| {
+            save_heartbeat(&heartbeat("1000")).unwrap();
+            save_heartbeat(&heartbeat("2799")).unwrap();
+
+            let raw = fs::read_to_string(heartbeat_log_path()).unwrap();
+            assert!(raw.contains(r#""updated_at":"1000""#));
+            assert!(raw.contains(r#""updated_at":"2799""#));
         });
     }
 
     #[test]
     fn save_heartbeat_drops_malformed_history_entries() {
         with_temp_home(|| {
+            fs::create_dir_all(config_dir()).unwrap();
             fs::write(heartbeat_log_path(), "not-json\n").unwrap();
             save_heartbeat(&heartbeat("5000")).unwrap();
 
