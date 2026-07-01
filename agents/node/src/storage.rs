@@ -5,6 +5,8 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+const HEARTBEAT_LOG_RETENTION_SECONDS: i64 = 30 * 60;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub version: u32,
@@ -107,12 +109,47 @@ pub fn save_heartbeat(heartbeat: &Heartbeat) -> std::io::Result<PathBuf> {
     }
 
     let line = serde_json::to_string(heartbeat).expect("heartbeat serialization");
+    let existing = if path.exists() {
+        fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let pruned = prune_heartbeat_log(&existing, &line, HEARTBEAT_LOG_RETENTION_SECONDS);
     fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(&path)?
-        .write_all(format!("{line}\n").as_bytes())?;
+        .write_all(pruned.as_bytes())?;
     Ok(path)
+}
+
+fn prune_heartbeat_log(existing: &str, new_line: &str, retention_seconds: i64) -> String {
+    let Some(current_timestamp) = heartbeat_line_timestamp(new_line) else {
+        return format!("{new_line}\n");
+    };
+    let cutoff = current_timestamp.saturating_sub(retention_seconds);
+    let mut lines = existing
+        .lines()
+        .chain(std::iter::once(new_line))
+        .filter(|line| {
+            heartbeat_line_timestamp(line)
+                .map(|timestamp| timestamp >= cutoff)
+                .unwrap_or(false)
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        lines.push(new_line.to_string());
+    }
+
+    format!("{}\n", lines.join("\n"))
+}
+
+fn heartbeat_line_timestamp(line: &str) -> Option<i64> {
+    let heartbeat: Heartbeat = serde_json::from_str(line).ok()?;
+    heartbeat.updated_at.parse::<i64>().ok()
 }
 
 pub fn load_last_heartbeat() -> std::io::Result<Option<Heartbeat>> {
@@ -254,6 +291,32 @@ mod tests {
 
             let restored = load_last_heartbeat().unwrap().expect("heartbeat");
             assert_eq!(restored.updated_at, "20");
+        });
+    }
+
+    #[test]
+    fn save_heartbeat_keeps_only_recent_heartbeat_history() {
+        with_temp_home(|| {
+            save_heartbeat(&heartbeat("1000")).unwrap();
+            save_heartbeat(&heartbeat("2700")).unwrap();
+            save_heartbeat(&heartbeat("2801")).unwrap();
+
+            let raw = fs::read_to_string(heartbeat_log_path()).unwrap();
+            assert!(!raw.contains(r#""updated_at":"1000""#));
+            assert!(raw.contains(r#""updated_at":"2700""#));
+            assert!(raw.contains(r#""updated_at":"2801""#));
+        });
+    }
+
+    #[test]
+    fn save_heartbeat_drops_malformed_history_entries() {
+        with_temp_home(|| {
+            fs::write(heartbeat_log_path(), "not-json\n").unwrap();
+            save_heartbeat(&heartbeat("5000")).unwrap();
+
+            let raw = fs::read_to_string(heartbeat_log_path()).unwrap();
+            assert!(!raw.contains("not-json"));
+            assert!(raw.contains(r#""updated_at":"5000""#));
         });
     }
 }
