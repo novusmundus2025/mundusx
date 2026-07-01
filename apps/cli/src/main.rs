@@ -1007,6 +1007,45 @@ fn active_graph_action_label(payload: &serde_json::Value) -> &'static str {
         .unwrap_or("waiting")
 }
 
+fn graph_node_label(node: &serde_json::Value) -> String {
+    node.get("name")
+        .and_then(|value| value.as_str())
+        .or_else(|| node.get("id").and_then(|value| value.as_str()))
+        .unwrap_or("unknown chunk")
+        .to_string()
+}
+
+fn running_graph_chunk_summaries(payload: &serde_json::Value) -> Vec<String> {
+    let Some(nodes) = graph_nodes(payload) else {
+        return Vec::new();
+    };
+
+    nodes
+        .iter()
+        .filter(|node| {
+            node.get("status")
+                .and_then(|value| value.as_str())
+                .map(|status| status.eq_ignore_ascii_case("running"))
+                .unwrap_or(false)
+        })
+        .map(|node| {
+            let mut summary = graph_node_label(node);
+            if let Some(assigned_node) = node
+                .get("assigned_node_id")
+                .and_then(|value| value.as_str())
+            {
+                summary.push_str(&format!("@{assigned_node}"));
+            }
+            if let Some(worker) = node.get("worker_id").and_then(|value| value.as_str()) {
+                summary.push_str(&format!("/worker={worker}"));
+            } else {
+                summary.push_str("/worker=pending");
+            }
+            summary
+        })
+        .collect()
+}
+
 fn job_wait_progress_signature(payload: &serde_json::Value) -> Option<String> {
     let job = job_plan_payload(payload);
     let graph_enabled = job
@@ -1021,8 +1060,9 @@ fn job_wait_progress_signature(payload: &serde_json::Value) -> Option<String> {
     let active =
         active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
     let action = active_graph_action_label(payload);
+    let running_chunks = running_graph_chunk_summaries(payload).join(";");
     Some(format!(
-        "{}|{completed}|{running}|{total}|{action}|{active}",
+        "{}|{completed}|{running}|{total}|{action}|{active}|{running_chunks}",
         job_state(payload)
     ))
 }
@@ -1032,10 +1072,19 @@ fn print_job_wait_progress(payload: &serde_json::Value) {
         let active =
             active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
         let action = active_graph_action_label(payload);
-        eprintln!(
-            "job progress: status={} chunks={completed}/{total} done, {running} running, {action}={active}",
-            theme::status(&job_state(payload)),
-        );
+        let running_chunks = running_graph_chunk_summaries(payload);
+        if running_chunks.len() > 1 {
+            eprintln!(
+                "job progress: status={} chunks={completed}/{total} done, {running} running, {action}={active}, runningChunks={}",
+                theme::status(&job_state(payload)),
+                running_chunks.join("; "),
+            );
+        } else {
+            eprintln!(
+                "job progress: status={} chunks={completed}/{total} done, {running} running, {action}={active}",
+                theme::status(&job_state(payload)),
+            );
+        }
     }
 }
 
@@ -1236,21 +1285,9 @@ fn timeout_job_detail(payload: &serde_json::Value) -> String {
         details.push(format!("activeChunk={active_node_id}"));
     }
 
-    if let Some(nodes) = graph_nodes(payload) {
-        if let Some(node) = nodes.iter().find(|node| {
-            node.get("status")
-                .and_then(|value| value.as_str())
-                .map(|status| status.eq_ignore_ascii_case("running"))
-                .unwrap_or(false)
-        }) {
-            if let Some(name) = node
-                .get("name")
-                .and_then(|value| value.as_str())
-                .or_else(|| node.get("id").and_then(|value| value.as_str()))
-            {
-                details.push(format!("runningChunk={name}"));
-            }
-        }
+    let running_chunks = running_graph_chunk_summaries(payload);
+    if !running_chunks.is_empty() {
+        details.push(format!("runningChunks={}", running_chunks.join("; ")));
     }
 
     if details.is_empty() {
@@ -4723,7 +4760,7 @@ mod tests {
         );
         assert_eq!(
             job_wait_progress_signature(&payload).as_deref(),
-            Some("queued|1|1|3|processing|Early development")
+            Some("queued|1|1|3|processing|Early development|Early development/worker=pending")
         );
     }
 
@@ -4795,7 +4832,7 @@ mod tests {
                 "active_graph_node_id": "job.origins",
                 "graph": {
                     "nodes": [
-                        {"id": "job.origins", "name": "Origins and founders", "status": "running"},
+                        {"id": "job.origins", "name": "Origins and founders", "status": "running", "assigned_node_id": "node-1"},
                         {"id": "job.final_merge", "name": "Final synthesis", "status": "waiting"}
                     ]
                 }
@@ -4804,7 +4841,41 @@ mod tests {
 
         assert_eq!(
             super::timeout_job_detail(&payload),
-            " (assignedNode=node-1, activeChunk=job.origins, runningChunk=Origins and founders)"
+            " (assignedNode=node-1, activeChunk=job.origins, runningChunks=Origins and founders@node-1/worker=pending)"
+        );
+    }
+
+    #[test]
+    fn running_graph_chunk_summaries_include_all_nodes_and_workers() {
+        let payload = serde_json::json!({
+            "job": {
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "job.origins",
+                            "name": "Origins and founders",
+                            "status": "running",
+                            "assigned_node_id": "node-1",
+                            "worker_id": "worker-a"
+                        },
+                        {
+                            "id": "job.expansion",
+                            "name": "Expansion",
+                            "status": "running",
+                            "assigned_node_id": "node-2"
+                        },
+                        {"id": "job.final_merge", "name": "Final synthesis", "status": "waiting"}
+                    ]
+                }
+            }
+        });
+
+        assert_eq!(
+            super::running_graph_chunk_summaries(&payload),
+            vec![
+                "Origins and founders@node-1/worker=worker-a".to_string(),
+                "Expansion@node-2/worker=pending".to_string()
+            ]
         );
     }
 
