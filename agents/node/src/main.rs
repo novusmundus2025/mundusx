@@ -529,6 +529,28 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
         }
     );
     println!(
+        "llamaServerAvailable: {}",
+        if health.llama_server_available {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "persistentRuntime: {}",
+        if health.persistent_runtime_warm {
+            "warm"
+        } else if health.llama_server_available {
+            "unavailable"
+        } else {
+            "batch"
+        }
+    );
+    println!(
+        "persistentRuntimeUrl: {}",
+        health.persistent_runtime_url.as_deref().unwrap_or("none")
+    );
+    println!(
         "blasDeviceAvailable: {}",
         if health.blas_device_available {
             "yes"
@@ -584,6 +606,7 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
             .unwrap_or_else(|| "unknown".to_string())
     );
     println!("runtimeMode: {}", health.runtime_mode);
+    println!("runtimeKind: {}", health.runtime_kind);
     println!("checkedAt: {}", health.checked_at);
     println!(
         "policyAllowed: {}",
@@ -856,6 +879,20 @@ fn print_status(json: bool) {
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let config = load_config_or_exit();
     let identity = load_identity_or_exit();
+    let persistent_runtime = match worker::start_persistent_runtime(
+        &config.effective_model_dir(),
+        config.active_model.as_deref(),
+        resolved_backend(&config),
+    ) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("persistentRuntime: unavailable ({error}); falling back to batch");
+            None
+        }
+    };
+    if let Some(runtime) = persistent_runtime.as_ref() {
+        std::env::set_var("OPENGPU_LLAMA_SERVER_URL", runtime.url());
+    }
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
     let state = resolved_state(&config);
@@ -887,6 +924,13 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     println!("heartbeatLogPath: {}", heartbeat_log_path().display());
     println!("registration: ready");
     println!("heartbeat: ready");
+    println!(
+        "persistentRuntime: {}",
+        persistent_runtime
+            .as_ref()
+            .map(|runtime| runtime.url())
+            .unwrap_or("batch")
+    );
 
     if let Err(error) = save_agent_state(&heartbeat) {
         eprintln!("failed to save agent state: {error}");
@@ -1070,6 +1114,10 @@ mod tests {
             model_name: Some("tiny-cuda".to_string()),
             model_path: Some("/tmp/models/tiny.gguf".to_string()),
             llama_cli_available: backend != Backend::Cuda,
+            llama_server_available: false,
+            persistent_runtime_warm: false,
+            persistent_runtime_url: None,
+            runtime_kind: "batch".to_string(),
             blas_device_available: backend != Backend::Cuda,
             cuda_device_available: backend == Backend::Cuda,
             cuda_driver_available: backend == Backend::Cuda,

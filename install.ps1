@@ -286,6 +286,7 @@ $compatExe = Join-Path $InstallDir "mundusx.exe"
 $finalAgent = Join-Path $InstallDir "opengpu-node-agent.exe"
 $runtimeInstallDir = Join-Path (Get-OpenGpuHome) "runtimes\llama"
 $finalCudaRuntime = Join-Path $runtimeInstallDir "llama-cli.exe"
+$finalCudaServerRuntime = Join-Path $runtimeInstallDir "llama-server.exe"
 $manifest = $null
 $trustedRuntimePath = $null
 $agentExpected = $null
@@ -387,6 +388,14 @@ try {
     }
     $runtimeExeChecksum = (Get-FileHash -Algorithm SHA256 -Path $finalCudaRuntime).Hash.ToUpperInvariant()
     $trustedRuntimePath = Save-TrustedRuntimePath -RuntimeName "llama_cli" -RuntimePath $finalCudaRuntime -Checksum $runtimeExeChecksum
+    $foundServerRuntime = Get-ChildItem -Path $runtimeInstallDir -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+    if ($foundServerRuntime) {
+      if ($foundServerRuntime.FullName -ne $finalCudaServerRuntime) {
+        Copy-Item -LiteralPath $foundServerRuntime.FullName -Destination $finalCudaServerRuntime
+      }
+      $serverRuntimeExeChecksum = (Get-FileHash -Algorithm SHA256 -Path $finalCudaServerRuntime).Hash.ToUpperInvariant()
+      $trustedRuntimePath = Save-TrustedRuntimePath -RuntimeName "llama_server" -RuntimePath $finalCudaServerRuntime -Checksum $serverRuntimeExeChecksum
+    }
   }
 } finally {
   Remove-Item -Recurse -Force -Path $tempDir -ErrorAction SilentlyContinue

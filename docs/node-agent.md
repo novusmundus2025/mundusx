@@ -41,6 +41,7 @@ The prototype agent:
 - posts the worker result back to the control plane with output, error, duration, model/runtime, backend, worker ID, and node ID metadata
 - converts subprocess launch failures into failed job completions so claimed jobs do not disappear silently
 - includes the worker health snapshot in heartbeats so the control plane can surface backend readiness
+- starts a pinned `llama-server` warm runtime when available, routes local inference through it, and falls back to batch `llama-cli` if the warm runtime is unavailable
 - reports NVIDIA CUDA driver/device availability, device name, VRAM, and low-VRAM classification when the selected backend is `cuda`
 - treats the configured model directory as a local cache, not as something the control plane owns
 - emits policy-aware heartbeats on a loop
@@ -79,7 +80,7 @@ The CUDA worker execution loop is still intentionally conservative. A low-VRAM n
 
 ### Building From Source Instead Of `install.ps1`
 
-`install.ps1` is the only path that automatically downloads and pins the CUDA `llama.cpp` runtime (see [docs/install-strategy.md](install-strategy.md)). A dev machine that instead runs:
+`install.ps1` is the only path that automatically downloads and pins the CUDA `llama.cpp` runtime (see [docs/install-strategy.md](install-strategy.md)). When the bundle includes `llama-server.exe`, the installer pins it as `llama_server` so `opengpu start` can keep the active GGUF model warm between jobs. A dev machine that instead runs:
 
 ```powershell
 cargo build -p opengpu -p opengpu-node-agent --release
@@ -94,8 +95,16 @@ To fix that without running the full installer, either:
   1. download the matching Windows CUDA build and `cudart` runtime zip from [ggml-org/llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) (match the CUDA version to `nvidia-smi`'s reported `CUDA Version`)
   2. extract both into `<OPENGPU_HOME>\runtimes\llama` (default `~\.opengpu\runtimes\llama`) so `llama-cli.exe` sits next to its CUDA DLLs
   3. compute its checksum with `Get-FileHash -Algorithm SHA256`
-  4. write `<OPENGPU_HOME>\trusted-runtime-paths.json` pinning `llama_cli.path` (absolute) and `llama_cli.sha256`, per the format in `agents/node/README.md`
+  4. write `<OPENGPU_HOME>\trusted-runtime-paths.json` pinning `llama_cli.path` (absolute) and `llama_cli.sha256`; also pin `llama_server.path` and `llama_server.sha256` when `llama-server.exe` is present
   5. re-run `opengpu-node-agent health` to confirm `llamaCliAvailable: yes` and `policyAllowed: yes`
+
+Health reports `runtimeKind` as:
+
+- `batch` when only `llama-cli` is available.
+- `persistent-unavailable` when `llama-server` is pinned but no warm server is currently healthy.
+- `persistent-warm` when a warm server is reachable through `OPENGPU_LLAMA_SERVER_URL`.
+
+Set `OPENGPU_PERSISTENT_RUNTIME=off` to force batch mode. `opengpu start` owns the warm process in foreground mode and falls back to batch execution if startup or completion through the warm server fails.
 
 ## Job Lifecycle
 
