@@ -2131,7 +2131,35 @@ fn remove_node_agent_pid() {
     let _ = std::fs::remove_file(node_agent_pid_path());
 }
 
-fn stop_process_by_pid(pid: u32) -> Result<(), String> {
+#[cfg(windows)]
+fn is_process_alive(pid: u32) -> bool {
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .stdin(Stdio::null())
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn is_process_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Returns Ok(true) if a running process was found and stopped, Ok(false) if
+/// the pid was already gone (nothing to do), Err if the stop attempt failed.
+fn stop_process_by_pid(pid: u32) -> Result<bool, String> {
+    if !is_process_alive(pid) {
+        return Ok(false);
+    }
+
     #[cfg(windows)]
     let status = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -2151,13 +2179,13 @@ fn stop_process_by_pid(pid: u32) -> Result<(), String> {
         .map_err(|error| format!("failed to run kill for agent pid {pid}: {error}"))?;
 
     if status.success() {
-        Ok(())
+        Ok(true)
     } else {
         Err(format!("agent stop command exited with {status}"))
     }
 }
 
-fn stop_background_node_agent() -> Result<Option<u32>, String> {
+fn read_node_agent_pid() -> Result<Option<u32>, String> {
     let path = node_agent_pid_path();
     if !path.exists() {
         return Ok(None);
@@ -2173,10 +2201,61 @@ fn stop_background_node_agent() -> Result<Option<u32>, String> {
         .trim()
         .parse::<u32>()
         .map_err(|error| format!("invalid agent pid file `{}`: {error}", path.display()))?;
+    Ok(Some(pid))
+}
+
+fn stop_background_node_agent() -> Result<Option<u32>, String> {
+    let Some(pid) = read_node_agent_pid()? else {
+        return Ok(None);
+    };
 
     let result = stop_process_by_pid(pid);
     remove_node_agent_pid();
-    result.map(|_| Some(pid))
+    match result {
+        Ok(true) => Ok(Some(pid)),
+        Ok(false) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Warns if the last recorded session ended without going through the
+/// normal shutdown path (crash, forced kill, closed terminal, etc.), using
+/// whatever state it last reported before going silent.
+fn report_stale_previous_session() {
+    let Ok(Some(pid)) = read_node_agent_pid() else {
+        return;
+    };
+    if is_process_alive(pid) {
+        return;
+    }
+
+    let state_path = config::config_dir().join("agent-state.json");
+    let Ok(raw) = std::fs::read_to_string(&state_path) else {
+        return;
+    };
+    let Ok(state) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let agent_state = state
+        .get("agent_state")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let age_desc = state
+        .get("updated_at")
+        .and_then(|value| value.as_str())
+        .and_then(|value| value.parse::<i64>().ok())
+        .and_then(|updated_at| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs() as i64;
+            Some(format!(" {}s ago", (now - updated_at).max(0)))
+        })
+        .unwrap_or_default();
+
+    println!(
+        "previousSessionWarning: node agent (pid {pid}) is no longer running but last reported state `{agent_state}`{age_desc} — it likely ended without a clean shutdown (crash, forced kill, closed terminal, or sleep)"
+    );
 }
 
 fn send_node_agent_stop() -> Result<(), String> {
@@ -2256,6 +2335,21 @@ fn mark_disconnected() -> Result<Config, String> {
     Ok(config)
 }
 
+fn tee_stream<R: Read, W: Write>(mut reader: R, mut mirror: W, mut log: std::fs::File) {
+    let mut buffer = [0u8; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let _ = mirror.write_all(&buffer[..n]);
+                let _ = mirror.flush();
+                let _ = log.write_all(&buffer[..n]);
+                let _ = log.flush();
+            }
+        }
+    }
+}
+
 fn run_node_agent_foreground(
     mut command: Command,
     agent: PathBuf,
@@ -2265,10 +2359,32 @@ fn run_node_agent_foreground(
         command.arg("--verbose");
     }
 
+    let log_path = node_agent_log_path();
+    let error_log_path = node_agent_error_log_path();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create agent log directory: {error}"))?;
+    }
+    let stdout_log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("failed to open agent log `{}`: {error}", log_path.display()))?;
+    let stderr_log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&error_log_path)
+        .map_err(|error| {
+            format!(
+                "failed to open agent error log `{}`: {error}",
+                error_log_path.display()
+            )
+        })?;
+
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(windows)]
     {
@@ -2287,12 +2403,19 @@ fn run_node_agent_foreground(
     );
     println!("agentCommand: {} run", agent.display());
     println!("agentHint: press Esc or Ctrl-C to disconnect");
+    println!("agentLog: {}", log_path.display());
+    println!("agentErrorLog: {}", error_log_path.display());
 
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to run node agent `{}`: {error}", agent.display()))?;
     let pid = child.id();
     write_node_agent_pid(pid)?;
+
+    let stdout_pipe = child.stdout.take().expect("node agent stdout piped");
+    let stderr_pipe = child.stderr.take().expect("node agent stderr piped");
+    let stdout_tee = thread::spawn(move || tee_stream(stdout_pipe, io::stdout(), stdout_log));
+    let stderr_tee = thread::spawn(move || tee_stream(stderr_pipe, io::stderr(), stderr_log));
 
     let _raw_mode = enable_session_raw_mode();
     loop {
@@ -2303,6 +2426,8 @@ fn run_node_agent_foreground(
             )
         })? {
             remove_node_agent_pid();
+            let _ = stdout_tee.join();
+            let _ = stderr_tee.join();
             if status.success() {
                 return Ok(());
             }
@@ -2322,6 +2447,8 @@ fn run_node_agent_foreground(
                     }
                     let _ = stop_process_by_pid(pid);
                     remove_node_agent_pid();
+                    let _ = stdout_tee.join();
+                    let _ = stderr_tee.join();
                     println!("disconnected {}", config.device_id);
                     println!("connected: no");
                     println!("paused: yes");
@@ -2342,6 +2469,8 @@ fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
     let agent = resolve_node_agent_executable();
     let mut command = Command::new(&agent);
     command.arg("run");
+
+    report_stale_previous_session();
 
     if let Err(error) = stop_background_node_agent() {
         eprintln!("agentStopWarning: {error}");

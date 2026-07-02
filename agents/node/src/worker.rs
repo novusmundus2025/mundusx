@@ -11,7 +11,9 @@ use std::io;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -1015,22 +1017,71 @@ pub fn launch_worker(
         command.arg("--seed").arg(seed.to_string());
     }
 
-    let output = command
+    let mut child = command
         .arg("--json")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("failed to launch worker: {error}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut stdout_pipe = child.stdout.take().expect("worker stdout piped");
+    let mut stderr_pipe = child.stderr.take().expect("worker stderr piped");
+    let stdout_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let deadline = Instant::now() + worker_timeout();
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to poll worker: {error}"))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(format!(
+                "worker timed out after {}s and was terminated",
+                worker_timeout().as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         return Err(format!(
             "worker exited {} — {}",
-            output.status.code().unwrap_or(-1),
+            status.code().unwrap_or(-1),
             stderr.lines().next().unwrap_or("no stderr")
         ));
     }
 
-    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8(stdout).map_err(|error| error.to_string())?;
     serde_json::from_str(stdout.trim()).map_err(|error| error.to_string())
+}
+
+fn worker_timeout() -> Duration {
+    std::env::var("OPENGPU_WORKER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(300))
 }
 
 #[cfg(test)]
