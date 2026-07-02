@@ -1060,10 +1060,16 @@ pub fn launch_worker(
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            // Kill the whole tree, not just the direct child: the worker
+            // subprocess spawns llama-cli as its own child, and on Windows
+            // that grandchild can inherit our stdout/stderr pipe handles.
+            // A single-process kill leaves llama-cli running as an orphan
+            // holding the pipe open, which would hang stdout_reader/
+            // stderr_reader forever waiting for EOF that never comes — so
+            // deliberately skip joining them here and let them unwind on
+            // their own once the tree-kill closes every handle.
+            kill_process_tree(child.id());
             let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
             return Err(format!(
                 "worker timed out after {}s and was terminated",
                 worker_timeout().as_secs()
@@ -1095,6 +1101,32 @@ fn worker_timeout() -> Duration {
         .filter(|value| *value > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(300))
+}
+
+#[cfg(windows)]
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("pkill")
+        .args(["-9", "-P", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 #[cfg(test)]
