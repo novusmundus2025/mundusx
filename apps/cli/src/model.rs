@@ -472,6 +472,7 @@ fn download_model_from_option(
 
     let dest = model_file_path(config, name, &option);
     if dest.exists() {
+        eprintln!("model download: cached `{name}` at {}", dest.display());
         return Ok(false);
     }
 
@@ -493,8 +494,11 @@ fn download_model_from_option(
 
     if is_local_source {
         let source_path = option.source_url.trim_start_matches("file://");
+        eprintln!("model download: copying `{name}` from {source_path}");
         fs::copy(source_path, &tmp)?;
     } else {
+        eprintln!("model download: starting `{name}`");
+        eprintln!("model download: {}", option.source_url);
         let status = Command::new("curl")
             .args([
                 "-fL",
@@ -502,7 +506,7 @@ fn download_model_from_option(
                 "3",
                 "--continue-at",
                 "-",
-                "--silent",
+                "--progress-bar",
                 "--show-error",
                 "--output",
             ])
@@ -520,6 +524,7 @@ fn download_model_from_option(
     }
 
     if !option.sha256.trim().is_empty() {
+        eprintln!("model download: verifying checksum");
         verify_sha256(&tmp, &option.sha256)?;
     }
 
@@ -527,6 +532,7 @@ fn download_model_from_option(
         let _ = fs::remove_file(&dest);
     }
     fs::rename(&tmp, &dest)?;
+    eprintln!("model download: saved `{name}` to {}", dest.display());
     Ok(true)
 }
 
