@@ -2270,6 +2270,13 @@ fn run_node_agent_foreground(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+
     println!(
         "agentMode: {}",
         if debug {
