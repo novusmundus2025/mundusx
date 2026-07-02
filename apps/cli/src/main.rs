@@ -808,11 +808,51 @@ fn default_max_tokens_for_prompt(prompt: &str) -> u32 {
         return 16;
     }
 
+    if looks_like_complete_code_prompt(&lower) {
+        return 2048;
+    }
+
     if looks_like_long_form_prompt(&lower) {
         return 768;
     }
 
     128
+}
+
+fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
+    let direct_markers = [
+        "complete program",
+        "complete source",
+        "complete code",
+        "full program",
+        "full source",
+        "entire program",
+        "working program",
+        "turbo c program",
+    ];
+
+    if direct_markers
+        .iter()
+        .any(|marker| lower_prompt.contains(marker))
+    {
+        return true;
+    }
+
+    let program_request = ["write a program", "create a program", "make a program"]
+        .iter()
+        .any(|marker| lower_prompt.contains(marker));
+    let code_context = [
+        "c program",
+        "turbo c",
+        "source",
+        "code",
+        "binary file",
+        "file handling",
+    ]
+    .iter()
+    .any(|marker| lower_prompt.contains(marker));
+
+    program_request && code_context
 }
 
 fn looks_like_long_form_prompt(lower_prompt: &str) -> bool {
@@ -4842,6 +4882,17 @@ mod tests {
         assert_eq!(
             super::effective_max_tokens("Write a comprehensive report about GPU markets", None),
             768
+        );
+    }
+
+    #[test]
+    fn run_defaults_complete_code_prompts_to_full_generation_budget() {
+        assert_eq!(
+            super::effective_max_tokens(
+                "Give me a complete turbo c program to handle enrollment of students save in binary file",
+                None
+            ),
+            2048
         );
     }
 
