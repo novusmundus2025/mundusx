@@ -77,6 +77,26 @@ Expected health behavior:
 
 The CUDA worker execution loop is still intentionally conservative. A low-VRAM node should advertise capability metadata and stay eligible only for modest CUDA work until model compatibility checks land.
 
+### Building From Source Instead Of `install.ps1`
+
+`install.ps1` is the only path that automatically downloads and pins the CUDA `llama.cpp` runtime (see [docs/install-strategy.md](install-strategy.md)). A dev machine that instead runs:
+
+```powershell
+cargo build -p opengpu -p opengpu-node-agent --release
+```
+
+gets working `opengpu.exe`/`opengpu-node-agent.exe` binaries but no `llama-cli.exe`, so `opengpu-node-agent health` reports `llamaCliAvailable: no`, `blasDeviceAvailable`/`cudaDeviceAvailable: no` as applicable, and `policyAllowed: no`.
+
+To fix that without running the full installer, either:
+
+- run `scripts/windows-dev-llama-runtime.ps1`, which builds both binaries, downloads the CUDA `llama.cpp` release matching the machine's NVIDIA driver, and pins it in `trusted-runtime-paths.json` automatically (see `agents/node/README.md` for flags), or
+- do it by hand:
+  1. download the matching Windows CUDA build and `cudart` runtime zip from [ggml-org/llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) (match the CUDA version to `nvidia-smi`'s reported `CUDA Version`)
+  2. extract both into `<OPENGPU_HOME>\runtimes\llama` (default `~\.opengpu\runtimes\llama`) so `llama-cli.exe` sits next to its CUDA DLLs
+  3. compute its checksum with `Get-FileHash -Algorithm SHA256`
+  4. write `<OPENGPU_HOME>\trusted-runtime-paths.json` pinning `llama_cli.path` (absolute) and `llama_cli.sha256`, per the format in `agents/node/README.md`
+  5. re-run `opengpu-node-agent health` to confirm `llamaCliAvailable: yes` and `policyAllowed: yes`
+
 ## Job Lifecycle
 
 When connected and policy-allowed, the run loop keeps heartbeats flowing while it checks for queued work:

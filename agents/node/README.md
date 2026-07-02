@@ -20,4 +20,16 @@ Enterprise Windows hosts can pin trusted runtime executables in the non-secret c
 
 When this file is present, paths must be absolute. Missing executables, hash changes, and relative paths are reported as missing or untrusted runtime diagnostics instead of falling back to PATH lookup.
 
+## Building From Source On Windows (Dev Machines)
+
+`cargo build -p opengpu -p opengpu-node-agent --release` only builds the two Rust binaries. It does not fetch or pin the CUDA llama.cpp runtime the way `install.ps1` does, so a fresh dev machine will report `llamaCliAvailable: no` and `policyAllowed: no` from `opengpu-node-agent health` until `llama-cli.exe` is installed and pinned.
+
+Run `scripts/windows-dev-llama-runtime.ps1` after (or instead of) a manual `cargo build` to automate that setup:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-dev-llama-runtime.ps1
+```
+
+It builds both binaries, detects the NVIDIA driver's supported CUDA version, downloads the matching `llama.cpp` Windows CUDA release and `cudart` runtime zip from [ggml-org/llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases), extracts `llama-cli.exe` into `<OPENGPU_HOME>\runtimes\llama`, pins it in `trusted-runtime-paths.json`, and runs `opengpu-node-agent health` to confirm. Pass `-SkipBuild` to only refresh the runtime, `-CudaVersion 12.4` (or `13.3`) to override auto-detection, or `-Tag b9856` to pin a specific `llama.cpp` release instead of latest.
+
 See [docs/node-agent.md](/Users/DBATALL/Documents/mundusx/docs/node-agent.md) for the current prototype commands and local state files.
