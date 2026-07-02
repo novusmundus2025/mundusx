@@ -217,9 +217,25 @@ if (-not (Test-Path -LiteralPath $llamaCliPath)) {
 $checksum = (Get-FileHash -Algorithm SHA256 -Path $llamaCliPath).Hash.ToLowerInvariant()
 $trustedPath = Save-TrustedRuntimePath -RuntimeName "llama_cli" -RuntimePath $llamaCliPath -Checksum $checksum
 
+$llamaServerPath = Join-Path $runtimeDir "llama-server.exe"
+if (-not (Test-Path -LiteralPath $llamaServerPath)) {
+  $foundServer = Get-ChildItem -Path $runtimeDir -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+  if ($foundServer) {
+    $llamaServerPath = $foundServer.FullName
+  }
+}
+if (Test-Path -LiteralPath $llamaServerPath) {
+  $serverChecksum = (Get-FileHash -Algorithm SHA256 -Path $llamaServerPath).Hash.ToLowerInvariant()
+  $trustedPath = Save-TrustedRuntimePath -RuntimeName "llama_server" -RuntimePath $llamaServerPath -Checksum $serverChecksum
+}
+
 Write-Output ""
 Write-Output "Installed llama-cli.exe to $llamaCliPath"
 Write-Output "Checksum: $checksum"
+if (Test-Path -LiteralPath $llamaServerPath) {
+  Write-Output "Installed llama-server.exe to $llamaServerPath"
+  Write-Output "Server checksum: $serverChecksum"
+}
 Write-Output "Pinned trusted runtime path in $trustedPath"
 
 if (-not $SkipHealthCheck) {

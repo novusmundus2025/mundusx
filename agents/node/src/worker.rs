@@ -11,7 +11,7 @@ use std::io;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -104,6 +104,8 @@ pub struct TrustedExecutable {
 pub struct TrustedRuntimePaths {
     #[serde(default)]
     pub llama_cli: Option<TrustedExecutable>,
+    #[serde(default)]
+    pub llama_server: Option<TrustedExecutable>,
     #[serde(default)]
     pub nvidia_smi: Option<TrustedExecutable>,
 }
@@ -241,6 +243,7 @@ fn trusted_runtime_executable(name: &str) -> Result<PathBuf, String> {
     let trusted = load_trusted_runtime_paths()?;
     let pinned = trusted.as_ref().and_then(|paths| match name {
         "llama-cli" => paths.llama_cli.as_ref(),
+        "llama-server" => paths.llama_server.as_ref(),
         "nvidia-smi" => paths.nvidia_smi.as_ref(),
         _ => None,
     });
@@ -431,6 +434,116 @@ fn probe_llama_cli_available() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn probe_llama_server_executable() -> Result<PathBuf, String> {
+    trusted_runtime_executable("llama-server")
+}
+
+fn configured_llama_server_url() -> Option<String> {
+    env::var("OPENGPU_LLAMA_SERVER_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+}
+
+fn llama_server_health_ok(url: &str) -> bool {
+    ureq::get(&format!("{url}/health"))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .map(|response| response.status() < 500)
+        .unwrap_or(false)
+}
+
+pub struct PersistentRuntimeHandle {
+    child: Child,
+    url: String,
+}
+
+impl PersistentRuntimeHandle {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+}
+
+impl Drop for PersistentRuntimeHandle {
+    fn drop(&mut self) {
+        kill_process_tree(self.child.id());
+        let _ = self.child.wait();
+    }
+}
+
+pub fn start_persistent_runtime(
+    model_dir: &Path,
+    model_name: Option<&str>,
+    backend: Backend,
+) -> Result<Option<PersistentRuntimeHandle>, String> {
+    if env::var("OPENGPU_PERSISTENT_RUNTIME")
+        .map(|value| value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("false"))
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    let Some(model_path) = resolve_model_path(model_dir, model_name).ok() else {
+        return Ok(None);
+    };
+    let llama_server = match probe_llama_server_executable() {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    let port = env::var("OPENGPU_LLAMA_SERVER_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(8789);
+    let url = format!("http://127.0.0.1:{port}");
+    if llama_server_health_ok(&url) {
+        return Ok(None);
+    }
+
+    let mut command = Command::new(llama_server);
+    command
+        .arg("-m")
+        .arg(model_path)
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("-c")
+        .arg("4096")
+        .arg("--threads")
+        .arg("2")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if matches!(backend, Backend::Cuda) {
+        command.arg("--device").arg("CUDA0");
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to launch llama-server: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to poll llama-server: {error}"))?
+        {
+            return Err(format!(
+                "llama-server exited during startup with {}",
+                status.code().unwrap_or(-1)
+            ));
+        }
+        if llama_server_health_ok(&url) {
+            return Ok(Some(PersistentRuntimeHandle { child, url }));
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+
+    kill_process_tree(child.id());
+    let _ = child.wait();
+    Err("llama-server did not become healthy within 20s".to_string())
 }
 
 fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
@@ -633,6 +746,45 @@ fn run_llama_command(
     Ok((generated, runtime_mode.to_string()))
 }
 
+fn run_llama_server_completion(
+    url: &str,
+    prompt: &str,
+    backend: Backend,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    seed: u64,
+) -> Result<(String, String), String> {
+    let payload = serde_json::json!({
+        "prompt": prompt,
+        "n_predict": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "seed": seed,
+    });
+    let response = ureq::post(&format!("{url}/completion"))
+        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
+        .send_json(payload)
+        .map_err(|error| format!("llama-server completion failed: {error}"))?;
+    let value = response
+        .into_json::<serde_json::Value>()
+        .map_err(|error| format!("llama-server returned invalid json: {error}"))?;
+    let generated = value
+        .get("content")
+        .or_else(|| value.get("response"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "llama-server response did not include content".to_string())?
+        .to_string();
+    let runtime_mode = match backend {
+        Backend::Cuda => "persistent-warm-cuda",
+        Backend::M => "persistent-warm-blas",
+        _ => "persistent-warm",
+    };
+    Ok((generated, runtime_mode.to_string()))
+}
+
 /// llama-cli's context window must hold the prompt tokens *and* the
 /// requested generation budget, or it overflows and aborts mid-run. Estimate
 /// prompt tokens conservatively (~3 chars/token) and size the context to fit
@@ -667,6 +819,12 @@ pub fn probe_worker_health(
     let mut notes = Vec::new();
     let mut model_path = None;
     let mut llama_cli_available = false;
+    let mut llama_server_available = false;
+    let persistent_runtime_url = configured_llama_server_url();
+    let persistent_runtime_warm = persistent_runtime_url
+        .as_deref()
+        .map(llama_server_health_ok)
+        .unwrap_or(false);
     let mut blas_device_available = false;
     let power_state = probe_power_state();
     let cuda = probe_cuda_diagnostics();
@@ -692,6 +850,20 @@ pub fn probe_worker_health(
             Err(error) => notes.push(error),
         },
     }
+    match probe_llama_server_executable() {
+        Ok(_) => {
+            llama_server_available = true;
+            if persistent_runtime_warm {
+                notes.push("persistent llama-server runtime is warm".to_string());
+            } else {
+                notes.push(
+                    "persistent llama-server runtime is available but not currently warm"
+                        .to_string(),
+                );
+            }
+        }
+        Err(error) => notes.push(format!("persistent runtime unavailable: {error}")),
+    }
 
     if backend == Backend::Cuda {
         notes.extend(cuda.notes.clone());
@@ -716,6 +888,13 @@ pub fn probe_worker_health(
     } else {
         "blas".to_string()
     };
+    let runtime_kind = if persistent_runtime_warm {
+        "persistent-warm".to_string()
+    } else if llama_server_available {
+        "persistent-unavailable".to_string()
+    } else {
+        "batch".to_string()
+    };
     let supported_runtime_modes = if healthy {
         vec!["local".to_string()]
     } else {
@@ -728,6 +907,10 @@ pub fn probe_worker_health(
         model_name: model_name.map(|name| name.to_string()),
         model_path,
         llama_cli_available,
+        llama_server_available,
+        persistent_runtime_warm,
+        persistent_runtime_url,
+        runtime_kind,
         blas_device_available,
         cuda_device_available: cuda.device_available,
         cuda_driver_available: cuda.driver_available,
@@ -901,15 +1084,24 @@ fn run_llama_request(
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
     let seed = request.seed.unwrap_or(42);
 
-    let (generated, runtime_mode) = run_llama_command(
-        &model_path,
-        &prompt,
-        backend,
-        max_tokens,
-        temperature,
-        top_p,
-        seed,
-    )?;
+    let warm_result = configured_llama_server_url()
+        .as_deref()
+        .filter(|url| llama_server_health_ok(url))
+        .map(|url| {
+            run_llama_server_completion(url, &prompt, backend, max_tokens, temperature, top_p, seed)
+        });
+    let (generated, runtime_mode) = match warm_result {
+        Some(Ok(result)) => result,
+        Some(Err(_)) | None => run_llama_command(
+            &model_path,
+            &prompt,
+            backend,
+            max_tokens,
+            temperature,
+            top_p,
+            seed,
+        )?,
+    };
 
     Ok(WorkerLaunchResponse {
         job_id: request.job_id.clone(),
@@ -1166,6 +1358,7 @@ mod tests {
         fs::create_dir_all(&temp_dir).expect("temp dir");
         let previous_home = env::var_os("OPENGPU_HOME");
         let previous_paths = env::var_os("OPENGPU_TRUSTED_RUNTIME_PATHS");
+        let previous_server_url = env::var_os("OPENGPU_LLAMA_SERVER_URL");
         env::set_var("OPENGPU_HOME", &temp_dir);
         env::set_var(
             "OPENGPU_TRUSTED_RUNTIME_PATHS",
@@ -1181,6 +1374,10 @@ mod tests {
         match previous_paths {
             Some(value) => env::set_var("OPENGPU_TRUSTED_RUNTIME_PATHS", value),
             None => env::remove_var("OPENGPU_TRUSTED_RUNTIME_PATHS"),
+        }
+        match previous_server_url {
+            Some(value) => env::set_var("OPENGPU_LLAMA_SERVER_URL", value),
+            None => env::remove_var("OPENGPU_LLAMA_SERVER_URL"),
         }
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -1335,6 +1532,7 @@ mod tests {
                         path: home.join("missing-llama-cli").display().to_string(),
                         sha256: None,
                     }),
+                    llama_server: None,
                     nvidia_smi: None,
                 },
             );
@@ -1381,6 +1579,7 @@ mod tests {
                         path: home.join("missing-llama-cli").display().to_string(),
                         sha256: None,
                     }),
+                    llama_server: None,
                     nvidia_smi: None,
                 },
             );
@@ -1414,11 +1613,36 @@ mod tests {
                         path: runtime.display().to_string(),
                         sha256: Some(digest),
                     }),
+                    llama_server: None,
                     nvidia_smi: None,
                 },
             );
 
             let resolved = trusted_runtime_executable("llama-cli").expect("trusted runtime");
+
+            assert_eq!(resolved, runtime);
+        });
+    }
+
+    #[test]
+    fn trusted_runtime_resolves_pinned_llama_server_path() {
+        with_temp_runtime_home(|home| {
+            let runtime = home.join("trusted-llama-server");
+            fs::write(&runtime, b"trusted server runtime").expect("runtime file");
+            let digest = sha256_file(&runtime).expect("runtime hash");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: None,
+                    llama_server: Some(TrustedExecutable {
+                        path: runtime.display().to_string(),
+                        sha256: Some(digest),
+                    }),
+                    nvidia_smi: None,
+                },
+            );
+
+            let resolved = trusted_runtime_executable("llama-server").expect("trusted runtime");
 
             assert_eq!(resolved, runtime);
         });
@@ -1436,6 +1660,7 @@ mod tests {
                         path: runtime.display().to_string(),
                         sha256: Some("0".repeat(64)),
                     }),
+                    llama_server: None,
                     nvidia_smi: None,
                 },
             );
@@ -1457,6 +1682,7 @@ mod tests {
                         path: "llama-cli".to_string(),
                         sha256: None,
                     }),
+                    llama_server: None,
                     nvidia_smi: None,
                 },
             );

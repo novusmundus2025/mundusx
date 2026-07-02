@@ -208,6 +208,14 @@ pub struct WorkerHealthReport {
     pub model_name: Option<String>,
     pub model_path: Option<String>,
     pub llama_cli_available: bool,
+    #[serde(default)]
+    pub llama_server_available: bool,
+    #[serde(default)]
+    pub persistent_runtime_warm: bool,
+    #[serde(default)]
+    pub persistent_runtime_url: Option<String>,
+    #[serde(default)]
+    pub runtime_kind: String,
     pub blas_device_available: bool,
     #[serde(default)]
     pub cuda_device_available: bool,
