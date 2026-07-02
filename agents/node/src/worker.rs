@@ -595,7 +595,7 @@ fn run_llama_command(
         .arg("--no-display-prompt")
         .arg("--no-perf")
         .arg("-c")
-        .arg("512")
+        .arg(context_size_for(prompt, max_tokens).to_string())
         .arg("--threads")
         .arg("2")
         .arg("--threads-batch")
@@ -631,6 +631,19 @@ fn run_llama_command(
     let generated = extract_llama_response(prompt, &transcript);
 
     Ok((generated, runtime_mode.to_string()))
+}
+
+/// llama-cli's context window must hold the prompt tokens *and* the
+/// requested generation budget, or it overflows and aborts mid-run. Estimate
+/// prompt tokens conservatively (~3 chars/token) and size the context to fit
+/// prompt + max_tokens plus headroom, clamped to a range that stays cheap on
+/// low-VRAM cards.
+fn context_size_for(prompt: &str, max_tokens: u32) -> u32 {
+    let prompt_token_estimate = (prompt.chars().count() as u32 / 3).max(32);
+    let needed = prompt_token_estimate
+        .saturating_add(max_tokens)
+        .saturating_add(256);
+    needed.clamp(1024, 4096)
 }
 
 fn first_actionable_stderr_line(stderr: &str) -> &str {
@@ -1088,6 +1101,28 @@ fn worker_timeout() -> Duration {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn context_size_covers_prompt_and_generation_budget() {
+        let prompt = "Give me a detailed history of honda from its origins to today.";
+        let max_tokens = 768;
+        let context = context_size_for(prompt, max_tokens);
+        let prompt_token_estimate = (prompt.chars().count() as u32 / 3).max(32);
+        assert!(
+            context >= prompt_token_estimate + max_tokens,
+            "context {context} must fit prompt (~{prompt_token_estimate} tokens) plus max_tokens {max_tokens}"
+        );
+    }
+
+    #[test]
+    fn context_size_has_a_floor_for_short_prompts() {
+        assert_eq!(context_size_for("hi", 4), 1024);
+    }
+
+    #[test]
+    fn context_size_is_capped_for_low_vram_cards() {
+        assert_eq!(context_size_for("hi", 100_000), 4096);
+    }
 
     fn with_temp_runtime_home(test: impl FnOnce(&Path)) {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
