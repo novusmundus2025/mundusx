@@ -1128,6 +1128,60 @@ fn print_job_wait_progress(payload: &serde_json::Value) {
     }
 }
 
+struct CliSpinner {
+    enabled: bool,
+    frame: usize,
+    width: usize,
+}
+
+impl CliSpinner {
+    fn new() -> Self {
+        Self {
+            enabled: io::stderr().is_terminal(),
+            frame: 0,
+            width: 0,
+        }
+    }
+
+    fn tick(&mut self, label: &str) {
+        if !self.enabled {
+            return;
+        }
+
+        const FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
+        let line = format!("{} {}", FRAMES[self.frame % FRAMES.len()], label);
+        self.frame = self.frame.wrapping_add(1);
+        self.width = self.width.max(line.chars().count());
+        eprint!("\r{line:<width$}", width = self.width);
+        let _ = io::stderr().flush();
+    }
+
+    fn clear(&mut self) {
+        if !self.enabled || self.width == 0 {
+            return;
+        }
+
+        eprint!("\r{:<width$}\r", "", width = self.width);
+        let _ = io::stderr().flush();
+        self.width = 0;
+    }
+}
+
+fn job_wait_spinner_label(payload: &serde_json::Value) -> String {
+    let status = job_state(payload);
+    if let Some((completed, running, total)) = graph_progress_counts(payload) {
+        let active =
+            active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
+        let action = active_graph_action_label(payload);
+        format!(
+            "waiting for job: status={} chunks={completed}/{total} done, {running} running, {action}={active}",
+            status
+        )
+    } else {
+        format!("waiting for job: status={status}")
+    }
+}
+
 fn graph_node_dependency_suffix(status: &str, blocked_by: &[&str]) -> String {
     if blocked_by.is_empty() {
         return String::new();
@@ -1288,18 +1342,23 @@ fn wait_for_job(
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let interval = Duration::from_secs(interval_secs.max(1));
     let mut last_progress_signature: Option<String> = None;
+    let mut spinner = CliSpinner::new();
 
     loop {
         let payload = get_job(config, job_id)?;
         if job_is_terminal(&payload) {
+            spinner.clear();
             return Ok(payload);
         }
         let progress_signature = job_wait_progress_signature(&payload);
         if progress_signature.is_some() && progress_signature != last_progress_signature {
+            spinner.clear();
             print_job_wait_progress(&payload);
             last_progress_signature = progress_signature;
         }
+        spinner.tick(&job_wait_spinner_label(&payload));
         if Instant::now() >= deadline {
+            spinner.clear();
             let detail = timeout_job_detail(&payload);
             return Err(format!(
                 "timed out waiting for job {job_id} while status was {}{detail}",
