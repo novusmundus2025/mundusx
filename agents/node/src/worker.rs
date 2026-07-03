@@ -874,13 +874,16 @@ pub fn probe_worker_health(
         }
     }
 
+    let local_runtime_available = llama_cli_available || persistent_runtime_warm;
     let healthy = if backend == Backend::Cuda {
         model_path.is_some()
-            && llama_cli_available
+            && local_runtime_available
             && cuda.device_available
             && cuda.driver_available
     } else {
-        model_path.is_some() && llama_cli_available && blas_device_available
+        model_path.is_some()
+            && local_runtime_available
+            && (blas_device_available || persistent_runtime_warm)
     };
 
     let runtime_mode = if backend == Backend::Cuda {
@@ -1324,6 +1327,8 @@ fn kill_process_tree(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
     use std::sync::{Mutex, OnceLock};
 
     #[test]
@@ -1388,6 +1393,76 @@ mod tests {
             serde_json::to_string_pretty(&paths).expect("trusted paths json"),
         )
         .expect("trusted paths");
+    }
+
+    fn start_mock_llama_server(completion: &'static str, expected_requests: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock llama server");
+        let addr = listener.local_addr().expect("mock llama server addr");
+        std::thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("mock llama accept");
+                let mut request_bytes = Vec::new();
+                let mut header_end = None;
+                let mut content_length = 0_usize;
+                loop {
+                    let mut buffer = [0_u8; 1024];
+                    let size = stream.read(&mut buffer).expect("mock llama read");
+                    if size == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buffer[..size]);
+                    if header_end.is_none() {
+                        header_end = request_bytes
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|index| index + 4);
+                        if let Some(end) = header_end {
+                            let headers = String::from_utf8_lossy(&request_bytes[..end]);
+                            content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    if name.eq_ignore_ascii_case("content-length") {
+                                        value.trim().parse::<usize>().ok()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(0);
+                        }
+                    }
+                    if let Some(end) = header_end {
+                        if request_bytes.len() >= end + content_length {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8_lossy(&request_bytes);
+                let body = if request.starts_with("GET /health") {
+                    "{}".to_string()
+                } else {
+                    assert!(
+                        request.starts_with("POST /completion"),
+                        "unexpected request: {request}"
+                    );
+                    assert!(
+                        request.contains("\"n_predict\""),
+                        "completion request should include token budget: {request}"
+                    );
+                    serde_json::json!({ "content": completion }).to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("mock llama write");
+            }
+        });
+
+        format!("http://{addr}")
     }
 
     #[test]
@@ -1597,6 +1672,91 @@ mod tests {
                 .notes
                 .iter()
                 .any(|note| note.contains("missing llama-cli")));
+        });
+    }
+
+    #[test]
+    fn warm_persistent_runtime_advertises_local_support_without_llama_cli() {
+        with_temp_runtime_home(|home| {
+            let model_dir = home.join("models");
+            let model_cache = model_dir.join("qwen");
+            fs::create_dir_all(&model_cache).expect("model dir");
+            fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
+            let server_runtime = home.join("trusted-llama-server");
+            fs::write(&server_runtime, b"trusted server runtime").expect("server runtime");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: None,
+                    llama_server: Some(TrustedExecutable {
+                        path: server_runtime.display().to_string(),
+                        sha256: None,
+                    }),
+                    nvidia_smi: None,
+                },
+            );
+            let url = start_mock_llama_server("ready", 1);
+            env::set_var("OPENGPU_LLAMA_SERVER_URL", url);
+
+            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::M);
+
+            assert!(health.healthy);
+            assert!(!health.llama_cli_available);
+            assert!(health.llama_server_available);
+            assert!(health.persistent_runtime_warm);
+            assert_eq!(health.runtime_kind, "persistent-warm");
+            assert_eq!(health.supported_runtime_modes, vec!["local".to_string()]);
+        });
+    }
+
+    #[test]
+    fn execute_request_prefers_warm_llama_server_without_spawning_cli() {
+        with_temp_runtime_home(|home| {
+            let model_dir = home.join("models");
+            let model_cache = model_dir.join("qwen");
+            fs::create_dir_all(&model_cache).expect("model dir");
+            fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: home.join("missing-llama-cli").display().to_string(),
+                        sha256: None,
+                    }),
+                    llama_server: None,
+                    nvidia_smi: None,
+                },
+            );
+            let previous_model_dir = env::var_os("OPENGPU_MODEL_DIR");
+            env::set_var("OPENGPU_MODEL_DIR", &model_dir);
+            let url = start_mock_llama_server("hello from warm server", 2);
+            env::set_var("OPENGPU_LLAMA_SERVER_URL", url);
+
+            let response = execute_request(&WorkerLaunchRequest {
+                job_id: "job-1".to_string(),
+                node_id: "node-1".to_string(),
+                backend: Backend::M,
+                prompt: "hello".to_string(),
+                model: Some("qwen".to_string()),
+                system_prompt: None,
+                max_tokens: Some(4),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                seed: Some(42),
+            });
+
+            match previous_model_dir {
+                Some(value) => env::set_var("OPENGPU_MODEL_DIR", value),
+                None => env::remove_var("OPENGPU_MODEL_DIR"),
+            }
+
+            assert_eq!(response.status, "completed");
+            assert_eq!(
+                response.runtime_mode.as_deref(),
+                Some("persistent-warm-blas")
+            );
+            assert!(response.output.contains("response=hello from warm server"));
+            assert!(response.error.is_none());
         });
     }
 
