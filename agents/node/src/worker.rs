@@ -250,7 +250,27 @@ fn trusted_runtime_executable(name: &str) -> Result<PathBuf, String> {
 
     match pinned {
         Some(pinned) => verify_trusted_executable(name, pinned),
+        None if name == "llama-server" => {
+            if let Some(cli) = trusted.as_ref().and_then(|paths| paths.llama_cli.as_ref()) {
+                let cli_path = verify_trusted_executable("llama-cli", cli)?;
+                if let Some(runtime_dir) = cli_path.parent() {
+                    let sibling = runtime_dir.join(platform_executable_name("llama-server"));
+                    if sibling.is_file() {
+                        return Ok(sibling);
+                    }
+                }
+            }
+            Ok(PathBuf::from(name))
+        }
         None => Ok(PathBuf::from(name)),
+    }
+}
+
+fn platform_executable_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
     }
 }
 
@@ -1805,6 +1825,61 @@ mod tests {
             let resolved = trusted_runtime_executable("llama-server").expect("trusted runtime");
 
             assert_eq!(resolved, runtime);
+        });
+    }
+
+    #[test]
+    fn trusted_runtime_resolves_llama_server_beside_pinned_cli() {
+        with_temp_runtime_home(|home| {
+            let runtime_dir = home.join("runtimes").join("llama");
+            fs::create_dir_all(&runtime_dir).expect("runtime dir");
+            let cli_runtime = runtime_dir.join(platform_executable_name("llama-cli"));
+            let server_runtime = runtime_dir.join(platform_executable_name("llama-server"));
+            fs::write(&cli_runtime, b"trusted cli runtime").expect("cli runtime");
+            fs::write(&server_runtime, b"trusted server runtime").expect("server runtime");
+            let digest = sha256_file(&cli_runtime).expect("cli runtime hash");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: cli_runtime.display().to_string(),
+                        sha256: Some(digest),
+                    }),
+                    llama_server: None,
+                    nvidia_smi: None,
+                },
+            );
+
+            let resolved = trusted_runtime_executable("llama-server").expect("trusted sibling");
+
+            assert_eq!(resolved, server_runtime);
+        });
+    }
+
+    #[test]
+    fn trusted_runtime_rejects_llama_server_sibling_when_cli_hash_changed() {
+        with_temp_runtime_home(|home| {
+            let runtime_dir = home.join("runtimes").join("llama");
+            fs::create_dir_all(&runtime_dir).expect("runtime dir");
+            let cli_runtime = runtime_dir.join(platform_executable_name("llama-cli"));
+            let server_runtime = runtime_dir.join(platform_executable_name("llama-server"));
+            fs::write(&cli_runtime, b"trusted cli runtime").expect("cli runtime");
+            fs::write(&server_runtime, b"trusted server runtime").expect("server runtime");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: cli_runtime.display().to_string(),
+                        sha256: Some("not-the-real-hash".to_string()),
+                    }),
+                    llama_server: None,
+                    nvidia_smi: None,
+                },
+            );
+
+            let error = trusted_runtime_executable("llama-server").expect_err("cli hash must fail");
+
+            assert!(error.contains("untrusted llama-cli"));
         });
     }
 
