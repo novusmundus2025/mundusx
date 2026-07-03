@@ -403,12 +403,16 @@ fn red(text: impl AsRef<str>) -> String {
     format!("\x1b[31m{}\x1b[0m", text.as_ref())
 }
 
+fn is_unknown_node_error(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("unknown node")
+}
+
 fn send_registration(
     config: &AgentConfig,
     identity: &DeviceIdentity,
     registration: &AgentRegistration,
     verbose: bool,
-) {
+) -> bool {
     match http::signed_post_json(
         &config.control_plane_url,
         "/v1/register",
@@ -423,8 +427,12 @@ fn send_registration(
                     response.lines().next().unwrap_or("no response line")
                 );
             }
+            true
         }
-        Err(error) => eprintln!("controlPlaneRegister: {error}"),
+        Err(error) => {
+            eprintln!("controlPlaneRegister: {error}");
+            false
+        }
     }
 }
 
@@ -434,13 +442,14 @@ fn send_heartbeat(
     heartbeat: &Heartbeat,
     verbose: bool,
 ) {
-    match http::signed_post_json(
+    let result = http::signed_post_json(
         &config.control_plane_url,
         "/v1/heartbeat",
         &config.device_id,
         identity,
         heartbeat,
-    ) {
+    );
+    match result {
         Ok(response) => {
             if verbose {
                 println!(
@@ -449,7 +458,32 @@ fn send_heartbeat(
                 );
             }
         }
-        Err(error) => eprintln!("controlPlaneHeartbeat: {error}"),
+        Err(error) => {
+            eprintln!("controlPlaneHeartbeat: {error}");
+            if is_unknown_node_error(&error) {
+                eprintln!("controlPlaneHeartbeat: re-registering missing node");
+                let registration = build_registration(config, identity);
+                if send_registration(config, identity, &registration, verbose) {
+                    match http::signed_post_json(
+                        &config.control_plane_url,
+                        "/v1/heartbeat",
+                        &config.device_id,
+                        identity,
+                        heartbeat,
+                    ) {
+                        Ok(response) => {
+                            if verbose {
+                                println!(
+                                    "controlPlaneHeartbeat: ok ({})",
+                                    response.lines().next().unwrap_or("no response line")
+                                );
+                            }
+                        }
+                        Err(retry_error) => eprintln!("controlPlaneHeartbeat: {retry_error}"),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -644,6 +678,21 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
         Ok(response) => response.job,
         Err(error) => {
             eprintln!("controlPlaneClaim: {error}");
+            if is_unknown_node_error(&error) {
+                eprintln!("controlPlaneClaim: re-registering missing node");
+                let registration = build_registration(config, identity);
+                if send_registration(config, identity, &registration, false) {
+                    match signed_get_json::<JobClaimResponse>(
+                        &config.control_plane_url,
+                        &path,
+                        &config.device_id,
+                        identity,
+                    ) {
+                        Ok(response) => return response.job,
+                        Err(retry_error) => eprintln!("controlPlaneClaim: {retry_error}"),
+                    }
+                }
+            }
             None
         }
     }
@@ -1088,6 +1137,15 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn detects_unknown_node_control_plane_errors() {
+        assert!(is_unknown_node_error(
+            "controlPlaneHeartbeat: HTTP 401: {\"error\":\"unknown node\"}"
+        ));
+        assert!(is_unknown_node_error("HTTP 401: UNKNOWN NODE"));
+        assert!(!is_unknown_node_error("HTTP 401: invalid signature"));
+    }
 
     fn test_config() -> AgentConfig {
         AgentConfig {
