@@ -14,7 +14,7 @@ This is the current command surface for the Rust CLI.
 - `opengpu cap --percent <value>` - save a contribution budget directly
 - `opengpu cap --reset` - clear the saved contribution budget
 - `opengpu status` - show local state, detected backend, local provider status, and local policy readiness
-- `opengpu exit` - leave local contribution mode and pause the machine
+- `opengpu exit` - leave local contribution mode, pause the machine, and cool any warm GPU runtime
 - `opengpu model list` - show the local model cache and active model
 - `opengpu model use` - open the official model picker, download/cache the selected model, and mark it active
 - `opengpu model use <name>` - activate a cached model, or download an official open preset first and then activate it
@@ -44,7 +44,7 @@ These remain available, but they are hidden from the default `--help` output so 
 
 - The CLI currently operates on local state only.
 - Real control-plane calls and node registration will come later.
-- The active `opengpu start` foreground session can be stopped with `Esc` or `Ctrl-C`, which rolls local state back to disconnected and paused.
+- The active `opengpu start` foreground session can be stopped with `Esc` or `Ctrl-C`, which rolls local state back to disconnected and paused, stops the node agent, and releases any warm `llama-server` GPU runtime.
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected and policy allows it.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
 - `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet, and whether it is using Keychain or the local encrypted fallback.

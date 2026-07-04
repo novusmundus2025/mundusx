@@ -48,6 +48,7 @@ The prototype agent:
 - sends the power source, battery state, and policy allowance with each heartbeat
 - writes the last heartbeat to disk
 - treats paused or disconnected state as non-active
+- exits and cools the persistent `llama-server` runtime when local config changes to paused or disconnected, so `opengpu exit`, `opengpu disconnect`, `Esc`, and `Ctrl-C` release GPU memory instead of leaving the model warm
 - reports itself as paused to the control plane when the Mac policy says the node should not launch jobs
 - currently speaks plain HTTP to the prototype control plane
 - signs device requests with the existing device keypair through the local OS signer
@@ -104,7 +105,7 @@ Health reports `runtimeKind` as:
 - `persistent-unavailable` when `llama-server` is pinned but no warm server is currently healthy.
 - `persistent-warm` when a warm server is reachable through `OPENGPU_LLAMA_SERVER_URL`.
 
-Set `OPENGPU_PERSISTENT_RUNTIME=off` to force batch mode. `opengpu start` owns the warm process in foreground mode and falls back to batch execution if startup or completion through the warm server fails.
+Set `OPENGPU_PERSISTENT_RUNTIME=off` to force batch mode. `opengpu start` owns the warm process in foreground mode and falls back to batch execution if startup or completion through the warm server fails. Disconnecting or exiting the node drops the warm runtime handle, stops `llama-server`, releases VRAM, and lets the GPU return to idle power.
 
 ## Job Lifecycle
 
