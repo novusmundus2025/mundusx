@@ -925,18 +925,26 @@ fn print_status(json: bool) {
     );
 }
 
+fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
+    config.connected && !config.paused
+}
+
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let config = load_config_or_exit();
     let identity = load_identity_or_exit();
-    let persistent_runtime = match worker::start_persistent_runtime(
-        &config.effective_model_dir(),
-        config.active_model.as_deref(),
-        resolved_backend(&config),
-    ) {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("persistentRuntime: unavailable ({error}); falling back to batch");
-            None
+    let mut persistent_runtime = if json || !should_keep_runtime_warm(&config) {
+        None
+    } else {
+        match worker::start_persistent_runtime(
+            &config.effective_model_dir(),
+            config.active_model.as_deref(),
+            resolved_backend(&config),
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("persistentRuntime: unavailable ({error}); falling back to batch");
+                None
+            }
         }
     };
     if let Some(runtime) = persistent_runtime.as_ref() {
@@ -1003,7 +1011,39 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
 
     loop {
         thread::sleep(Duration::from_secs(interval));
-        let heartbeat = build_heartbeat(&config);
+        let latest_config = match load_agent_config() {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                eprintln!("agentStop: config missing; cooling persistent runtime");
+                drop(persistent_runtime.take());
+                std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+                break;
+            }
+            Err(error) => {
+                eprintln!(
+                    "agentStop: failed to reload config ({error}); cooling persistent runtime"
+                );
+                drop(persistent_runtime.take());
+                std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+                break;
+            }
+        };
+        if !should_keep_runtime_warm(&latest_config) {
+            let heartbeat = build_heartbeat(&latest_config);
+            let _ = save_agent_state(&heartbeat);
+            let _ = save_heartbeat(&heartbeat);
+            send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+            drop(persistent_runtime.take());
+            std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+            println!("persistentRuntime: stopped");
+            println!(
+                "{}",
+                red(format!("disconnected {}", latest_config.device_id))
+            );
+            break;
+        }
+
+        let heartbeat = build_heartbeat(&latest_config);
         if let Err(error) = save_agent_state(&heartbeat) {
             eprintln!("failed to save agent state: {error}");
             break;
@@ -1012,11 +1052,11 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             eprintln!("failed to save heartbeat: {error}");
             break;
         }
-        send_heartbeat(&config, &identity, &heartbeat, verbose);
+        send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
         if verbose {
             println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
         }
-        process_pending_job(&config, json, verbose);
+        process_pending_job(&latest_config, json, verbose);
         let _ = io::stdout().flush();
     }
 }
@@ -1163,6 +1203,19 @@ mod tests {
             active_model: Some("tiny-cuda".to_string()),
             models: vec!["tiny-cuda".to_string()],
         }
+    }
+
+    #[test]
+    fn keeps_persistent_runtime_warm_only_for_active_connected_nodes() {
+        let mut config = test_config();
+        assert!(should_keep_runtime_warm(&config));
+
+        config.paused = true;
+        assert!(!should_keep_runtime_warm(&config));
+
+        config.paused = false;
+        config.connected = false;
+        assert!(!should_keep_runtime_warm(&config));
     }
 
     fn test_health(backend: Backend) -> WorkerHealthReport {

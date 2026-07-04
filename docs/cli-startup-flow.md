@@ -145,7 +145,7 @@ the CLI:
 13. Keeps the reused secure device identity attached to the local config when available.
 14. Starts the installed `opengpu-node-agent` companion binary in a foreground contribution session when the secure device identity is ready.
 15. Keeps the terminal attached so status and worker logs remain visible.
-16. Treats `Esc` or `Ctrl-C` as a graceful disconnect: local state is saved as disconnected and paused, and the node agent is stopped.
+16. Treats `Esc` or `Ctrl-C` as a graceful disconnect: local state is saved as disconnected and paused, the node agent is stopped, and any warm `llama-server` runtime is cooled so GPU memory is released.
 
 For daemon mode, run:
 
@@ -197,7 +197,8 @@ the CLI:
 1. Marks the local config as disconnected.
 2. Pauses contribution.
 3. Stops the recorded node agent when one is running.
-4. Leaves the identity and config in place for the next `start`.
+4. Cools any persistent `llama-server` runtime owned by that agent so the GPU can return to idle power.
+5. Leaves the identity and config in place for the next `start`.
 
 ## Status
 
