@@ -1,12 +1,25 @@
 # MundusX
 
-MundusX is the product and platform we are building here. `opengpu` is the current CLI command name and compatibility binary, while the broader public OpenGPU ecosystem is treated as separate.
+**Build AI Together.**
 
-This repository contains the public, contributor-facing pieces of MundusX. The operator/control-plane side lives in a separate private repo.
+MundusX is a decentralized AI compute network that connects idle CPUs, GPUs, and AI accelerators into a shared compute ecosystem.
 
-MundusX is a distributed compute network that routes requests to the best available live node across Apple Silicon `M` series nodes.
+This repository contains the public, contributor-facing CLI, node agent, local worker, installer, and shared packages. The operator/control-plane side lives in a separate repo.
 
-`opengpu` is the current command family for the local prototype, but the current flow is localhost-only.
+`opengpu` is the current CLI command name and compatibility binary for contributor machines. It handles install, onboarding, model management, node startup, health checks, and local worker execution.
+
+## Vision
+
+MundusX exists to make AI more accessible, affordable, and collaborative by allowing individuals, enterprises, and organizations to contribute available compute resources.
+
+## What MundusX Provides
+
+- Distributed AI compute orchestration
+- Community node contribution through the `opengpu` CLI
+- Secure workload routing to available local workers
+- Contributor participation and rewards foundations
+- Support for local and distributed AI inference
+- Enterprise-ready control-plane integration
 
 ## Repo Shape
 
