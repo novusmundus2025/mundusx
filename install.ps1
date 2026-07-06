@@ -1,12 +1,14 @@
 param(
   [string]$InstallDir = "$env:USERPROFILE\.opengpu\bin",
   [string]$ReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download",
+  [string]$GitHubToken = "",
   [switch]$AllowUnsignedLocalPreview,
   [switch]$InstallCudaRuntime,
   [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 function Show-Usage {
   @"
@@ -16,6 +18,7 @@ Usage:
 Options:
   -InstallDir <path>       Directory where opengpu.exe will be installed.
   -ReleaseBaseUrl <url>    Release download base URL.
+  -GitHubToken <token>     Optional token for private GitHub release assets.
   -InstallCudaRuntime      Force CUDA llama runtime installation and pinning.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
@@ -25,6 +28,96 @@ Options:
 After this bootstrapper installs the binary, run:
   opengpu install
 "@ | Write-Output
+}
+
+function Get-GitHubToken {
+  if ($GitHubToken) {
+    return $GitHubToken
+  }
+  if ($env:GITHUB_TOKEN) {
+    return $env:GITHUB_TOKEN
+  }
+  if ($env:GH_TOKEN) {
+    return $env:GH_TOKEN
+  }
+  return $null
+}
+
+function Assert-DownloadedReleaseFile {
+  param(
+    [string]$Source,
+    [string]$Destination
+  )
+
+  if (-not (Test-Path -LiteralPath $Destination)) {
+    throw "download failed for $Source"
+  }
+
+  $item = Get-Item -LiteralPath $Destination
+  if ($item.Length -le 0) {
+    throw "downloaded empty file from $Source"
+  }
+
+  $bufferSize = [Math]::Min(512, [int]$item.Length)
+  $buffer = New-Object byte[] $bufferSize
+  $stream = [System.IO.File]::OpenRead($Destination)
+  try {
+    [void]$stream.Read($buffer, 0, $bufferSize)
+  } finally {
+    $stream.Dispose()
+  }
+  $prefix = [System.Text.Encoding]::UTF8.GetString($buffer).TrimStart()
+  if ($prefix.StartsWith("<!DOCTYPE", [System.StringComparison]::OrdinalIgnoreCase) -or
+      $prefix.StartsWith("<html", [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ($Source -like "https://github.com/*") {
+      throw "GitHub returned an HTML page instead of the release asset. If this repository or release is private, pass -GitHubToken or set GITHUB_TOKEN/GH_TOKEN with release read access."
+    }
+    throw "downloaded HTML instead of the expected release asset from $Source"
+  }
+}
+
+function Resolve-GitHubReleaseAssetApiUrl {
+  param([string]$Source)
+
+  $uri = $null
+  if (-not [System.Uri]::TryCreate($Source, [System.UriKind]::Absolute, [ref]$uri)) {
+    return $null
+  }
+  if ($uri.Host -ne "github.com") {
+    return $null
+  }
+
+  $parts = $uri.AbsolutePath.Trim("/") -split "/"
+  if ($parts.Length -lt 6) {
+    return $null
+  }
+  if ($parts[2] -ne "releases" -or $parts[3] -ne "download") {
+    return $null
+  }
+
+  $owner = $parts[0]
+  $repo = $parts[1]
+  $tag = [System.Uri]::UnescapeDataString($parts[4])
+  $assetName = [System.Uri]::UnescapeDataString(($parts[5..($parts.Length - 1)] -join "/"))
+  $token = Get-GitHubToken
+  if (-not $token) {
+    return $null
+  }
+
+  $headers = @{
+    Authorization = "Bearer $token"
+    Accept = "application/vnd.github+json"
+    "X-GitHub-Api-Version" = "2022-11-28"
+  }
+  $releaseApi = "https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
+  $release = Invoke-RestMethod -Uri $releaseApi -Headers $headers
+  foreach ($asset in @($release.assets)) {
+    if ($asset.name -eq $assetName) {
+      return $asset.url
+    }
+  }
+
+  throw "GitHub release $owner/$repo@$tag does not include asset $assetName"
 }
 
 function Find-NvidiaGpu {
@@ -222,7 +315,35 @@ function Copy-ReleaseFile {
     return
   }
 
-  Invoke-WebRequest -Uri $Source -OutFile $Destination
+  $token = Get-GitHubToken
+  $downloadSource = $Source
+  $apiSource = Resolve-GitHubReleaseAssetApiUrl -Source $Source
+  if ($apiSource) {
+    $downloadSource = $apiSource
+  }
+  $headers = @{}
+  if ($token -and ($Source -like "https://github.com/*" -or $downloadSource -like "https://api.github.com/*")) {
+    $headers["Authorization"] = "Bearer $token"
+    $headers["Accept"] = "application/octet-stream"
+    $headers["X-GitHub-Api-Version"] = "2022-11-28"
+  }
+
+  try {
+    if ($headers.Count -gt 0) {
+      Invoke-WebRequest -Uri $downloadSource -Headers $headers -OutFile $Destination
+    } else {
+      Invoke-WebRequest -Uri $downloadSource -OutFile $Destination
+    }
+  } catch {
+    if ($Source -like "https://github.com/*") {
+      if ($token) {
+        throw "failed to download private GitHub release asset from $Source. Verify the token has access to this repository and release assets. Original error: $($_.Exception.Message)"
+      }
+      throw "failed to download GitHub release asset from $Source. If this repository or release is private, pass -GitHubToken or set GITHUB_TOKEN/GH_TOKEN with release read access. Original error: $($_.Exception.Message)"
+    }
+    throw
+  }
+  Assert-DownloadedReleaseFile -Source $Source -Destination $Destination
 }
 
 function Verify-ReleaseAsset {
