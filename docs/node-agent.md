@@ -71,6 +71,7 @@ opengpu-agent heartbeat --json
 Expected health behavior:
 
 - `opengpu start` auto-selects `cuda` when NVIDIA environment hints or `nvidia-smi` identify a CUDA-capable machine and keeps the foreground contribution session open.
+- `vllm` is accepted only as an explicit backend preference for Linux/Ubuntu NVIDIA work. It is not auto-selected and does not start the llama.cpp warm runtime.
 - `cudaDeviceAvailable: yes` means `nvidia-smi` found at least one NVIDIA GPU.
 - `cudaDriverAvailable: yes` means the NVIDIA driver/runtime probe completed successfully.
 - `cudaMemoryMb` reports the largest detected GPU memory total.
@@ -78,6 +79,11 @@ Expected health behavior:
 - missing drivers or CUDA runtime support produce an actionable health note and keep policy from allowing CUDA jobs.
 
 The CUDA worker execution loop is still intentionally conservative. A low-VRAM node should advertise capability metadata and stay eligible only for modest CUDA work until model compatibility checks land.
+
+The vLLM worker path is currently diagnostic/adapter-ready only. A node configured
+with `backendPreference: vllm` reports vLLM readiness through `opengpu doctor`,
+but the node agent keeps worker health unavailable until a real Linux vLLM
+runtime adapter is installed.
 
 ### Building From Source Instead Of `install.ps1`
 

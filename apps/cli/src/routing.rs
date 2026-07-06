@@ -28,6 +28,7 @@ pub fn score_node(node: &NodeStatus, preferred_backend: Backend) -> f64 {
     let backend_score = match node.backend {
         Backend::M => 8.0,
         Backend::Cuda => 0.0,
+        Backend::Vllm => 0.0,
         Backend::Auto => 0.0,
     };
 

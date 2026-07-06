@@ -23,7 +23,7 @@ This is the current command surface for the Rust CLI.
 - `opengpu model import <path> --name <name> --backend cuda --vram-mb <mb>` - record an existing local model file with format, quantization, size, and compatibility metadata
 - `opengpu model remove <name>` - remove a cached model
 - `opengpu model prune --yes` - remove inactive cached models
-- `opengpu doctor` - inspect config paths, writability, CUDA prerequisite state, low-VRAM profile, and Windows LM Studio runtime guidance
+- `opengpu doctor` - inspect config paths, writability, CUDA prerequisite state, low-VRAM profile, Windows LM Studio runtime guidance, and opt-in Linux vLLM readiness
 - `opengpu logs` - show local log source information
 - `opengpu update` - show the local install page and release preview URLs
 
@@ -46,6 +46,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - Real control-plane calls and node registration will come later.
 - The active `opengpu start` foreground session can be stopped with `Esc` or `Ctrl-C`, which rolls local state back to disconnected and paused, stops the node agent, and releases any warm `llama-server` GPU runtime.
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected and policy allows it.
+- `vllm` is explicit opt-in for Linux/Ubuntu NVIDIA nodes. `auto` does not select it, and Windows continues to use the llama.cpp CUDA path.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
 - `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet, and whether it is using Keychain or the local encrypted fallback.
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled. On Windows, `login` stores the token in a DPAPI-protected blob outside `config.json`, and `logout` removes that protected token.

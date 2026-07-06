@@ -9,6 +9,7 @@ pub enum Backend {
     Auto,
     M,
     Cuda,
+    Vllm,
 }
 
 impl Default for Backend {
@@ -23,6 +24,7 @@ impl Backend {
             Self::Auto => "auto",
             Self::M => "m",
             Self::Cuda => "cuda",
+            Self::Vllm => "vllm",
         }
     }
 
@@ -39,7 +41,8 @@ impl FromStr for Backend {
             "auto" => Ok(Self::Auto),
             "m" => Ok(Self::M),
             "cuda" => Ok(Self::Cuda),
-            _ => Err("backend must be one of: auto, m, cuda".to_string()),
+            "vllm" => Ok(Self::Vllm),
+            _ => Err("backend must be one of: auto, m, cuda, vllm".to_string()),
         }
     }
 }
@@ -308,7 +311,7 @@ mod tests {
     use clap::ValueEnum;
 
     #[test]
-    fn backend_accepts_cuda_across_cli_parsing() {
+    fn backend_accepts_runtime_backends_across_cli_parsing() {
         assert_eq!(
             <Backend as std::str::FromStr>::from_str("cuda").expect("parse cuda backend"),
             Backend::Cuda
@@ -316,6 +319,14 @@ mod tests {
         assert_eq!(
             <Backend as ValueEnum>::from_str("cuda", false).expect("clap parse cuda backend"),
             Backend::Cuda
+        );
+        assert_eq!(
+            <Backend as std::str::FromStr>::from_str("vllm").expect("parse vllm backend"),
+            Backend::Vllm
+        );
+        assert_eq!(
+            <Backend as ValueEnum>::from_str("vllm", false).expect("clap parse vllm backend"),
+            Backend::Vllm
         );
 
         let variants = Backend::value_variants()
@@ -331,6 +342,10 @@ mod tests {
         assert!(
             variants.iter().any(|variant| variant == "cuda"),
             "expected clap variants to expose cuda"
+        );
+        assert!(
+            variants.iter().any(|variant| variant == "vllm"),
+            "expected clap variants to expose vllm"
         );
     }
 

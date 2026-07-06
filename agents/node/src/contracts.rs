@@ -9,6 +9,7 @@ pub enum Backend {
     Auto,
     M,
     Cuda,
+    Vllm,
 }
 
 impl Backend {
@@ -17,6 +18,7 @@ impl Backend {
             Self::Auto => "auto",
             Self::M => "m",
             Self::Cuda => "cuda",
+            Self::Vllm => "vllm",
         }
     }
 }
@@ -35,7 +37,8 @@ impl FromStr for Backend {
             "auto" => Ok(Self::Auto),
             "m" => Ok(Self::M),
             "cuda" => Ok(Self::Cuda),
-            _ => Err("backend must be one of: auto, m, cuda".to_string()),
+            "vllm" => Ok(Self::Vllm),
+            _ => Err("backend must be one of: auto, m, cuda, vllm".to_string()),
         }
     }
 }

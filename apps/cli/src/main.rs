@@ -466,6 +466,99 @@ fn live_cuda_doctor_payload(backend: Backend) -> serde_json::Value {
     )
 }
 
+fn command_available(command: &str, args: &[&str]) -> bool {
+    Command::new(command)
+        .args(args)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn vllm_doctor_payload(
+    os: &str,
+    backend: Backend,
+    python_available: bool,
+    vllm_available: bool,
+    nvidia_smi_available: bool,
+) -> serde_json::Value {
+    let supported_os = os == "linux";
+    let selected = backend == Backend::Vllm;
+    let mut notes = Vec::new();
+
+    if !supported_os {
+        notes.push(
+            "vLLM is currently supported only for Linux/Ubuntu NVIDIA nodes; Windows keeps using the llama.cpp runtime path"
+                .to_string(),
+        );
+    }
+
+    if supported_os && !python_available {
+        notes.push("python3 is unavailable; install Python before enabling vLLM".to_string());
+    }
+
+    if supported_os && python_available && !vllm_available {
+        notes.push(
+            "python3 is available, but the vllm module is not importable in this environment"
+                .to_string(),
+        );
+    }
+
+    if supported_os && !nvidia_smi_available {
+        notes.push(
+            "nvidia-smi is unavailable; vLLM NVIDIA nodes require a visible GPU driver".to_string(),
+        );
+    }
+
+    if !selected {
+        notes.push(format!(
+            "selected backend is {}; vLLM diagnostics are informational unless vLLM is selected",
+            backend.as_str()
+        ));
+    }
+
+    let readiness = if !selected {
+        "informational"
+    } else if !supported_os {
+        "unsupported-on-this-os"
+    } else if !python_available {
+        "blocked-python-unavailable"
+    } else if !vllm_available {
+        "blocked-vllm-unavailable"
+    } else if !nvidia_smi_available {
+        "blocked-nvidia-smi-unavailable"
+    } else {
+        "vllm-prerequisites-detected"
+    };
+
+    serde_json::json!({
+        "os": os,
+        "selected_backend": backend.as_str(),
+        "supported_os": supported_os,
+        "python_available": python_available,
+        "vllm_available": vllm_available,
+        "nvidia_smi_available": nvidia_smi_available,
+        "runtime_readiness": readiness,
+        "notes": notes,
+    })
+}
+
+fn live_vllm_doctor_payload(backend: Backend) -> serde_json::Value {
+    let python_available =
+        command_available("python3", &["--version"]) || command_available("python", &["--version"]);
+    let vllm_available = command_available("python3", &["-c", "import vllm"])
+        || command_available("python", &["-c", "import vllm"]);
+    let nvidia_smi_available =
+        run_nvidia_smi_query(&["--query-gpu=name", "--format=csv,noheader"]).is_ok();
+
+    vllm_doctor_payload(
+        env::consts::OS,
+        backend,
+        python_available,
+        vllm_available,
+        nvidia_smi_available,
+    )
+}
+
 fn doctor_payload(config: &Config) -> serde_json::Value {
     let resolved_path = resolved_config_path();
     let local_path = config::local_config_path();
@@ -474,6 +567,7 @@ fn doctor_payload(config: &Config) -> serde_json::Value {
     let model_dir = model::effective_model_dir(config);
     let backend = resolved_backend(config);
     let cuda = live_cuda_doctor_payload(backend);
+    let vllm = live_vllm_doctor_payload(backend);
 
     serde_json::json!({
         "config_dir": config_dir,
@@ -491,6 +585,7 @@ fn doctor_payload(config: &Config) -> serde_json::Value {
         "active_model": active_model_name(config),
         "auth_token_present": auth_token::operator_token_present(config),
         "cuda": cuda,
+        "vllm": vllm,
     })
 }
 
@@ -647,6 +742,42 @@ fn print_doctor_report(config: &Config, json: bool) {
     if let Some(notes) = cuda["notes"].as_array() {
         for note in notes.iter().filter_map(|note| note.as_str()) {
             theme::note(format!("cuda: {note}"));
+        }
+    }
+
+    let vllm = &payload["vllm"];
+    theme::section("vLLM diagnostics");
+    theme::field(
+        "vllm.selectedBackend",
+        vllm["selected_backend"].as_str().unwrap_or("unknown"),
+    );
+    theme::field(
+        "vllm.supportedOs",
+        theme::boolean(vllm["supported_os"].as_bool().unwrap_or(false), "yes", "no"),
+    );
+    theme::field(
+        "vllm.pythonAvailable",
+        theme::boolean(
+            vllm["python_available"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
+    );
+    theme::field(
+        "vllm.moduleAvailable",
+        theme::boolean(
+            vllm["vllm_available"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
+    );
+    theme::field(
+        "vllm.runtimeReadiness",
+        theme::status(vllm["runtime_readiness"].as_str().unwrap_or("unknown")),
+    );
+    if let Some(notes) = vllm["notes"].as_array() {
+        for note in notes.iter().filter_map(|note| note.as_str()) {
+            theme::note(format!("vllm: {note}"));
         }
     }
 }
@@ -2823,6 +2954,7 @@ fn contribution_semantics(backend: Backend) -> &'static str {
     match backend {
         Backend::M => "memory-and-compute budget for Apple Silicon M-series",
         Backend::Cuda => "automatic routing budget",
+        Backend::Vllm => "Linux vLLM routing budget",
         Backend::Auto => "automatic routing budget",
     }
 }
@@ -2830,6 +2962,7 @@ fn contribution_semantics(backend: Backend) -> &'static str {
 fn default_contribution_percent(backend: Backend) -> u8 {
     match backend {
         Backend::Cuda => 30,
+        Backend::Vllm => 30,
         Backend::M => 30,
         Backend::Auto => 20,
     }
@@ -2894,6 +3027,8 @@ fn install_profile_for(os: &str, arch: &str, backend: Backend) -> &'static str {
         ("windows", "x86_64", Backend::Cuda) => "windows-x86_64-cuda",
         ("linux", "x86_64", Backend::Cuda) => "linux-x86_64-cuda",
         ("linux", "aarch64", Backend::Cuda) => "linux-aarch64-cuda",
+        ("linux", "x86_64", Backend::Vllm) => "linux-x86_64-vllm",
+        ("linux", "aarch64", Backend::Vllm) => "linux-aarch64-vllm",
         ("windows", "x86_64", _) => "windows-x86_64-generic",
         ("linux", "x86_64", _) => "linux-x86_64-generic",
         ("linux", "aarch64", _) => "linux-aarch64-generic",
@@ -4514,8 +4649,8 @@ mod tests {
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
         cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
         job_status_path, job_wait_progress_signature, logs_payload, remote_job_output,
-        resolve_install_control_plane_url, Cli, Commands, ExecutionMode, JobsCommands,
-        PUBLIC_CONTROL_PLANE_URL,
+        resolve_install_control_plane_url, vllm_doctor_payload, Cli, Commands, ExecutionMode,
+        JobsCommands, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::types::Backend;
@@ -5158,6 +5293,7 @@ mod tests {
     #[test]
     fn default_contribution_percent_matches_backend_risk() {
         assert_eq!(super::default_contribution_percent(Backend::Cuda), 30);
+        assert_eq!(super::default_contribution_percent(Backend::Vllm), 30);
         assert_eq!(super::default_contribution_percent(Backend::M), 30);
         assert_eq!(super::default_contribution_percent(Backend::Auto), 20);
     }
@@ -5188,6 +5324,10 @@ mod tests {
         assert_eq!(
             super::install_profile_for("linux", "x86_64", Backend::Cuda),
             "linux-x86_64-cuda"
+        );
+        assert_eq!(
+            super::install_profile_for("linux", "x86_64", Backend::Vllm),
+            "linux-x86_64-vllm"
         );
         assert_eq!(
             super::install_profile_for("windows", "x86_64", Backend::Auto),
@@ -5293,6 +5433,33 @@ mod tests {
             .as_str()
             .unwrap_or("")
             .contains("install or repair the NVIDIA driver")));
+    }
+
+    #[test]
+    fn vllm_doctor_blocks_vllm_on_windows_without_touching_cuda_path() {
+        let payload = vllm_doctor_payload("windows", Backend::Vllm, true, true, true);
+
+        assert_eq!(payload["selected_backend"].as_str(), Some("vllm"));
+        assert!(!payload["supported_os"].as_bool().unwrap_or(true));
+        assert_eq!(
+            payload["runtime_readiness"].as_str(),
+            Some("unsupported-on-this-os")
+        );
+        assert!(payload["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
+            .unwrap_or("")
+            .contains("Windows keeps using the llama.cpp runtime path")));
+    }
+
+    #[test]
+    fn vllm_doctor_reports_linux_dependency_readiness() {
+        let payload = vllm_doctor_payload("linux", Backend::Vllm, true, true, true);
+
+        assert!(payload["supported_os"].as_bool().unwrap_or(false));
+        assert_eq!(
+            payload["runtime_readiness"].as_str(),
+            Some("vllm-prerequisites-detected")
+        );
     }
 
     #[test]

@@ -926,7 +926,7 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    config.connected && !config.paused
+    config.connected && !config.paused && resolved_backend(config) != Backend::Vllm
 }
 
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
@@ -1215,6 +1215,10 @@ mod tests {
 
         config.paused = false;
         config.connected = false;
+        assert!(!should_keep_runtime_warm(&config));
+
+        config.connected = true;
+        config.backend_preference = Backend::Vllm;
         assert!(!should_keep_runtime_warm(&config));
     }
 

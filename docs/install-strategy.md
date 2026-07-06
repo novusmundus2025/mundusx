@@ -70,6 +70,7 @@ The setup flow must detect the machine family before selecting runtime defaults 
 - `macos-aarch64-apple-silicon` for Apple Silicon M-series nodes
 - `windows-x86_64-cuda` for Windows NVIDIA CUDA contributors
 - `linux-x86_64-cuda` and `linux-aarch64-cuda` for Linux NVIDIA CUDA contributors
+- `linux-x86_64-vllm` and `linux-aarch64-vllm` for future explicit Linux vLLM contributors
 - generic Windows/Linux/macOS profiles when no supported accelerator is detected
 
 The same detection should drive:
@@ -95,6 +96,7 @@ Runtime bundles remain platform-specific release assets:
 
 - Apple Silicon M-series releases must include a compatible `llama.cpp` runtime bundle before M-series nodes are advertised as ready.
 - Linux CUDA releases must include CUDA llama runtime binaries and required shared libraries before CUDA nodes are advertised as ready.
+- Linux vLLM releases must include a vLLM runtime adapter before vLLM nodes are advertised as ready. Until then, `vllm` remains an explicit diagnostic backend and is never selected by `auto`.
 - Windows CUDA releases must include `llama-runtime-x86_64-pc-windows-msvc-cuda.zip`, which the PowerShell bootstrapper verifies, extracts, and pins in `trusted-runtime-paths.json`.
 
 If a required runtime bundle is not available for a target, the installer or `opengpu doctor` / node-agent health path must fail that profile early with a clear missing-runtime diagnostic instead of allowing the node to advertise ready capacity.

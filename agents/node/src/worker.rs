@@ -712,6 +712,13 @@ fn run_llama_command(
     top_p: f32,
     seed: u64,
 ) -> Result<(String, String), String> {
+    if backend == Backend::Vllm {
+        return Err(
+            "vLLM execution is not enabled in this worker; use Linux vLLM nodes only after the vLLM runtime adapter is installed"
+                .to_string(),
+        );
+    }
+
     let llama_cli = trusted_runtime_executable("llama-cli")?;
     let runtime_mode = match backend {
         Backend::Cuda => "cuda",
@@ -859,6 +866,12 @@ pub fn probe_worker_health(
             Ok(()) => llama_cli_available = true,
             Err(error) => notes.push(error),
         },
+        Backend::Vllm => {
+            notes.push(
+                "vLLM backend is explicit opt-in and requires the Linux vLLM runtime adapter; this worker will not advertise jobs until that adapter is installed"
+                    .to_string(),
+            );
+        }
         _ => match probe_llama_cli_devices() {
             Ok(stdout) => {
                 llama_cli_available = true;
@@ -900,17 +913,20 @@ pub fn probe_worker_health(
             && local_runtime_available
             && cuda.device_available
             && cuda.driver_available
+    } else if backend == Backend::Vllm {
+        false
     } else {
         model_path.is_some()
             && local_runtime_available
             && (blas_device_available || persistent_runtime_warm)
     };
 
-    let runtime_mode = if backend == Backend::Cuda {
-        "cuda".to_string()
-    } else {
-        "blas".to_string()
+    let runtime_mode = match backend {
+        Backend::Cuda => "cuda",
+        Backend::Vllm => "vllm",
+        _ => "blas",
     };
+    let runtime_mode = runtime_mode.to_string();
     let runtime_kind = if persistent_runtime_warm {
         "persistent-warm".to_string()
     } else if llama_server_available {
@@ -1167,7 +1183,7 @@ fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
         status: "failed".to_string(),
         output: String::new(),
         error: Some(format!(
-            "backend {backend} is not enabled in the Mac M-only worker"
+            "backend {backend} is not enabled in this worker runtime"
         )),
         backend,
         node_id: request.node_id.clone(),
@@ -1693,6 +1709,51 @@ mod tests {
                 .iter()
                 .any(|note| note.contains("missing llama-cli")));
         });
+    }
+
+    #[test]
+    fn vllm_health_is_explicitly_unavailable_until_adapter_exists() {
+        with_temp_runtime_home(|home| {
+            let model_dir = home.join("models");
+            let model_cache = model_dir.join("qwen");
+            fs::create_dir_all(&model_cache).expect("model dir");
+            fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
+
+            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::Vllm);
+
+            assert!(!health.healthy);
+            assert_eq!(health.runtime_mode, "vllm");
+            assert!(health.supported_runtime_modes.is_empty());
+            assert!(health
+                .notes
+                .iter()
+                .any(|note| note.contains("vLLM backend")));
+        });
+    }
+
+    #[test]
+    fn vllm_worker_fails_with_clear_adapter_message() {
+        let response = execute_request(&WorkerLaunchRequest {
+            job_id: "job-vllm".to_string(),
+            node_id: "node-1".to_string(),
+            backend: Backend::Vllm,
+            prompt: "hello".to_string(),
+            model: Some("qwen".to_string()),
+            system_prompt: None,
+            max_tokens: Some(4),
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            seed: Some(42),
+        });
+
+        assert_eq!(response.backend, Backend::Vllm);
+        assert_eq!(response.status, "failed");
+        assert_eq!(response.runtime_mode.as_deref(), Some("vllm"));
+        assert!(response
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("not enabled in this worker runtime"));
     }
 
     #[test]
