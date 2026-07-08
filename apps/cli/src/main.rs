@@ -960,10 +960,10 @@ fn default_max_tokens_for_prompt(prompt: &str) -> u32 {
     }
 
     if looks_like_long_form_prompt(&lower) {
-        return 768;
+        return 1536;
     }
 
-    128
+    512
 }
 
 fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
@@ -5290,7 +5290,7 @@ mod tests {
     fn run_defaults_normal_prompts_to_concise_generation_budget() {
         assert_eq!(
             super::effective_max_tokens("Explain why local inference can be slow", None),
-            128
+            512
         );
     }
 
@@ -5301,11 +5301,11 @@ mod tests {
                 "Give me a detailed history of Microsoft from its origins to today.",
                 None
             ),
-            768
+            1536
         );
         assert_eq!(
             super::effective_max_tokens("Write a comprehensive report about GPU markets", None),
-            768
+            1536
         );
     }
 
