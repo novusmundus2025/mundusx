@@ -1600,28 +1600,31 @@ fn print_runtime_metrics(metrics: Option<&RuntimeMetrics>) {
     }
     theme::section("Runtime metrics");
     if let Some(value) = metrics.total_duration_ms {
-        theme::field("totalDuration", format_duration_ms(value));
+        theme::field("totalDurationMs", format_duration_ms(value));
     }
     if let Some(value) = metrics.load_duration_ms {
-        theme::field("loadDuration", format_duration_ms(value));
+        theme::field("loadDurationMs", format_duration_ms(value));
     }
     if let Some(value) = metrics.prompt_eval_count {
-        theme::field("promptEvalCount", value.to_string());
+        theme::field("promptEvalCountTokens", value.to_string());
     }
     if let Some(value) = metrics.prompt_eval_duration_ms {
-        theme::field("promptEvalDuration", format_duration_ms(value));
+        theme::field("promptEvalDurationMs", format_duration_ms(value));
     }
     if let Some(value) = metrics.prompt_eval_rate {
-        theme::field("promptEvalRate", format!("{value:.2} tokens/s"));
+        theme::field(
+            "promptEvalRateTokensPerSecond",
+            format!("{value:.2} tokens/s"),
+        );
     }
     if let Some(value) = metrics.eval_count {
-        theme::field("evalCount", value.to_string());
+        theme::field("evalCountTokens", value.to_string());
     }
     if let Some(value) = metrics.eval_duration_ms {
-        theme::field("evalDuration", format_duration_ms(value));
+        theme::field("evalDurationMs", format_duration_ms(value));
     }
     if let Some(value) = metrics.eval_rate {
-        theme::field("evalRate", format!("{value:.2} tokens/s"));
+        theme::field("evalRateTokensPerSecond", format!("{value:.2} tokens/s"));
     }
 }
 
