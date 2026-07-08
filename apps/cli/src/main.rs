@@ -875,12 +875,19 @@ fn run_inference_via_control_plane(
     model: Option<&str>,
     backend: crate::types::Backend,
     max_tokens: u32,
+    max_tokens_source: &str,
     execution_mode: ExecutionMode,
     timeout_secs: u64,
     interval_secs: u64,
 ) -> Result<InferenceResult, String> {
-    let (request_id, job) =
-        build_job_submission_payload(prompt, model, backend, max_tokens, execution_mode);
+    let (request_id, job) = build_job_submission_payload(
+        prompt,
+        model,
+        backend,
+        max_tokens,
+        max_tokens_source,
+        execution_mode,
+    );
     match http_post_json(&config.control_plane_url, "/v1/jobs", &job) {
         Ok(record) => {
             let job_id = record["job_id"].as_str().unwrap_or(&request_id).to_string();
@@ -925,6 +932,7 @@ fn build_job_submission_payload(
     model: Option<&str>,
     backend: Backend,
     max_tokens: u32,
+    max_tokens_source: &str,
     execution_mode: ExecutionMode,
 ) -> (String, serde_json::Value) {
     let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
@@ -935,6 +943,7 @@ fn build_job_submission_payload(
         "execution_mode": execution_mode.as_str(),
         "model": model,
         "max_tokens": max_tokens,
+        "max_tokens_source": max_tokens_source,
     });
     (request_id, job)
 }
@@ -1048,6 +1057,14 @@ fn effective_max_tokens(prompt: &str, max_tokens: Option<u32>) -> u32 {
         .max(1)
 }
 
+fn max_tokens_source(max_tokens: Option<u32>) -> &'static str {
+    if max_tokens.is_some() {
+        "explicit"
+    } else {
+        "auto"
+    }
+}
+
 fn effective_execution_mode(
     decompose: bool,
     execution_mode: Option<ExecutionMode>,
@@ -1065,9 +1082,17 @@ fn submit_job(
     model: Option<&str>,
     backend: Backend,
     max_tokens: u32,
+    max_tokens_source: &str,
     execution_mode: ExecutionMode,
 ) -> Result<serde_json::Value, String> {
-    let (_, job) = build_job_submission_payload(prompt, model, backend, max_tokens, execution_mode);
+    let (_, job) = build_job_submission_payload(
+        prompt,
+        model,
+        backend,
+        max_tokens,
+        max_tokens_source,
+        execution_mode,
+    );
     http_post_json(&config.control_plane_url, "/v1/jobs", &job)
 }
 
@@ -4707,6 +4732,7 @@ fn main() {
             let config = current_config_or_default();
             let default_model = active_model_name(&config);
             let requested_model = model.as_deref().or(default_model.as_deref());
+            let max_tokens_source = max_tokens_source(max_tokens);
             let max_tokens = effective_max_tokens(&prompt, max_tokens);
             let execution_mode = effective_execution_mode(decompose, execution_mode);
             match run_inference_via_control_plane(
@@ -4715,6 +4741,7 @@ fn main() {
                 requested_model,
                 backend,
                 max_tokens,
+                max_tokens_source,
                 execution_mode,
                 timeout,
                 interval,
@@ -4774,6 +4801,7 @@ fn main() {
                 } => {
                     let default_model = active_model_name(&config);
                     let requested_model = model.as_deref().or(default_model.as_deref());
+                    let max_tokens_source = max_tokens_source(max_tokens);
                     let max_tokens = effective_max_tokens(&prompt, max_tokens);
                     let execution_mode = effective_execution_mode(decompose, execution_mode);
                     submit_job(
@@ -4782,6 +4810,7 @@ fn main() {
                         requested_model,
                         backend,
                         max_tokens,
+                        max_tokens_source,
                         execution_mode,
                     )
                 }
@@ -5251,6 +5280,7 @@ mod tests {
             Some("smol"),
             Backend::Cuda,
             64,
+            "explicit",
             ExecutionMode::Auto,
         );
 
@@ -5263,6 +5293,13 @@ mod tests {
         assert_eq!(payload["preferred_backend"].as_str(), Some("cuda"));
         assert_eq!(payload["execution_mode"].as_str(), Some("auto"));
         assert_eq!(payload["max_tokens"].as_u64(), Some(64));
+        assert_eq!(payload["max_tokens_source"].as_str(), Some("explicit"));
+    }
+
+    #[test]
+    fn max_tokens_source_marks_omitted_values_as_auto() {
+        assert_eq!(super::max_tokens_source(None), "auto");
+        assert_eq!(super::max_tokens_source(Some(64)), "explicit");
     }
 
     #[test]
