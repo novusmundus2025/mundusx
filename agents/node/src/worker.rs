@@ -15,6 +15,48 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Default, Clone, Serialize)]
+struct RuntimeMetrics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    load_duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_eval_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_eval_duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_eval_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eval_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eval_duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eval_rate: Option<f64>,
+}
+
+impl RuntimeMetrics {
+    fn is_empty(&self) -> bool {
+        self.total_duration_ms.is_none()
+            && self.load_duration_ms.is_none()
+            && self.prompt_eval_count.is_none()
+            && self.prompt_eval_duration_ms.is_none()
+            && self.prompt_eval_rate.is_none()
+            && self.eval_count.is_none()
+            && self.eval_duration_ms.is_none()
+            && self.eval_rate.is_none()
+    }
+
+    fn to_output_fragment(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        serde_json::to_string(self)
+            .ok()
+            .map(|json| format!("; runtime_metrics={json}"))
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "opengpu-agent worker",
@@ -711,7 +753,7 @@ fn run_llama_command(
     temperature: f32,
     top_p: f32,
     seed: u64,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, RuntimeMetrics), String> {
     if backend == Backend::Vllm {
         return Err(
             "vLLM execution is not enabled in this worker; use Linux vLLM nodes only after the vLLM runtime adapter is installed"
@@ -733,7 +775,6 @@ fn run_llama_command(
         .arg("--no-conversation")
         .arg("--simple-io")
         .arg("--no-display-prompt")
-        .arg("--no-perf")
         .arg("-c")
         .arg(context_size_for(prompt, max_tokens).to_string())
         .arg("--threads")
@@ -768,9 +809,12 @@ fn run_llama_command(
         .map_err(|error| error.to_string())?
         .trim()
         .to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let diagnostics = format!("{transcript}\n{stderr}");
+    let metrics = llama_perf_metrics(&diagnostics);
     let generated = extract_llama_response(prompt, &transcript);
 
-    Ok((generated, runtime_mode.to_string()))
+    Ok((generated, runtime_mode.to_string(), metrics))
 }
 
 fn run_llama_server_completion(
@@ -781,7 +825,7 @@ fn run_llama_server_completion(
     temperature: f32,
     top_p: f32,
     seed: u64,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, RuntimeMetrics), String> {
     let payload = serde_json::json!({
         "prompt": prompt,
         "n_predict": max_tokens,
@@ -804,12 +848,87 @@ fn run_llama_server_completion(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "llama-server response did not include content".to_string())?
         .to_string();
+    let metrics = llama_server_metrics(&value);
     let runtime_mode = match backend {
         Backend::Cuda => "persistent-warm-cuda",
         Backend::M => "persistent-warm-blas",
         _ => "persistent-warm",
     };
-    Ok((generated, runtime_mode.to_string()))
+    Ok((generated, runtime_mode.to_string(), metrics))
+}
+
+fn llama_server_metrics(value: &serde_json::Value) -> RuntimeMetrics {
+    let timings = value.get("timings").unwrap_or(value);
+    RuntimeMetrics {
+        total_duration_ms: timing_number(timings, &["total_ms", "total_duration_ms"]),
+        load_duration_ms: timing_number(timings, &["load_ms", "load_duration_ms"]),
+        prompt_eval_count: timing_number(timings, &["prompt_n", "prompt_eval_count"])
+            .map(|value| value.round() as u64),
+        prompt_eval_duration_ms: timing_number(timings, &["prompt_ms", "prompt_eval_duration_ms"]),
+        prompt_eval_rate: timing_number(timings, &["prompt_per_second", "prompt_eval_rate"]),
+        eval_count: timing_number(timings, &["predicted_n", "eval_count"])
+            .map(|value| value.round() as u64),
+        eval_duration_ms: timing_number(timings, &["predicted_ms", "eval_duration_ms"]),
+        eval_rate: timing_number(timings, &["predicted_per_second", "eval_rate"]),
+    }
+}
+
+fn timing_number(value: &serde_json::Value, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|entry| {
+            entry
+                .as_f64()
+                .or_else(|| entry.as_str()?.parse::<f64>().ok())
+        })
+    })
+}
+
+fn llama_perf_metrics(text: &str) -> RuntimeMetrics {
+    let mut metrics = RuntimeMetrics::default();
+    for line in text.lines().map(str::trim) {
+        if !line.starts_with("llama_perf_") {
+            continue;
+        }
+        if line.contains("load time") {
+            metrics.load_duration_ms = metric_ms_after_equals(line);
+        } else if line.contains("prompt eval time") {
+            metrics.prompt_eval_duration_ms = metric_ms_after_equals(line);
+            metrics.prompt_eval_count = metric_count(line, "tokens");
+            metrics.prompt_eval_rate = metric_rate(line);
+        } else if line.contains("eval time") {
+            metrics.eval_duration_ms = metric_ms_after_equals(line);
+            metrics.eval_count =
+                metric_count(line, "runs").or_else(|| metric_count(line, "tokens"));
+            metrics.eval_rate = metric_rate(line);
+        } else if line.contains("total time") {
+            metrics.total_duration_ms = metric_ms_after_equals(line);
+        }
+    }
+    metrics
+}
+
+fn metric_ms_after_equals(line: &str) -> Option<f64> {
+    let after_equals = line.split_once('=')?.1;
+    first_number(after_equals)
+}
+
+fn metric_count(line: &str, label: &str) -> Option<u64> {
+    let slash = line.rfind('/')?;
+    let after_slash = &line[slash + 1..];
+    let before_label = after_slash.split(label).next()?;
+    first_number(before_label).map(|value| value.round() as u64)
+}
+
+fn metric_rate(line: &str) -> Option<f64> {
+    let before_rate = line.split("tokens per second").next()?;
+    let open = before_rate.rfind('(')?;
+    first_number(&before_rate[open + 1..])
+}
+
+fn first_number(text: &str) -> Option<f64> {
+    text.split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .find(|part| !part.is_empty())
+        .and_then(|part| part.parse::<f64>().ok())
 }
 
 /// llama-cli's context window must hold the prompt tokens *and* the
@@ -1129,7 +1248,7 @@ fn run_llama_request(
         .map(|url| {
             run_llama_server_completion(url, &prompt, backend, max_tokens, temperature, top_p, seed)
         });
-    let (generated, runtime_mode) = match warm_result {
+    let (generated, runtime_mode, metrics) = match warm_result {
         Some(Ok(result)) => result,
         Some(Err(_)) | None => run_llama_command(
             &model_path,
@@ -1141,13 +1260,14 @@ fn run_llama_request(
             seed,
         )?,
     };
+    let runtime_metrics = metrics.to_output_fragment().unwrap_or_default();
 
     Ok(WorkerLaunchResponse {
         job_id: request.job_id.clone(),
         worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
         status: "completed".to_string(),
         output: format!(
-            "llama.cpp mode={runtime_mode}; model={model_name}; path={}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}; response={generated}",
+            "llama.cpp mode={runtime_mode}; model={model_name}; path={}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}{runtime_metrics}; response={generated}",
             model_path.display(),
         ),
         error: None,
@@ -1627,6 +1747,49 @@ mod tests {
         let generated = extract_llama_response("The answer to 2+2 is", transcript);
 
         assert_eq!(generated, "4. What is the answer to");
+    }
+
+    #[test]
+    fn parses_llama_perf_metrics() {
+        let metrics = llama_perf_metrics(
+            "llama_perf_context_print:        load time =     123.45 ms\n\
+             llama_perf_context_print: prompt eval time =      50.00 ms /    10 tokens (  200.00 tokens per second)\n\
+             llama_perf_context_print:        eval time =     100.00 ms /     5 runs   (   50.00 tokens per second)\n\
+             llama_perf_context_print:       total time =     275.00 ms /    15 tokens",
+        );
+
+        assert_eq!(metrics.load_duration_ms, Some(123.45));
+        assert_eq!(metrics.prompt_eval_count, Some(10));
+        assert_eq!(metrics.prompt_eval_duration_ms, Some(50.0));
+        assert_eq!(metrics.prompt_eval_rate, Some(200.0));
+        assert_eq!(metrics.eval_count, Some(5));
+        assert_eq!(metrics.eval_duration_ms, Some(100.0));
+        assert_eq!(metrics.eval_rate, Some(50.0));
+        assert_eq!(metrics.total_duration_ms, Some(275.0));
+    }
+
+    #[test]
+    fn parses_llama_server_timing_metrics() {
+        let value = serde_json::json!({
+            "content": "hello",
+            "timings": {
+                "prompt_n": 12,
+                "prompt_ms": 60.0,
+                "prompt_per_second": 200.0,
+                "predicted_n": 8,
+                "predicted_ms": 160.0,
+                "predicted_per_second": 50.0
+            }
+        });
+
+        let metrics = llama_server_metrics(&value);
+
+        assert_eq!(metrics.prompt_eval_count, Some(12));
+        assert_eq!(metrics.prompt_eval_duration_ms, Some(60.0));
+        assert_eq!(metrics.prompt_eval_rate, Some(200.0));
+        assert_eq!(metrics.eval_count, Some(8));
+        assert_eq!(metrics.eval_duration_ms, Some(160.0));
+        assert_eq!(metrics.eval_rate, Some(50.0));
     }
 
     #[test]

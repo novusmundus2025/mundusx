@@ -845,7 +845,20 @@ struct InferenceResult {
     job_id: Option<String>,
     status: Option<String>,
     error: Option<String>,
+    runtime_metrics: Option<RuntimeMetrics>,
     job_payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct RuntimeMetrics {
+    total_duration_ms: Option<f64>,
+    load_duration_ms: Option<f64>,
+    prompt_eval_count: Option<u64>,
+    prompt_eval_duration_ms: Option<f64>,
+    prompt_eval_rate: Option<f64>,
+    eval_count: Option<u64>,
+    eval_duration_ms: Option<f64>,
+    eval_rate: Option<f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -883,6 +896,8 @@ fn run_inference_via_control_plane(
             }
             let output = remote_job_output(&completed)
                 .ok_or_else(|| format!("remote job {job_id} completed without output"))?;
+            let runtime_metrics = runtime_metrics_from_payload(&completed)
+                .or_else(|| runtime_metrics_from_output(&output));
             Ok(InferenceResult {
                 output,
                 node_label: completed
@@ -897,6 +912,7 @@ fn run_inference_via_control_plane(
                     .get("error")
                     .and_then(|value| value.as_str())
                     .map(|value| value.to_string()),
+                runtime_metrics,
                 job_payload: completed,
             })
         }
@@ -1462,6 +1478,159 @@ fn remote_job_output(payload: &serde_json::Value) -> Option<String> {
     output_from(payload)
         .or_else(|| payload.get("job").and_then(output_from))
         .or_else(|| payload.pointer("/job/graph").and_then(output_from))
+}
+
+fn runtime_metrics_from_payload(payload: &serde_json::Value) -> Option<RuntimeMetrics> {
+    runtime_metrics_from_value(payload.get("runtime_metrics"))
+        .or_else(|| runtime_metrics_from_value(payload.pointer("/job/runtime_metrics")))
+        .or_else(|| {
+            payload
+                .pointer("/job/graph/nodes")
+                .and_then(|value| value.as_array())
+                .and_then(|nodes| runtime_metrics_from_graph_nodes(nodes))
+        })
+}
+
+fn runtime_metrics_from_graph_nodes(nodes: &[serde_json::Value]) -> Option<RuntimeMetrics> {
+    let metrics: Vec<RuntimeMetrics> = nodes
+        .iter()
+        .filter_map(|node| {
+            runtime_metrics_from_value(node.get("runtime_metrics")).or_else(|| {
+                node.get("output")
+                    .and_then(|value| value.as_str())
+                    .and_then(runtime_metrics_from_output)
+            })
+        })
+        .collect();
+    if metrics.is_empty() {
+        return None;
+    }
+
+    Some(RuntimeMetrics {
+        total_duration_ms: sum_metric(&metrics, |metric| metric.total_duration_ms),
+        load_duration_ms: sum_metric(&metrics, |metric| metric.load_duration_ms),
+        prompt_eval_count: sum_metric_u64(&metrics, |metric| metric.prompt_eval_count),
+        prompt_eval_duration_ms: sum_metric(&metrics, |metric| metric.prompt_eval_duration_ms),
+        prompt_eval_rate: average_metric(&metrics, |metric| metric.prompt_eval_rate),
+        eval_count: sum_metric_u64(&metrics, |metric| metric.eval_count),
+        eval_duration_ms: sum_metric(&metrics, |metric| metric.eval_duration_ms),
+        eval_rate: average_metric(&metrics, |metric| metric.eval_rate),
+    })
+}
+
+fn runtime_metrics_from_value(value: Option<&serde_json::Value>) -> Option<RuntimeMetrics> {
+    let value = value?;
+    if value.is_null() {
+        return None;
+    }
+    serde_json::from_value::<RuntimeMetrics>(value.clone())
+        .ok()
+        .filter(|metrics| !runtime_metrics_empty(metrics))
+}
+
+fn runtime_metrics_from_output(output: &str) -> Option<RuntimeMetrics> {
+    let marker = "runtime_metrics=";
+    let start = output.find(marker)? + marker.len();
+    let rest = &output[start..];
+    let json = extract_balanced_json(rest)?;
+    serde_json::from_str::<RuntimeMetrics>(json)
+        .ok()
+        .filter(|metrics| !runtime_metrics_empty(metrics))
+}
+
+fn extract_balanced_json(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    for (offset, ch) in text[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&text[start..start + offset + ch.len_utf8()]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn runtime_metrics_empty(metrics: &RuntimeMetrics) -> bool {
+    metrics.total_duration_ms.is_none()
+        && metrics.load_duration_ms.is_none()
+        && metrics.prompt_eval_count.is_none()
+        && metrics.prompt_eval_duration_ms.is_none()
+        && metrics.prompt_eval_rate.is_none()
+        && metrics.eval_count.is_none()
+        && metrics.eval_duration_ms.is_none()
+        && metrics.eval_rate.is_none()
+}
+
+fn sum_metric(
+    metrics: &[RuntimeMetrics],
+    getter: fn(&RuntimeMetrics) -> Option<f64>,
+) -> Option<f64> {
+    let values: Vec<f64> = metrics.iter().filter_map(getter).collect();
+    (!values.is_empty()).then(|| values.iter().sum())
+}
+
+fn sum_metric_u64(
+    metrics: &[RuntimeMetrics],
+    getter: fn(&RuntimeMetrics) -> Option<u64>,
+) -> Option<u64> {
+    let values: Vec<u64> = metrics.iter().filter_map(getter).collect();
+    (!values.is_empty()).then(|| values.iter().sum())
+}
+
+fn average_metric(
+    metrics: &[RuntimeMetrics],
+    getter: fn(&RuntimeMetrics) -> Option<f64>,
+) -> Option<f64> {
+    let values: Vec<f64> = metrics.iter().filter_map(getter).collect();
+    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+}
+
+fn print_runtime_metrics(metrics: Option<&RuntimeMetrics>) {
+    let Some(metrics) = metrics else {
+        return;
+    };
+    if runtime_metrics_empty(metrics) {
+        return;
+    }
+    theme::section("Runtime metrics");
+    if let Some(value) = metrics.total_duration_ms {
+        theme::field("totalDuration", format_duration_ms(value));
+    }
+    if let Some(value) = metrics.load_duration_ms {
+        theme::field("loadDuration", format_duration_ms(value));
+    }
+    if let Some(value) = metrics.prompt_eval_count {
+        theme::field("promptEvalCount", value.to_string());
+    }
+    if let Some(value) = metrics.prompt_eval_duration_ms {
+        theme::field("promptEvalDuration", format_duration_ms(value));
+    }
+    if let Some(value) = metrics.prompt_eval_rate {
+        theme::field("promptEvalRate", format!("{value:.2} tokens/s"));
+    }
+    if let Some(value) = metrics.eval_count {
+        theme::field("evalCount", value.to_string());
+    }
+    if let Some(value) = metrics.eval_duration_ms {
+        theme::field("evalDuration", format_duration_ms(value));
+    }
+    if let Some(value) = metrics.eval_rate {
+        theme::field("evalRate", format!("{value:.2} tokens/s"));
+    }
+}
+
+fn format_duration_ms(value: f64) -> String {
+    if value >= 1000.0 {
+        format!("{:.2}s", value / 1000.0)
+    } else {
+        format!("{value:.0}ms")
+    }
 }
 
 fn wait_for_job(
@@ -4503,6 +4672,7 @@ fn main() {
                             "job_id": result.job_id,
                             "status": result.status,
                             "error": result.error,
+                            "runtime_metrics": result.runtime_metrics,
                         });
                         if let Err(error) = print_json(&output) {
                             eprintln!("{error}");
@@ -4520,6 +4690,7 @@ fn main() {
                         if let Some(status) = &result.status {
                             theme::field("status", theme::status(status));
                         }
+                        print_runtime_metrics(result.runtime_metrics.as_ref());
                         print_job_plan_progress(&result.job_payload);
                         println!();
                         println!("{}", result.output);
@@ -4649,7 +4820,8 @@ mod tests {
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
         cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
         job_status_path, job_wait_progress_signature, logs_payload, remote_job_output,
-        resolve_install_control_plane_url, vllm_doctor_payload, Cli, Commands, ExecutionMode,
+        resolve_install_control_plane_url, runtime_metrics_from_output,
+        runtime_metrics_from_payload, vllm_doctor_payload, Cli, Commands, ExecutionMode,
         JobsCommands, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
@@ -5202,6 +5374,39 @@ mod tests {
             remote_job_output(&serde_json::json!({"status": "completed", "output": null})),
             None
         );
+    }
+
+    #[test]
+    fn runtime_metrics_parse_from_worker_output() {
+        let output = r#"llama.cpp mode=cuda; runtime_metrics={"total_duration_ms":250.0,"prompt_eval_count":10,"prompt_eval_rate":200.0,"eval_count":8,"eval_rate":50.0}; response=hello"#;
+
+        let metrics = runtime_metrics_from_output(output).expect("runtime metrics");
+
+        assert_eq!(metrics.total_duration_ms, Some(250.0));
+        assert_eq!(metrics.prompt_eval_count, Some(10));
+        assert_eq!(metrics.prompt_eval_rate, Some(200.0));
+        assert_eq!(metrics.eval_count, Some(8));
+        assert_eq!(metrics.eval_rate, Some(50.0));
+    }
+
+    #[test]
+    fn runtime_metrics_aggregate_from_graph_nodes() {
+        let payload = serde_json::json!({
+            "job": {
+                "graph": {
+                    "nodes": [
+                        {"runtime_metrics": {"total_duration_ms": 100.0, "eval_count": 4, "eval_rate": 40.0}},
+                        {"output": "llama.cpp runtime_metrics={\"total_duration_ms\":200.0,\"eval_count\":6,\"eval_rate\":60.0}; response=ok"}
+                    ]
+                }
+            }
+        });
+
+        let metrics = runtime_metrics_from_payload(&payload).expect("runtime metrics");
+
+        assert_eq!(metrics.total_duration_ms, Some(300.0));
+        assert_eq!(metrics.eval_count, Some(10));
+        assert_eq!(metrics.eval_rate, Some(50.0));
     }
 
     #[test]
