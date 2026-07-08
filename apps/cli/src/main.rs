@@ -1633,6 +1633,61 @@ fn format_duration_ms(value: f64) -> String {
     }
 }
 
+fn print_inference_output(output: &str) {
+    if let Some((fields, response)) = parse_llama_output(output) {
+        theme::section("Worker output");
+        for (label, value) in fields {
+            theme::field(&label, value);
+        }
+        if !response.trim().is_empty() {
+            println!();
+            println!("{}", response.trim());
+        }
+        return;
+    }
+
+    println!("{output}");
+}
+
+fn parse_llama_output(output: &str) -> Option<(Vec<(String, String)>, String)> {
+    let text = output.trim();
+    let metadata = text.strip_prefix("llama.cpp ")?;
+    let response_marker = "; response=";
+    let (metadata, response) = metadata
+        .split_once(response_marker)
+        .unwrap_or((metadata, ""));
+    let fields = metadata
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            let key = key.trim();
+            if key == "runtime_metrics" {
+                return None;
+            }
+            Some((camel_case_label(key), value.trim().to_string()))
+        })
+        .collect::<Vec<_>>();
+    (!fields.is_empty()).then(|| (fields, response.trim().to_string()))
+}
+
+fn camel_case_label(value: &str) -> String {
+    let mut words = value.split('_').filter(|part| !part.is_empty());
+    let Some(first) = words.next() else {
+        return value.to_string();
+    };
+    let mut label = first.to_string();
+    for word in words {
+        let mut chars = word.chars();
+        if let Some(first_char) = chars.next() {
+            label.push(first_char.to_ascii_uppercase());
+            label.extend(chars);
+        }
+    }
+    label
+}
+
 fn wait_for_job(
     config: &Config,
     job_id: &str,
@@ -4693,7 +4748,7 @@ fn main() {
                         print_runtime_metrics(result.runtime_metrics.as_ref());
                         print_job_plan_progress(&result.job_payload);
                         println!();
-                        println!("{}", result.output);
+                        print_inference_output(&result.output);
                     }
                 }
                 Err(error) => {
@@ -4819,8 +4874,8 @@ mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
         cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
-        job_status_path, job_wait_progress_signature, logs_payload, remote_job_output,
-        resolve_install_control_plane_url, runtime_metrics_from_output,
+        job_status_path, job_wait_progress_signature, logs_payload, parse_llama_output,
+        remote_job_output, resolve_install_control_plane_url, runtime_metrics_from_output,
         runtime_metrics_from_payload, vllm_doctor_payload, Cli, Commands, ExecutionMode,
         JobsCommands, PUBLIC_CONTROL_PLANE_URL,
     };
@@ -5407,6 +5462,24 @@ mod tests {
         assert_eq!(metrics.total_duration_ms, Some(300.0));
         assert_eq!(metrics.eval_count, Some(10));
         assert_eq!(metrics.eval_rate, Some(50.0));
+    }
+
+    #[test]
+    fn llama_output_metadata_is_split_into_display_fields() {
+        let output = r#"llama.cpp mode=cuda; model=Qwen; path=C:\model.gguf; max_tokens=16; runtime_metrics={"eval_count":4}; response=hello world"#;
+
+        let (fields, response) = parse_llama_output(output).expect("llama output");
+
+        assert_eq!(
+            fields,
+            vec![
+                ("mode".to_string(), "cuda".to_string()),
+                ("model".to_string(), "Qwen".to_string()),
+                ("path".to_string(), r#"C:\model.gguf"#.to_string()),
+                ("maxTokens".to_string(), "16".to_string()),
+            ]
+        );
+        assert_eq!(response, "hello world");
     }
 
     #[test]
