@@ -95,8 +95,9 @@ pub fn error(value: impl std::fmt::Display) {
     match current_mode() {
         ThemeMode::Classic => eprintln!("error: {value}"),
         ThemeMode::Reactor => eprintln!(
-            "{}",
-            style(format!("error: {value}")).with(Color::Red).bold()
+            "{} {}",
+            style("error:").with(Color::AnsiValue(220)).bold(),
+            style(value.to_string()).with(Color::Red).bold()
         ),
     }
 }
