@@ -452,6 +452,21 @@ fn print_capability_summary(capabilities: &NodeCapabilityAdvertisement) {
     print_capability_summary_with_control_plane(capabilities, None);
 }
 
+fn control_plane_blocks_jobs(status: Option<&NodeAdmissionStatus>) -> Option<String> {
+    let status = status?;
+    if status.policy_allowed {
+        return None;
+    }
+
+    Some(
+        status
+            .policy_reason
+            .clone()
+            .or_else(|| status.computed_policy_reason.clone())
+            .unwrap_or_else(|| "control-plane admission policy blocked this node".to_string()),
+    )
+}
+
 fn build_worker_launch_request(
     config: &AgentConfig,
     job_id: String,
@@ -1096,6 +1111,14 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         &registration.capabilities,
         control_plane_status.as_ref(),
     );
+    if let Some(reason) = control_plane_blocks_jobs(control_plane_status.as_ref()) {
+        drop(persistent_runtime.take());
+        std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+        eprintln!("agentAdmission: blocked by control plane");
+        eprintln!("agentAdmissionReason: {reason}");
+        eprintln!("persistentRuntime: stopped");
+        std::process::exit(2);
+    }
     process_pending_job(&config, json, verbose);
 
     println!("{}", green(format!("connected {}", config.device_id)));
@@ -1407,6 +1430,38 @@ mod tests {
             output: None,
             error: None,
         }
+    }
+
+    #[test]
+    fn admission_status_blocks_startup_when_control_plane_denies_jobs() {
+        let status = NodeAdmissionStatus {
+            node_id: "node-1".to_string(),
+            state: AgentState::Ready,
+            policy_allowed: false,
+            policy_reason: Some("CUDA VRAM below minimum".to_string()),
+            computed_policy_allowed: false,
+            computed_policy_reason: None,
+        };
+
+        assert_eq!(
+            control_plane_blocks_jobs(Some(&status)).as_deref(),
+            Some("CUDA VRAM below minimum")
+        );
+    }
+
+    #[test]
+    fn admission_status_allows_startup_when_control_plane_allows_jobs() {
+        let status = NodeAdmissionStatus {
+            node_id: "node-1".to_string(),
+            state: AgentState::Ready,
+            policy_allowed: true,
+            policy_reason: None,
+            computed_policy_allowed: true,
+            computed_policy_reason: None,
+        };
+
+        assert_eq!(control_plane_blocks_jobs(Some(&status)), None);
+        assert_eq!(control_plane_blocks_jobs(None), None);
     }
 
     #[test]
