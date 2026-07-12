@@ -37,8 +37,8 @@ These remain available, but they are hidden from the default `--help` output so 
 - `opengpu connect` - mark the machine as ready
 - `opengpu disconnect` - same behavior as `opengpu exit`, kept as the explicit advanced form
 - `opengpu nodes` - show the current sample node inventory
-- `opengpu pause` - pause contribution
-- `opengpu resume` - resume contribution
+- `opengpu pause` - keep the device connected, stop new job claims, and let the running node agent cool the warm `llama-server` so its GPU allocation is released
+- `opengpu resume` - restart contribution in the background, re-run readiness checks, and warm the configured model before accepting work
 
 ## Notes
 

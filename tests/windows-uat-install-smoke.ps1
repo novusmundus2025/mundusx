@@ -13,10 +13,13 @@ $assetName = "opengpu-x86_64-pc-windows-msvc.exe"
 $assetPath = Join-Path $releaseDir $assetName
 $agentAssetName = "opengpu-node-agent-x86_64-pc-windows-msvc.exe"
 $agentAssetPath = Join-Path $releaseDir $agentAssetName
+$trayAssetName = "mundusx-tray-x86_64-pc-windows-msvc.exe"
+$trayAssetPath = Join-Path $releaseDir $trayAssetName
 $runtimeAssetName = "llama-runtime-x86_64-pc-windows-msvc-cuda.zip"
 $runtimeAssetPath = Join-Path $releaseDir $runtimeAssetName
 $runtimeFixtureDir = Join-Path $fixtureRoot "runtime-fixture"
 $agentBuildPath = Join-Path $repoRoot "target\release\opengpu-node-agent.exe"
+$trayBuildPath = Join-Path $repoRoot "target\release\mundusx-tray.exe"
 
 function Invoke-Checked {
   param(
@@ -49,9 +52,13 @@ try {
   Invoke-Checked "cargo build node-agent release binary" {
     cargo build --manifest-path (Join-Path $repoRoot "agents\node\Cargo.toml") --release
   } | Out-Null
+  Invoke-Checked "cargo build tray release binary" {
+    cargo build --manifest-path (Join-Path $repoRoot "apps\tray\Cargo.toml") --release
+  } | Out-Null
 
   Copy-Item -LiteralPath (Join-Path $repoRoot "target\release\opengpu.exe") -Destination $assetPath
   Copy-Item -LiteralPath $agentBuildPath -Destination $agentAssetPath
+  Copy-Item -LiteralPath $trayBuildPath -Destination $trayAssetPath
   New-Item -ItemType Directory -Force -Path $runtimeFixtureDir | Out-Null
   Copy-Item -LiteralPath $agentBuildPath -Destination (Join-Path $runtimeFixtureDir "llama-cli.exe")
   Set-Content -Path (Join-Path $runtimeFixtureDir "cudart64_11.dll") -Value "uat cuda runtime fixture" -NoNewline -Encoding ASCII
@@ -61,6 +68,8 @@ try {
   Set-Content -Path "$assetPath.sha256" -Value "$checksum  $assetName`n" -NoNewline -Encoding ASCII
   $agentChecksum = (Get-FileHash -Algorithm SHA256 -Path $agentAssetPath).Hash.ToLowerInvariant()
   Set-Content -Path "$agentAssetPath.sha256" -Value "$agentChecksum  $agentAssetName`n" -NoNewline -Encoding ASCII
+  $trayChecksum = (Get-FileHash -Algorithm SHA256 -Path $trayAssetPath).Hash.ToLowerInvariant()
+  Set-Content -Path "$trayAssetPath.sha256" -Value "$trayChecksum  $trayAssetName`n" -NoNewline -Encoding ASCII
   $runtimeChecksum = (Get-FileHash -Algorithm SHA256 -Path $runtimeAssetPath).Hash.ToLowerInvariant()
   Set-Content -Path "$runtimeAssetPath.sha256" -Value "$runtimeChecksum  $runtimeAssetName`n" -NoNewline -Encoding ASCII
   $runtimeExeChecksum = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $runtimeFixtureDir "llama-cli.exe")).Hash.ToLowerInvariant()
@@ -74,6 +83,12 @@ try {
         install_as = "opengpu-node-agent.exe"
         kind = "node-agent-binary"
         checksum_sha256 = $agentChecksum
+      },
+      @{
+        name = $trayAssetName
+        install_as = "mundusx-tray.exe"
+        kind = "windows-tray-binary"
+        checksum_sha256 = $trayChecksum
       }
     )
     runtime_assets = @(
@@ -97,12 +112,14 @@ try {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
       -InstallDir $installDir `
       -ReleaseBaseUrl $releaseDir `
-      -InstallCudaRuntime
+      -InstallCudaRuntime `
+      -SkipTrayAutoStart
   } | Out-Null
 
   $installedExe = Join-Path $installDir "opengpu.exe"
   $compatExe = Join-Path $installDir "mundusx.exe"
   $agentInstallPath = Join-Path $installDir "opengpu-node-agent.exe"
+  $trayInstallPath = Join-Path $installDir "mundusx-tray.exe"
   $installedRuntime = Join-Path $opengpuHome "runtimes\llama\llama-cli.exe"
   $installedRuntimeDll = Join-Path $opengpuHome "runtimes\llama\cudart64_11.dll"
   if (-not (Test-Path -LiteralPath $installedExe)) {
@@ -113,6 +130,9 @@ try {
   }
   if (-not (Test-Path -LiteralPath $agentInstallPath)) {
     throw "install.ps1 did not install opengpu-node-agent.exe"
+  }
+  if (-not (Test-Path -LiteralPath $trayInstallPath)) {
+    throw "install.ps1 did not install mundusx-tray.exe"
   }
   if (-not (Test-Path -LiteralPath $installedRuntime)) {
     throw "install.ps1 did not install llama-cli.exe"

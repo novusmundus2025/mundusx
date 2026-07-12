@@ -10,6 +10,9 @@ $checksumPath = "$assetPath.sha256"
 $agentAssetName = "opengpu-node-agent-x86_64-pc-windows-msvc.exe"
 $agentAssetPath = Join-Path $releaseDir $agentAssetName
 $agentChecksumPath = "$agentAssetPath.sha256"
+$trayAssetName = "mundusx-tray-x86_64-pc-windows-msvc.exe"
+$trayAssetPath = Join-Path $releaseDir $trayAssetName
+$trayChecksumPath = "$trayAssetPath.sha256"
 $runtimeAssetName = "llama-runtime-x86_64-pc-windows-msvc-cuda.zip"
 $runtimeAssetPath = Join-Path $releaseDir $runtimeAssetName
 $runtimeChecksumPath = "$runtimeAssetPath.sha256"
@@ -29,6 +32,9 @@ try {
   Set-Content -Path $agentAssetPath -Value "fake node agent windows binary" -NoNewline -Encoding ASCII
   $agentChecksum = (Get-FileHash -Algorithm SHA256 -Path $agentAssetPath).Hash.ToLowerInvariant()
   Set-Content -Path $agentChecksumPath -Value "$agentChecksum  $agentAssetName`n" -NoNewline -Encoding ASCII
+  Set-Content -Path $trayAssetPath -Value "fake mundusx tray windows binary" -NoNewline -Encoding ASCII
+  $trayChecksum = (Get-FileHash -Algorithm SHA256 -Path $trayAssetPath).Hash.ToLowerInvariant()
+  Set-Content -Path $trayChecksumPath -Value "$trayChecksum  $trayAssetName`n" -NoNewline -Encoding ASCII
   New-Item -ItemType Directory -Force -Path $runtimeFixtureDir | Out-Null
   Set-Content -Path (Join-Path $runtimeFixtureDir "llama-cli.exe") -Value "fake cuda llama runtime" -NoNewline -Encoding ASCII
   Set-Content -Path (Join-Path $runtimeFixtureDir "cudart64_11.dll") -Value "fake cuda runtime dll" -NoNewline -Encoding ASCII
@@ -46,6 +52,12 @@ try {
         install_as = "opengpu-node-agent.exe"
         kind = "node-agent-binary"
         checksum_sha256 = $agentChecksum
+      },
+      @{
+        name = $trayAssetName
+        install_as = "mundusx-tray.exe"
+        kind = "windows-tray-binary"
+        checksum_sha256 = $trayChecksum
       }
     )
     runtime_assets = @(
@@ -68,7 +80,8 @@ try {
   $output = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
-    -InstallCudaRuntime 2>&1
+    -InstallCudaRuntime `
+    -SkipTrayAutoStart 2>&1
 
   if ($LASTEXITCODE -ne 0) {
     throw "install.ps1 failed with checksum present: $output"
@@ -77,6 +90,7 @@ try {
   $installedExe = Join-Path $installDir "opengpu.exe"
   $compatExe = Join-Path $installDir "mundusx.exe"
   $installedAgent = Join-Path $installDir "opengpu-node-agent.exe"
+  $installedTray = Join-Path $installDir "mundusx-tray.exe"
   $installedRuntime = Join-Path $opengpuHome "runtimes\llama\llama-cli.exe"
   $installedRuntimeDll = Join-Path $opengpuHome "runtimes\llama\cudart64_11.dll"
   if (-not (Test-Path -LiteralPath $installedExe)) {
@@ -87,6 +101,9 @@ try {
   }
   if (-not (Test-Path -LiteralPath $installedAgent)) {
     throw "expected installer to write opengpu-node-agent.exe"
+  }
+  if (-not (Test-Path -LiteralPath $installedTray)) {
+    throw "expected installer to write mundusx-tray.exe"
   }
   if (-not (Test-Path -LiteralPath $installedRuntime)) {
     throw "expected installer to write llama-cli.exe"
@@ -106,6 +123,9 @@ try {
   }
   if ((Get-Content -Path $installedAgent -Raw) -ne "fake node agent windows binary") {
     throw "installed node agent contents did not match release asset"
+  }
+  if ((Get-Content -Path $installedTray -Raw) -ne "fake mundusx tray windows binary") {
+    throw "installed tray contents did not match release asset"
   }
 
   $trustedPath = Join-Path $opengpuHome "trusted-runtime-paths.json"
@@ -130,6 +150,9 @@ try {
   if ($joinedOutput -notmatch [regex]::Escape($agentAssetName)) {
     throw "installer output did not mention expected node agent asset name"
   }
+  if ($joinedOutput -notmatch [regex]::Escape($trayAssetName)) {
+    throw "installer output did not mention expected tray asset name"
+  }
   if ($joinedOutput -notmatch "Verifying checksum") {
     throw "installer did not verify checksum"
   }
@@ -152,7 +175,8 @@ try {
   $missingChecksumOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
-    -InstallCudaRuntime 2>&1
+    -InstallCudaRuntime `
+    -SkipTrayAutoStart 2>&1
   $missingChecksumExitCode = $LASTEXITCODE
   $ErrorActionPreference = $previousErrorActionPreference
 
@@ -168,6 +192,7 @@ try {
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
     -InstallCudaRuntime `
+    -SkipTrayAutoStart `
     -AllowUnsignedLocalPreview 2>&1
 
   if ($LASTEXITCODE -ne 0) {
@@ -198,7 +223,8 @@ try {
   $missingManifestOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install.ps1") `
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
-    -InstallCudaRuntime 2>&1
+    -InstallCudaRuntime `
+    -SkipTrayAutoStart 2>&1
   $missingManifestExitCode = $LASTEXITCODE
   $ErrorActionPreference = $previousErrorActionPreference
 

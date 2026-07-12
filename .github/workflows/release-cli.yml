@@ -32,6 +32,10 @@ jobs:
             executable_name: opengpu.exe
             agent_binary_name: opengpu-node-agent-x86_64-pc-windows-msvc.exe
             agent_executable_name: opengpu-node-agent.exe
+            tray_binary_name: mundusx-tray-x86_64-pc-windows-msvc.exe
+            tray_executable_name: mundusx-tray.exe
+            setup_binary_name: MundusX-Setup.exe
+            setup_executable_name: mundusx-bootstrap.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -50,11 +54,25 @@ jobs:
       - name: Build node agent
         run: cargo build --release --manifest-path agents/node/Cargo.toml --target ${{ matrix.target }}
 
+      - name: Build Windows tray companion
+        if: startsWith(matrix.os, 'windows-')
+        run: cargo build --release --manifest-path apps/tray/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Build clickable Windows installer
+        if: startsWith(matrix.os, 'windows-')
+        run: cargo build --release --manifest-path apps/windows-installer/Cargo.toml --target ${{ matrix.target }}
+
       - name: Prepare binary
         shell: bash
         run: |
           cp target/${{ matrix.target }}/release/${{ matrix.executable_name }} ${{ matrix.binary_name }}
           cp target/${{ matrix.target }}/release/${{ matrix.agent_executable_name }} ${{ matrix.agent_binary_name }}
+          if [[ -n "${{ matrix.tray_binary_name }}" ]]; then
+            cp target/${{ matrix.target }}/release/${{ matrix.tray_executable_name }} ${{ matrix.tray_binary_name }}
+          fi
+          if [[ -n "${{ matrix.setup_binary_name }}" ]]; then
+            cp target/${{ matrix.target }}/release/${{ matrix.setup_executable_name }} ${{ matrix.setup_binary_name }}
+          fi
           if [[ "${{ matrix.os }}" != windows-* ]]; then
             chmod +x ${{ matrix.binary_name }}
             chmod +x ${{ matrix.agent_binary_name }}
@@ -66,9 +84,13 @@ jobs:
           if command -v shasum >/dev/null 2>&1; then
             shasum -a 256 ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
             shasum -a 256 ${{ matrix.agent_binary_name }} > ${{ matrix.agent_binary_name }}.sha256
+            if [[ -n "${{ matrix.tray_binary_name }}" ]]; then shasum -a 256 ${{ matrix.tray_binary_name }} > ${{ matrix.tray_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.setup_binary_name }}" ]]; then shasum -a 256 ${{ matrix.setup_binary_name }} > ${{ matrix.setup_binary_name }}.sha256; fi
           elif command -v sha256sum >/dev/null 2>&1; then
             sha256sum ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
             sha256sum ${{ matrix.agent_binary_name }} > ${{ matrix.agent_binary_name }}.sha256
+            if [[ -n "${{ matrix.tray_binary_name }}" ]]; then sha256sum ${{ matrix.tray_binary_name }} > ${{ matrix.tray_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.setup_binary_name }}" ]]; then sha256sum ${{ matrix.setup_binary_name }} > ${{ matrix.setup_binary_name }}.sha256; fi
           else
             echo "checksum tooling not found (need shasum or sha256sum)" >&2
             exit 1
@@ -80,9 +102,13 @@ jobs:
           if command -v shasum >/dev/null 2>&1; then
             shasum -a 256 -c ${{ matrix.binary_name }}.sha256
             shasum -a 256 -c ${{ matrix.agent_binary_name }}.sha256
+            if [[ -n "${{ matrix.tray_binary_name }}" ]]; then shasum -a 256 -c ${{ matrix.tray_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.setup_binary_name }}" ]]; then shasum -a 256 -c ${{ matrix.setup_binary_name }}.sha256; fi
           elif command -v sha256sum >/dev/null 2>&1; then
             sha256sum -c ${{ matrix.binary_name }}.sha256
             sha256sum -c ${{ matrix.agent_binary_name }}.sha256
+            if [[ -n "${{ matrix.tray_binary_name }}" ]]; then sha256sum -c ${{ matrix.tray_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.setup_binary_name }}" ]]; then sha256sum -c ${{ matrix.setup_binary_name }}.sha256; fi
           else
             echo "checksum tooling not found (need shasum or sha256sum)" >&2
             exit 1
@@ -110,6 +136,10 @@ jobs:
             ${{ matrix.binary_name }}.sha256
             ${{ matrix.agent_binary_name }}
             ${{ matrix.agent_binary_name }}.sha256
+            ${{ matrix.tray_binary_name }}
+            ${{ matrix.tray_binary_name }}.sha256
+            ${{ matrix.setup_binary_name }}
+            ${{ matrix.setup_binary_name }}.sha256
             release-manifest.json
             release-manifest.json.sig
 

@@ -4,6 +4,7 @@ param(
   [string]$GitHubToken = "",
   [switch]$AllowUnsignedLocalPreview,
   [switch]$InstallCudaRuntime,
+  [switch]$SkipTrayAutoStart,
   [switch]$Help
 )
 
@@ -20,6 +21,7 @@ Options:
   -ReleaseBaseUrl <url>    Release download base URL.
   -GitHubToken <token>     Optional token for private GitHub release assets.
   -InstallCudaRuntime      Force CUDA llama runtime installation and pinning.
+  -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
                           when testing a local release preview.
@@ -388,6 +390,7 @@ $gpu = Find-NvidiaGpu
 $profile = if ($gpu) { "windows-x86_64-cuda" } else { "windows-x86_64-generic" }
 $assetName = "opengpu-$target.exe"
 $agentAssetName = "opengpu-node-agent-$target.exe"
+$trayAssetName = "mundusx-tray-$target.exe"
 $cudaRuntimeRequired = [bool]($gpu -or $InstallCudaRuntime)
 $cudaRuntimeAssetName = "llama-runtime-$target-cuda.zip"
 $releaseBase = $ReleaseBaseUrl.TrimEnd("/")
@@ -401,16 +404,19 @@ $tempChecksum = Join-Path $tempDir "$assetName.sha256"
 $tempManifest = Join-Path $tempDir "release-manifest.json"
 $tempSignature = Join-Path $tempDir "release-manifest.json.sig"
 $tempAgent = Join-Path $tempDir $agentAssetName
+$tempTray = Join-Path $tempDir $trayAssetName
 $tempCudaRuntime = Join-Path $tempDir $cudaRuntimeAssetName
 $finalExe = Join-Path $InstallDir "opengpu.exe"
 $compatExe = Join-Path $InstallDir "mundusx.exe"
 $finalAgent = Join-Path $InstallDir "opengpu-node-agent.exe"
+$finalTray = Join-Path $InstallDir "mundusx-tray.exe"
 $runtimeInstallDir = Join-Path (Get-OpenGpuHome) "runtimes\llama"
 $finalCudaRuntime = Join-Path $runtimeInstallDir "llama-cli.exe"
 $finalCudaServerRuntime = Join-Path $runtimeInstallDir "llama-server.exe"
 $manifest = $null
 $trustedRuntimePath = $null
 $agentExpected = $null
+$trayExpected = $null
 $runtimeExpected = $null
 
 Write-Output "MundusX Windows installer"
@@ -421,6 +427,7 @@ Write-Output "  cuda vram: $(if ($gpu -and $gpu.VramMb) { "$($gpu.VramMb) MB" } 
 Write-Output "  source: $releaseBase"
 Write-Output "  asset: $assetName"
 Write-Output "  node agent: $agentAssetName"
+Write-Output "  tray companion: $trayAssetName"
 Write-Output "  cuda runtime: $(if ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { 'not required' })"
 Write-Output "  install: $InstallDir"
 Write-Output "  verification: $(if ($AllowUnsignedLocalPreview) { 'local preview override' } else { 'strict enterprise' })"
@@ -490,9 +497,15 @@ try {
   Write-Output "Verifying node agent checksum..."
   $agentExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $agentAssetName -Destination $tempAgent -ManifestAsset $agentManifestAsset
 
+  $trayManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $trayAssetName
+  Write-Output "Fetching Windows tray companion..."
+  Write-Output "Verifying Windows tray companion checksum..."
+  $trayExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $trayAssetName -Destination $tempTray -ManifestAsset $trayManifestAsset
+
   Move-Item -Force -Path $tempExe -Destination $finalExe
   Copy-Item -Force -LiteralPath $finalExe -Destination $compatExe
   Move-Item -Force -Path $tempAgent -Destination $finalAgent
+  Move-Item -Force -Path $tempTray -Destination $finalTray
 
   if ($cudaRuntimeRequired) {
     if (Test-Path -LiteralPath $runtimeInstallDir) {
@@ -526,6 +539,15 @@ Write-Output ""
 Write-Output "Installed opengpu to $finalExe"
 Write-Output "Installed mundusx compatibility alias to $compatExe"
 Write-Output "Installed node agent to $finalAgent"
+Write-Output "Installed tray companion to $finalTray"
+if (-not $SkipTrayAutoStart) {
+  $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+  New-Item -Path $runKey -Force | Out-Null
+  New-ItemProperty -Path $runKey -Name "MundusX" -Value ('"' + $finalTray + '"') -PropertyType String -Force | Out-Null
+  Write-Output "Configured MundusX tray to start at sign-in"
+  Start-Process -FilePath $finalTray
+  Write-Output "Started MundusX tray companion"
+}
 if ($cudaRuntimeRequired) {
   Write-Output "Installed CUDA llama runtime bundle to $runtimeInstallDir"
   Write-Output "Runtime bundle checksum: $($runtimeExpected.ToLowerInvariant())"

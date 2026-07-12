@@ -34,12 +34,16 @@ The Windows PowerShell bootstrapper fails closed by default. A production instal
 - `opengpu-x86_64-pc-windows-msvc.exe.sha256`
 - `opengpu-node-agent-x86_64-pc-windows-msvc.exe`
 - `opengpu-node-agent-x86_64-pc-windows-msvc.exe.sha256`
+- `mundusx-tray-x86_64-pc-windows-msvc.exe`
+- `mundusx-tray-x86_64-pc-windows-msvc.exe.sha256`
+- `MundusX-Setup.exe`
+- `MundusX-Setup.exe.sha256`
 - `llama-runtime-x86_64-pc-windows-msvc-cuda.zip`
 - `llama-runtime-x86_64-pc-windows-msvc-cuda.zip.sha256`
 - `release-manifest.json`
 - `release-manifest.json.sig`
 
-The installer verifies the CLI and node-agent asset checksums, requires the signed manifest artifacts, and checks that the manifest names the same Windows binary and checksum. On CUDA-capable Windows hosts, it also requires a `runtime_assets` manifest entry for `llama-runtime-x86_64-pc-windows-msvc-cuda.zip`, verifies that bundle checksum, extracts the CUDA runtime beside `llama-cli.exe`, and pins the extracted `llama-cli.exe` absolute path plus SHA-256 in `trusted-runtime-paths.json`. `-AllowUnsignedLocalPreview` is reserved for local development fixtures and must not be used for enterprise or production installs.
+`MundusX-Setup.exe` is the clickable Windows entry point. It embeds the reviewed `install.ps1` bootstrapper and runs the same manifest-driven installation path, so graphical and terminal installs cannot drift. The installer verifies the CLI, node-agent, and Windows tray asset checksums, requires the signed manifest artifacts, and checks that the manifest names every installed binary and checksum. It registers the tray companion for the current user at sign-in and starts it after a production install; `-SkipTrayAutoStart` is available for managed deployment and test environments. On CUDA-capable Windows hosts, it also requires a `runtime_assets` manifest entry for `llama-runtime-x86_64-pc-windows-msvc-cuda.zip`, verifies that bundle checksum, extracts the CUDA runtime beside `llama-cli.exe`, and pins both `llama-cli.exe` and `llama-server.exe` when present in `trusted-runtime-paths.json`. `-AllowUnsignedLocalPreview` is reserved for local development fixtures and must not be used for enterprise or production installs.
 
 The broader enterprise Windows rollout policy, including secret storage, model-source integrity, trusted runtime paths, rollback, and support boundaries, lives in [docs/enterprise-windows-policy.md](enterprise-windows-policy.md).
 

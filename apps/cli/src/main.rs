@@ -96,6 +96,10 @@ enum Commands {
     },
     /// Join the MundusX network (boots local state on first use)
     Connect,
+    /// Pause contribution while keeping this device connected
+    Pause,
+    /// Resume contribution in the background
+    Resume,
     /// Store local operator auth state
     Login {
         #[arg(long)]
@@ -4366,6 +4370,33 @@ fn main() {
             run_start_or_connect(mode)
         }
         Commands::Connect => run_start_or_connect(AgentLaunchMode::Background),
+        Commands::Pause => {
+            if !config_exists() {
+                eprintln!("not connected");
+                std::process::exit(1);
+            }
+
+            let mut config = current_config_or_default();
+            if !config.connected {
+                eprintln!("not connected");
+                std::process::exit(1);
+            }
+
+            config.paused = true;
+            match save_config(&config) {
+                Ok(_) => {
+                    println!("connected: yes");
+                    println!("paused: yes");
+                    println!("pauseState: draining");
+                    println!("pauseHint: the node agent will stop claiming jobs and cool the warm runtime");
+                }
+                Err(error) => {
+                    eprintln!("failed to save pause state: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Resume => run_start_or_connect(AgentLaunchMode::Background),
         Commands::Login { token } => {
             let mut config = current_config_or_default();
             let token = match token {
@@ -5032,6 +5063,22 @@ mod tests {
     fn exit_alias_maps_to_disconnect() {
         let cli = Cli::try_parse_from(["opengpu", "exit"]).expect("exit alias should parse");
         assert!(matches!(cli.command, Commands::Disconnect));
+    }
+
+    #[test]
+    fn pause_and_resume_commands_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["opengpu", "pause"])
+                .expect("pause should parse")
+                .command,
+            Commands::Pause
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["opengpu", "resume"])
+                .expect("resume should parse")
+                .command,
+            Commands::Resume
+        ));
     }
 
     #[test]

@@ -68,7 +68,7 @@ node_agent_name_for_binary() {
 }
 
 create_manifest() {
-  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as
+  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum
   checksum="$(checksum_for_binary "$binary_name")"
   tag_text="$(normalize_text "$tag_name")"
   version_text="$(normalize_text "$version")"
@@ -82,13 +82,21 @@ create_manifest() {
       *) agent_install_as="opengpu-node-agent" ;;
     esac
   fi
+  tray_name=""
+  tray_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) tray_name="mundusx-tray-${binary_name#opengpu-}" ;;
+  esac
+  if [ -n "$tray_name" ] && [ -f "$artifact_dir/$tray_name" ]; then
+    tray_checksum="$(checksum_for_binary "$tray_name")"
+  fi
   generated_at="$("$(python_cmd)" - <<'PY'
 from datetime import datetime, timezone
 print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -102,6 +110,8 @@ generated_at = sys.argv[6]
 agent_name = sys.argv[7]
 agent_checksum = sys.argv[8]
 agent_install_as = sys.argv[9]
+tray_name = sys.argv[10]
+tray_checksum = sys.argv[11]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -111,15 +121,23 @@ payload = {
     "tag": tag,
     "version": version,
 }
+assets = []
 if agent_name and agent_checksum:
-    payload["assets"] = [
-        {
+    assets.append({
             "name": agent_name,
             "install_as": agent_install_as,
             "kind": "node-agent-binary",
             "checksum_sha256": agent_checksum,
-        }
-    ]
+        })
+if tray_name and tray_checksum:
+    assets.append({
+        "name": tray_name,
+        "install_as": "mundusx-tray.exe",
+        "kind": "windows-tray-binary",
+        "checksum_sha256": tray_checksum,
+    })
+if assets:
+    payload["assets"] = assets
 manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
 }

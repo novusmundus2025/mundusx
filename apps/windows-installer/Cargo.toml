@@ -1,0 +1,16 @@
+[package]
+name = "mundusx-windows-installer"
+version = "0.1.0"
+edition = "2021"
+description = "Clickable MundusX Windows installer"
+license = "Apache-2.0"
+
+[[bin]]
+name = "mundusx-bootstrap"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }

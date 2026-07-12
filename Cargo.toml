@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "apps/cli",
+    "apps/tray",
+    "apps/windows-installer",
     "agents/node",
 ]
 resolver = "2"
