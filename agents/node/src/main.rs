@@ -7,8 +7,8 @@ mod worker;
 use clap::{Parser, Subcommand};
 use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    NodeCapabilityAdvertisement, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
-    WorkerPolicyReport,
+    NodeAdmissionStatus, NodeCapabilityAdvertisement, WorkerHealthReport, WorkerLaunchRequest,
+    WorkerLaunchResponse, WorkerPolicyReport,
 };
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
@@ -357,17 +357,54 @@ fn build_heartbeat(config: &AgentConfig) -> Heartbeat {
     build_heartbeat_with_state(config, operational_state(config))
 }
 
-fn print_capability_summary(capabilities: &NodeCapabilityAdvertisement) {
+fn effective_ready_for_jobs(
+    capabilities: &NodeCapabilityAdvertisement,
+    control_plane_status: Option<&NodeAdmissionStatus>,
+) -> bool {
+    capabilities.ready_for_jobs
+        && control_plane_status
+            .map(|status| status.policy_allowed)
+            .unwrap_or(true)
+}
+
+fn effective_readiness_reason(
+    capabilities: &NodeCapabilityAdvertisement,
+    control_plane_status: Option<&NodeAdmissionStatus>,
+) -> Option<String> {
+    if let Some(status) = control_plane_status {
+        if !status.policy_allowed {
+            return status
+                .policy_reason
+                .clone()
+                .or_else(|| status.computed_policy_reason.clone())
+                .or_else(|| Some("control-plane admission policy blocked this node".to_string()));
+        }
+    }
+
+    capabilities.readiness_reason.clone()
+}
+
+fn print_capability_summary_with_control_plane(
+    capabilities: &NodeCapabilityAdvertisement,
+    control_plane_status: Option<&NodeAdmissionStatus>,
+) {
     println!(
         "readyForJobs: {}",
-        if capabilities.ready_for_jobs {
+        if effective_ready_for_jobs(capabilities, control_plane_status) {
             "yes"
         } else {
             "no"
         }
     );
-    if let Some(reason) = capabilities.readiness_reason.as_ref() {
+    if let Some(reason) = effective_readiness_reason(capabilities, control_plane_status) {
         println!("readinessReason: {reason}");
+    }
+    if let Some(status) = control_plane_status {
+        println!(
+            "controlPlanePolicyAllowed: {}",
+            if status.policy_allowed { "yes" } else { "no" }
+        );
+        println!("controlPlaneState: {}", status.state);
     }
     println!("runtimeMode: {}", capabilities.runtime_mode);
     if let Some(vram_mb) = capabilities.physical_vram_mb {
@@ -387,6 +424,10 @@ fn print_capability_summary(capabilities: &NodeCapabilityAdvertisement) {
     } else {
         println!("activeModel: unset");
     }
+}
+
+fn print_capability_summary(capabilities: &NodeCapabilityAdvertisement) {
+    print_capability_summary_with_control_plane(capabilities, None);
 }
 
 fn build_worker_launch_request(
@@ -473,8 +514,8 @@ fn send_heartbeat(
     identity: &DeviceIdentity,
     heartbeat: &Heartbeat,
     verbose: bool,
-) {
-    let result = http::signed_post_json(
+) -> Option<NodeAdmissionStatus> {
+    let result = http::signed_post_json_body::<_, NodeAdmissionStatus>(
         &config.control_plane_url,
         "/v1/heartbeat",
         &config.device_id,
@@ -482,13 +523,11 @@ fn send_heartbeat(
         heartbeat,
     );
     match result {
-        Ok(response) => {
+        Ok(status) => {
             if verbose {
-                println!(
-                    "controlPlaneHeartbeat: ok ({})",
-                    response.lines().next().unwrap_or("no response line")
-                );
+                println!("controlPlaneHeartbeat: ok");
             }
+            Some(status)
         }
         Err(error) => {
             eprintln!("controlPlaneHeartbeat: {error}");
@@ -496,25 +535,24 @@ fn send_heartbeat(
                 eprintln!("controlPlaneHeartbeat: re-registering missing node");
                 let registration = build_registration(config, identity);
                 if send_registration(config, identity, &registration, verbose) {
-                    match http::signed_post_json(
+                    match http::signed_post_json_body::<_, NodeAdmissionStatus>(
                         &config.control_plane_url,
                         "/v1/heartbeat",
                         &config.device_id,
                         identity,
                         heartbeat,
                     ) {
-                        Ok(response) => {
+                        Ok(status) => {
                             if verbose {
-                                println!(
-                                    "controlPlaneHeartbeat: ok ({})",
-                                    response.lines().next().unwrap_or("no response line")
-                                );
+                                println!("controlPlaneHeartbeat: ok");
                             }
+                            return Some(status);
                         }
                         Err(retry_error) => eprintln!("controlPlaneHeartbeat: {retry_error}"),
                     }
                 }
             }
+            None
         }
     }
 }
@@ -1013,7 +1051,6 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     println!("heartbeatLogPath: {}", heartbeat_log_path().display());
     println!("registration: ready");
     println!("heartbeat: ready");
-    print_capability_summary(&registration.capabilities);
     println!(
         "persistentRuntime: {}",
         persistent_runtime
@@ -1032,7 +1069,11 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     }
 
     send_registration(&config, &identity, &registration, verbose);
-    send_heartbeat(&config, &identity, &heartbeat, verbose);
+    let control_plane_status = send_heartbeat(&config, &identity, &heartbeat, verbose);
+    print_capability_summary_with_control_plane(
+        &registration.capabilities,
+        control_plane_status.as_ref(),
+    );
     process_pending_job(&config, json, verbose);
 
     println!("{}", green(format!("connected {}", config.device_id)));

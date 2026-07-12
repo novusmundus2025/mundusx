@@ -276,6 +276,18 @@ pub struct NodeCapabilityAdvertisement {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeAdmissionStatus {
+    pub node_id: String,
+    pub state: AgentState,
+    pub policy_allowed: bool,
+    pub policy_reason: Option<String>,
+    #[serde(default)]
+    pub computed_policy_allowed: bool,
+    #[serde(default)]
+    pub computed_policy_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerPolicyReport {
     pub allowed: bool,
     pub reason: Option<String>,
