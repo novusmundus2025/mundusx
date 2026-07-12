@@ -513,6 +513,10 @@ fn red(text: impl AsRef<str>) -> String {
     format!("\x1b[31m{}\x1b[0m", text.as_ref())
 }
 
+fn eprintln_red(text: impl AsRef<str>) {
+    eprintln!("{}", red(text));
+}
+
 fn is_unknown_node_error(error: &str) -> bool {
     error.to_ascii_lowercase().contains("unknown node")
 }
@@ -1114,9 +1118,9 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     if let Some(reason) = control_plane_blocks_jobs(control_plane_status.as_ref()) {
         drop(persistent_runtime.take());
         std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
-        eprintln!("agentAdmission: blocked by control plane");
-        eprintln!("agentAdmissionReason: {reason}");
-        eprintln!("persistentRuntime: stopped");
+        eprintln_red("agentAdmission: blocked by control plane");
+        eprintln_red(format!("agentAdmissionReason: {reason}"));
+        eprintln_red("persistentRuntime: stopped");
         std::process::exit(2);
     }
     process_pending_job(&config, json, verbose);

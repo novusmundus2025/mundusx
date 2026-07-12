@@ -4329,8 +4329,8 @@ fn run_start_or_connect(mode: AgentLaunchMode) {
             }
             if identity_ready {
                 if let Err(error) = launch_node_agent(mode) {
-                    eprintln!("{error}");
-                    eprintln!(
+                    theme::error(error);
+                    theme::error(
                         "agentHint: ensure `opengpu-node-agent` is installed beside `opengpu`, or run `opengpu start --background` to use daemon mode"
                     );
                     std::process::exit(1);
@@ -4569,7 +4569,7 @@ fn main() {
                         }
                         Ok(None) => println!("agent: not running"),
                         Err(error) => {
-                            eprintln!("agentStop: {error}");
+                            theme::error(format!("agentStop: {error}"));
                             std::process::exit(1);
                         }
                     }
@@ -4868,7 +4868,7 @@ fn main() {
                     }
                 }
                 Err(error) => {
-                    eprintln!("run failed: {error}");
+                    theme::error(format!("run failed: {error}"));
                     std::process::exit(1);
                 }
             }
@@ -4913,7 +4913,7 @@ fn main() {
             };
 
             if let Err(error) = result {
-                eprintln!("jobs command failed: {error}");
+                theme::error(format!("jobs command failed: {error}"));
                 std::process::exit(1);
             }
         }

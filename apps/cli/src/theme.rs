@@ -91,6 +91,16 @@ pub fn warn(value: impl std::fmt::Display) {
     }
 }
 
+pub fn error(value: impl std::fmt::Display) {
+    match current_mode() {
+        ThemeMode::Classic => eprintln!("error: {value}"),
+        ThemeMode::Reactor => eprintln!(
+            "{}",
+            style(format!("error: {value}")).with(Color::Red).bold()
+        ),
+    }
+}
+
 pub fn status(value: &str) -> String {
     match current_mode() {
         ThemeMode::Classic => value.to_string(),
