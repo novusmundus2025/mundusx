@@ -357,6 +357,38 @@ fn build_heartbeat(config: &AgentConfig) -> Heartbeat {
     build_heartbeat_with_state(config, operational_state(config))
 }
 
+fn print_capability_summary(capabilities: &NodeCapabilityAdvertisement) {
+    println!(
+        "readyForJobs: {}",
+        if capabilities.ready_for_jobs {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    if let Some(reason) = capabilities.readiness_reason.as_ref() {
+        println!("readinessReason: {reason}");
+    }
+    println!("runtimeMode: {}", capabilities.runtime_mode);
+    if let Some(vram_mb) = capabilities.physical_vram_mb {
+        println!("physicalVramMb: {vram_mb}");
+    }
+    if let Some(vram_mb) = capabilities.usable_vram_mb {
+        println!("usableVramMb: {vram_mb}");
+    }
+    if let Some(model) = capabilities.active_model.as_ref() {
+        println!("activeModel: {}", model.name);
+        if let Some(compatibility) = model.compatibility.as_ref() {
+            println!("activeModelCompatibility: {compatibility}");
+        }
+        if let Some(reason) = model.compatibility_reason.as_ref() {
+            println!("activeModelCompatibilityReason: {reason}");
+        }
+    } else {
+        println!("activeModel: unset");
+    }
+}
+
 fn build_worker_launch_request(
     config: &AgentConfig,
     job_id: String,
@@ -981,6 +1013,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     println!("heartbeatLogPath: {}", heartbeat_log_path().display());
     println!("registration: ready");
     println!("heartbeat: ready");
+    print_capability_summary(&registration.capabilities);
     println!(
         "persistentRuntime: {}",
         persistent_runtime
@@ -1082,6 +1115,7 @@ fn print_registration(json: bool) {
         registration.contribution_percent
     );
     println!("agentVersion: {}", registration.agent_version);
+    print_capability_summary(&registration.capabilities);
 }
 
 fn print_heartbeat(once: bool, json: bool) {
@@ -1100,6 +1134,18 @@ fn print_heartbeat(once: bool, json: bool) {
     println!("availableGpuPercent: {}", heartbeat.available_gpu_percent);
     println!("updatedAt: {}", heartbeat.updated_at);
     println!("contributionPercent: {}%", heartbeat.contribution_percent);
+    println!(
+        "policyAllowed: {}",
+        if heartbeat.policy_allowed {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    if let Some(reason) = heartbeat.policy_reason.as_ref() {
+        println!("policyReason: {reason}");
+    }
+    print_capability_summary(&heartbeat.capabilities);
     if once {
         println!("mode: once");
     } else {
