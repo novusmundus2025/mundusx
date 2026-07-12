@@ -48,7 +48,8 @@ These remain available, but they are hidden from the default `--help` output so 
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected and policy allows it.
 - `vllm` is explicit opt-in for Linux/Ubuntu NVIDIA nodes. `auto` does not select it, and Windows continues to use the llama.cpp CUDA path.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
-- `status` also reports `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, and `policyReason` so you can see why the Mac is paused or quiet, and whether it is using Keychain or the local encrypted fallback.
+- `status` and `start` also report `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, `policyReason`, `readyForJobs`, and `readinessReason` so a connected node can still explain why it is not schedulable yet.
+- `readyForJobs: yes` means the node is connected, not paused, has secure identity, has a selected active model, passes local power policy, and is not using a model manifest marked `rejected`.
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled. On Windows, `login` stores the token in a DPAPI-protected blob outside `config.json`, and `logout` removes that protected token.
 - The model commands manage the local model cache manifest and active selection, download official open presets from the reviewed catalog before caching or activating them, and can import contributor-supplied local GGUF files with compatibility metadata for node capability reporting.
 - Bare `model use` and `model add` show an arrow-key official model picker with provider/source URL, backend compatibility, estimated VRAM, and cap-fit context; passing an exact name remains available for scripts.

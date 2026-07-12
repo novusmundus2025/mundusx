@@ -2398,16 +2398,68 @@ fn policy_allowed(
     policy_reason(config, power, active_model, identity_ready).is_none()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalReadiness {
+    ready_for_jobs: bool,
+    readiness_reason: Option<String>,
+    model_compatibility: Option<String>,
+    model_compatibility_reason: Option<String>,
+}
+
+fn active_model_record(config: &Config, active_model: Option<&str>) -> Option<ModelRecord> {
+    let models = list_models(config).ok()?;
+    if let Some(active_model) = active_model {
+        models
+            .iter()
+            .find(|model| model.name == active_model)
+            .cloned()
+            .or_else(|| models.into_iter().find(|model| model.active))
+    } else {
+        models.into_iter().find(|model| model.active)
+    }
+}
+
+fn local_readiness(
+    config: &Config,
+    power: &PowerState,
+    active_model: Option<&str>,
+    identity_ready: bool,
+) -> LocalReadiness {
+    let policy_reason = policy_reason(config, power, active_model, identity_ready);
+    let model = active_model_record(config, active_model);
+    let model_compatibility = model.as_ref().and_then(|model| model.compatibility.clone());
+    let model_compatibility_reason = model
+        .as_ref()
+        .and_then(|model| model.compatibility_reason.clone());
+    let readiness_reason = if !config.connected {
+        Some("node is disconnected".to_string())
+    } else if config.paused {
+        Some("node is paused".to_string())
+    } else if let Some(reason) = policy_reason {
+        Some(reason)
+    } else if model_compatibility.as_deref() == Some("rejected") {
+        model_compatibility_reason
+            .clone()
+            .or_else(|| Some("active model is not compatible with this node".to_string()))
+    } else {
+        None
+    };
+
+    LocalReadiness {
+        ready_for_jobs: readiness_reason.is_none(),
+        readiness_reason,
+        model_compatibility,
+        model_compatibility_reason,
+    }
+}
+
 fn provider_count(
     config: &Config,
     power: &PowerState,
     active_model: Option<&str>,
     identity_ready: bool,
 ) -> usize {
-    if config.connected
-        && !config.paused
-        && policy_allowed(config, power, active_model, identity_ready)
-    {
+    if local_readiness(config, power, active_model, identity_ready).ready_for_jobs {
         1
     } else {
         0
@@ -2420,6 +2472,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     let active_model = active_model_name(config);
     let identity_ready = identity_ready();
     let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
+    let readiness = local_readiness(config, &power, active_model.as_deref(), identity_ready);
     let provider_count = provider_count(config, &power, active_model.as_deref(), identity_ready);
     theme::section("Node status");
     theme::field("configPath", path.display());
@@ -2482,6 +2535,19 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
         theme::field("policyReason", reason);
     }
     theme::field(
+        "readyForJobs",
+        theme::boolean(readiness.ready_for_jobs, "yes", "no"),
+    );
+    if let Some(reason) = readiness.readiness_reason.as_ref() {
+        theme::field("readinessReason", reason);
+    }
+    if let Some(compatibility) = readiness.model_compatibility.as_ref() {
+        theme::field("activeModelCompatibility", compatibility);
+    }
+    if let Some(reason) = readiness.model_compatibility_reason.as_ref() {
+        theme::field("activeModelCompatibilityReason", reason);
+    }
+    theme::field(
         "onboardingCompleted",
         if config.onboarding_completed {
             "yes"
@@ -2500,6 +2566,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     let active_model = active_model_name(config);
     let identity_ready = identity_ready();
     let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
+    let readiness = local_readiness(config, &power, active_model.as_deref(), identity_ready);
 
     theme::section("Startup ready");
     theme::field("deviceId", &config.device_id);
@@ -2551,6 +2618,19 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     theme::field("policyAllowed", theme::boolean(allowed, "yes", "no"));
     if let Some(reason) = policy_reason(config, &power, active_model.as_deref(), identity_ready) {
         theme::field("policyReason", reason);
+    }
+    theme::field(
+        "readyForJobs",
+        theme::boolean(readiness.ready_for_jobs, "yes", "no"),
+    );
+    if let Some(reason) = readiness.readiness_reason.as_ref() {
+        theme::field("readinessReason", reason);
+    }
+    if let Some(compatibility) = readiness.model_compatibility.as_ref() {
+        theme::field("activeModelCompatibility", compatibility);
+    }
+    if let Some(reason) = readiness.model_compatibility_reason.as_ref() {
+        theme::field("activeModelCompatibilityReason", reason);
     }
     theme::field(
         "onboardingCompleted",
@@ -4508,6 +4588,8 @@ fn main() {
             let identity_ready = identity_ready();
             let policy_allowed =
                 policy_allowed(&config, &power, active_model.as_deref(), identity_ready);
+            let readiness =
+                local_readiness(&config, &power, active_model.as_deref(), identity_ready);
             let provider_count =
                 provider_count(&config, &power, active_model.as_deref(), identity_ready);
 
@@ -4532,6 +4614,10 @@ fn main() {
                         active_model.as_deref(),
                         identity_ready
                     ),
+                    "ready_for_jobs": readiness.ready_for_jobs,
+                    "readiness_reason": readiness.readiness_reason,
+                    "active_model_compatibility": readiness.model_compatibility,
+                    "active_model_compatibility_reason": readiness.model_compatibility_reason,
                 });
                 if let Err(error) = print_json(&payload) {
                     eprintln!("failed to print json: {error}");
@@ -4906,14 +4992,16 @@ mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
         cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
-        job_status_path, job_wait_progress_signature, logs_payload, parse_llama_output,
-        remote_job_output, resolve_install_control_plane_url, runtime_metrics_from_output,
-        runtime_metrics_from_payload, vllm_doctor_payload, Cli, Commands, ExecutionMode,
-        JobsCommands, PUBLIC_CONTROL_PLANE_URL,
+        job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
+        parse_llama_output, remote_job_output, resolve_install_control_plane_url,
+        runtime_metrics_from_output, runtime_metrics_from_payload, vllm_doctor_payload, Cli,
+        Commands, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
+    use crate::model::ModelRecord;
     use crate::types::Backend;
     use clap::Parser;
+    use std::fs;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
 
@@ -4922,10 +5010,93 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn ac_power() -> PowerState {
+        PowerState {
+            source: "AC Power".to_string(),
+            on_battery: false,
+            battery_percent: Some(100),
+        }
+    }
+
+    fn ready_config() -> Config {
+        Config {
+            connected: true,
+            paused: false,
+            contribution_percent: 80,
+            active_model: Some("Qwen/Qwen2.5-1.5B-Instruct".to_string()),
+            ..Config::default()
+        }
+    }
+
     #[test]
     fn exit_alias_maps_to_disconnect() {
         let cli = Cli::try_parse_from(["opengpu", "exit"]).expect("exit alias should parse");
         assert!(matches!(cli.command, Commands::Disconnect));
+    }
+
+    #[test]
+    fn local_readiness_reports_ready_node() {
+        let config = ready_config();
+        let readiness = local_readiness(&config, &ac_power(), config.active_model.as_deref(), true);
+
+        assert!(readiness.ready_for_jobs);
+        assert_eq!(readiness.readiness_reason, None);
+    }
+
+    #[test]
+    fn local_readiness_reports_disconnected_node() {
+        let mut config = ready_config();
+        config.connected = false;
+
+        let readiness = local_readiness(&config, &ac_power(), config.active_model.as_deref(), true);
+
+        assert!(!readiness.ready_for_jobs);
+        assert_eq!(
+            readiness.readiness_reason.as_deref(),
+            Some("node is disconnected")
+        );
+    }
+
+    #[test]
+    fn local_readiness_reports_rejected_active_model() {
+        let base =
+            std::env::temp_dir().join(format!("opengpu-cli-readiness-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".opengpu")).expect("test model manifest dir");
+
+        let rejected_model = ModelRecord {
+            name: "too-big".to_string(),
+            active: true,
+            cached_at: "test".to_string(),
+            model_dir: base.display().to_string(),
+            source_path: None,
+            file_name: None,
+            format: Some("gguf".to_string()),
+            quantization: Some("q4".to_string()),
+            size_bytes: None,
+            estimated_vram_mb: Some(65536),
+            compatibility: Some("rejected".to_string()),
+            compatibility_reason: Some("requires more VRAM than this node can offer".to_string()),
+        };
+        fs::write(
+            base.join(".opengpu").join("too-big.json"),
+            serde_json::to_string(&rejected_model).expect("serialize rejected model"),
+        )
+        .expect("write rejected model manifest");
+
+        let mut config = ready_config();
+        config.active_model = Some("too-big".to_string());
+        config.model_dir = Some(base.display().to_string());
+
+        let readiness = local_readiness(&config, &ac_power(), config.active_model.as_deref(), true);
+        let _ = fs::remove_dir_all(&base);
+
+        assert!(!readiness.ready_for_jobs);
+        assert_eq!(readiness.model_compatibility.as_deref(), Some("rejected"));
+        assert_eq!(
+            readiness.readiness_reason.as_deref(),
+            Some("requires more VRAM than this node can offer")
+        );
     }
 
     #[test]
