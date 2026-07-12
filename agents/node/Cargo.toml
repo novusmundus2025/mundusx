@@ -21,4 +21,5 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security_Cryptography",
+  "Win32_System_SystemInformation",
 ] }

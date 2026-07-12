@@ -299,6 +299,28 @@ fn resolved_backend(config: &AgentConfig) -> Backend {
 }
 
 fn detect_memory_mb() -> u32 {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            dwMemoryLoad: 0,
+            ullTotalPhys: 0,
+            ullAvailPhys: 0,
+            ullTotalPageFile: 0,
+            ullAvailPageFile: 0,
+            ullTotalVirtual: 0,
+            ullAvailVirtual: 0,
+            ullAvailExtendedVirtual: 0,
+        };
+
+        let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+        if ok != 0 {
+            return (status.ullTotalPhys / 1024 / 1024) as u32;
+        }
+    }
+
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("sysctl")
