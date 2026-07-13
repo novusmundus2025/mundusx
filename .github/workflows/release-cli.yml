@@ -36,6 +36,7 @@ jobs:
             tray_executable_name: mundusx-tray.exe
             setup_binary_name: MundusX-Setup.exe
             setup_executable_name: mundusx-bootstrap.exe
+            runtime_binary_name: llama-runtime-x86_64-pc-windows-msvc-cuda.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -61,6 +62,13 @@ jobs:
       - name: Build clickable Windows installer
         if: startsWith(matrix.os, 'windows-')
         run: cargo build --release --manifest-path apps/windows-installer/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Package pinned Windows llama.cpp CUDA runtime
+        if: startsWith(matrix.os, 'windows-')
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\scripts\package-windows-llama-runtime.ps1 -Tag b9856 -CudaVersion 12.4 -OutputPath ${{ matrix.runtime_binary_name }}
 
       - name: Prepare binary
         shell: bash
@@ -140,6 +148,8 @@ jobs:
             ${{ matrix.tray_binary_name }}.sha256
             ${{ matrix.setup_binary_name }}
             ${{ matrix.setup_binary_name }}.sha256
+            ${{ matrix.runtime_binary_name }}
+            ${{ matrix.runtime_binary_name }}.sha256
             release-manifest.json
             release-manifest.json.sig
 

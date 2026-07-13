@@ -68,7 +68,7 @@ node_agent_name_for_binary() {
 }
 
 create_manifest() {
-  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum
+  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum runtime_name runtime_checksum
   checksum="$(checksum_for_binary "$binary_name")"
   tag_text="$(normalize_text "$tag_name")"
   version_text="$(normalize_text "$version")"
@@ -90,13 +90,21 @@ create_manifest() {
   if [ -n "$tray_name" ] && [ -f "$artifact_dir/$tray_name" ]; then
     tray_checksum="$(checksum_for_binary "$tray_name")"
   fi
+  runtime_name=""
+  runtime_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) runtime_name="llama-runtime-x86_64-pc-windows-msvc-cuda.zip" ;;
+  esac
+  if [ -n "$runtime_name" ] && [ -f "$artifact_dir/$runtime_name" ]; then
+    runtime_checksum="$(checksum_for_binary "$runtime_name")"
+  fi
   generated_at="$("$(python_cmd)" - <<'PY'
 from datetime import datetime, timezone
 print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -112,6 +120,8 @@ agent_checksum = sys.argv[8]
 agent_install_as = sys.argv[9]
 tray_name = sys.argv[10]
 tray_checksum = sys.argv[11]
+runtime_name = sys.argv[12]
+runtime_checksum = sys.argv[13]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -138,6 +148,13 @@ if tray_name and tray_checksum:
     })
 if assets:
     payload["assets"] = assets
+if runtime_name and runtime_checksum:
+    payload["runtime_assets"] = [{
+        "name": runtime_name,
+        "install_as": "runtimes/llama",
+        "kind": "llama-cpp-cuda-runtime-bundle",
+        "checksum_sha256": runtime_checksum,
+    }]
 manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
 }
