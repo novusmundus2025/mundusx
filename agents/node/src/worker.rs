@@ -1341,7 +1341,22 @@ pub fn worker_main(cli: WorkerCli) {
     println!("nodeId: {}", response.node_id);
     println!("backend: {}", response.backend);
     println!("status: {}", response.status);
-    println!("output: {}", response.output);
+    println!("{}", output_summary_line(&response.output));
+}
+
+fn output_summary_line(output: &str) -> String {
+    let chars = output.chars().count();
+    let first_line = output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("");
+    let preview: String = first_line.chars().take(160).collect();
+    if chars > preview.chars().count() {
+        format!("output: {chars} chars; preview: {preview}...")
+    } else {
+        format!("output: {chars} chars; preview: {preview}")
+    }
 }
 
 pub fn launch_worker(

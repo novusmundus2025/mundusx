@@ -625,7 +625,7 @@ fn launch_worker_process(
                 println!("jobId: {}", response.job_id);
                 println!("status: {}", response.status);
                 println!("backend: {}", response.backend);
-                println!("output: {}", response.output);
+                println!("{}", output_summary_line(&response.output));
                 if let Some(error) = response.error.as_deref() {
                     println!("error: {error}");
                 }
@@ -637,6 +637,21 @@ fn launch_worker_process(
             let _ = save_agent_state(&build_heartbeat(config));
             Err(error)
         }
+    }
+}
+
+fn output_summary_line(output: &str) -> String {
+    let chars = output.chars().count();
+    let first_line = output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("");
+    let preview: String = first_line.chars().take(160).collect();
+    if chars > preview.chars().count() {
+        format!("output: {chars} chars; preview: {preview}...")
+    } else {
+        format!("output: {chars} chars; preview: {preview}")
     }
 }
 
