@@ -12,7 +12,10 @@ mod windows_tray {
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            Shell::{Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW},
+            Shell::{
+                Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+                NOTIFYICONDATAW,
+            },
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
                 DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW,
@@ -26,10 +29,21 @@ mod windows_tray {
     };
 
     const TRAY_MESSAGE: u32 = WM_APP + 1;
-    const MENU_OPEN: usize = 1001;
-    const MENU_PAUSE: usize = 1002;
-    const MENU_RESUME: usize = 1003;
-    const MENU_EXIT: usize = 1004;
+    const MENU_STATUS: usize = 1001;
+    const MENU_SETUP: usize = 1002;
+    const MENU_ONBOARDING: usize = 1003;
+    const MENU_CAP: usize = 1004;
+    const MENU_CREDITS: usize = 1005;
+    const MENU_MODEL_LIST: usize = 1006;
+    const MENU_MODEL_USE: usize = 1007;
+    const MENU_MODEL_ADD: usize = 1008;
+    const MENU_DOCTOR: usize = 1009;
+    const MENU_LOGS: usize = 1010;
+    const MENU_START: usize = 1011;
+    const MENU_PAUSE: usize = 1012;
+    const MENU_RESUME: usize = 1013;
+    const MENU_DISCONNECT: usize = 1014;
+    const MENU_EXIT: usize = 1015;
 
     fn wide(value: &str) -> Vec<u16> {
         OsStr::new(value).encode_wide().chain(Some(0)).collect()
@@ -43,12 +57,51 @@ mod windows_tray {
             .unwrap_or_else(|| PathBuf::from("opengpu.exe"))
     }
 
-    fn run_cli(argument: &str) {
-        let _ = Command::new(cli_path()).arg(argument).spawn();
+    fn run_cli(args: &[&str]) {
+        let _ = Command::new(cli_path()).args(args).spawn();
     }
 
-    fn open_dashboard() {
-        let _ = Command::new(cli_path()).arg("status").spawn();
+    fn powershell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    fn powershell_cli_command(args: &[&str]) -> String {
+        let mut command = format!("& {}", powershell_quote(&cli_path().display().to_string()));
+        for arg in args {
+            command.push(' ');
+            command.push_str(&powershell_quote(arg));
+        }
+        command
+    }
+
+    fn run_cli_window(args: &[&str]) {
+        let command = format!(
+            "{}; Write-Host ''; Write-Host 'Press Enter to close this window.'; Read-Host",
+            powershell_cli_command(args)
+        );
+        let _ = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-NoExit",
+                "-Command",
+                &command,
+            ])
+            .spawn();
+    }
+
+    fn open_status_window() {
+        run_cli_window(&["status"]);
+    }
+
+    unsafe fn append_menu_item(menu: *mut core::ffi::c_void, id: usize, label: &str) {
+        let label = wide(label);
+        AppendMenuW(menu, MF_STRING, id, label.as_ptr());
+    }
+
+    unsafe fn append_separator(menu: *mut core::ffi::c_void) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
     }
 
     unsafe fn show_menu(hwnd: HWND) {
@@ -56,16 +109,26 @@ mod windows_tray {
         if menu.is_null() {
             return;
         }
-        let open = wide("Open MundusX status");
-        let pause = wide("Pause contribution");
-        let resume = wide("Resume contribution");
-        let exit = wide("Exit tray");
-        AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-        AppendMenuW(menu, MF_STRING, MENU_PAUSE, pause.as_ptr());
-        AppendMenuW(menu, MF_STRING, MENU_RESUME, resume.as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-        AppendMenuW(menu, MF_STRING, MENU_EXIT, exit.as_ptr());
+        append_menu_item(menu, MENU_STATUS, "Status");
+        append_menu_item(menu, MENU_CREDITS, "Credits and earnings");
+        append_separator(menu);
+        append_menu_item(menu, MENU_SETUP, "Guided setup");
+        append_menu_item(menu, MENU_ONBOARDING, "Onboarding checklist");
+        append_menu_item(menu, MENU_CAP, "Contribution cap");
+        append_separator(menu);
+        append_menu_item(menu, MENU_MODEL_LIST, "Model cache");
+        append_menu_item(menu, MENU_MODEL_USE, "Choose active model");
+        append_menu_item(menu, MENU_MODEL_ADD, "Download another model");
+        append_separator(menu);
+        append_menu_item(menu, MENU_DOCTOR, "Diagnostics");
+        append_menu_item(menu, MENU_LOGS, "Logs");
+        append_separator(menu);
+        append_menu_item(menu, MENU_START, "Start in background");
+        append_menu_item(menu, MENU_PAUSE, "Pause contribution");
+        append_menu_item(menu, MENU_RESUME, "Resume contribution");
+        append_menu_item(menu, MENU_DISCONNECT, "Disconnect and cool GPU");
+        append_separator(menu);
+        append_menu_item(menu, MENU_EXIT, "Exit app");
 
         let mut point = POINT { x: 0, y: 0 };
         GetCursorPos(&mut point);
@@ -99,16 +162,27 @@ mod windows_tray {
             TRAY_MESSAGE => {
                 match lparam as u32 {
                     WM_RBUTTONUP => show_menu(hwnd),
-                    WM_LBUTTONDBLCLK => open_dashboard(),
+                    WM_LBUTTONDBLCLK => open_status_window(),
                     _ => {}
                 }
                 0
             }
             WM_COMMAND => {
                 match wparam & 0xffff {
-                    MENU_OPEN => open_dashboard(),
-                    MENU_PAUSE => run_cli("pause"),
-                    MENU_RESUME => run_cli("resume"),
+                    MENU_STATUS => open_status_window(),
+                    MENU_SETUP => run_cli_window(&["install"]),
+                    MENU_ONBOARDING => run_cli_window(&["onboarding"]),
+                    MENU_CAP => run_cli_window(&["cap"]),
+                    MENU_CREDITS => run_cli_window(&["credits"]),
+                    MENU_MODEL_LIST => run_cli_window(&["model", "list"]),
+                    MENU_MODEL_USE => run_cli_window(&["model", "use"]),
+                    MENU_MODEL_ADD => run_cli_window(&["model", "add"]),
+                    MENU_DOCTOR => run_cli_window(&["doctor"]),
+                    MENU_LOGS => run_cli_window(&["logs"]),
+                    MENU_START => run_cli_window(&["start", "--background"]),
+                    MENU_PAUSE => run_cli(&["pause"]),
+                    MENU_RESUME => run_cli_window(&["resume"]),
+                    MENU_DISCONNECT => run_cli_window(&["exit"]),
                     MENU_EXIT => {
                         DestroyWindow(hwnd);
                     }
@@ -190,6 +264,18 @@ mod windows_tray {
                 DispatchMessageW(&message);
             }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::powershell_cli_command;
+
+        #[test]
+        fn powershell_command_keeps_multi_arg_cli_commands() {
+            let command = powershell_cli_command(&["model", "use"]);
+
+            assert!(command.contains("'model' 'use'"));
         }
     }
 }

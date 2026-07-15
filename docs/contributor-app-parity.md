@@ -17,27 +17,28 @@ labels, status, errors, and next steps.
 
 ## Current Parity Matrix
 
-| Capability | CLI Surface | App Surface Required |
+| Capability | CLI Surface | Current App Surface |
 | --- | --- | --- |
 | Install binaries and runtime | `install.ps1`, release assets | Clickable setup EXE |
-| Choose control plane URL | `opengpu install` | Setup/onboarding screen |
-| Choose contribution cap | `opengpu install`, `opengpu cap` | Setup/onboarding screen plus later settings screen |
-| Detect backend | `opengpu status`, `opengpu doctor`, `opengpu start` | Read-only status panel with detected backend and reason |
+| Choose control plane URL | `opengpu install` | Setup EXE launches guided setup; tray exposes Guided setup |
+| Choose contribution cap | `opengpu install`, `opengpu cap` | Setup wizard and tray Contribution cap action |
+| Detect backend | `opengpu status`, `opengpu doctor`, `opengpu start` | Tray Status and Diagnostics actions |
 | Choose backend preference | `opengpu start --backend`, config | Settings screen |
-| Choose/download official model | `opengpu model use`, `opengpu model add` | Model picker with fit/reason labels |
+| Choose/download official model | `opengpu model use`, `opengpu model add` | Tray Choose active model and Download another model actions |
 | Import local GGUF model | `opengpu model import` | Advanced model import screen |
-| Show active model/cache | `opengpu model list` | Model status screen |
+| Show active model/cache | `opengpu model list` | Tray Model cache action |
 | Start contribution foreground | `opengpu start` | Start button with live state |
-| Start background contribution | `opengpu start --background` | Start in background toggle/button |
+| Start background contribution | `opengpu start --background` | Tray Start in background action |
 | Pause contribution | `opengpu pause` | Tray menu and main app button |
 | Resume contribution | `opengpu resume` | Tray menu and main app button |
-| Disconnect / cool GPU | `opengpu exit`, `opengpu disconnect` | Stop/disconnect button that confirms GPU runtime is cooled |
-| Show readiness | `opengpu status` | Home/status card with ready/not-ready reason |
+| Disconnect / cool GPU | `opengpu exit`, `opengpu disconnect` | Tray Disconnect and cool GPU action |
+| Show readiness | `opengpu status` | Tray Status action and setup output |
 | Show policy rejection | `opengpu status`, control-plane response | Status card with red/yellow reason text |
-| Show logs | `opengpu logs` | Logs page or "Open logs" action |
-| Run doctor | `opengpu doctor` | Diagnostics page |
-| Onboarding checklist | `opengpu onboarding` | First-run onboarding wizard |
+| Show logs | `opengpu logs` | Tray Logs action |
+| Run doctor | `opengpu doctor` | Tray Diagnostics action |
+| Onboarding checklist | `opengpu onboarding` | First-run onboarding wizard and tray Onboarding checklist action |
 | Complete/reset onboarding | `opengpu onboarding --complete/reset` | Onboarding review/redo controls |
+| Show credits/earnings | `opengpu credits` | Tray Credits and earnings action |
 | Update/reinstall | `opengpu update`, setup EXE | Update screen or setup relaunch |
 
 ## App Behavior Requirements
