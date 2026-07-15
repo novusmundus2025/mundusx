@@ -13,7 +13,7 @@ RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 Apple Silicon macOS public release install. Replace `v0.1.10` with the current published Mac release version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | RELEASE_BASE_URL=https://github.com/mundusx/mundusx/releases/download/cli-macos-v0.1.10 bash
+curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | RELEASE_BASE_URL=https://github.com/mundusx/mundusx/releases/download/cli-macos-v0.1.11 bash
 ```
 
 On Windows local preview:
@@ -25,7 +25,7 @@ On Windows local preview:
 Windows public release install uses the Windows-specific release:
 
 ```powershell
-.\install.ps1 -ReleaseBaseUrl https://github.com/mundusx/mundusx/releases/download/cli-windows-v0.1.10
+.\install.ps1 -ReleaseBaseUrl https://github.com/mundusx/mundusx/releases/download/cli-windows-v0.1.11
 ```
 
 Useful commands:

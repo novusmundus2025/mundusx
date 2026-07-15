@@ -1,0 +1,96 @@
+name: Release CLI macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "macOS release tag to build and publish, for example cli-macos-v0.1.11"
+        required: true
+        type: string
+  push:
+    tags:
+      - "cli-macos-v*"
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  TARGET: aarch64-apple-darwin
+  BINARY_NAME: opengpu-aarch64-apple-darwin
+  EXECUTABLE_NAME: opengpu
+  AGENT_BINARY_NAME: opengpu-node-agent-aarch64-apple-darwin
+  AGENT_EXECUTABLE_NAME: opengpu-node-agent
+
+jobs:
+  release:
+    name: Build and publish macOS Apple Silicon CLI
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build CLI
+        run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ env.TARGET }}
+
+      - name: Build node agent
+        run: cargo build --release --manifest-path agents/node/Cargo.toml --target ${{ env.TARGET }}
+
+      - name: Prepare binaries
+        shell: bash
+        run: |
+          cp "target/${TARGET}/release/${EXECUTABLE_NAME}" "${BINARY_NAME}"
+          cp "target/${TARGET}/release/${AGENT_EXECUTABLE_NAME}" "${AGENT_BINARY_NAME}"
+          chmod +x "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          shasum -a 256 "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
+          shasum -a 256 "${AGENT_BINARY_NAME}" > "${AGENT_BINARY_NAME}.sha256"
+
+      - name: Verify checksums
+        shell: bash
+        run: |
+          shasum -a 256 -c "${BINARY_NAME}.sha256"
+          shasum -a 256 -c "${AGENT_BINARY_NAME}.sha256"
+
+      - name: Verify packaging
+        shell: bash
+        run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
+
+      - name: Prepare signed manifest
+        shell: bash
+        env:
+          OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: ./scripts/release-signing.sh prepare . "${BINARY_NAME}" "${RELEASE_TAG}" "${RELEASE_TAG}"
+
+      - name: Verify signed manifest
+        shell: bash
+        env:
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: ./scripts/release-signing.sh verify . "${BINARY_NAME}"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.BINARY_NAME }}
+            ${{ env.BINARY_NAME }}.sha256
+            ${{ env.AGENT_BINARY_NAME }}
+            ${{ env.AGENT_BINARY_NAME }}.sha256
+            release-manifest.json
+            release-manifest.json.sig
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: MundusX macOS Apple Silicon CLI ${{ env.RELEASE_TAG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -4,10 +4,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-workflow=".github/workflows/release-cli.yml"
+legacy_workflow=".github/workflows/release-cli.yml"
+macos_workflow=".github/workflows/release-cli-macos.yml"
+windows_workflow=".github/workflows/release-cli-windows.yml"
 
 assert_contains() {
-  local text="$1"
+  local workflow="$1"
+  local text="$2"
 
   if ! rg -F -q "$text" "$workflow"; then
     echo "expected $workflow to contain: $text" >&2
@@ -15,39 +18,42 @@ assert_contains() {
   fi
 }
 
-assert_contains "os: windows-latest"
-assert_contains "workflow_dispatch:"
-assert_contains "release_tag:"
-assert_contains "os: macos-14"
-assert_contains "target: aarch64-apple-darwin"
-assert_contains "binary_name: opengpu-aarch64-apple-darwin"
-assert_contains "agent_binary_name: opengpu-node-agent-aarch64-apple-darwin"
-assert_contains "agent_executable_name: opengpu-node-agent"
-assert_contains "target: x86_64-pc-windows-msvc"
-assert_contains "binary_name: opengpu-x86_64-pc-windows-msvc.exe"
-assert_contains "executable_name: opengpu.exe"
-assert_contains "agent_binary_name: opengpu-node-agent-x86_64-pc-windows-msvc.exe"
-assert_contains "agent_executable_name: opengpu-node-agent.exe"
-assert_contains "tray_binary_name: mundusx-tray-x86_64-pc-windows-msvc.exe"
-assert_contains "cargo build --release --manifest-path apps/tray/Cargo.toml"
-assert_contains "setup_binary_name: MundusX-Setup.exe"
-assert_contains "cargo build --release --manifest-path apps/windows-installer/Cargo.toml"
-assert_contains "runtime_binary_name: llama-runtime-x86_64-pc-windows-msvc-cuda.zip"
-assert_contains "package-windows-llama-runtime.ps1 -Tag b9856 -CudaVersion 12.4"
-assert_contains "channel: macos"
-assert_contains "channel: windows"
-assert_contains "platform_tag=\"cli-\${{ matrix.channel }}-\${version}\""
-assert_contains "release_name=\"MundusX \${{ matrix.label }} CLI \${version}\""
-assert_contains "tag_name: \${{ steps.platform.outputs.tag }}"
-assert_contains "name: \${{ steps.platform.outputs.name }}"
-assert_contains "cargo build --release --manifest-path agents/node/Cargo.toml --target \${{ matrix.target }}"
-assert_contains "cp target/\${{ matrix.target }}/release/\${{ matrix.executable_name }} \${{ matrix.binary_name }}"
-assert_contains "cp target/\${{ matrix.target }}/release/\${{ matrix.agent_executable_name }} \${{ matrix.agent_binary_name }}"
-assert_contains "sha256sum \${{ matrix.binary_name }} > \${{ matrix.binary_name }}.sha256"
-assert_contains "sha256sum \${{ matrix.agent_binary_name }} > \${{ matrix.agent_binary_name }}.sha256"
-assert_contains "sha256sum -c \${{ matrix.binary_name }}.sha256"
-assert_contains "sha256sum -c \${{ matrix.agent_binary_name }}.sha256"
-assert_contains "./scripts/verify-release-packaging.sh . \${{ matrix.binary_name }} \${{ matrix.agent_binary_name }}"
-assert_contains "./scripts/release-signing.sh prepare . \${{ matrix.binary_name }} \${{ env.RELEASE_TAG }} \${{ env.RELEASE_TAG }}"
+assert_legacy_contains() {
+  local text="$1"
 
-echo "release CLI workflow publishes CLI, node-agent, Windows tray, and clickable setup assets"
+  assert_contains "$legacy_workflow" "$text"
+}
+
+assert_legacy_contains "os: windows-latest"
+assert_legacy_contains "workflow_dispatch:"
+assert_legacy_contains "release_tag:"
+assert_legacy_contains "channel: macos"
+assert_legacy_contains "channel: windows"
+
+assert_contains "$macos_workflow" "name: Release CLI macOS"
+assert_contains "$macos_workflow" "cli-macos-v*"
+assert_contains "$macos_workflow" "runs-on: macos-14"
+assert_contains "$macos_workflow" "TARGET: aarch64-apple-darwin"
+assert_contains "$macos_workflow" "BINARY_NAME: opengpu-aarch64-apple-darwin"
+assert_contains "$macos_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-aarch64-apple-darwin"
+assert_contains "$macos_workflow" "cargo build --release --manifest-path apps/cli/Cargo.toml --target \${{ env.TARGET }}"
+assert_contains "$macos_workflow" "cargo build --release --manifest-path agents/node/Cargo.toml --target \${{ env.TARGET }}"
+assert_contains "$macos_workflow" "tag_name: \${{ env.RELEASE_TAG }}"
+assert_contains "$macos_workflow" "name: MundusX macOS Apple Silicon CLI \${{ env.RELEASE_TAG }}"
+
+assert_contains "$windows_workflow" "name: Release CLI Windows"
+assert_contains "$windows_workflow" "cli-windows-v*"
+assert_contains "$windows_workflow" "runs-on: windows-latest"
+assert_contains "$windows_workflow" "TARGET: x86_64-pc-windows-msvc"
+assert_contains "$windows_workflow" "BINARY_NAME: opengpu-x86_64-pc-windows-msvc.exe"
+assert_contains "$windows_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-x86_64-pc-windows-msvc.exe"
+assert_contains "$windows_workflow" "TRAY_BINARY_NAME: mundusx-tray-x86_64-pc-windows-msvc.exe"
+assert_contains "$windows_workflow" "SETUP_BINARY_NAME: MundusX-Setup.exe"
+assert_contains "$windows_workflow" "RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-cuda.zip"
+assert_contains "$windows_workflow" "package-windows-llama-runtime.ps1 -Tag b9856 -CudaVersion 12.4"
+assert_contains "$windows_workflow" "cargo build --release --manifest-path apps/tray/Cargo.toml --target \${{ env.TARGET }}"
+assert_contains "$windows_workflow" "cargo build --release --manifest-path apps/windows-installer/Cargo.toml --target \${{ env.TARGET }}"
+assert_contains "$windows_workflow" "tag_name: \${{ env.RELEASE_TAG }}"
+assert_contains "$windows_workflow" "name: MundusX Windows x86_64 CLI \${{ env.RELEASE_TAG }}"
+
+echo "release CLI workflows publish separate macOS and Windows CLI releases"
