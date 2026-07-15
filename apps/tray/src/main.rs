@@ -16,6 +16,7 @@ mod windows_tray {
     };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
+        Graphics::Gdi::{CreateSolidBrush, DeleteObject, SetBkColor, SetTextColor},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Shell::{
@@ -24,19 +25,28 @@ mod windows_tray {
             },
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-                DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, LoadImageW,
-                MessageBoxW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-                TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, IDI_APPLICATION, IMAGE_ICON,
-                LR_DEFAULTSIZE, LR_LOADFROMFILE, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
-                MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
-                WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
-                WNDCLASSW, WS_OVERLAPPED,
+                DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW,
+                GetWindowLongPtrW, LoadIconW, LoadImageW, MoveWindow, PostQuitMessage,
+                RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu,
+                TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE,
+                ES_READONLY, GWLP_USERDATA, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE,
+                LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+                TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN,
+                WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+                WM_SIZE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
+                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     };
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const TRAY_MESSAGE: u32 = WM_APP + 1;
+    const OUTPUT_CLOSE: usize = 2001;
+    const COLOR_BACKGROUND: u32 = 0x00170f07;
+    const COLOR_PANEL: u32 = 0x0023160b;
+    const COLOR_TEXT: u32 = 0x00f7f9fb;
+    const COLOR_SUCCESS: u32 = 0x0064d98b;
+    const COLOR_ERROR: u32 = 0x006060ff;
     const MENU_STATUS: usize = 1001;
     const MENU_SETUP: usize = 1002;
     const MENU_ONBOARDING: usize = 1003;
@@ -93,21 +103,241 @@ mod windows_tray {
             .spawn();
     }
 
-    fn show_message(title: &str, body: &str, error: bool) {
-        let title = wide(title);
-        let body = wide(body);
+    struct OutputWindowState {
+        title: Vec<u16>,
+        status: Vec<u16>,
+        body: Vec<u16>,
+        error: bool,
+        title_hwnd: HWND,
+        status_hwnd: HWND,
+        body_hwnd: HWND,
+        close_hwnd: HWND,
+        background_brush: *mut core::ffi::c_void,
+        panel_brush: *mut core::ffi::c_void,
+    }
+
+    impl OutputWindowState {
+        fn new(title: &str, body: &str, error: bool) -> Self {
+            let normalized = body.replace('\n', "\r\n");
+            Self {
+                title: wide(title),
+                status: wide(if error {
+                    "Action failed"
+                } else {
+                    "Action completed"
+                }),
+                body: wide(&normalized),
+                error,
+                title_hwnd: ptr::null_mut(),
+                status_hwnd: ptr::null_mut(),
+                body_hwnd: ptr::null_mut(),
+                close_hwnd: ptr::null_mut(),
+                background_brush: unsafe { CreateSolidBrush(COLOR_BACKGROUND) },
+                panel_brush: unsafe { CreateSolidBrush(COLOR_PANEL) },
+            }
+        }
+    }
+
+    fn window_state(hwnd: HWND) -> Option<&'static mut OutputWindowState> {
+        let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OutputWindowState };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *ptr })
+        }
+    }
+
+    unsafe fn layout_output_window(hwnd: HWND, state: &OutputWindowState) {
+        let mut rect = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rect);
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        let margin = 24;
+        MoveWindow(state.title_hwnd, margin, 18, width - margin * 2, 28, 1);
+        MoveWindow(state.status_hwnd, margin, 52, width - margin * 2, 24, 1);
+        MoveWindow(
+            state.body_hwnd,
+            margin,
+            88,
+            width - margin * 2,
+            height - 150,
+            1,
+        );
+        MoveWindow(
+            state.close_hwnd,
+            width - margin - 110,
+            height - 44,
+            110,
+            30,
+            1,
+        );
+    }
+
+    unsafe extern "system" fn output_window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_CREATE => {
+                let create = lparam as *const CREATESTRUCTW;
+                if create.is_null() {
+                    return -1;
+                }
+                let state_ptr = (*create).lpCreateParams as *mut OutputWindowState;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+                let state = &mut *state_ptr;
+                state.title_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    state.title.as_ptr(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.status_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    state.status.as_ptr(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.body_hwnd = CreateWindowExW(
+                    0,
+                    wide("EDIT").as_ptr(),
+                    state.body.as_ptr(),
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | ES_MULTILINE as u32
+                        | ES_AUTOVSCROLL as u32
+                        | ES_READONLY as u32,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.close_hwnd = CreateWindowExW(
+                    0,
+                    wide("BUTTON").as_ptr(),
+                    wide("Close").as_ptr(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    OUTPUT_CLOSE as _,
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                layout_output_window(hwnd, state);
+                0
+            }
+            WM_SIZE => {
+                if let Some(state) = window_state(hwnd) {
+                    layout_output_window(hwnd, state);
+                }
+                0
+            }
+            WM_COMMAND => {
+                if wparam & 0xffff == OUTPUT_CLOSE {
+                    DestroyWindow(hwnd);
+                }
+                0
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => {
+                if let Some(state) = window_state(hwnd) {
+                    let hdc = wparam as _;
+                    SetBkColor(hdc, COLOR_PANEL);
+                    SetTextColor(
+                        hdc,
+                        if message == WM_CTLCOLORSTATIC && state.error {
+                            COLOR_ERROR
+                        } else if message == WM_CTLCOLORSTATIC {
+                            COLOR_SUCCESS
+                        } else {
+                            COLOR_TEXT
+                        },
+                    );
+                    return state.panel_brush as isize;
+                }
+                0
+            }
+            WM_CLOSE => {
+                DestroyWindow(hwnd);
+                0
+            }
+            WM_DESTROY => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OutputWindowState;
+                if !state_ptr.is_null() {
+                    let state = Box::from_raw(state_ptr);
+                    DeleteObject(state.background_brush);
+                    DeleteObject(state.panel_brush);
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                }
+                0
+            }
+            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        }
+    }
+
+    fn show_output_window(title: &str, body: &str, error: bool) {
         unsafe {
-            MessageBoxW(
+            let instance = GetModuleHandleW(ptr::null());
+            if instance.is_null() {
+                return;
+            }
+            let class_name = wide("MundusXOutputWindow");
+            let window_class = WNDCLASSW {
+                lpfnWndProc: Some(output_window_proc),
+                hInstance: instance,
+                lpszClassName: class_name.as_ptr(),
+                hbrBackground: CreateSolidBrush(COLOR_BACKGROUND),
+                ..std::mem::zeroed()
+            };
+            RegisterClassW(&window_class);
+
+            let state = Box::new(OutputWindowState::new(title, body, error));
+            let state_ptr = Box::into_raw(state);
+            let hwnd = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("MundusX Contributor").as_ptr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                760,
+                520,
                 ptr::null_mut(),
-                body.as_ptr(),
-                title.as_ptr(),
-                MB_OK
-                    | if error {
-                        MB_ICONERROR
-                    } else {
-                        MB_ICONINFORMATION
-                    },
+                ptr::null_mut(),
+                instance,
+                state_ptr as *const _,
             );
+            if hwnd.is_null() {
+                let state = Box::from_raw(state_ptr);
+                DeleteObject(state.background_brush);
+                DeleteObject(state.panel_brush);
+            }
         }
     }
 
@@ -154,8 +384,8 @@ mod windows_tray {
 
     fn run_cli_app_output(title: &str, args: &[&str]) {
         match cli_output(args) {
-            Ok(body) => show_message(title, &body, false),
-            Err(body) => show_message(title, &body, true),
+            Ok(body) => show_output_window(title, &body, false),
+            Err(body) => show_output_window(title, &body, true),
         }
     }
 
