@@ -2,6 +2,24 @@
 
 const INSTALL_SCRIPT: &str = include_str!("../../../install.ps1");
 
+fn installed_cli_path() -> std::path::PathBuf {
+    if let Ok(install_dir) = std::env::var("OPENGPU_INSTALL_DIR") {
+        let install_dir = install_dir.trim();
+        if !install_dir.is_empty() {
+            return std::path::PathBuf::from(install_dir).join("opengpu.exe");
+        }
+    }
+
+    std::env::var("USERPROFILE")
+        .map(|profile| {
+            std::path::PathBuf::from(profile)
+                .join(".opengpu")
+                .join("bin")
+                .join("opengpu.exe")
+        })
+        .unwrap_or_else(|_| std::path::PathBuf::from("opengpu.exe"))
+}
+
 fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
     let mut arguments = vec![
         "-NoProfile".to_string(),
@@ -18,6 +36,13 @@ fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
         }
     }
     arguments
+}
+
+fn contributor_setup_command(cli_path: &std::path::Path) -> String {
+    let escaped = cli_path.display().to_string().replace('\'', "''");
+    format!(
+        "& '{escaped}' install; Write-Host ''; Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.'; Write-Host 'Press Enter to close this window.'; Read-Host"
+    )
 }
 
 fn run_installer() -> Result<(), String> {
@@ -50,6 +75,29 @@ fn run_installer() -> Result<(), String> {
     }
 }
 
+fn launch_contributor_setup() -> Result<(), String> {
+    let cli_path = installed_cli_path();
+    if !cli_path.is_file() {
+        return Err(format!(
+            "installed opengpu was not found at {}",
+            cli_path.display()
+        ));
+    }
+
+    std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-NoExit",
+            "-Command",
+            &contributor_setup_command(&cli_path),
+        ])
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to launch contributor setup: {error}"))
+}
+
 #[cfg(windows)]
 fn message(title: &str, body: &str, error: bool) {
     use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
@@ -73,15 +121,24 @@ fn message(title: &str, body: &str, error: bool) {
 fn main() {
     message(
         "MundusX Setup",
-        "MundusX will download and verify the CLI, node agent, tray application, and GPU runtime. A PowerShell installation window will open next.",
+        "MundusX will download and verify the CLI, node agent, tray application, and GPU runtime. After installation, contributor setup will open so you can choose your control plane, contribution cap, and model.",
         false,
     );
     match run_installer() {
-        Ok(()) => message(
-            "MundusX Setup",
-            "MundusX was installed successfully. The tray application is now starting.",
-            false,
-        ),
+        Ok(()) => match launch_contributor_setup() {
+            Ok(()) => message(
+                "MundusX Setup",
+                "MundusX was installed successfully. The contributor setup wizard is open.",
+                false,
+            ),
+            Err(error) => message(
+                "MundusX Setup",
+                &format!(
+                    "MundusX was installed successfully, but contributor setup could not open automatically.\n\n{error}\n\nRun `opengpu install` manually."
+                ),
+                true,
+            ),
+        },
         Err(error) => message("MundusX Setup failed", &error, true),
     }
 }
@@ -107,5 +164,14 @@ mod tests {
         let arguments = installer_arguments(std::path::Path::new("C:\\Temp\\install.ps1"));
         assert!(arguments.windows(2).any(|pair| pair == ["-ExecutionPolicy", "Bypass"]));
         assert!(arguments.windows(2).any(|pair| pair == ["-File", "C:\\Temp\\install.ps1"]));
+    }
+
+    #[test]
+    fn contributor_setup_command_runs_installed_cli_install() {
+        let command = contributor_setup_command(std::path::Path::new(
+            "C:\\Users\\tester\\.opengpu\\bin\\opengpu.exe",
+        ));
+        assert!(command.contains("& 'C:\\Users\\tester\\.opengpu\\bin\\opengpu.exe' install"));
+        assert!(command.contains("Contributor setup finished"));
     }
 }
