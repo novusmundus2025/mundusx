@@ -90,17 +90,27 @@ function Resolve-GitHubReleaseAssetApiUrl {
   }
 
   $parts = $uri.AbsolutePath.Trim("/") -split "/"
-  if ($parts.Length -lt 6) {
+  if ($parts.Length -lt 5) {
     return $null
   }
-  if ($parts[2] -ne "releases" -or $parts[3] -ne "download") {
+  if ($parts[2] -ne "releases") {
     return $null
   }
 
   $owner = $parts[0]
   $repo = $parts[1]
-  $tag = [System.Uri]::UnescapeDataString($parts[4])
-  $assetName = [System.Uri]::UnescapeDataString(($parts[5..($parts.Length - 1)] -join "/"))
+  $releaseApi = $null
+  $assetName = $null
+  if ($parts[3] -eq "download" -and $parts.Length -ge 6) {
+    $tag = [System.Uri]::UnescapeDataString($parts[4])
+    $assetName = [System.Uri]::UnescapeDataString(($parts[5..($parts.Length - 1)] -join "/"))
+    $releaseApi = "https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
+  } elseif ($parts[3] -eq "latest" -and $parts.Length -ge 6 -and $parts[4] -eq "download") {
+    $assetName = [System.Uri]::UnescapeDataString(($parts[5..($parts.Length - 1)] -join "/"))
+    $releaseApi = "https://api.github.com/repos/$owner/$repo/releases/latest"
+  } else {
+    return $null
+  }
   $token = Get-GitHubToken
   if (-not $token) {
     return $null
@@ -111,7 +121,6 @@ function Resolve-GitHubReleaseAssetApiUrl {
     Accept = "application/vnd.github+json"
     "X-GitHub-Api-Version" = "2022-11-28"
   }
-  $releaseApi = "https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
   $release = Invoke-RestMethod -Uri $releaseApi -Headers $headers
   foreach ($asset in @($release.assets)) {
     if ($asset.name -eq $assetName) {
@@ -119,7 +128,7 @@ function Resolve-GitHubReleaseAssetApiUrl {
     }
   }
 
-  throw "GitHub release $owner/$repo@$tag does not include asset $assetName"
+  throw "GitHub release $releaseApi does not include asset $assetName"
 }
 
 function Find-NvidiaGpu {
