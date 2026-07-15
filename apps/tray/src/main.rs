@@ -27,21 +27,36 @@ mod windows_tray {
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
                 DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW,
                 GetWindowLongPtrW, LoadIconW, LoadImageW, MoveWindow, PostQuitMessage,
-                RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu,
-                TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE,
-                ES_READONLY, GWLP_USERDATA, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE,
-                LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-                TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN,
-                WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
-                WM_SIZE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
-                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+                TrackPopupMenu, TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL,
+                ES_MULTILINE, ES_READONLY, GWLP_USERDATA, IDI_APPLICATION, IMAGE_ICON,
+                LR_DEFAULTSIZE, LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, SW_RESTORE,
+                TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND,
+                WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
+                WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_BORDER,
+                WS_CHILD, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     };
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const TRAY_MESSAGE: u32 = WM_APP + 1;
+    static mut DASHBOARD_HWND: HWND = ptr::null_mut();
     const OUTPUT_CLOSE: usize = 2001;
+    const DASH_REFRESH: usize = 3001;
+    const DASH_CREDITS: usize = 3002;
+    const DASH_MODELS: usize = 3003;
+    const DASH_DOCTOR: usize = 3004;
+    const DASH_LOGS: usize = 3005;
+    const DASH_START: usize = 3006;
+    const DASH_PAUSE: usize = 3007;
+    const DASH_RESUME: usize = 3008;
+    const DASH_DISCONNECT: usize = 3009;
+    const DASH_SETUP: usize = 3010;
+    const DASH_CAP: usize = 3011;
+    const DASH_MODEL_USE: usize = 3012;
+    const DASH_MODEL_ADD: usize = 3013;
+    const DASH_CLOSE: usize = 3014;
     const COLOR_BACKGROUND: u32 = 0x00170f07;
     const COLOR_PANEL: u32 = 0x0023160b;
     const COLOR_TEXT: u32 = 0x00f7f9fb;
@@ -423,6 +438,348 @@ mod windows_tray {
         run_cli_app_output("MundusX Status", &["status"]);
     }
 
+    struct DashboardState {
+        title_hwnd: HWND,
+        subtitle_hwnd: HWND,
+        status_hwnd: HWND,
+        output_hwnd: HWND,
+        buttons: Vec<HWND>,
+        background_brush: *mut core::ffi::c_void,
+        panel_brush: *mut core::ffi::c_void,
+    }
+
+    impl DashboardState {
+        fn new() -> Self {
+            Self {
+                title_hwnd: ptr::null_mut(),
+                subtitle_hwnd: ptr::null_mut(),
+                status_hwnd: ptr::null_mut(),
+                output_hwnd: ptr::null_mut(),
+                buttons: Vec::new(),
+                background_brush: unsafe { CreateSolidBrush(COLOR_BACKGROUND) },
+                panel_brush: unsafe { CreateSolidBrush(COLOR_PANEL) },
+            }
+        }
+    }
+
+    fn dashboard_state(hwnd: HWND) -> Option<&'static mut DashboardState> {
+        let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DashboardState };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *ptr })
+        }
+    }
+
+    unsafe fn create_dashboard_button(hwnd: HWND, id: usize, label: &str, buttons: &mut Vec<HWND>) {
+        let button = CreateWindowExW(
+            0,
+            wide("BUTTON").as_ptr(),
+            wide(label).as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0,
+            0,
+            0,
+            0,
+            hwnd,
+            id as _,
+            ptr::null_mut(),
+            ptr::null(),
+        );
+        buttons.push(button);
+    }
+
+    unsafe fn layout_dashboard_window(hwnd: HWND, state: &DashboardState) {
+        let mut rect = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rect);
+        let width = (rect.right - rect.left).max(720);
+        let height = (rect.bottom - rect.top).max(560);
+        let margin = 24;
+        let gap = 12;
+        let button_width = ((width - margin * 2 - gap * 3) / 4).max(130);
+        let button_height = 34;
+
+        MoveWindow(state.title_hwnd, margin, 18, width - margin * 2, 30, 1);
+        MoveWindow(state.subtitle_hwnd, margin, 50, width - margin * 2, 24, 1);
+        MoveWindow(state.status_hwnd, margin, 84, width - margin * 2, 26, 1);
+
+        for (index, button) in state.buttons.iter().enumerate() {
+            let row = index as i32 / 4;
+            let col = index as i32 % 4;
+            MoveWindow(
+                *button,
+                margin + col * (button_width + gap),
+                128 + row * (button_height + gap),
+                button_width,
+                button_height,
+                1,
+            );
+        }
+
+        MoveWindow(
+            state.output_hwnd,
+            margin,
+            128 + 4 * (button_height + gap) + 10,
+            width - margin * 2,
+            height - (128 + 4 * (button_height + gap) + 34),
+            1,
+        );
+    }
+
+    unsafe fn set_dashboard_text(state: &DashboardState, status: &str, body: &str) {
+        let normalized = body.replace('\n', "\r\n");
+        SetWindowTextW(state.status_hwnd, wide(status).as_ptr());
+        SetWindowTextW(state.output_hwnd, wide(&normalized).as_ptr());
+    }
+
+    unsafe fn run_dashboard_cli(state: &DashboardState, status: &str, args: &[&str]) {
+        set_dashboard_text(
+            state,
+            status,
+            &format!("Running `opengpu {}`...", args.join(" ")),
+        );
+        match cli_output(args) {
+            Ok(body) => set_dashboard_text(state, "Action completed", &body),
+            Err(body) => set_dashboard_text(state, "Action failed", &body),
+        }
+    }
+
+    unsafe fn open_dashboard_shell(state: &DashboardState, status: &str, args: &[&str]) {
+        run_cli_window(args);
+        set_dashboard_text(
+            state,
+            status,
+            &format!(
+                "Opened guided terminal workflow for `opengpu {}`.\r\n\r\nInteractive selector screens still run in a terminal until the installer wizard is moved fully into this app window.",
+                args.join(" ")
+            ),
+        );
+    }
+
+    unsafe extern "system" fn dashboard_window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_CREATE => {
+                let create = lparam as *const CREATESTRUCTW;
+                if create.is_null() {
+                    return -1;
+                }
+                let state_ptr = (*create).lpCreateParams as *mut DashboardState;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+                let state = &mut *state_ptr;
+
+                state.title_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    wide("MundusX Contributor Control").as_ptr(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.subtitle_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    wide(
+                        "Manage node state, models, credits, diagnostics, and logs from one place.",
+                    )
+                    .as_ptr(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.status_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    wide("Ready").as_ptr(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.output_hwnd = CreateWindowExW(
+                    0,
+                    wide("EDIT").as_ptr(),
+                    wide("Click Status to read the current contributor state.").as_ptr(),
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_BORDER
+                        | WS_VSCROLL
+                        | ES_MULTILINE as u32
+                        | ES_AUTOVSCROLL as u32
+                        | ES_READONLY as u32,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+
+                create_dashboard_button(hwnd, DASH_REFRESH, "Status", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_CREDITS, "Credits", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_MODELS, "Models", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_DOCTOR, "Diagnostics", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_LOGS, "Logs", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_START, "Start", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_PAUSE, "Pause", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_RESUME, "Resume", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_DISCONNECT, "Disconnect", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_SETUP, "Setup", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_CAP, "Contribution", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_MODEL_USE, "Choose model", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_MODEL_ADD, "Add model", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_CLOSE, "Close", &mut state.buttons);
+
+                layout_dashboard_window(hwnd, state);
+                run_dashboard_cli(state, "Loading status", &["status"]);
+                0
+            }
+            WM_SIZE => {
+                if let Some(state) = dashboard_state(hwnd) {
+                    layout_dashboard_window(hwnd, state);
+                }
+                0
+            }
+            WM_COMMAND => {
+                if let Some(state) = dashboard_state(hwnd) {
+                    match wparam & 0xffff {
+                        DASH_REFRESH => run_dashboard_cli(state, "Loading status", &["status"]),
+                        DASH_CREDITS => run_dashboard_cli(state, "Loading credits", &["credits"]),
+                        DASH_MODELS => {
+                            run_dashboard_cli(state, "Loading models", &["model", "list"])
+                        }
+                        DASH_DOCTOR => run_dashboard_cli(state, "Running diagnostics", &["doctor"]),
+                        DASH_LOGS => run_dashboard_cli(state, "Loading logs", &["logs"]),
+                        DASH_START => {
+                            run_dashboard_cli(state, "Starting node", &["start", "--background"])
+                        }
+                        DASH_PAUSE => run_dashboard_cli(state, "Pausing node", &["pause"]),
+                        DASH_RESUME => run_dashboard_cli(state, "Resuming node", &["resume"]),
+                        DASH_DISCONNECT => {
+                            run_dashboard_cli(state, "Disconnecting node", &["exit"])
+                        }
+                        DASH_SETUP => {
+                            open_dashboard_shell(state, "Setup wizard opened", &["install"])
+                        }
+                        DASH_CAP => {
+                            open_dashboard_shell(state, "Contribution wizard opened", &["cap"])
+                        }
+                        DASH_MODEL_USE => {
+                            open_dashboard_shell(state, "Model selector opened", &["model", "use"])
+                        }
+                        DASH_MODEL_ADD => open_dashboard_shell(
+                            state,
+                            "Model downloader opened",
+                            &["model", "add"],
+                        ),
+                        DASH_CLOSE => {
+                            DestroyWindow(hwnd);
+                        }
+                        _ => {}
+                    }
+                }
+                0
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => {
+                if let Some(state) = dashboard_state(hwnd) {
+                    let hdc = wparam as _;
+                    SetBkColor(hdc, COLOR_PANEL);
+                    SetTextColor(hdc, COLOR_TEXT);
+                    return state.panel_brush as isize;
+                }
+                0
+            }
+            WM_CLOSE => {
+                DestroyWindow(hwnd);
+                0
+            }
+            WM_DESTROY => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DashboardState;
+                if !state_ptr.is_null() {
+                    let state = Box::from_raw(state_ptr);
+                    DeleteObject(state.background_brush);
+                    DeleteObject(state.panel_brush);
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                }
+                DASHBOARD_HWND = ptr::null_mut();
+                0
+            }
+            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        }
+    }
+
+    fn open_dashboard_window() {
+        unsafe {
+            if !DASHBOARD_HWND.is_null() {
+                ShowWindow(DASHBOARD_HWND, SW_RESTORE);
+                SetForegroundWindow(DASHBOARD_HWND);
+                return;
+            }
+
+            let instance = GetModuleHandleW(ptr::null());
+            if instance.is_null() {
+                return;
+            }
+            let class_name = wide("MundusXDashboardWindow");
+            let window_class = WNDCLASSW {
+                lpfnWndProc: Some(dashboard_window_proc),
+                hInstance: instance,
+                lpszClassName: class_name.as_ptr(),
+                hbrBackground: CreateSolidBrush(COLOR_BACKGROUND),
+                ..std::mem::zeroed()
+            };
+            RegisterClassW(&window_class);
+
+            let state = Box::new(DashboardState::new());
+            let state_ptr = Box::into_raw(state);
+            let hwnd = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("MundusX Contributor Control").as_ptr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                980,
+                680,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                state_ptr as *const _,
+            );
+            if hwnd.is_null() {
+                let state = Box::from_raw(state_ptr);
+                DeleteObject(state.background_brush);
+                DeleteObject(state.panel_brush);
+            } else {
+                DASHBOARD_HWND = hwnd;
+                SetForegroundWindow(hwnd);
+            }
+        }
+    }
+
     unsafe fn append_menu_item(menu: *mut core::ffi::c_void, id: usize, label: &str) {
         let label = wide(label);
         AppendMenuW(menu, MF_STRING, id, label.as_ptr());
@@ -490,7 +847,7 @@ mod windows_tray {
             TRAY_MESSAGE => {
                 match lparam as u32 {
                     WM_RBUTTONUP => show_menu(hwnd),
-                    WM_LBUTTONDBLCLK => open_status_window(),
+                    WM_LBUTTONUP | WM_LBUTTONDBLCLK => open_dashboard_window(),
                     _ => {}
                 }
                 0
