@@ -16,14 +16,19 @@ Apple Silicon macOS public release install. Replace `v0.1.12` with the current p
 curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | RELEASE_BASE_URL=https://github.com/mundusx/mundusx/releases/download/cli-macos-v0.1.12 bash
 ```
 
-On Apple Silicon, `opengpu install` prefers MLX for local inference. It creates
-`~/.opengpu/runtimes/mlx/venv`, installs `mlx-lm`, verifies it, and records
-`runtimePreference: mlx`. If MLX setup fails, the node records
-`fallbackRuntime: llama-metal` and can be retried with:
+On Apple Silicon, the macOS `.pkg` and `opengpu install` prepare Python when
+`python3` is missing, then prefer MLX for local inference. `opengpu install`
+creates `~/.opengpu/runtimes/mlx/venv`, installs `mlx-lm`, verifies it, and
+records `runtimePreference: mlx`. If a locked-down network blocks the Python or
+MLX download, the node records `fallbackRuntime: llama-metal` and can be retried
+with:
 
 ```bash
 opengpu runtime install mlx
 ```
+
+Python bootstrap can be disabled with `OPENGPU_SKIP_PYTHON_BOOTSTRAP=1`, or
+pointed to a mirrored package with `OPENGPU_PYTHON_INSTALLER_URL`.
 
 On Windows local preview:
 

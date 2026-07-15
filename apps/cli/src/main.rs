@@ -3506,6 +3506,73 @@ fn mlx_runtime_python_path() -> PathBuf {
     path
 }
 
+#[cfg(target_os = "macos")]
+fn install_macos_python3_if_missing() -> Result<(), String> {
+    if command_available("python3", &["--version"]) {
+        return Ok(());
+    }
+
+    if std::env::var("OPENGPU_SKIP_PYTHON_BOOTSTRAP")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+    {
+        return Err(
+            "python3 is unavailable and OPENGPU_SKIP_PYTHON_BOOTSTRAP is enabled".to_string(),
+        );
+    }
+
+    let installer_url = std::env::var("OPENGPU_PYTHON_INSTALLER_URL").unwrap_or_else(|_| {
+        "https://www.python.org/ftp/python/3.12.4/python-3.12.4-macos11.pkg".to_string()
+    });
+    let package_path = std::env::temp_dir().join("opengpu-python3-macos.pkg");
+
+    println!("pythonBootstrap: python3 unavailable; downloading official Python package");
+    println!("pythonBootstrapUrl: {installer_url}");
+
+    let mut curl = Command::new("/usr/bin/curl");
+    curl.args(["-fL", "--retry", "3", "-o"])
+        .arg(&package_path)
+        .arg(&installer_url);
+    run_checked_command(curl, "download Python for MLX")?;
+
+    println!("pythonBootstrap: installing Python package");
+    let mut installer = if command_available("id", &["-u"]) {
+        let output = Command::new("id").arg("-u").output().ok();
+        let is_root = output
+            .as_ref()
+            .and_then(|output| String::from_utf8(output.stdout.clone()).ok())
+            .map(|uid| uid.trim() == "0")
+            .unwrap_or(false);
+        if is_root {
+            Command::new("/usr/sbin/installer")
+        } else {
+            let mut command = Command::new("/usr/bin/sudo");
+            command.arg("/usr/sbin/installer");
+            command
+        }
+    } else {
+        let mut command = Command::new("/usr/bin/sudo");
+        command.arg("/usr/sbin/installer");
+        command
+    };
+    installer
+        .args(["-pkg"])
+        .arg(&package_path)
+        .args(["-target", "/"]);
+    run_checked_command(installer, "install Python for MLX")?;
+
+    if command_available("python3", &["--version"]) {
+        Ok(())
+    } else {
+        Err("Python package installed, but python3 is still unavailable on PATH".to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_macos_python3_if_missing() -> Result<(), String> {
+    Ok(())
+}
+
 fn run_checked_command(mut command: Command, action: &str) -> Result<(), String> {
     let output = command
         .output()
@@ -3552,6 +3619,7 @@ fn install_mlx_runtime(config: &mut Config) -> Result<PathBuf, String> {
 
     let venv_dir = opengpu_home_dir().join("runtimes").join("mlx").join("venv");
     if !venv_dir.exists() {
+        install_macos_python3_if_missing()?;
         let mut command = Command::new("python3");
         command.args(["-m", "venv"]).arg(&venv_dir);
         run_checked_command(command, "create MLX runtime venv")?;

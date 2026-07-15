@@ -13,7 +13,9 @@ Usage: scripts/package-macos-pkg.sh <artifact-dir> <opengpu-binary> <node-agent-
 
 Creates an unsigned macOS .pkg installer for Apple Silicon nodes. The package
 installs opengpu and opengpu-node-agent to /usr/local/bin and links them into
-the logged-in user's ~/.opengpu/bin directory during postinstall.
+the logged-in user's ~/.opengpu/bin directory during postinstall. On Apple
+Silicon, postinstall also bootstraps python3 from python.org when it is missing,
+so MLX setup can run during `opengpu install`.
 EOF
 }
 
@@ -71,6 +73,17 @@ mkdir -p "$opengpu_bin"
 ln -sf /usr/local/bin/opengpu "${opengpu_bin}/opengpu"
 ln -sf /usr/local/bin/opengpu-node-agent "${opengpu_bin}/opengpu-node-agent"
 chown -R "${console_user}:staff" "$opengpu_home" 2>/dev/null || true
+
+if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && [ "$(uname -m 2>/dev/null || true)" = "arm64" ]; then
+  if ! command -v python3 >/dev/null 2>&1 && [ "${OPENGPU_SKIP_PYTHON_BOOTSTRAP:-}" != "1" ]; then
+    python_pkg_url="${OPENGPU_PYTHON_INSTALLER_URL:-https://www.python.org/ftp/python/3.12.4/python-3.12.4-macos11.pkg}"
+    python_pkg="/tmp/opengpu-python3-macos.pkg"
+    if /usr/bin/curl -fL --retry 3 -o "$python_pkg" "$python_pkg_url"; then
+      /usr/sbin/installer -pkg "$python_pkg" -target / || true
+      rm -f "$python_pkg"
+    fi
+  fi
+fi
 
 exit 0
 POSTINSTALL
