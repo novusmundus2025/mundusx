@@ -12,7 +12,7 @@ mod windows_tray {
         os::windows::{ffi::OsStrExt, process::CommandExt},
         path::PathBuf,
         process::Command,
-        ptr,
+        ptr, thread,
     };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
@@ -26,21 +26,23 @@ mod windows_tray {
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
                 DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW,
-                GetWindowLongPtrW, LoadIconW, LoadImageW, MoveWindow, PostQuitMessage,
-                RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-                TrackPopupMenu, TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL,
-                ES_MULTILINE, ES_READONLY, GWLP_USERDATA, IDI_APPLICATION, IMAGE_ICON,
-                LR_DEFAULTSIZE, LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, SW_RESTORE,
-                TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND,
-                WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
-                WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_BORDER,
-                WS_CHILD, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                GetWindowLongPtrW, LoadIconW, LoadImageW, MoveWindow, PostMessageW,
+                PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
+                SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, CREATESTRUCTW,
+                CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA,
+                IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, MF_SEPARATOR,
+                MF_STRING, MSG, SW_RESTORE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
+                WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
+                WM_CTLCOLORSTATIC, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+                WM_SIZE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
+                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     };
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const TRAY_MESSAGE: u32 = WM_APP + 1;
+    const DASHBOARD_RESULT_MESSAGE: u32 = WM_APP + 2;
     static mut DASHBOARD_HWND: HWND = ptr::null_mut();
     const OUTPUT_CLOSE: usize = 2001;
     const DASH_REFRESH: usize = 3001;
@@ -462,6 +464,11 @@ mod windows_tray {
         }
     }
 
+    struct DashboardCommandResult {
+        status: String,
+        body: String,
+    }
+
     fn dashboard_state(hwnd: HWND) -> Option<&'static mut DashboardState> {
         let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DashboardState };
         if ptr.is_null() {
@@ -532,16 +539,41 @@ mod windows_tray {
         SetWindowTextW(state.output_hwnd, wide(&normalized).as_ptr());
     }
 
-    unsafe fn run_dashboard_cli(state: &DashboardState, status: &str, args: &[&str]) {
+    unsafe fn queue_dashboard_cli(hwnd: HWND, state: &DashboardState, status: &str, args: &[&str]) {
         set_dashboard_text(
             state,
             status,
             &format!("Running `opengpu {}`...", args.join(" ")),
         );
-        match cli_output(args) {
-            Ok(body) => set_dashboard_text(state, "Action completed", &body),
-            Err(body) => set_dashboard_text(state, "Action failed", &body),
-        }
+        let hwnd_value = hwnd as isize;
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        thread::spawn(move || {
+            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+            let result = match cli_output(&refs) {
+                Ok(body) => DashboardCommandResult {
+                    status: "Action completed".to_string(),
+                    body,
+                },
+                Err(body) => DashboardCommandResult {
+                    status: "Action failed".to_string(),
+                    body,
+                },
+            };
+            let result_ptr = Box::into_raw(Box::new(result));
+            let posted = unsafe {
+                PostMessageW(
+                    hwnd_value as HWND,
+                    DASHBOARD_RESULT_MESSAGE,
+                    0,
+                    result_ptr as LPARAM,
+                )
+            };
+            if posted == 0 {
+                unsafe {
+                    drop(Box::from_raw(result_ptr));
+                }
+            }
+        });
     }
 
     unsafe fn open_dashboard_shell(state: &DashboardState, status: &str, args: &[&str]) {
@@ -654,7 +686,17 @@ mod windows_tray {
                 create_dashboard_button(hwnd, DASH_CLOSE, "Close", &mut state.buttons);
 
                 layout_dashboard_window(hwnd, state);
-                run_dashboard_cli(state, "Loading status", &["status"]);
+                queue_dashboard_cli(hwnd, state, "Loading status", &["status"]);
+                0
+            }
+            DASHBOARD_RESULT_MESSAGE => {
+                if let Some(state) = dashboard_state(hwnd) {
+                    let result_ptr = lparam as *mut DashboardCommandResult;
+                    if !result_ptr.is_null() {
+                        let result = Box::from_raw(result_ptr);
+                        set_dashboard_text(state, &result.status, &result.body);
+                    }
+                }
                 0
             }
             WM_SIZE => {
@@ -666,20 +708,31 @@ mod windows_tray {
             WM_COMMAND => {
                 if let Some(state) = dashboard_state(hwnd) {
                     match wparam & 0xffff {
-                        DASH_REFRESH => run_dashboard_cli(state, "Loading status", &["status"]),
-                        DASH_CREDITS => run_dashboard_cli(state, "Loading credits", &["credits"]),
+                        DASH_REFRESH => {
+                            queue_dashboard_cli(hwnd, state, "Loading status", &["status"])
+                        }
+                        DASH_CREDITS => {
+                            queue_dashboard_cli(hwnd, state, "Loading credits", &["credits"])
+                        }
                         DASH_MODELS => {
-                            run_dashboard_cli(state, "Loading models", &["model", "list"])
+                            queue_dashboard_cli(hwnd, state, "Loading models", &["model", "list"])
                         }
-                        DASH_DOCTOR => run_dashboard_cli(state, "Running diagnostics", &["doctor"]),
-                        DASH_LOGS => run_dashboard_cli(state, "Loading logs", &["logs"]),
-                        DASH_START => {
-                            run_dashboard_cli(state, "Starting node", &["start", "--background"])
+                        DASH_DOCTOR => {
+                            queue_dashboard_cli(hwnd, state, "Running diagnostics", &["doctor"])
                         }
-                        DASH_PAUSE => run_dashboard_cli(state, "Pausing node", &["pause"]),
-                        DASH_RESUME => run_dashboard_cli(state, "Resuming node", &["resume"]),
+                        DASH_LOGS => queue_dashboard_cli(hwnd, state, "Loading logs", &["logs"]),
+                        DASH_START => queue_dashboard_cli(
+                            hwnd,
+                            state,
+                            "Starting node",
+                            &["start", "--background"],
+                        ),
+                        DASH_PAUSE => queue_dashboard_cli(hwnd, state, "Pausing node", &["pause"]),
+                        DASH_RESUME => {
+                            queue_dashboard_cli(hwnd, state, "Resuming node", &["resume"])
+                        }
                         DASH_DISCONNECT => {
-                            run_dashboard_cli(state, "Disconnecting node", &["exit"])
+                            queue_dashboard_cli(hwnd, state, "Disconnecting node", &["exit"])
                         }
                         DASH_SETUP => {
                             open_dashboard_shell(state, "Setup wizard opened", &["install"])
