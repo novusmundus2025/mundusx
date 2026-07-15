@@ -48,16 +48,16 @@ Users should install the CLI from the localhost release preview and never need R
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
-On Apple Silicon macOS, the public release channel uses the same script and downloads the signed `opengpu-aarch64-apple-darwin` CLI plus the matching `opengpu-node-agent`:
+On Apple Silicon macOS, use the macOS-specific release. Replace `v0.1.10` with the current published Mac release version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | RELEASE_BASE_URL=https://github.com/mundusx/mundusx/releases/download/cli-macos-v0.1.10 bash
 ```
 
 On Windows, use the native PowerShell bootstrapper:
 
 ```powershell
-.\install.ps1 -ReleaseBaseUrl http://127.0.0.1:8788/releases/latest/download
+.\install.ps1 -ReleaseBaseUrl https://github.com/mundusx/mundusx/releases/download/cli-windows-v0.1.10
 ```
 
 The installer downloads the matching release binary for the user's operating system and CPU architecture from the local release preview, then verifies the checksum when available. After the binary is installed, `opengpu install` detects the machine profile, control-plane choice, community contribution cap, and model fit.

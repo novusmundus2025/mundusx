@@ -167,6 +167,22 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - channel: linux
+            label: Linux x86_64
+            binary_name: opengpu-x86_64-unknown-linux-gnu
+            agent_name: opengpu-node-agent-x86_64-unknown-linux-gnu
+          - channel: macos
+            label: macOS Apple Silicon
+            binary_name: opengpu-aarch64-apple-darwin
+            agent_name: opengpu-node-agent-aarch64-apple-darwin
+          - channel: windows
+            label: Windows x86_64
+            binary_name: opengpu-x86_64-pc-windows-msvc.exe
+            agent_name: opengpu-node-agent-x86_64-pc-windows-msvc.exe
 
     steps:
       - name: Download build artifacts
@@ -174,25 +190,40 @@ jobs:
         with:
           path: dist
 
-      - name: Verify downloaded artifacts
+      - name: Prepare platform release files
+        id: platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#cli-}"
+          platform_tag="cli-${{ matrix.channel }}-${version}"
+          release_name="MundusX ${{ matrix.label }} CLI ${version}"
+          upload_dir="release-upload/${{ matrix.channel }}"
+          artifact_dir="dist/${{ matrix.binary_name }}"
+          mkdir -p "$upload_dir"
+          if [[ ! -d "$artifact_dir" ]]; then
+            echo "missing artifact directory: $artifact_dir" >&2
+            exit 1
+          fi
+          cp "$artifact_dir"/* "$upload_dir"/
+          echo "tag=$platform_tag" >> "$GITHUB_OUTPUT"
+          echo "name=$release_name" >> "$GITHUB_OUTPUT"
+          echo "upload_dir=$upload_dir" >> "$GITHUB_OUTPUT"
+          echo "Prepared $release_name as $platform_tag"
+
+      - name: Verify platform release files
         env:
           OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+          UPLOAD_DIR: ${{ steps.platform.outputs.upload_dir }}
         run: |
-          find dist -name '*.sha256' -print0 | while IFS= read -r -d '' checksum_file; do
-            artifact_dir="$(dirname "$checksum_file")"
-            binary_name="$(basename "${checksum_file%.sha256}")"
-            if [[ "$binary_name" == opengpu-node-agent-* ]]; then
-              continue
-            fi
-            agent_name="opengpu-node-agent-${binary_name#opengpu-}"
-            ./scripts/verify-release-packaging.sh "$artifact_dir" "$binary_name" "$agent_name"
-            ./scripts/release-signing.sh verify "$artifact_dir" "$binary_name"
-          done
+          ./scripts/verify-release-packaging.sh "$UPLOAD_DIR" "${{ matrix.binary_name }}" "${{ matrix.agent_name }}"
+          ./scripts/release-signing.sh verify "$UPLOAD_DIR" "${{ matrix.binary_name }}"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*/*
-          tag_name: ${{ env.RELEASE_TAG }}
+          files: ${{ steps.platform.outputs.upload_dir }}/*
+          tag_name: ${{ steps.platform.outputs.tag }}
+          name: ${{ steps.platform.outputs.name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
