@@ -156,6 +156,7 @@ mod tests {
     fn embeds_the_windows_bootstrapper() {
         assert!(INSTALL_SCRIPT.contains("MundusX Windows installer"));
         assert!(INSTALL_SCRIPT.contains("mundusx-tray"));
+        assert!(INSTALL_SCRIPT.contains("mundusx.ico"));
         assert!(INSTALL_SCRIPT.contains("llama-server.exe"));
     }
 

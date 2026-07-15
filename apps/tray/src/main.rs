@@ -7,7 +7,13 @@ fn main() {
 
 #[cfg(windows)]
 mod windows_tray {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, path::PathBuf, process::Command, ptr};
+    use std::{
+        ffi::OsStr,
+        os::windows::{ffi::OsStrExt, process::CommandExt},
+        path::PathBuf,
+        process::Command,
+        ptr,
+    };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
@@ -18,16 +24,18 @@ mod windows_tray {
             },
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-                DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW,
-                PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-                TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, IDI_APPLICATION, MF_SEPARATOR,
-                MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP,
-                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW,
-                WS_OVERLAPPED,
+                DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, LoadImageW,
+                MessageBoxW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
+                TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, IDI_APPLICATION, IMAGE_ICON,
+                LR_DEFAULTSIZE, LR_LOADFROMFILE, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
+                MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
+                WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+                WNDCLASSW, WS_OVERLAPPED,
             },
         },
     };
 
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
     const TRAY_MESSAGE: u32 = WM_APP + 1;
     const MENU_STATUS: usize = 1001;
     const MENU_SETUP: usize = 1002;
@@ -57,8 +65,98 @@ mod windows_tray {
             .unwrap_or_else(|| PathBuf::from("opengpu.exe"))
     }
 
+    fn tray_icon_path() -> Option<PathBuf> {
+        let exe_icon = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("mundusx.ico")));
+        if exe_icon.as_ref().is_some_and(|path| path.is_file()) {
+            return exe_icon;
+        }
+
+        let dev_icon = std::env::current_dir().ok().map(|cwd| {
+            cwd.join("apps")
+                .join("tray")
+                .join("assets")
+                .join("mundusx.ico")
+        });
+        if dev_icon.as_ref().is_some_and(|path| path.is_file()) {
+            return dev_icon;
+        }
+
+        None
+    }
+
     fn run_cli(args: &[&str]) {
-        let _ = Command::new(cli_path()).args(args).spawn();
+        let _ = Command::new(cli_path())
+            .args(args)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+
+    fn show_message(title: &str, body: &str, error: bool) {
+        let title = wide(title);
+        let body = wide(body);
+        unsafe {
+            MessageBoxW(
+                ptr::null_mut(),
+                body.as_ptr(),
+                title.as_ptr(),
+                MB_OK
+                    | if error {
+                        MB_ICONERROR
+                    } else {
+                        MB_ICONINFORMATION
+                    },
+            );
+        }
+    }
+
+    fn short_text(value: &str) -> String {
+        const LIMIT: usize = 6000;
+        if value.chars().count() <= LIMIT {
+            return value.to_string();
+        }
+
+        let mut clipped: String = value.chars().take(LIMIT).collect();
+        clipped.push_str("\n\n... output clipped. Use `opengpu logs` for full details.");
+        clipped
+    }
+
+    fn cli_output(args: &[&str]) -> Result<String, String> {
+        let output = Command::new(cli_path())
+            .args(args)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| format!("failed to run opengpu {}: {error}", args.join(" ")))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let mut body = String::new();
+        if !stdout.is_empty() {
+            body.push_str(&stdout);
+        }
+        if !stderr.is_empty() {
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+            body.push_str(&stderr);
+        }
+        if body.is_empty() {
+            body = format!("opengpu {} completed.", args.join(" "));
+        }
+
+        if output.status.success() {
+            Ok(short_text(&body))
+        } else {
+            Err(short_text(&body))
+        }
+    }
+
+    fn run_cli_app_output(title: &str, args: &[&str]) {
+        match cli_output(args) {
+            Ok(body) => show_message(title, &body, false),
+            Err(body) => show_message(title, &body, true),
+        }
     }
 
     fn powershell_quote(value: &str) -> String {
@@ -92,7 +190,7 @@ mod windows_tray {
     }
 
     fn open_status_window() {
-        run_cli_window(&["status"]);
+        run_cli_app_output("MundusX Status", &["status"]);
     }
 
     unsafe fn append_menu_item(menu: *mut core::ffi::c_void, id: usize, label: &str) {
@@ -171,18 +269,20 @@ mod windows_tray {
                 match wparam & 0xffff {
                     MENU_STATUS => open_status_window(),
                     MENU_SETUP => run_cli_window(&["install"]),
-                    MENU_ONBOARDING => run_cli_window(&["onboarding"]),
+                    MENU_ONBOARDING => run_cli_app_output("MundusX Onboarding", &["onboarding"]),
                     MENU_CAP => run_cli_window(&["cap"]),
-                    MENU_CREDITS => run_cli_window(&["credits"]),
-                    MENU_MODEL_LIST => run_cli_window(&["model", "list"]),
+                    MENU_CREDITS => run_cli_app_output("MundusX Credits", &["credits"]),
+                    MENU_MODEL_LIST => {
+                        run_cli_app_output("MundusX Model Cache", &["model", "list"])
+                    }
                     MENU_MODEL_USE => run_cli_window(&["model", "use"]),
                     MENU_MODEL_ADD => run_cli_window(&["model", "add"]),
-                    MENU_DOCTOR => run_cli_window(&["doctor"]),
-                    MENU_LOGS => run_cli_window(&["logs"]),
-                    MENU_START => run_cli_window(&["start", "--background"]),
+                    MENU_DOCTOR => run_cli_app_output("MundusX Diagnostics", &["doctor"]),
+                    MENU_LOGS => run_cli_app_output("MundusX Logs", &["logs"]),
+                    MENU_START => run_cli_app_output("MundusX Start", &["start", "--background"]),
                     MENU_PAUSE => run_cli(&["pause"]),
-                    MENU_RESUME => run_cli_window(&["resume"]),
-                    MENU_DISCONNECT => run_cli_window(&["exit"]),
+                    MENU_RESUME => run_cli_app_output("MundusX Resume", &["resume"]),
+                    MENU_DISCONNECT => run_cli_app_output("MundusX Disconnect", &["exit"]),
                     MENU_EXIT => {
                         DestroyWindow(hwnd);
                     }
@@ -206,7 +306,24 @@ mod windows_tray {
         data.uID = 1;
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = TRAY_MESSAGE;
-        data.hIcon = LoadIconW(ptr::null_mut(), IDI_APPLICATION);
+        data.hIcon = tray_icon_path()
+            .and_then(|path| {
+                let path = wide(&path.display().to_string());
+                let icon = LoadImageW(
+                    ptr::null_mut(),
+                    path.as_ptr(),
+                    IMAGE_ICON,
+                    0,
+                    0,
+                    LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                );
+                if icon.is_null() {
+                    None
+                } else {
+                    Some(icon)
+                }
+            })
+            .unwrap_or_else(|| LoadIconW(ptr::null_mut(), IDI_APPLICATION));
         let tip = wide("MundusX contributor");
         let count = tip.len().min(data.szTip.len());
         data.szTip[..count].copy_from_slice(&tip[..count]);

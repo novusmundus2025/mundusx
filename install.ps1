@@ -400,6 +400,7 @@ $profile = if ($gpu) { "windows-x86_64-cuda" } else { "windows-x86_64-generic" }
 $assetName = "opengpu-$target.exe"
 $agentAssetName = "opengpu-node-agent-$target.exe"
 $trayAssetName = "mundusx-tray-$target.exe"
+$trayIconAssetName = "mundusx.ico"
 $cudaRuntimeRequired = [bool]($gpu -or $InstallCudaRuntime)
 $cudaRuntimeAssetName = "llama-runtime-$target-cuda.zip"
 $releaseBase = $ReleaseBaseUrl.TrimEnd("/")
@@ -414,11 +415,13 @@ $tempManifest = Join-Path $tempDir "release-manifest.json"
 $tempSignature = Join-Path $tempDir "release-manifest.json.sig"
 $tempAgent = Join-Path $tempDir $agentAssetName
 $tempTray = Join-Path $tempDir $trayAssetName
+$tempTrayIcon = Join-Path $tempDir $trayIconAssetName
 $tempCudaRuntime = Join-Path $tempDir $cudaRuntimeAssetName
 $finalExe = Join-Path $InstallDir "opengpu.exe"
 $compatExe = Join-Path $InstallDir "mundusx.exe"
 $finalAgent = Join-Path $InstallDir "opengpu-node-agent.exe"
 $finalTray = Join-Path $InstallDir "mundusx-tray.exe"
+$finalTrayIcon = Join-Path $InstallDir "mundusx.ico"
 $runtimeInstallDir = Join-Path (Get-OpenGpuHome) "runtimes\llama"
 $finalCudaRuntime = Join-Path $runtimeInstallDir "llama-cli.exe"
 $finalCudaServerRuntime = Join-Path $runtimeInstallDir "llama-server.exe"
@@ -426,6 +429,7 @@ $manifest = $null
 $trustedRuntimePath = $null
 $agentExpected = $null
 $trayExpected = $null
+$trayIconExpected = $null
 $runtimeExpected = $null
 
 Write-Output "MundusX Windows installer"
@@ -511,10 +515,16 @@ try {
   Write-Output "Verifying Windows tray companion checksum..."
   $trayExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $trayAssetName -Destination $tempTray -ManifestAsset $trayManifestAsset
 
+  $trayIconManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $trayIconAssetName
+  Write-Output "Fetching Windows tray icon..."
+  Write-Output "Verifying Windows tray icon checksum..."
+  $trayIconExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $trayIconAssetName -Destination $tempTrayIcon -ManifestAsset $trayIconManifestAsset
+
   Move-Item -Force -Path $tempExe -Destination $finalExe
   Copy-Item -Force -LiteralPath $finalExe -Destination $compatExe
   Move-Item -Force -Path $tempAgent -Destination $finalAgent
   Move-Item -Force -Path $tempTray -Destination $finalTray
+  Move-Item -Force -Path $tempTrayIcon -Destination $finalTrayIcon
 
   if ($cudaRuntimeRequired) {
     if (Test-Path -LiteralPath $runtimeInstallDir) {
@@ -549,6 +559,8 @@ Write-Output "Installed opengpu to $finalExe"
 Write-Output "Installed mundusx compatibility alias to $compatExe"
 Write-Output "Installed node agent to $finalAgent"
 Write-Output "Installed tray companion to $finalTray"
+Write-Output "Installed tray icon to $finalTrayIcon"
+Write-Output "Tray icon checksum: $($trayIconExpected.ToLowerInvariant())"
 if (-not $SkipTrayAutoStart) {
   $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
   New-Item -Path $runKey -Force | Out-Null
