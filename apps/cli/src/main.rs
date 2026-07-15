@@ -3633,6 +3633,10 @@ fn resolve_install_control_plane_url(
     }
 }
 
+fn should_prompt_model_selection(config: &Config) -> bool {
+    active_model_name(config).is_none()
+}
+
 fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
     const OPTIONS: &[Option<(u8, &str)>] = &[
         Some((20, "light")),
@@ -4235,6 +4239,11 @@ fn run_install(
     let detected = resolved_backend(&config);
     config.control_plane_url =
         resolve_install_control_plane_url(public, private, control_plane_url);
+    if let Err(error) = save_config(&config) {
+        eprintln!("failed to save control-plane URL: {error}");
+        std::process::exit(1);
+    }
+    println!("controlPlaneUrl: {}", config.control_plane_url);
 
     let selected_cap = if let Some(value) = cap_percent {
         match normalize_contribution_percent(u16::from(value)) {
@@ -4264,9 +4273,7 @@ fn run_install(
         config.contribution_percent = value;
     }
 
-    if active_model_name(&config).is_none()
-        || io::stdin().is_terminal() && io::stdout().is_terminal()
-    {
+    if should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
         let choice = prompt_model_selection(&config, backend);
         apply_model_choice(&mut config, choice, true);
@@ -5099,8 +5106,8 @@ mod tests {
         job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
         normalize_control_plane_url, parse_llama_output, remote_job_output,
         resolve_install_control_plane_url, runtime_metrics_from_output,
-        runtime_metrics_from_payload, vllm_doctor_payload, Cli, Commands, ExecutionMode,
-        JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
+        runtime_metrics_from_payload, should_prompt_model_selection, vllm_doctor_payload, Cli,
+        Commands, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -5361,6 +5368,21 @@ mod tests {
     fn control_plane_url_normalization_rejects_missing_scheme() {
         assert!(normalize_control_plane_url("uat.mundusx.ai").is_err());
         assert!(normalize_control_plane_url("ftp://uat.mundusx.ai").is_err());
+    }
+
+    #[test]
+    fn install_prompts_for_model_only_when_missing_active_model() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "opengpu-cli-install-missing-model-{}",
+            std::process::id()
+        ));
+        let mut config = Config::default();
+        config.model_dir = Some(temp_dir.display().to_string());
+        config.active_model = None;
+        assert!(should_prompt_model_selection(&config));
+
+        config.active_model = Some("Qwen/Qwen2.5-1.5B-Instruct".to_string());
+        assert!(!should_prompt_model_selection(&config));
     }
 
     #[test]
