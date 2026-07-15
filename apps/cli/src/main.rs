@@ -3564,7 +3564,7 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
 
 fn read_private_control_plane_url() -> String {
     loop {
-        print!("Private control-plane URL [blank for public MundusX]: ");
+        print!("Private control-plane URL (http:// or https://): ");
         let _ = io::stdout().flush();
         let mut input = String::new();
         if io::stdin().read_line(&mut input).is_err() {
@@ -3573,13 +3573,29 @@ fn read_private_control_plane_url() -> String {
         }
         let url = input.trim();
         if url.is_empty() {
-            return PUBLIC_CONTROL_PLANE_URL.to_string();
+            println!("Private / custom requires a URL. Choose Public MundusX in the previous menu to use the default.");
+            continue;
         }
-        if !url.is_empty() && (url.starts_with("http://") || url.starts_with("https://")) {
+        if is_valid_control_plane_url(url) {
             return url.to_string();
         }
-        println!("Enter a full URL, for example http://127.0.0.1:8787, or leave blank for public MundusX");
+        println!("Enter a full URL, for example http://127.0.0.1:8787 or https://uat.mundusx.ai");
     }
+}
+
+fn is_valid_control_plane_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+fn normalize_control_plane_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Ok(PUBLIC_CONTROL_PLANE_URL.to_string());
+    }
+    if is_valid_control_plane_url(trimmed) {
+        return Ok(trimmed.to_string());
+    }
+    Err("control-plane URL must start with http:// or https://".to_string())
 }
 
 fn resolve_install_control_plane_url(
@@ -3593,15 +3609,10 @@ fn resolve_install_control_plane_url(
     }
 
     if let Some(url) = control_plane_url {
-        let trimmed = url.trim();
-        if trimmed.is_empty() {
-            return PUBLIC_CONTROL_PLANE_URL.to_string();
-        }
-        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-            return trimmed.to_string();
-        }
-        eprintln!("control-plane URL must start with http:// or https://");
-        std::process::exit(2);
+        return normalize_control_plane_url(&url).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(2);
+        });
     }
 
     if public {
@@ -5029,12 +5040,16 @@ fn main() {
                     println!("modelDir: {expanded}");
                 }
                 ConfigCommands::ControlPlaneUrl { url } => {
-                    config.control_plane_url = url.clone();
+                    let normalized = normalize_control_plane_url(&url).unwrap_or_else(|error| {
+                        eprintln!("{error}");
+                        std::process::exit(2);
+                    });
+                    config.control_plane_url = normalized.clone();
                     if let Err(error) = crate::config::save_config(&config) {
                         eprintln!("failed to save config: {error}");
                         std::process::exit(1);
                     }
-                    println!("controlPlaneUrl: {url}");
+                    println!("controlPlaneUrl: {normalized}");
                 }
             }
         }
@@ -5082,9 +5097,10 @@ mod tests {
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
         cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
         job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
-        parse_llama_output, remote_job_output, resolve_install_control_plane_url,
-        runtime_metrics_from_output, runtime_metrics_from_payload, vllm_doctor_payload, Cli,
-        Commands, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
+        normalize_control_plane_url, parse_llama_output, remote_job_output,
+        resolve_install_control_plane_url, runtime_metrics_from_output,
+        runtime_metrics_from_payload, vllm_doctor_payload, Cli, Commands, ExecutionMode,
+        JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -5323,6 +5339,28 @@ mod tests {
             resolve_install_control_plane_url(false, false, Some("http://127.0.0.1:8787".into())),
             "http://127.0.0.1:8787"
         );
+    }
+
+    #[test]
+    fn control_plane_url_normalization_accepts_public_blank_and_custom_urls() {
+        assert_eq!(
+            normalize_control_plane_url(" ").as_deref(),
+            Ok(PUBLIC_CONTROL_PLANE_URL)
+        );
+        assert_eq!(
+            normalize_control_plane_url("https://private.example.com/").as_deref(),
+            Ok("https://private.example.com")
+        );
+        assert_eq!(
+            normalize_control_plane_url("http://127.0.0.1:8787/").as_deref(),
+            Ok("http://127.0.0.1:8787")
+        );
+    }
+
+    #[test]
+    fn control_plane_url_normalization_rejects_missing_scheme() {
+        assert!(normalize_control_plane_url("uat.mundusx.ai").is_err());
+        assert!(normalize_control_plane_url("ftp://uat.mundusx.ai").is_err());
     }
 
     #[test]
