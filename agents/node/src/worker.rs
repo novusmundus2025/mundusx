@@ -502,6 +502,63 @@ fn probe_llama_server_executable() -> Result<PathBuf, String> {
     trusted_runtime_executable("llama-server")
 }
 
+fn opengpu_home_dir() -> PathBuf {
+    std::env::var_os("OPENGPU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|dir| dir.join(".opengpu")))
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
+}
+
+fn mlx_runtime_python_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("OPENGPU_MLX_PYTHON") {
+        return PathBuf::from(path);
+    }
+
+    let mut path = opengpu_home_dir().join("runtimes").join("mlx").join("venv");
+    #[cfg(windows)]
+    {
+        path = path.join("Scripts").join("python.exe");
+    }
+    #[cfg(not(windows))]
+    {
+        path = path.join("bin").join("python");
+    }
+    path
+}
+
+fn probe_mlx_available() -> Result<PathBuf, String> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let python = mlx_runtime_python_path();
+        if !python.exists() {
+            return Err(format!(
+                "MLX runtime python not found at {}",
+                python.display()
+            ));
+        }
+        let output = Command::new(&python)
+            .args(["-c", "import mlx_lm"])
+            .output()
+            .map_err(|error| format!("failed to launch MLX runtime: {error}"))?;
+        if output.status.success() {
+            return Ok(python);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "MLX runtime import failed: {}",
+            stderr
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("no stderr")
+        ));
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        Err("MLX is supported only on Apple Silicon macOS nodes".to_string())
+    }
+}
+
 fn configured_llama_server_url() -> Option<String> {
     env::var("OPENGPU_LLAMA_SERVER_URL")
         .ok()
@@ -857,6 +914,78 @@ fn run_llama_server_completion(
     Ok((generated, runtime_mode.to_string(), metrics))
 }
 
+fn run_mlx_command(
+    model_name: &str,
+    prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+) -> Result<(String, String, RuntimeMetrics), String> {
+    let python = probe_mlx_available()?;
+    let started = Instant::now();
+    let output = Command::new(&python)
+        .args([
+            "-m",
+            "mlx_lm.generate",
+            "--model",
+            model_name,
+            "--prompt",
+            prompt,
+            "--max-tokens",
+            &max_tokens.to_string(),
+            "--temp",
+            &temperature.to_string(),
+        ])
+        .output()
+        .map_err(|error| format!("failed to launch MLX runtime: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "mlx-lm exited {} — {}",
+            output.status.code().unwrap_or(-1),
+            first_actionable_stderr_line(&stderr)
+        ));
+    }
+
+    let transcript = String::from_utf8(output.stdout)
+        .map_err(|error| error.to_string())?
+        .trim()
+        .to_string();
+    let generated = extract_mlx_response(&transcript);
+    let metrics = RuntimeMetrics {
+        total_duration_ms: Some(started.elapsed().as_secs_f64() * 1000.0),
+        load_duration_ms: None,
+        prompt_eval_count: None,
+        prompt_eval_duration_ms: None,
+        prompt_eval_rate: None,
+        eval_count: None,
+        eval_duration_ms: None,
+        eval_rate: None,
+    };
+
+    Ok((generated, "mlx".to_string(), metrics))
+}
+
+fn extract_mlx_response(transcript: &str) -> String {
+    let mut lines = Vec::new();
+    for line in transcript.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Fetching ")
+            || trimmed.starts_with("Loading ")
+            || trimmed.starts_with("========")
+            || trimmed.starts_with("Prompt:")
+            || trimmed.starts_with("Generation")
+            || trimmed.starts_with("Peak memory")
+        {
+            continue;
+        }
+        if !trimmed.is_empty() {
+            lines.push(trimmed);
+        }
+    }
+    lines.join("\n").trim().to_string()
+}
+
 fn llama_server_metrics(value: &serde_json::Value) -> RuntimeMetrics {
     let timings = value.get("timings").unwrap_or(value);
     RuntimeMetrics {
@@ -966,6 +1095,7 @@ pub fn probe_worker_health(
     let mut model_path = None;
     let mut llama_cli_available = false;
     let mut llama_server_available = false;
+    let mut mlx_available = false;
     let persistent_runtime_url = configured_llama_server_url();
     let persistent_runtime_warm = persistent_runtime_url
         .as_deref()
@@ -1002,6 +1132,15 @@ pub fn probe_worker_health(
             Err(error) => notes.push(error),
         },
     }
+    if backend == Backend::M {
+        match probe_mlx_available() {
+            Ok(path) => {
+                mlx_available = true;
+                notes.push(format!("MLX runtime is available at {}", path.display()));
+            }
+            Err(error) => notes.push(format!("MLX runtime unavailable: {error}")),
+        }
+    }
     match probe_llama_server_executable() {
         Ok(_) => {
             llama_server_available = true;
@@ -1026,7 +1165,7 @@ pub fn probe_worker_health(
         }
     }
 
-    let local_runtime_available = llama_cli_available || persistent_runtime_warm;
+    let local_runtime_available = llama_cli_available || persistent_runtime_warm || mlx_available;
     let healthy = if backend == Backend::Cuda {
         model_path.is_some()
             && local_runtime_available
@@ -1034,6 +1173,8 @@ pub fn probe_worker_health(
             && cuda.driver_available
     } else if backend == Backend::Vllm {
         false
+    } else if backend == Backend::M && mlx_available {
+        model_name.is_some() || model_path.is_some()
     } else {
         model_path.is_some()
             && local_runtime_available
@@ -1043,6 +1184,7 @@ pub fn probe_worker_health(
     let runtime_mode = match backend {
         Backend::Cuda => "cuda",
         Backend::Vllm => "vllm",
+        Backend::M if mlx_available => "mlx",
         _ => "blas",
     };
     let runtime_mode = runtime_mode.to_string();
@@ -1053,7 +1195,9 @@ pub fn probe_worker_health(
     } else {
         "batch".to_string()
     };
-    let supported_runtime_modes = if healthy {
+    let supported_runtime_modes = if healthy && backend == Backend::M && mlx_available {
+        vec!["local".to_string(), "mlx".to_string()]
+    } else if healthy {
         vec!["local".to_string()]
     } else {
         Vec::new()
@@ -1069,6 +1213,17 @@ pub fn probe_worker_health(
         persistent_runtime_warm,
         persistent_runtime_url,
         runtime_kind,
+        runtime_preference: if backend == Backend::M {
+            Some(if mlx_available { "mlx" } else { "llama-metal" }.to_string())
+        } else {
+            None
+        },
+        fallback_runtime: if backend == Backend::M {
+            Some(if mlx_available { "llama-metal" } else { "mlx" }.to_string())
+        } else {
+            None
+        },
+        mlx_available,
         blas_device_available,
         cuda_device_available: cuda.device_available,
         cuda_driver_available: cuda.driver_available,
@@ -1222,9 +1377,6 @@ fn run_llama_request(
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
                 .join(".opengpu/models")
         });
-    let model_path = resolve_model_path(&model_dir, request.model.as_deref())
-        .map_err(|error| error.to_string())?;
-
     let model_name = request
         .model
         .clone()
@@ -1241,6 +1393,30 @@ fn run_llama_request(
     let temperature = request.temperature.unwrap_or(0.2).max(0.0);
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
     let seed = request.seed.unwrap_or(42);
+
+    if backend == Backend::M {
+        if let Ok((generated, runtime_mode, metrics)) =
+            run_mlx_command(&model_name, &prompt, max_tokens, temperature)
+        {
+            let runtime_metrics = metrics.to_output_fragment().unwrap_or_default();
+            return Ok(WorkerLaunchResponse {
+                job_id: request.job_id.clone(),
+                worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                status: "completed".to_string(),
+                output: format!(
+                    "mlx-lm mode={runtime_mode}; model={model_name}; max_tokens={max_tokens}; temperature={temperature}{runtime_metrics}; response={generated}",
+                ),
+                error: None,
+                backend,
+                node_id: request.node_id.clone(),
+                model: Some(model_name),
+                runtime_mode: Some(runtime_mode),
+            });
+        }
+    }
+
+    let model_path = resolve_model_path(&model_dir, request.model.as_deref())
+        .map_err(|error| error.to_string())?;
 
     let warm_result = configured_llama_server_url()
         .as_deref()

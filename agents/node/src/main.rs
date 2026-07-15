@@ -771,6 +771,21 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
     );
     println!("runtimeMode: {}", health.runtime_mode);
     println!("runtimeKind: {}", health.runtime_kind);
+    println!(
+        "runtimePreference: {}",
+        health
+            .runtime_preference
+            .as_deref()
+            .unwrap_or("platform-default")
+    );
+    println!(
+        "fallbackRuntime: {}",
+        health.fallback_runtime.as_deref().unwrap_or("none")
+    );
+    println!(
+        "mlxAvailable: {}",
+        if health.mlx_available { "yes" } else { "no" }
+    );
     println!("checkedAt: {}", health.checked_at);
     println!(
         "policyAllowed: {}",
@@ -1357,6 +1372,8 @@ mod tests {
             model_dir: None,
             active_model: Some("tiny-cuda".to_string()),
             models: vec!["tiny-cuda".to_string()],
+            runtime_preference: None,
+            fallback_runtime: None,
         }
     }
 
@@ -1388,6 +1405,9 @@ mod tests {
             persistent_runtime_warm: false,
             persistent_runtime_url: None,
             runtime_kind: "batch".to_string(),
+            runtime_preference: None,
+            fallback_runtime: None,
+            mlx_available: false,
             blas_device_available: backend != Backend::Cuda,
             cuda_device_available: backend == Backend::Cuda,
             cuda_driver_available: backend == Backend::Cuda,

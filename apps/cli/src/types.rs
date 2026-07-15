@@ -184,6 +184,12 @@ pub struct WorkerHealthReport {
     pub persistent_runtime_url: Option<String>,
     #[serde(default)]
     pub runtime_kind: String,
+    #[serde(default)]
+    pub runtime_preference: Option<String>,
+    #[serde(default)]
+    pub fallback_runtime: Option<String>,
+    #[serde(default)]
+    pub mlx_available: bool,
     pub blas_device_available: bool,
     #[serde(default)]
     pub cuda_device_available: bool,

@@ -27,6 +27,10 @@ pub struct AgentConfig {
     /// Model identifiers this node has available (e.g. ["llama3.1:8b"]).
     #[serde(default)]
     pub models: Vec<String>,
+    #[serde(default)]
+    pub runtime_preference: Option<String>,
+    #[serde(default)]
+    pub fallback_runtime: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -45,6 +49,8 @@ impl Default for AgentConfig {
             model_dir: None,
             active_model: None,
             models: Vec::new(),
+            runtime_preference: None,
+            fallback_runtime: None,
         }
     }
 }
@@ -242,6 +248,9 @@ mod tests {
                 persistent_runtime_warm: false,
                 persistent_runtime_url: None,
                 runtime_kind: "batch".to_string(),
+                runtime_preference: None,
+                fallback_runtime: None,
+                mlx_available: false,
                 blas_device_available: true,
                 cuda_device_available: false,
                 cuda_driver_available: false,

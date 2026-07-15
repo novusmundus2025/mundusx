@@ -148,6 +148,11 @@ enum Commands {
         #[command(subcommand)]
         command: ModelCommands,
     },
+    /// Manage local runtime adapters
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommands,
+    },
     /// Update the MundusX binary
     Update,
     /// Show earned credits from the control plane
@@ -247,6 +252,28 @@ enum ModelCommands {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum RuntimeCommands {
+    /// Install and enable a local runtime adapter
+    Install {
+        #[arg(value_enum)]
+        runtime: RuntimeSelection,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RuntimeSelection {
+    Mlx,
+}
+
+impl RuntimeSelection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mlx => "mlx",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -1686,7 +1713,7 @@ fn format_duration_ms(value: f64) -> String {
 }
 
 fn print_inference_output(output: &str) {
-    if let Some((fields, response)) = parse_llama_output(output) {
+    if let Some((fields, response)) = parse_worker_output(output) {
         theme::section("Worker output");
         for (label, value) in fields {
             theme::field(&label, value);
@@ -1701,9 +1728,11 @@ fn print_inference_output(output: &str) {
     println!("{output}");
 }
 
-fn parse_llama_output(output: &str) -> Option<(Vec<(String, String)>, String)> {
+fn parse_worker_output(output: &str) -> Option<(Vec<(String, String)>, String)> {
     let text = output.trim();
-    let metadata = text.strip_prefix("llama.cpp ")?;
+    let metadata = text
+        .strip_prefix("llama.cpp ")
+        .or_else(|| text.strip_prefix("mlx-lm "))?;
     let response_marker = "; response=";
     let (metadata, response) = metadata
         .split_once(response_marker)
@@ -2566,6 +2595,17 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     );
     theme::field("backendPreference", config.backend_preference);
     theme::field("detectedBackend", detected_backend);
+    theme::field(
+        "runtimePreference",
+        config
+            .runtime_preference
+            .as_deref()
+            .unwrap_or("platform-default"),
+    );
+    theme::field(
+        "fallbackRuntime",
+        config.fallback_runtime.as_deref().unwrap_or("none"),
+    );
     theme::field("identityReady", theme::boolean(identity_ready, "yes", "no"));
     theme::field("identityTrustPath", identity::trust_path());
     theme::field("providerCount", provider_count);
@@ -2644,6 +2684,17 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     theme::field("cpuCores", cores);
     theme::field("backendPreference", config.backend_preference);
     theme::field("detectedBackend", detected_backend);
+    theme::field(
+        "runtimePreference",
+        config
+            .runtime_preference
+            .as_deref()
+            .unwrap_or("platform-default"),
+    );
+    theme::field(
+        "fallbackRuntime",
+        config.fallback_runtime.as_deref().unwrap_or("none"),
+    );
     theme::field("identityReady", theme::boolean(identity_ready, "yes", "no"));
     theme::field("identityTrustPath", identity::trust_path());
     theme::field("modelDir", configured_model_dir_string(config));
@@ -3428,6 +3479,143 @@ fn install_profile_for(os: &str, arch: &str, backend: Backend) -> &'static str {
         ("linux", "aarch64", _) => "linux-aarch64-generic",
         ("macos", "x86_64", _) => "macos-x86_64-generic",
         _ => "unsupported-or-generic",
+    }
+}
+
+fn opengpu_home_dir() -> PathBuf {
+    std::env::var_os("OPENGPU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|dir| dir.join(".opengpu")))
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
+}
+
+fn is_apple_silicon_macos() -> bool {
+    env::consts::OS == "macos" && env::consts::ARCH == "aarch64"
+}
+
+fn mlx_runtime_python_path() -> PathBuf {
+    let mut path = opengpu_home_dir().join("runtimes").join("mlx").join("venv");
+    #[cfg(windows)]
+    {
+        path = path.join("Scripts").join("python.exe");
+    }
+    #[cfg(not(windows))]
+    {
+        path = path.join("bin").join("python");
+    }
+    path
+}
+
+fn run_checked_command(mut command: Command, action: &str) -> Result<(), String> {
+    let output = command
+        .output()
+        .map_err(|error| format!("{action} failed to launch: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = stderr
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .or_else(|| stdout.lines().find(|line| !line.trim().is_empty()))
+        .unwrap_or("no output");
+    Err(format!("{action} failed: {detail}"))
+}
+
+fn verify_mlx_runtime() -> Result<PathBuf, String> {
+    let python = mlx_runtime_python_path();
+    if !python.exists() {
+        return Err(format!(
+            "MLX runtime python was not found at {}",
+            python.display()
+        ));
+    }
+
+    let mut command = Command::new(&python);
+    command.args(["-c", "import mlx_lm; print('mlx-lm ok')"]);
+    run_checked_command(command, "verify MLX runtime")?;
+    Ok(python)
+}
+
+fn install_mlx_runtime(config: &mut Config) -> Result<PathBuf, String> {
+    if !is_apple_silicon_macos() {
+        return Err("MLX is supported only on Apple Silicon macOS nodes".to_string());
+    }
+
+    if let Ok(path) = verify_mlx_runtime() {
+        config.runtime_preference = Some("mlx".to_string());
+        config.fallback_runtime = Some("llama-metal".to_string());
+        return Ok(path);
+    }
+
+    let venv_dir = opengpu_home_dir().join("runtimes").join("mlx").join("venv");
+    if !venv_dir.exists() {
+        let mut command = Command::new("python3");
+        command.args(["-m", "venv"]).arg(&venv_dir);
+        run_checked_command(command, "create MLX runtime venv")?;
+    }
+
+    let python = mlx_runtime_python_path();
+    let mut pip_upgrade = Command::new(&python);
+    pip_upgrade.args(["-m", "pip", "install", "--upgrade", "pip"]);
+    run_checked_command(pip_upgrade, "upgrade MLX runtime pip")?;
+
+    let mut pip_install = Command::new(&python);
+    pip_install.args(["-m", "pip", "install", "--upgrade", "mlx-lm"]);
+    run_checked_command(pip_install, "install MLX runtime")?;
+
+    let python = verify_mlx_runtime()?;
+    config.runtime_preference = Some("mlx".to_string());
+    config.fallback_runtime = Some("llama-metal".to_string());
+    Ok(python)
+}
+
+fn prompt_mlx_fallback_action(error: &str) -> bool {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return false;
+    }
+
+    println!("runtimeInstall: mlx failed");
+    println!("runtimeError: {error}");
+    println!("runtimeQuestion: retry MLX install? [y/N]");
+    let mut answer = String::new();
+    if io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+fn configure_macos_runtime(config: &mut Config) {
+    if !is_apple_silicon_macos() {
+        return;
+    }
+
+    println!("runtimePreference: mlx");
+    println!("runtimeFallback: llama-metal");
+    match install_mlx_runtime(config) {
+        Ok(path) => println!("runtimeInstall: mlx ready at {}", path.display()),
+        Err(first_error) if prompt_mlx_fallback_action(&first_error) => {
+            match install_mlx_runtime(config) {
+                Ok(path) => println!("runtimeInstall: mlx ready at {}", path.display()),
+                Err(second_error) => {
+                    config.runtime_preference = Some("llama-metal".to_string());
+                    config.fallback_runtime = Some("mlx".to_string());
+                    println!("runtimeInstall: mlx unavailable after retry");
+                    println!("runtimeFallback: llama-metal");
+                    println!("runtimeError: {second_error}");
+                }
+            }
+        }
+        Err(error) => {
+            config.runtime_preference = Some("llama-metal".to_string());
+            config.fallback_runtime = Some("mlx".to_string());
+            println!("runtimeInstall: mlx unavailable");
+            println!("runtimeFallback: llama-metal");
+            println!("runtimeError: {error}");
+            println!("runtimeHint: run `opengpu runtime install mlx` to retry");
+        }
     }
 }
 
@@ -4279,6 +4467,8 @@ fn run_install(
         apply_model_choice(&mut config, choice, true);
     }
 
+    configure_macos_runtime(&mut config);
+
     match save_config(&config) {
         Ok(path) => {
             let body = vec![
@@ -4303,6 +4493,17 @@ fn run_install(
                     } else {
                         config.backend_preference.as_str()
                     }
+                ),
+                format!(
+                    "runtime preference: {}",
+                    config
+                        .runtime_preference
+                        .as_deref()
+                        .unwrap_or("platform default")
+                ),
+                format!(
+                    "fallback runtime: {}",
+                    config.fallback_runtime.as_deref().unwrap_or("none")
                 ),
                 format!(
                     "contribution cap: {}",
@@ -4905,6 +5106,34 @@ fn main() {
                 }
             }
         }
+        Commands::Runtime { command } => match command {
+            RuntimeCommands::Install { runtime } => {
+                let mut config = current_config_or_default();
+                match runtime {
+                    RuntimeSelection::Mlx => match install_mlx_runtime(&mut config) {
+                        Ok(path) => match save_config(&config) {
+                            Ok(config_path) => {
+                                println!("runtime: {}", runtime.as_str());
+                                println!("runtimeReady: yes");
+                                println!("runtimePython: {}", path.display());
+                                println!("runtimePreference: mlx");
+                                println!("runtimeFallback: llama-metal");
+                                println!("config: {}", config_path.display());
+                            }
+                            Err(error) => {
+                                eprintln!("failed to save runtime preference: {error}");
+                                std::process::exit(1);
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("{error}");
+                            eprintln!("runtimeHint: fallback is llama-metal; retry with `opengpu runtime install mlx`");
+                            std::process::exit(1);
+                        }
+                    },
+                }
+            }
+        },
         Commands::Update => {
             println!("updateChannel: localhost preview");
             println!("installPage: http://127.0.0.1:3002/install");
@@ -5104,7 +5333,7 @@ mod tests {
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
         cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
         job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
-        normalize_control_plane_url, parse_llama_output, remote_job_output,
+        normalize_control_plane_url, parse_worker_output, remote_job_output,
         resolve_install_control_plane_url, runtime_metrics_from_output,
         runtime_metrics_from_payload, should_prompt_model_selection, vllm_doctor_payload, Cli,
         Commands, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
@@ -5844,7 +6073,7 @@ mod tests {
     fn llama_output_metadata_is_split_into_display_fields() {
         let output = r#"llama.cpp mode=cuda; model=Qwen; path=C:\model.gguf; max_tokens=16; runtime_metrics={"eval_count":4}; response=hello world"#;
 
-        let (fields, response) = parse_llama_output(output).expect("llama output");
+        let (fields, response) = parse_worker_output(output).expect("llama output");
 
         assert_eq!(
             fields,
@@ -5856,6 +6085,26 @@ mod tests {
             ]
         );
         assert_eq!(response, "hello world");
+    }
+
+    #[test]
+    fn mlx_output_metadata_is_split_into_display_fields() {
+        let output = r#"mlx-lm mode=mlx; model=mlx-community/Qwen2.5-1.5B-Instruct; max_tokens=32; response=hello from mlx"#;
+
+        let (fields, response) = parse_worker_output(output).expect("mlx output");
+
+        assert_eq!(
+            fields,
+            vec![
+                ("mode".to_string(), "mlx".to_string()),
+                (
+                    "model".to_string(),
+                    "mlx-community/Qwen2.5-1.5B-Instruct".to_string()
+                ),
+                ("maxTokens".to_string(), "32".to_string()),
+            ]
+        );
+        assert_eq!(response, "hello from mlx");
     }
 
     #[test]

@@ -23,6 +23,10 @@ pub struct Config {
     pub model_dir: Option<String>,
     #[serde(default)]
     pub onboarding_completed: bool,
+    #[serde(default)]
+    pub runtime_preference: Option<String>,
+    #[serde(default)]
+    pub fallback_runtime: Option<String>,
 }
 
 impl Default for Config {
@@ -42,6 +46,8 @@ impl Default for Config {
             models: vec![],
             model_dir: None,
             onboarding_completed: false,
+            runtime_preference: None,
+            fallback_runtime: None,
         }
     }
 }

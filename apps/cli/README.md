@@ -10,10 +10,19 @@ Install with:
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
-Apple Silicon macOS public release install. Replace `v0.1.10` with the current published Mac release version:
+Apple Silicon macOS public release install. Replace `v0.1.12` with the current published Mac release version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | RELEASE_BASE_URL=https://github.com/mundusx/mundusx/releases/download/cli-macos-v0.1.11 bash
+curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | RELEASE_BASE_URL=https://github.com/mundusx/mundusx/releases/download/cli-macos-v0.1.12 bash
+```
+
+On Apple Silicon, `opengpu install` prefers MLX for local inference. It creates
+`~/.opengpu/runtimes/mlx/venv`, installs `mlx-lm`, verifies it, and records
+`runtimePreference: mlx`. If MLX setup fails, the node records
+`fallbackRuntime: llama-metal` and can be retried with:
+
+```bash
+opengpu runtime install mlx
 ```
 
 On Windows local preview:
@@ -41,6 +50,7 @@ opengpu status
 opengpu nodes
 opengpu exit
 opengpu doctor
+opengpu runtime install mlx
 opengpu model use
 opengpu model add
 opengpu model import ./models/local-model.gguf --name local-model --backend cuda --vram-mb 4096
