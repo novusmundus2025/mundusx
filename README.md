@@ -48,6 +48,12 @@ Users should install the CLI from the localhost release preview and never need R
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
+On Apple Silicon macOS, the public release channel uses the same script and downloads the signed `opengpu-aarch64-apple-darwin` CLI plus the matching `opengpu-node-agent`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | bash
+```
+
 On Windows, use the native PowerShell bootstrapper:
 
 ```powershell

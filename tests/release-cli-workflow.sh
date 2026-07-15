@@ -16,6 +16,11 @@ assert_contains() {
 }
 
 assert_contains "os: windows-latest"
+assert_contains "os: macos-14"
+assert_contains "target: aarch64-apple-darwin"
+assert_contains "binary_name: opengpu-aarch64-apple-darwin"
+assert_contains "agent_binary_name: opengpu-node-agent-aarch64-apple-darwin"
+assert_contains "agent_executable_name: opengpu-node-agent"
 assert_contains "target: x86_64-pc-windows-msvc"
 assert_contains "binary_name: opengpu-x86_64-pc-windows-msvc.exe"
 assert_contains "executable_name: opengpu.exe"

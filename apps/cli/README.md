@@ -10,6 +10,12 @@ Install with:
 RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
 ```
 
+Apple Silicon macOS public release install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | bash
+```
+
 On Windows local preview:
 
 ```powershell
