@@ -59,11 +59,11 @@ mod windows_tray {
     const DASH_MODEL_USE: usize = 3012;
     const DASH_MODEL_ADD: usize = 3013;
     const DASH_CLOSE: usize = 3014;
-    const COLOR_BACKGROUND: u32 = 0x00170f07;
-    const COLOR_PANEL: u32 = 0x0023160b;
-    const COLOR_TEXT: u32 = 0x00f7f9fb;
-    const COLOR_SUCCESS: u32 = 0x0064d98b;
-    const COLOR_ERROR: u32 = 0x006060ff;
+    const COLOR_BACKGROUND: u32 = 0x00faf9f7;
+    const COLOR_PANEL: u32 = 0x00ffffff;
+    const COLOR_TEXT: u32 = 0x00201714;
+    const COLOR_SUCCESS: u32 = 0x004aa316;
+    const COLOR_ERROR: u32 = 0x001c1cb9;
     const MENU_STATUS: usize = 1001;
     const MENU_SETUP: usize = 1002;
     const MENU_ONBOARDING: usize = 1003;
@@ -441,9 +441,14 @@ mod windows_tray {
     }
 
     struct DashboardState {
+        logo_hwnd: HWND,
+        sidebar_status_hwnd: HWND,
+        sidebar_node_hwnd: HWND,
         title_hwnd: HWND,
         subtitle_hwnd: HWND,
         status_hwnd: HWND,
+        metric_hwnds: Vec<HWND>,
+        section_hwnds: Vec<HWND>,
         output_hwnd: HWND,
         buttons: Vec<HWND>,
         background_brush: *mut core::ffi::c_void,
@@ -453,9 +458,14 @@ mod windows_tray {
     impl DashboardState {
         fn new() -> Self {
             Self {
+                logo_hwnd: ptr::null_mut(),
+                sidebar_status_hwnd: ptr::null_mut(),
+                sidebar_node_hwnd: ptr::null_mut(),
                 title_hwnd: ptr::null_mut(),
                 subtitle_hwnd: ptr::null_mut(),
                 status_hwnd: ptr::null_mut(),
+                metric_hwnds: Vec::new(),
+                section_hwnds: Vec::new(),
                 output_hwnd: ptr::null_mut(),
                 buttons: Vec::new(),
                 background_brush: unsafe { CreateSolidBrush(COLOR_BACKGROUND) },
@@ -496,47 +506,167 @@ mod windows_tray {
         buttons.push(button);
     }
 
+    unsafe fn create_dashboard_static(
+        hwnd: HWND,
+        label: &str,
+        bordered: bool,
+        controls: &mut Vec<HWND>,
+    ) {
+        let style = if bordered {
+            WS_CHILD | WS_VISIBLE | WS_BORDER
+        } else {
+            WS_CHILD | WS_VISIBLE
+        };
+        let control = CreateWindowExW(
+            0,
+            wide("STATIC").as_ptr(),
+            wide(label).as_ptr(),
+            style,
+            0,
+            0,
+            0,
+            0,
+            hwnd,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null(),
+        );
+        controls.push(control);
+    }
+
     unsafe fn layout_dashboard_window(hwnd: HWND, state: &DashboardState) {
         let mut rect = std::mem::zeroed();
         GetClientRect(hwnd, &mut rect);
-        let width = (rect.right - rect.left).max(720);
-        let height = (rect.bottom - rect.top).max(560);
-        let margin = 24;
+        let width = (rect.right - rect.left).max(1040);
+        let height = (rect.bottom - rect.top).max(680);
+        let sidebar_width = 214;
+        let main_x = sidebar_width + 28;
+        let main_width = width - main_x - 28;
         let gap = 12;
-        let button_width = ((width - margin * 2 - gap * 3) / 4).max(130);
-        let button_height = 34;
+        let card_width = ((main_width - gap * 3) / 4).max(150);
 
-        MoveWindow(state.title_hwnd, margin, 18, width - margin * 2, 30, 1);
-        MoveWindow(state.subtitle_hwnd, margin, 50, width - margin * 2, 24, 1);
-        MoveWindow(state.status_hwnd, margin, 84, width - margin * 2, 26, 1);
+        MoveWindow(state.logo_hwnd, 30, 28, sidebar_width - 58, 42, 1);
+        MoveWindow(
+            state.sidebar_status_hwnd,
+            22,
+            472,
+            sidebar_width - 44,
+            84,
+            1,
+        );
+        MoveWindow(
+            state.sidebar_node_hwnd,
+            22,
+            height - 126,
+            sidebar_width - 44,
+            86,
+            1,
+        );
+        MoveWindow(state.title_hwnd, main_x, 24, main_width - 190, 28, 1);
+        MoveWindow(state.subtitle_hwnd, main_x, 56, main_width - 190, 22, 1);
+        MoveWindow(state.status_hwnd, width - 170, 24, 138, 30, 1);
 
         for (index, button) in state.buttons.iter().enumerate() {
-            let row = index as i32 / 4;
-            let col = index as i32 % 4;
+            if index < 8 {
+                MoveWindow(
+                    *button,
+                    22,
+                    92 + index as i32 * 38,
+                    sidebar_width - 44,
+                    30,
+                    1,
+                );
+            } else if index == 8 {
+                MoveWindow(*button, width - 170, 62, 138, 30, 1);
+            } else {
+                let local = index as i32 - 9;
+                let col = local % 3;
+                let row = local / 3;
+                MoveWindow(*button, main_x + col * 118, 374 + row * 38, 106, 30, 1);
+            }
+        }
+
+        for (index, card) in state.metric_hwnds.iter().enumerate() {
             MoveWindow(
-                *button,
-                margin + col * (button_width + gap),
-                128 + row * (button_height + gap),
-                button_width,
-                button_height,
+                *card,
+                main_x + index as i32 * (card_width + gap),
+                102,
+                card_width,
+                96,
                 1,
             );
         }
 
-        MoveWindow(
-            state.output_hwnd,
-            margin,
-            128 + 4 * (button_height + gap) + 10,
-            width - margin * 2,
-            height - (128 + 4 * (button_height + gap) + 34),
-            1,
-        );
+        let left_w = ((main_width * 62) / 100).max(430);
+        let right_x = main_x + left_w + 16;
+        let right_w = main_width - left_w - 16;
+        if state.section_hwnds.len() >= 4 {
+            MoveWindow(state.section_hwnds[0], main_x, 216, left_w, 142, 1);
+            MoveWindow(state.section_hwnds[1], right_x, 216, right_w, 142, 1);
+            MoveWindow(state.section_hwnds[2], main_x, 472, left_w, 108, 1);
+            MoveWindow(state.section_hwnds[3], right_x, 374, right_w, 206, 1);
+        }
+
+        MoveWindow(state.output_hwnd, main_x, 596, left_w, height - 622, 1);
     }
 
     unsafe fn set_dashboard_text(state: &DashboardState, status: &str, body: &str) {
         let normalized = body.replace('\n', "\r\n");
         SetWindowTextW(state.status_hwnd, wide(status).as_ptr());
         SetWindowTextW(state.output_hwnd, wide(&normalized).as_ptr());
+
+        if !body.trim().is_empty() {
+            let lower = body.to_ascii_lowercase();
+            let connected = if lower.contains("connected: yes") {
+                "Connected"
+            } else if lower.contains("readyforjobs: no") || lower.contains("connected: no") {
+                "Standby"
+            } else {
+                "Checking"
+            };
+            if !state.metric_hwnds.is_empty() {
+                SetWindowTextW(
+                    state.metric_hwnds[0],
+                    wide(&format!(
+                        "Status\r\n\r\n{connected}\r\nAll systems reviewed by control plane"
+                    ))
+                    .as_ptr(),
+                );
+            }
+            if state.metric_hwnds.len() > 2 {
+                let contribution = body
+                    .lines()
+                    .find_map(|line| line.strip_prefix("contributionPercent:"))
+                    .map(str::trim)
+                    .unwrap_or("--");
+                SetWindowTextW(
+                    state.metric_hwnds[2],
+                    wide(&format!(
+                        "Contribution\r\n\r\n{contribution}\r\nAutomatic routing budget"
+                    ))
+                    .as_ptr(),
+                );
+            }
+            if state.section_hwnds.len() > 1 {
+                let model = body
+                    .lines()
+                    .find_map(|line| line.strip_prefix("activeModel:"))
+                    .map(str::trim)
+                    .unwrap_or("Not selected");
+                let backend = body
+                    .lines()
+                    .find_map(|line| line.strip_prefix("detectedBackend:"))
+                    .map(str::trim)
+                    .unwrap_or("--");
+                SetWindowTextW(
+                    state.section_hwnds[1],
+                    wide(&format!(
+                        "Active Model\r\n\r\n{model}\r\n\r\nPerformance: live probe\r\nBackend: {backend}"
+                    ))
+                    .as_ptr(),
+                );
+            }
+        }
     }
 
     unsafe fn queue_dashboard_cli(hwnd: HWND, state: &DashboardState, status: &str, args: &[&str]) {
@@ -654,10 +784,55 @@ mod windows_tray {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
                 let state = &mut *state_ptr;
 
+                state.logo_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    wide("MUNDUSX").as_ptr(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.sidebar_status_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    wide(
+                        "Connected\r\n\r\nStuttgart Control Plane\r\nLatency: checking\r\n\r\nNode ID\r\nloading",
+                    )
+                    .as_ptr(),
+                    WS_CHILD | WS_VISIBLE | WS_BORDER,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
+                state.sidebar_node_hwnd = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    wide("Contributor\r\n\r\nMundusX Node\r\nv1.0.0").as_ptr(),
+                    WS_CHILD | WS_VISIBLE | WS_BORDER,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                );
                 state.title_hwnd = CreateWindowExW(
                     0,
                     wide("STATIC").as_ptr(),
-                    wide("MundusX Contributor Control").as_ptr(),
+                    wide("Good morning, Contributor").as_ptr(),
                     WS_CHILD | WS_VISIBLE,
                     0,
                     0,
@@ -671,10 +846,7 @@ mod windows_tray {
                 state.subtitle_hwnd = CreateWindowExW(
                     0,
                     wide("STATIC").as_ptr(),
-                    wide(
-                        "Manage node state, models, credits, diagnostics, and logs from one place.",
-                    )
-                    .as_ptr(),
+                    wide("Your node is contributing to the MundusX network.").as_ptr(),
                     WS_CHILD | WS_VISIBLE,
                     0,
                     0,
@@ -689,7 +861,7 @@ mod windows_tray {
                     0,
                     wide("STATIC").as_ptr(),
                     wide("Ready").as_ptr(),
-                    WS_CHILD | WS_VISIBLE,
+                    WS_CHILD | WS_VISIBLE | WS_BORDER,
                     0,
                     0,
                     0,
@@ -702,7 +874,7 @@ mod windows_tray {
                 state.output_hwnd = CreateWindowExW(
                     0,
                     wide("EDIT").as_ptr(),
-                    wide("Click Status to read the current contributor state.").as_ptr(),
+                    wide("Recent logs and command output will appear here.").as_ptr(),
                     WS_CHILD
                         | WS_VISIBLE
                         | WS_BORDER
@@ -720,20 +892,69 @@ mod windows_tray {
                     ptr::null(),
                 );
 
-                create_dashboard_button(hwnd, DASH_REFRESH, "Status", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_CREDITS, "Credits", &mut state.buttons);
+                create_dashboard_static(
+                    hwnd,
+                    "Status\r\n\r\nChecking\r\nWaiting for node status",
+                    true,
+                    &mut state.metric_hwnds,
+                );
+                create_dashboard_static(
+                    hwnd,
+                    "Today's Credits\r\n\r\n--\r\nRefresh credits to load",
+                    true,
+                    &mut state.metric_hwnds,
+                );
+                create_dashboard_static(
+                    hwnd,
+                    "Contribution\r\n\r\n--\r\nAutomatic routing budget",
+                    true,
+                    &mut state.metric_hwnds,
+                );
+                create_dashboard_static(
+                    hwnd,
+                    "Uptime\r\n\r\n--\r\nRefresh status to load",
+                    true,
+                    &mut state.metric_hwnds,
+                );
+                create_dashboard_static(
+                    hwnd,
+                    "Contribution Control\r\n\r\nRunning\r\nContribution is active\r\n\r\nLevel: --\r\nUse Contribution to edit the cap.",
+                    true,
+                    &mut state.section_hwnds,
+                );
+                create_dashboard_static(
+                    hwnd,
+                    "Active Model\r\n\r\nLoading model state\r\n\r\nPerformance: checking\r\nBackend: --",
+                    true,
+                    &mut state.section_hwnds,
+                );
+                create_dashboard_static(
+                    hwnd,
+                    "System Overview\r\n\r\nCPU: --     GPU: --     Memory: --     Temperature: --\r\nHardware metrics will be wired from the node agent next.",
+                    true,
+                    &mut state.section_hwnds,
+                );
+                create_dashboard_static(
+                    hwnd,
+                    "Earnings\r\n\r\nToday: -- credits\r\nThis week: -- credits\r\nThis month: -- credits\r\n\r\nOpen Credits for ledger details.",
+                    true,
+                    &mut state.section_hwnds,
+                );
+
+                create_dashboard_button(hwnd, DASH_REFRESH, "Dashboard", &mut state.buttons);
                 create_dashboard_button(hwnd, DASH_MODELS, "Models", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_DOCTOR, "Diagnostics", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_LOGS, "Logs", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_START, "Start", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_PAUSE, "Pause", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_RESUME, "Resume", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_DISCONNECT, "Disconnect", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_SETUP, "Setup", &mut state.buttons);
                 create_dashboard_button(hwnd, DASH_CAP, "Contribution", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_CREDITS, "Credits", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_DOCTOR, "Identity", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_LOGS, "Logs", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_SETUP, "Settings", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_CLOSE, "Help", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_PAUSE, "Pause Contribution", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_START, "Start", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_DISCONNECT, "Stop", &mut state.buttons);
+                create_dashboard_button(hwnd, DASH_RESUME, "Resume", &mut state.buttons);
                 create_dashboard_button(hwnd, DASH_MODEL_USE, "Choose model", &mut state.buttons);
                 create_dashboard_button(hwnd, DASH_MODEL_ADD, "Add model", &mut state.buttons);
-                create_dashboard_button(hwnd, DASH_CLOSE, "Close", &mut state.buttons);
 
                 layout_dashboard_window(hwnd, state);
                 queue_dashboard_cli(hwnd, state, "Loading status", &["status"]);
