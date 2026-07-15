@@ -576,6 +576,56 @@ mod windows_tray {
         });
     }
 
+    unsafe fn queue_dashboard_start(hwnd: HWND, state: &DashboardState) {
+        set_dashboard_text(
+            state,
+            "Starting node",
+            "Start requested. The dashboard will refresh status in a few seconds.",
+        );
+        let hwnd_value = hwnd as isize;
+        thread::spawn(move || {
+            let start_result = Command::new(cli_path())
+                .args(["start", "--background"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+
+            let result = match start_result {
+                Ok(_) => {
+                    thread::sleep(std::time::Duration::from_secs(3));
+                    match cli_output(&["status"]) {
+                        Ok(body) => DashboardCommandResult {
+                            status: "Start requested".to_string(),
+                            body,
+                        },
+                        Err(body) => DashboardCommandResult {
+                            status: "Start requested; status failed".to_string(),
+                            body,
+                        },
+                    }
+                }
+                Err(error) => DashboardCommandResult {
+                    status: "Action failed".to_string(),
+                    body: format!("failed to launch `opengpu start --background`: {error}"),
+                },
+            };
+
+            let result_ptr = Box::into_raw(Box::new(result));
+            let posted = unsafe {
+                PostMessageW(
+                    hwnd_value as HWND,
+                    DASHBOARD_RESULT_MESSAGE,
+                    0,
+                    result_ptr as LPARAM,
+                )
+            };
+            if posted == 0 {
+                unsafe {
+                    drop(Box::from_raw(result_ptr));
+                }
+            }
+        });
+    }
+
     unsafe fn open_dashboard_shell(state: &DashboardState, status: &str, args: &[&str]) {
         run_cli_window(args);
         set_dashboard_text(
@@ -721,12 +771,7 @@ mod windows_tray {
                             queue_dashboard_cli(hwnd, state, "Running diagnostics", &["doctor"])
                         }
                         DASH_LOGS => queue_dashboard_cli(hwnd, state, "Loading logs", &["logs"]),
-                        DASH_START => queue_dashboard_cli(
-                            hwnd,
-                            state,
-                            "Starting node",
-                            &["start", "--background"],
-                        ),
+                        DASH_START => queue_dashboard_start(hwnd, state),
                         DASH_PAUSE => queue_dashboard_cli(hwnd, state, "Pausing node", &["pause"]),
                         DASH_RESUME => {
                             queue_dashboard_cli(hwnd, state, "Resuming node", &["resume"])
