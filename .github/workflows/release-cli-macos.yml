@@ -21,6 +21,7 @@ env:
   EXECUTABLE_NAME: opengpu
   AGENT_BINARY_NAME: opengpu-node-agent-aarch64-apple-darwin
   AGENT_EXECUTABLE_NAME: opengpu-node-agent
+  PKG_NAME: MundusX-Node-aarch64-dev.pkg
 
 jobs:
   release:
@@ -67,6 +68,18 @@ jobs:
         shell: bash
         run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
 
+      - name: Build unsigned macOS package
+        shell: bash
+        run: ./scripts/package-macos-pkg.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}" "${PKG_NAME}" "${RELEASE_TAG#cli-macos-v}"
+
+      - name: Generate package checksum
+        shell: bash
+        run: shasum -a 256 "${PKG_NAME}" > "${PKG_NAME}.sha256"
+
+      - name: Verify package checksum
+        shell: bash
+        run: shasum -a 256 -c "${PKG_NAME}.sha256"
+
       - name: Prepare signed manifest
         shell: bash
         env:
@@ -88,6 +101,8 @@ jobs:
             ${{ env.BINARY_NAME }}.sha256
             ${{ env.AGENT_BINARY_NAME }}
             ${{ env.AGENT_BINARY_NAME }}.sha256
+            ${{ env.PKG_NAME }}
+            ${{ env.PKG_NAME }}.sha256
             release-manifest.json
             release-manifest.json.sig
           tag_name: ${{ env.RELEASE_TAG }}

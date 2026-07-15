@@ -68,7 +68,7 @@ node_agent_name_for_binary() {
 }
 
 create_manifest() {
-  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum runtime_name runtime_checksum
+  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum runtime_name runtime_checksum mac_pkg_name mac_pkg_checksum
   checksum="$(checksum_for_binary "$binary_name")"
   tag_text="$(normalize_text "$tag_name")"
   version_text="$(normalize_text "$version")"
@@ -98,13 +98,21 @@ create_manifest() {
   if [ -n "$runtime_name" ] && [ -f "$artifact_dir/$runtime_name" ]; then
     runtime_checksum="$(checksum_for_binary "$runtime_name")"
   fi
+  mac_pkg_name=""
+  mac_pkg_checksum=""
+  case "$binary_name" in
+    opengpu-aarch64-apple-darwin) mac_pkg_name="MundusX-Node-aarch64-dev.pkg" ;;
+  esac
+  if [ -n "$mac_pkg_name" ] && [ -f "$artifact_dir/$mac_pkg_name" ]; then
+    mac_pkg_checksum="$(checksum_for_binary "$mac_pkg_name")"
+  fi
   generated_at="$("$(python_cmd)" - <<'PY'
 from datetime import datetime, timezone
 print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -122,6 +130,8 @@ tray_name = sys.argv[10]
 tray_checksum = sys.argv[11]
 runtime_name = sys.argv[12]
 runtime_checksum = sys.argv[13]
+mac_pkg_name = sys.argv[14]
+mac_pkg_checksum = sys.argv[15]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -148,6 +158,15 @@ if tray_name and tray_checksum:
     })
 if assets:
     payload["assets"] = assets
+if mac_pkg_name and mac_pkg_checksum:
+    payload.setdefault("installers", []).append({
+        "name": mac_pkg_name,
+        "kind": "macos-pkg-installer",
+        "install_as": "MundusX Node Installer",
+        "checksum_sha256": mac_pkg_checksum,
+        "signed": False,
+        "notarized": False,
+    })
 if runtime_name and runtime_checksum:
     payload["runtime_assets"] = [{
         "name": runtime_name,
