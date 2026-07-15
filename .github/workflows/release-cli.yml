@@ -1,12 +1,21 @@
 name: Release CLI
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to build and publish, for example cli-v0.1.8"
+        required: true
+        type: string
   push:
     tags:
       - "cli-v*"
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   build:
@@ -43,6 +52,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -133,7 +144,7 @@ jobs:
           OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
           OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
         run: |
-          ./scripts/release-signing.sh prepare . ${{ matrix.binary_name }} ${{ github.ref_name }} ${{ github.ref_name }}
+          ./scripts/release-signing.sh prepare . ${{ matrix.binary_name }} ${{ env.RELEASE_TAG }} ${{ env.RELEASE_TAG }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -182,6 +193,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*/*
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

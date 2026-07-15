@@ -16,6 +16,8 @@ assert_contains() {
 }
 
 assert_contains "os: windows-latest"
+assert_contains "workflow_dispatch:"
+assert_contains "release_tag:"
 assert_contains "os: macos-14"
 assert_contains "target: aarch64-apple-darwin"
 assert_contains "binary_name: opengpu-aarch64-apple-darwin"
@@ -40,6 +42,6 @@ assert_contains "sha256sum \${{ matrix.agent_binary_name }} > \${{ matrix.agent_
 assert_contains "sha256sum -c \${{ matrix.binary_name }}.sha256"
 assert_contains "sha256sum -c \${{ matrix.agent_binary_name }}.sha256"
 assert_contains "./scripts/verify-release-packaging.sh . \${{ matrix.binary_name }} \${{ matrix.agent_binary_name }}"
-assert_contains "./scripts/release-signing.sh prepare . \${{ matrix.binary_name }} \${{ github.ref_name }} \${{ github.ref_name }}"
+assert_contains "./scripts/release-signing.sh prepare . \${{ matrix.binary_name }} \${{ env.RELEASE_TAG }} \${{ env.RELEASE_TAG }}"
 
 echo "release CLI workflow publishes CLI, node-agent, Windows tray, and clickable setup assets"
