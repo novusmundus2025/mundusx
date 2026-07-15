@@ -79,6 +79,21 @@ verify_checksum() {
   fi
 }
 
+smoke_installed_binary() {
+  local binary="$1"
+  local label="$2"
+
+  if [ "${OPENGPU_SKIP_INSTALL_SMOKE:-}" = "1" ]; then
+    return 0
+  fi
+
+  if ! "$binary" --version >/dev/null 2>&1; then
+    echo "installed ${label} failed to run: ${binary} --version" >&2
+    echo "This usually means the downloaded release asset does not match this machine." >&2
+    exit 1
+  fi
+}
+
 echo "MundusX installer"
 echo "  target: ${target}"
 echo "  source: ${RELEASE_BASE_URL%/}"
@@ -103,6 +118,10 @@ chmod +x "$tmp_agent"
 mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
 mv "$tmp_agent" "$INSTALL_DIR/opengpu-node-agent"
 ln -sf "$BIN_NAME" "$INSTALL_DIR/$COMPAT_BIN_NAME"
+
+echo "Running installed binary smoke checks..."
+smoke_installed_binary "$INSTALL_DIR/$BIN_NAME" "$BIN_NAME"
+smoke_installed_binary "$INSTALL_DIR/opengpu-node-agent" "opengpu-node-agent"
 
 echo
 echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"

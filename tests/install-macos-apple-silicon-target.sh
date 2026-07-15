@@ -9,16 +9,14 @@ bin_dir="$tmp_dir/bin"
 install_dir="$tmp_dir/install"
 mkdir -p "$bin_dir" "$install_dir"
 
-original_path="$PATH"
-
 cat >"$bin_dir/uname" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
 case "${1:-}" in
-  -s) printf 'Linux\n' ;;
-  -m) printf 'x86_64\n' ;;
-  *) printf 'Linux\n' ;;
+  -s) printf 'Darwin\n' ;;
+  -m) printf 'arm64\n' ;;
+  *) printf 'Darwin\n' ;;
 esac
 EOF
 chmod +x "$bin_dir/uname"
@@ -58,14 +56,12 @@ chmod +x "$bin_dir/curl"
 cat >"$bin_dir/shasum" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$TEST_SHASUM_LOG"
 exit 0
 EOF
 chmod +x "$bin_dir/shasum"
 
-export PATH="$bin_dir:$original_path"
+export PATH="$bin_dir:$PATH"
 export TEST_DOWNLOAD_LOG="$tmp_dir/download.log"
-export TEST_SHASUM_LOG="$tmp_dir/shasum.log"
 
 output="$(
   INSTALL_DIR="$install_dir" \
@@ -73,17 +69,12 @@ output="$(
   bash "$repo_root/install.sh" 2>&1
 )"
 
-expected_asset="https://github.com/mundusx/mundusx/releases/latest/download/opengpu-"
-expected_checksum="https://github.com/mundusx/mundusx/releases/latest/download/opengpu-"
-expected_agent="https://github.com/mundusx/mundusx/releases/latest/download/opengpu-node-agent-"
-grep -F "$expected_asset" "$TEST_DOWNLOAD_LOG" >/dev/null
-grep -F "$expected_checksum" "$TEST_DOWNLOAD_LOG" | grep -F ".sha256" >/dev/null
-grep -F "$expected_agent" "$TEST_DOWNLOAD_LOG" >/dev/null
-grep -F "$expected_agent" "$TEST_DOWNLOAD_LOG" | grep -F ".sha256" >/dev/null
-test -s "$TEST_SHASUM_LOG"
+printf '%s\n' "$output" | grep -F "target: aarch64-apple-darwin" >/dev/null
+grep -F "opengpu-aarch64-apple-darwin" "$TEST_DOWNLOAD_LOG" >/dev/null
+grep -F "opengpu-aarch64-apple-darwin.sha256" "$TEST_DOWNLOAD_LOG" >/dev/null
+grep -F "opengpu-node-agent-aarch64-apple-darwin" "$TEST_DOWNLOAD_LOG" >/dev/null
+grep -F "opengpu-node-agent-aarch64-apple-darwin.sha256" "$TEST_DOWNLOAD_LOG" >/dev/null
 test -f "$install_dir/opengpu"
 test -f "$install_dir/opengpu-node-agent"
-printf '%s\n' "$output" | grep -F "Verifying checksum..." >/dev/null
-printf '%s\n' "$output" | grep -F "Verifying node agent checksum..." >/dev/null
 
-echo "PASS: install.sh verifies CLI and node-agent checksums when wget is the available downloader"
+echo "PASS: install.sh selects Apple Silicon macOS CLI and node-agent assets"
