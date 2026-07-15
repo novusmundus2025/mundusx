@@ -610,62 +610,147 @@ mod windows_tray {
         MoveWindow(state.output_hwnd, main_x, 596, left_w, height - 622, 1);
     }
 
+    fn field_value<'a>(body: &'a str, name: &str) -> Option<&'a str> {
+        body.lines()
+            .find_map(|line| line.strip_prefix(name))
+            .map(str::trim)
+    }
+
+    fn credit_value<'a>(body: &'a str, name: &str) -> Option<&'a str> {
+        field_value(body, name).map(|value| {
+            value
+                .split_whitespace()
+                .next()
+                .filter(|part| !part.is_empty())
+                .unwrap_or(value)
+        })
+    }
+
+    unsafe fn update_dashboard_from_status(state: &DashboardState, body: &str) {
+        let connected = match (
+            field_value(body, "connected:"),
+            field_value(body, "readyForJobs:"),
+            field_value(body, "paused:"),
+        ) {
+            (Some("yes"), Some("yes"), Some("no")) => "Connected",
+            (Some("yes"), _, Some("yes")) => "Paused",
+            (Some("yes"), Some("no"), _) => "Standby",
+            (Some("no"), _, _) => "Disconnected",
+            _ => "Checking",
+        };
+        let device_id = field_value(body, "deviceId:").unwrap_or("unknown");
+        let control_plane =
+            field_value(body, "controlPlaneUrl:").unwrap_or("control plane unknown");
+        let contribution = field_value(body, "contributionPercent:").unwrap_or("--");
+        let model = field_value(body, "activeModel:").unwrap_or("Not selected");
+        let backend = field_value(body, "detectedBackend:").unwrap_or("--");
+        let policy = field_value(body, "policyAllowed:").unwrap_or("--");
+        let ready = field_value(body, "readyForJobs:").unwrap_or("--");
+        let battery = field_value(body, "batteryPercent:").unwrap_or("unknown");
+        let power = field_value(body, "powerSource:").unwrap_or("unknown");
+
+        if !state.metric_hwnds.is_empty() {
+            SetWindowTextW(
+                state.metric_hwnds[0],
+                wide(&format!(
+                    "Status\r\n\r\n{connected}\r\nreadyForJobs: {ready} | policy: {policy}"
+                ))
+                .as_ptr(),
+            );
+        }
+        if state.metric_hwnds.len() > 2 {
+            SetWindowTextW(
+                state.metric_hwnds[2],
+                wide(&format!(
+                    "Contribution\r\n\r\n{contribution}\r\nAutomatic routing budget"
+                ))
+                .as_ptr(),
+            );
+        }
+        if state.metric_hwnds.len() > 3 {
+            SetWindowTextW(
+                state.metric_hwnds[3],
+                wide(&format!("Power\r\n\r\n{power}\r\nBattery: {battery}")).as_ptr(),
+            );
+        }
+        if !state.section_hwnds.is_empty() {
+            SetWindowTextW(
+                state.section_hwnds[0],
+                wide(&format!(
+                    "Contribution Control\r\n\r\n{connected}\r\nContribution is active when readyForJobs is yes.\r\n\r\nLevel: {contribution}\r\nUse Contribution to edit the cap."
+                ))
+                .as_ptr(),
+            );
+        }
+        if state.section_hwnds.len() > 1 {
+            SetWindowTextW(
+                state.section_hwnds[1],
+                wide(&format!(
+                    "Active Model\r\n\r\n{model}\r\n\r\nPerformance: live probe\r\nBackend: {backend}"
+                ))
+                .as_ptr(),
+            );
+        }
+        if state.section_hwnds.len() > 2 {
+            SetWindowTextW(
+                state.section_hwnds[2],
+                wide(&format!(
+                    "System Overview\r\n\r\nBackend: {backend}     Power: {power}     Battery: {battery}\r\nHardware metrics will be wired from the node agent next."
+                ))
+                .as_ptr(),
+            );
+        }
+        SetWindowTextW(
+            state.sidebar_status_hwnd,
+            wide(&format!(
+                "{connected}\r\n\r\n{control_plane}\r\nLatency: check via Status\r\n\r\nNode ID\r\n{device_id}"
+            ))
+            .as_ptr(),
+        );
+        SetWindowTextW(
+            state.sidebar_node_hwnd,
+            wide(&format!("Contributor\r\n\r\nMundusX Node\r\n{device_id}")).as_ptr(),
+        );
+    }
+
+    unsafe fn update_dashboard_from_credits(state: &DashboardState, body: &str) {
+        let earned = credit_value(body, "earnedCredits:").unwrap_or("--");
+        let used = credit_value(body, "usedCredits:").unwrap_or("--");
+        if state.metric_hwnds.len() > 1 {
+            SetWindowTextW(
+                state.metric_hwnds[1],
+                wide(&format!(
+                    "Today's Credits\r\n\r\n{earned}\r\nUsed credits: {used}"
+                ))
+                .as_ptr(),
+            );
+        }
+        if state.section_hwnds.len() > 3 {
+            SetWindowTextW(
+                state.section_hwnds[3],
+                wide(&format!(
+                    "Earnings\r\n\r\nEarned: {earned} credits\r\nUsed: {used} credits\r\n\r\nOpen Credits for ledger details."
+                ))
+                .as_ptr(),
+            );
+        }
+    }
+
     unsafe fn set_dashboard_text(state: &DashboardState, status: &str, body: &str) {
         let normalized = body.replace('\n', "\r\n");
         SetWindowTextW(state.status_hwnd, wide(status).as_ptr());
         SetWindowTextW(state.output_hwnd, wide(&normalized).as_ptr());
 
-        if !body.trim().is_empty() {
-            let lower = body.to_ascii_lowercase();
-            let connected = if lower.contains("connected: yes") {
-                "Connected"
-            } else if lower.contains("readyforjobs: no") || lower.contains("connected: no") {
-                "Standby"
-            } else {
-                "Checking"
-            };
-            if !state.metric_hwnds.is_empty() {
-                SetWindowTextW(
-                    state.metric_hwnds[0],
-                    wide(&format!(
-                        "Status\r\n\r\n{connected}\r\nAll systems reviewed by control plane"
-                    ))
-                    .as_ptr(),
-                );
-            }
-            if state.metric_hwnds.len() > 2 {
-                let contribution = body
-                    .lines()
-                    .find_map(|line| line.strip_prefix("contributionPercent:"))
-                    .map(str::trim)
-                    .unwrap_or("--");
-                SetWindowTextW(
-                    state.metric_hwnds[2],
-                    wide(&format!(
-                        "Contribution\r\n\r\n{contribution}\r\nAutomatic routing budget"
-                    ))
-                    .as_ptr(),
-                );
-            }
-            if state.section_hwnds.len() > 1 {
-                let model = body
-                    .lines()
-                    .find_map(|line| line.strip_prefix("activeModel:"))
-                    .map(str::trim)
-                    .unwrap_or("Not selected");
-                let backend = body
-                    .lines()
-                    .find_map(|line| line.strip_prefix("detectedBackend:"))
-                    .map(str::trim)
-                    .unwrap_or("--");
-                SetWindowTextW(
-                    state.section_hwnds[1],
-                    wide(&format!(
-                        "Active Model\r\n\r\n{model}\r\n\r\nPerformance: live probe\r\nBackend: {backend}"
-                    ))
-                    .as_ptr(),
-                );
-            }
+        if body.contains("[Node status]") || body.contains("readyForJobs:") {
+            update_dashboard_from_status(state, body);
+            let ready = field_value(body, "readyForJobs:").unwrap_or("--");
+            let connected = field_value(body, "connected:").unwrap_or("--");
+            SetWindowTextW(
+                state.status_hwnd,
+                wide(&format!("Connected: {connected} | Ready: {ready}")).as_ptr(),
+            );
+        } else if body.contains("earnedCredits:") || body.contains("usedCredits:") {
+            update_dashboard_from_credits(state, body);
         }
     }
 
