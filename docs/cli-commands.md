@@ -2,6 +2,11 @@
 
 This is the current command surface for the Rust CLI.
 
+Contributor-facing commands must stay aligned with the app surface. See
+[Contributor App Parity](contributor-app-parity.md) for the rule that ordinary
+contributors should not need PowerShell for normal setup, model, status, start,
+pause, resume, or disconnect workflows.
+
 ## Core Commands
 
 - `opengpu start` - create local state if needed, auto-detect the backend, ask for a contribution cap on interactive first run, connect locally when the secure device identity is available, print a startup summary with the public key, and keep a foreground contribution session open
