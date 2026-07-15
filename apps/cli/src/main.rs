@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use types::Backend;
+use types::{Backend, Heartbeat};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum ExecutionMode {
@@ -332,6 +332,7 @@ fn display_public_key_fingerprint(config: &Config) -> String {
                 .flatten()
                 .map(|identity| identity.fingerprint)
         })
+        .or_else(identity_metadata_fingerprint)
         .unwrap_or_else(|| "unset".to_string())
 }
 
@@ -348,7 +349,26 @@ fn display_public_key_hex(config: &Config) -> String {
         .ok()
         .flatten()
         .map(|identity| identity.public_key_hex)
+        .or_else(identity_metadata_public_key_hex)
         .unwrap_or_else(|| "unset".to_string())
+}
+
+fn identity_metadata_value(field: &str) -> Option<String> {
+    let text = std::fs::read_to_string(identity::resolved_identity_path()).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value
+        .get(field)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+}
+
+fn identity_metadata_public_key_hex() -> Option<String> {
+    identity_metadata_value("public_key_hex")
+}
+
+fn identity_metadata_fingerprint() -> Option<String> {
+    identity_metadata_value("fingerprint")
 }
 
 fn run_nvidia_smi_query(args: &[&str]) -> Result<String, String> {
@@ -2470,14 +2490,52 @@ fn provider_count(
     }
 }
 
+fn latest_agent_state(config: &Config) -> Option<Heartbeat> {
+    let path = config::config_dir().join("agent-state.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    let heartbeat: Heartbeat = serde_json::from_str(&text).ok()?;
+    if heartbeat.node_id == config.device_id {
+        Some(heartbeat)
+    } else {
+        None
+    }
+}
+
+fn live_readiness_from_agent(agent: &Heartbeat) -> Option<LocalReadiness> {
+    let capabilities = agent.capabilities.as_ref()?;
+    Some(LocalReadiness {
+        ready_for_jobs: capabilities.ready_for_jobs,
+        readiness_reason: capabilities
+            .readiness_reason
+            .clone()
+            .or_else(|| agent.policy_reason.clone()),
+        model_compatibility: None,
+        model_compatibility_reason: None,
+    })
+}
+
 fn print_config_summary(config: &Config, path: &std::path::Path) {
     let detected_backend = resolved_backend(config);
     let power = probe_power_state();
     let active_model = active_model_name(config);
-    let identity_ready = identity_ready();
-    let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
-    let readiness = local_readiness(config, &power, active_model.as_deref(), identity_ready);
-    let provider_count = provider_count(config, &power, active_model.as_deref(), identity_ready);
+    let agent = latest_agent_state(config);
+    let identity_ready = identity_ready()
+        || agent
+            .as_ref()
+            .and_then(|state| state.identity_trust_path.as_ref())
+            .is_some();
+    let fallback_allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
+    let allowed = agent
+        .as_ref()
+        .and_then(|state| state.policy_allowed)
+        .unwrap_or(fallback_allowed);
+    let readiness = agent
+        .as_ref()
+        .and_then(live_readiness_from_agent)
+        .unwrap_or_else(|| {
+            local_readiness(config, &power, active_model.as_deref(), identity_ready)
+        });
+    let provider_count = if readiness.ready_for_jobs { 1 } else { 0 };
     theme::section("Node status");
     theme::field("configPath", path.display());
     theme::field("deviceId", &config.device_id);
