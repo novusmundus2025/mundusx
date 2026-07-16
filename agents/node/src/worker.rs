@@ -1195,9 +1195,10 @@ pub fn probe_worker_health(
     } else {
         "batch".to_string()
     };
-    let supported_runtime_modes = if healthy && backend == Backend::M && mlx_available {
-        vec!["local".to_string(), "mlx".to_string()]
-    } else if healthy {
+    let supported_runtime_modes = if healthy {
+        // This field is a control-plane scheduling contract, not a low-level
+        // engine list. MLX still satisfies local execution; the exact engine is
+        // reported separately through runtime_mode/runtime_preference.
         vec!["local".to_string()]
     } else {
         Vec::new()
