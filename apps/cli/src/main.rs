@@ -333,6 +333,15 @@ fn clear_menu_screen() {
     let _ = execute!(stdout, Clear(ClearType::All), MoveTo(0, 0));
 }
 
+macro_rules! raw_println {
+    () => {
+        print!("\r\n")
+    };
+    ($($arg:tt)*) => {
+        print!("{}\r\n", format_args!($($arg)*))
+    };
+}
+
 fn drain_pending_terminal_events() {
     while matches!(poll(Duration::from_millis(0)), Ok(true)) {
         if read().is_err() {
@@ -3847,14 +3856,14 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
 
     let render_menu = |selected: usize| {
         clear_menu_screen();
-        println!("Which control plane should this node use?");
-        println!("-----------------------------------------");
+        raw_println!("Which control plane should this node use?");
+        raw_println!("-----------------------------------------");
         for (index, (label, detail)) in OPTIONS.iter().enumerate() {
             let marker = if index == selected { ">>" } else { "  " };
-            println!("{marker} {label} - {detail}");
+            raw_println!("{marker} {label} - {detail}");
         }
-        println!();
-        println!("Use ↑/↓ or Tab/Shift+Tab and Enter");
+        raw_println!();
+        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter");
         let _ = io::stdout().flush();
     };
 
@@ -4014,17 +4023,17 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
 
     let render_menu = |selected: usize| {
         clear_menu_screen();
-        println!("Contribution level");
-        println!("-------------------");
+        raw_println!("Contribution level");
+        raw_println!("-------------------");
         for (index, option) in OPTIONS.iter().enumerate() {
             let marker = if index == selected { ">>" } else { "  " };
             match option {
-                Some((percent, label)) => println!("{marker} {percent:>2}% - {label}"),
-                None => println!("{marker} custom - type exact percent (1-80)"),
+                Some((percent, label)) => raw_println!("{marker} {percent:>2}% - {label}"),
+                None => raw_println!("{marker} custom - type exact percent (1-80)"),
             }
         }
-        println!();
-        println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press 1-5");
+        raw_println!();
+        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press 1-5");
         let _ = io::stdout().flush();
     };
 
@@ -4241,21 +4250,22 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
 
     let render = |selected: usize| {
         clear_menu_screen();
-        println!("Which model should this node run?");
-        println!(
+        raw_println!("Which model should this node run?");
+        raw_println!(
             "detected: {} / {}GB memory",
-            selection.backend, selection.memory_gb
+            selection.backend,
+            selection.memory_gb
         );
         if let Some(budget) = available_vram_mb {
-            println!(
+            raw_println!(
                 "model budget: {budget} MB VRAM ({}% contribution cap)",
                 config.contribution_percent
             );
         }
-        println!("----------------------------------");
+        raw_println!("----------------------------------");
         for (i, option) in options.iter().enumerate() {
             let marker = if i == selected { ">>" } else { "  " };
-            println!(
+            raw_println!(
                 "{marker} {}. {} [{}] — {}",
                 i + 1,
                 option.label,
@@ -4268,12 +4278,12 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
         } else {
             "  "
         };
-        println!(
+        raw_println!(
             "{marker} {}. Import local GGUF / LM Studio model",
             options.len() + 1
         );
-        println!();
-        println!("Use ↑/↓ or Tab/Shift+Tab and Enter — you must choose one");
+        raw_println!();
+        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter — you must choose one");
         let _ = io::stdout().flush();
     };
 
@@ -4356,7 +4366,7 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
 
     let render = |selected: usize| {
         clear_menu_screen();
-        println!(
+        raw_println!(
             "Choose official model to {}",
             if active {
                 "download and activate"
@@ -4364,14 +4374,14 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
                 "download"
             }
         );
-        println!("backend: {}", backend);
+        raw_println!("backend: {}", backend);
         if let Some(budget) = available_vram_mb {
-            println!(
+            raw_println!(
                 "model budget: {budget} MB VRAM ({}% contribution cap)",
                 config.contribution_percent
             );
         }
-        println!("----------------------------------");
+        raw_println!("----------------------------------");
         for (i, option) in options.iter().enumerate() {
             let marker = if i == selected { ">>" } else { "  " };
             let estimated = option
@@ -4388,15 +4398,17 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
                     .collect::<Vec<_>>()
                     .join("/")
             };
-            println!("{marker} {}. {} [{}]", i + 1, option.label, option.name);
-            println!(
+            raw_println!("{marker} {}. {} [{}]", i + 1, option.label, option.name);
+            raw_println!(
                 "     provider: {} | fit: ok | backends: {} | {}",
-                option.source_kind, backends, estimated
+                option.source_kind,
+                backends,
+                estimated
             );
-            println!("     url: {}", option.source_url);
+            raw_println!("     url: {}", option.source_url);
         }
-        println!();
-        println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press a number — Ctrl-C cancels");
+        raw_println!();
+        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press a number — Ctrl-C cancels");
         let _ = io::stdout().flush();
     };
 
