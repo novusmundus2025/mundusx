@@ -3117,7 +3117,7 @@ fn run_node_agent_foreground(
     let stdout_tee = thread::spawn(move || tee_stream(stdout_pipe, io::stdout(), stdout_log));
     let stderr_tee = thread::spawn(move || tee_stream(stderr_pipe, io::stderr(), stderr_log));
 
-    let _raw_mode = enable_session_raw_mode();
+    let mut raw_mode = enable_session_raw_mode();
     loop {
         if let Some(status) = child.try_wait().map_err(|error| {
             format!(
@@ -3141,7 +3141,8 @@ fn run_node_agent_foreground(
                         || event.code == KeyCode::Char('c')
                             && event.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    let config = mark_disconnected()?;
+                    mark_disconnected()?;
+                    drop(raw_mode.take());
                     if let Err(error) = send_node_agent_stop() {
                         eprintln!("agentStopWarning: {error}");
                     }
@@ -3149,9 +3150,6 @@ fn run_node_agent_foreground(
                     remove_node_agent_pid();
                     let _ = stdout_tee.join();
                     let _ = stderr_tee.join();
-                    println!("disconnected {}", config.device_id);
-                    println!("connected: no");
-                    println!("paused: yes");
                     return Ok(());
                 }
                 Ok(_) => {}
