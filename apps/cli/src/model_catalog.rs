@@ -322,8 +322,9 @@ mod tests {
             .iter()
             .any(|option| option.name == "tensorblock/Qwen2.5-14B-Instruct-GGUF"));
 
-        let forty_eight_gb = selectable_catalog_options_for(Backend::Cuda, Some(49_152));
-        assert!(forty_eight_gb
+        let sixty_four_gb_at_eighty_percent =
+            selectable_catalog_options_for(Backend::Cuda, Some(52_428));
+        assert!(sixty_four_gb_at_eighty_percent
             .iter()
             .any(|option| option.name == "tensorblock/Qwen2.5-72B-Instruct-GGUF"));
     }

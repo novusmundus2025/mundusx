@@ -190,8 +190,8 @@
     },
     {
       "backend": "cuda", "min_memory_gb": 0, "max_memory_gb": 999,
-      "lighter": {"name":"tensorblock/Qwen2.5-72B-Instruct-GGUF","label":"Qwen 2.5 72B GGUF Q3_K_M","notes":"very large CUDA llama.cpp model for 48 GB-class GPUs","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf","sha256":"b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":43000},
-      "recommended": {"name":"tensorblock/Qwen2.5-72B-Instruct-GGUF","label":"Qwen 2.5 72B GGUF Q3_K_M","notes":"very large CUDA llama.cpp model for 48 GB-class GPUs","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf","sha256":"b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":43000}
+      "lighter": {"name":"tensorblock/Qwen2.5-72B-Instruct-GGUF","label":"Qwen 2.5 72B GGUF Q3_K_M","notes":"very large CUDA llama.cpp model for 64 GB-class GPUs at an 80% cap","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf","sha256":"b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":43000},
+      "recommended": {"name":"tensorblock/Qwen2.5-72B-Instruct-GGUF","label":"Qwen 2.5 72B GGUF Q3_K_M","notes":"very large CUDA llama.cpp model for 64 GB-class GPUs at an 80% cap","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf","sha256":"b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":43000}
     }
   ]
 }
