@@ -3012,17 +3012,32 @@ fn mark_disconnected() -> Result<Config, String> {
 
 fn tee_stream<R: Read, W: Write>(mut reader: R, mut mirror: W, mut log: std::fs::File) {
     let mut buffer = [0u8; 4096];
+    let mut previous_was_carriage_return = false;
     loop {
         match reader.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let _ = mirror.write_all(&buffer[..n]);
+                let terminal_bytes =
+                    terminal_line_endings(&buffer[..n], &mut previous_was_carriage_return);
+                let _ = mirror.write_all(&terminal_bytes);
                 let _ = mirror.flush();
                 let _ = log.write_all(&buffer[..n]);
                 let _ = log.flush();
             }
         }
     }
+}
+
+fn terminal_line_endings(bytes: &[u8], previous_was_carriage_return: &mut bool) -> Vec<u8> {
+    let mut rendered = Vec::with_capacity(bytes.len());
+    for &byte in bytes {
+        if byte == b'\n' && !*previous_was_carriage_return {
+            rendered.push(b'\r');
+        }
+        rendered.push(byte);
+        *previous_was_carriage_return = byte == b'\r';
+    }
+    rendered
 }
 
 fn run_node_agent_foreground(
@@ -5466,8 +5481,9 @@ mod tests {
         job_is_terminal, job_status_path, job_wait_progress_signature, local_readiness,
         logs_payload, normalize_control_plane_url, parse_worker_output, remote_job_output,
         resolve_install_control_plane_url, runtime_metrics_from_output,
-        runtime_metrics_from_payload, should_prompt_model_selection, vllm_doctor_payload, Cli,
-        Commands, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
+        runtime_metrics_from_payload, should_prompt_model_selection, terminal_line_endings,
+        vllm_doctor_payload, Cli, Commands, ExecutionMode, JobsCommands, PowerState,
+        PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -5759,6 +5775,28 @@ mod tests {
         assert!(!is_hugging_face_model_id("/tmp/model"));
         assert!(!is_hugging_face_model_id("owner/../model"));
         assert!(!is_hugging_face_model_id("owner/model/extra"));
+    }
+
+    #[test]
+    fn terminal_output_returns_to_column_zero_in_raw_mode() {
+        let mut previous_was_carriage_return = false;
+        assert_eq!(
+            terminal_line_endings(b"first\nsecond\r\n", &mut previous_was_carriage_return),
+            b"first\r\nsecond\r\n"
+        );
+    }
+
+    #[test]
+    fn terminal_output_handles_line_endings_split_across_reads() {
+        let mut previous_was_carriage_return = false;
+        assert_eq!(
+            terminal_line_endings(b"first\r", &mut previous_was_carriage_return),
+            b"first\r"
+        );
+        assert_eq!(
+            terminal_line_endings(b"\nsecond\n", &mut previous_was_carriage_return),
+            b"\nsecond\r\n"
+        );
     }
 
     #[test]
