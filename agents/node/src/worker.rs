@@ -925,7 +925,8 @@ fn run_mlx_command(
     let output = Command::new(&python)
         .args([
             "-m",
-            "mlx_lm.generate",
+            "mlx_lm",
+            "generate",
             "--model",
             model_name,
             "--prompt",
