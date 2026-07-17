@@ -183,7 +183,7 @@ pub fn selectable_catalog_options_for(
         })
         .into_iter()
         .filter(|option| {
-            if backend != Backend::Cuda {
+            if backend != Backend::Cuda && backend != Backend::M {
                 return true;
             }
 
@@ -286,6 +286,46 @@ mod tests {
         assert!(options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-1.5B-Instruct"));
+    }
+
+    #[test]
+    fn apple_picker_scales_quantized_models_with_cap_applied_memory() {
+        let eight_gb = selectable_catalog_options_for(Backend::M, Some(6553));
+        assert!(eight_gb
+            .iter()
+            .any(|option| option.name == "mlx-community/Qwen2.5-3B-Instruct-4bit"));
+        assert!(!eight_gb
+            .iter()
+            .any(|option| option.name == "mlx-community/Qwen2.5-7B-Instruct-4bit"));
+
+        let sixty_four_gb = selectable_catalog_options_for(Backend::M, Some(52_428));
+        assert!(sixty_four_gb
+            .iter()
+            .any(|option| option.name == "mlx-community/Qwen2.5-32B-Instruct-4bit"));
+        assert!(!sixty_four_gb
+            .iter()
+            .any(|option| option.name == "mlx-community/Qwen2.5-72B-Instruct-4bit"));
+
+        let one_twenty_eight_gb = selectable_catalog_options_for(Backend::M, Some(104_857));
+        assert!(one_twenty_eight_gb
+            .iter()
+            .any(|option| option.name == "mlx-community/Qwen2.5-72B-Instruct-4bit"));
+    }
+
+    #[test]
+    fn cuda_picker_scales_gguf_models_with_cap_applied_vram() {
+        let eight_gb = selectable_catalog_options_for(Backend::Cuda, Some(6553));
+        assert!(eight_gb
+            .iter()
+            .any(|option| option.name == "tensorblock/Qwen2.5-7B-Instruct-GGUF"));
+        assert!(!eight_gb
+            .iter()
+            .any(|option| option.name == "tensorblock/Qwen2.5-14B-Instruct-GGUF"));
+
+        let forty_eight_gb = selectable_catalog_options_for(Backend::Cuda, Some(49_152));
+        assert!(forty_eight_gb
+            .iter()
+            .any(|option| option.name == "tensorblock/Qwen2.5-72B-Instruct-GGUF"));
     }
 
     #[test]

@@ -48,7 +48,8 @@ use model::{
     ImportModelOptions, ModelRecord,
 };
 use model_catalog::{
-    selectable_catalog_options_for, selectable_options_for, selection_for, ModelOption,
+    lookup_model_for_backend, selectable_catalog_options_for, selectable_options_for,
+    selection_for, ModelOption,
 };
 
 const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
@@ -3676,6 +3677,20 @@ fn prefetch_active_mlx_model(config: &Config, python: &Path) -> Result<(), Strin
     prefetch_mlx_model(python, &model)
 }
 
+fn prefetch_mlx_catalog_model(config: &Config, model: &str) -> Result<(), String> {
+    if config.runtime_preference.as_deref() != Some("mlx") {
+        return Ok(());
+    }
+    let Some(option) = lookup_model_for_backend(model, Backend::M) else {
+        return Ok(());
+    };
+    if option.source_kind != "huggingface-mlx" {
+        return Ok(());
+    }
+    let python = verify_mlx_runtime()?;
+    prefetch_mlx_model(&python, model)
+}
+
 fn verify_mlx_runtime() -> Result<PathBuf, String> {
     let python = mlx_runtime_python_path();
     if !python.exists() {
@@ -3811,11 +3826,16 @@ fn contribution_vram_budget_mb(
 }
 
 fn model_vram_budget_mb(config: &Config, backend: Backend) -> Option<u64> {
-    if backend != Backend::Cuda {
-        return None;
+    match backend {
+        Backend::M => contribution_vram_budget_mb(
+            Some(detect_memory_gb().saturating_mul(1024)),
+            config.contribution_percent,
+        ),
+        Backend::Cuda => {
+            contribution_vram_budget_mb(detect_cuda_vram_mb(), config.contribution_percent)
+        }
+        _ => None,
     }
-
-    contribution_vram_budget_mb(detect_cuda_vram_mb(), config.contribution_percent)
 }
 
 fn ensure_catalog_model_fits_machine(
@@ -5126,6 +5146,10 @@ fn main() {
                         eprintln!("{error}");
                         std::process::exit(1);
                     }
+                    if let Err(error) = prefetch_mlx_catalog_model(&config, &name) {
+                        eprintln!("failed to download MLX model `{name}`: {error}");
+                        std::process::exit(1);
+                    }
                     if let Err(error) = use_model(&mut config, &name) {
                         eprintln!("failed to activate model `{name}`: {error}");
                         std::process::exit(1);
@@ -5147,6 +5171,10 @@ fn main() {
                     let backend = resolved_backend(&config);
                     if let Err(error) = ensure_catalog_model_fits_machine(&name, backend, &config) {
                         eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                    if let Err(error) = prefetch_mlx_catalog_model(&config, &name) {
+                        eprintln!("failed to download MLX model `{name}`: {error}");
                         std::process::exit(1);
                     }
                     if let Err(error) = add_model(&mut config, &name) {

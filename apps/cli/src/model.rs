@@ -103,8 +103,11 @@ pub fn add_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
 pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     ensure_effective_model_dir(config);
     let _ = download_model_if_available(config, name)?;
+    let remote_mlx = lookup_model_for_backend(name, config.backend_preference)
+        .map(|option| option.source_kind == "huggingface-mlx")
+        .unwrap_or(false);
     let cached_path = cached_model_path(config, name)?;
-    if cached_path.is_none() {
+    if cached_path.is_none() && !remote_mlx {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("model `{name}` is not cached; download or import it before activating"),
@@ -160,23 +163,21 @@ pub fn ensure_catalog_model_fits(
         return Ok(());
     };
 
-    if option.format.as_deref() != Some("gguf") {
+    let expected_format = if backend == crate::types::Backend::M {
+        ["gguf", "mlx"].as_slice()
+    } else {
+        ["gguf"].as_slice()
+    };
+    if !option
+        .format
+        .as_deref()
+        .map(|format| expected_format.contains(&format))
+        .unwrap_or(false)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("refusing to download `{name}`: catalog entry is not a GGUF model"),
         ));
-    }
-
-    if backend != crate::types::Backend::Cuda {
-        if !option.supports_backend(backend) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "refusing to download `{name}`: catalog entry is not compatible with {backend}"
-                ),
-            ));
-        }
-        return Ok(());
     }
 
     if !option.supports_backend(backend) {
@@ -186,6 +187,10 @@ pub fn ensure_catalog_model_fits(
                 "refusing to download `{name}`: catalog entry is not compatible with {backend}"
             ),
         ));
+    }
+
+    if backend != crate::types::Backend::Cuda && backend != crate::types::Backend::M {
+        return Ok(());
     }
 
     let Some(estimated_vram_mb) = option.estimated_vram_mb else {
@@ -198,7 +203,7 @@ pub fn ensure_catalog_model_fits(
     let Some(available_vram_mb) = available_vram_mb else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("refusing to download `{name}`: CUDA VRAM could not be detected"),
+            format!("refusing to download `{name}`: available model memory could not be detected"),
         ));
     };
 
@@ -457,6 +462,10 @@ fn download_model_if_available(config: &Config, name: &str) -> io::Result<bool> 
     let Some(option) = lookup_model_for_backend(name, config.backend_preference) else {
         return Ok(false);
     };
+
+    if option.source_kind == "huggingface-mlx" {
+        return Ok(false);
+    }
 
     download_model_from_option(config, name, &option)
 }
@@ -839,6 +848,19 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "llama3.1:8b");
         assert!(models[0].active);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn activates_prefetched_mlx_hub_model_without_gguf_cache() {
+        let (mut config, temp_dir) = temp_config();
+        config.backend_preference = crate::types::Backend::M;
+        let name = "mlx-community/Qwen2.5-3B-Instruct-4bit";
+
+        let active = use_model(&mut config, name).expect("activate MLX model");
+        assert_eq!(active.name, name);
+        assert_eq!(config.active_model.as_deref(), Some(name));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
