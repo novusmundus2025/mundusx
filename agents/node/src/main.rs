@@ -1071,10 +1071,13 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    config.connected
-        && !config.paused
+    should_agent_run(config)
         && resolved_backend(config) != Backend::Vllm
         && !uses_mlx_runtime(config)
+}
+
+fn should_agent_run(config: &AgentConfig) -> bool {
+    config.connected && !config.paused
 }
 
 fn uses_mlx_runtime(config: &AgentConfig) -> bool {
@@ -1197,7 +1200,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                 break;
             }
         };
-        if !should_keep_runtime_warm(&latest_config) {
+        if !should_agent_run(&latest_config) {
             let heartbeat = build_heartbeat(&latest_config);
             let _ = save_agent_state(&heartbeat);
             let _ = save_heartbeat(&heartbeat);
@@ -1408,6 +1411,7 @@ mod tests {
         config.backend_preference = Backend::M;
         config.runtime_preference = Some("mlx".to_string());
         assert!(uses_mlx_runtime(&config));
+        assert!(should_agent_run(&config));
         assert!(!should_keep_runtime_warm(&config));
 
         config.runtime_preference = Some("llama-metal".to_string());
