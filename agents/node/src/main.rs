@@ -1071,7 +1071,19 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    config.connected && !config.paused && resolved_backend(config) != Backend::Vllm
+    config.connected
+        && !config.paused
+        && resolved_backend(config) != Backend::Vllm
+        && !uses_mlx_runtime(config)
+}
+
+fn uses_mlx_runtime(config: &AgentConfig) -> bool {
+    resolved_backend(config) == Backend::M
+        && config
+            .runtime_preference
+            .as_deref()
+            .map(|runtime| runtime.eq_ignore_ascii_case("mlx"))
+            .unwrap_or(false)
 }
 
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
@@ -1392,6 +1404,15 @@ mod tests {
         config.connected = true;
         config.backend_preference = Backend::Vllm;
         assert!(!should_keep_runtime_warm(&config));
+
+        config.backend_preference = Backend::M;
+        config.runtime_preference = Some("mlx".to_string());
+        assert!(uses_mlx_runtime(&config));
+        assert!(!should_keep_runtime_warm(&config));
+
+        config.runtime_preference = Some("llama-metal".to_string());
+        assert!(!uses_mlx_runtime(&config));
+        assert!(should_keep_runtime_warm(&config));
     }
 
     fn test_health(backend: Backend) -> WorkerHealthReport {
