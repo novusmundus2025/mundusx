@@ -167,9 +167,21 @@ pub fn selectable_catalog_options_for(
     available_vram_mb: Option<u64>,
 ) -> Vec<ModelOption> {
     let catalog = load_catalog().unwrap_or_else(|_| fallback_catalog());
-    unique_catalog_options(&catalog)
+    catalog
+        .presets
         .into_iter()
+        .flat_map(|preset| [preset.lighter, preset.recommended])
         .filter(|option| option.supports_backend(backend))
+        .fold(Vec::new(), |mut options, option| {
+            if !options
+                .iter()
+                .any(|existing: &ModelOption| existing.name == option.name)
+            {
+                options.push(option);
+            }
+            options
+        })
+        .into_iter()
         .filter(|option| {
             if backend != Backend::Cuda {
                 return true;
@@ -181,6 +193,15 @@ pub fn selectable_catalog_options_for(
             }
         })
         .collect()
+}
+
+pub fn lookup_model_for_backend(name: &str, backend: Backend) -> Option<ModelOption> {
+    let catalog = load_catalog().ok()?;
+    catalog
+        .presets
+        .into_iter()
+        .flat_map(|preset| [preset.lighter, preset.recommended])
+        .find(|option| option.name == name && option.supports_backend(backend))
 }
 
 pub fn lookup_model(name: &str) -> Option<ModelOption> {
@@ -249,6 +270,22 @@ mod tests {
         let model = lookup_model("Qwen/Qwen2.5-1.5B-Instruct").expect("model");
         assert_eq!(model.name, "Qwen/Qwen2.5-1.5B-Instruct");
         assert_eq!(model.source_kind, "huggingface-open");
+    }
+
+    #[test]
+    fn looks_up_backend_compatible_duplicate_catalog_model() {
+        let model = lookup_model_for_backend("Qwen/Qwen2.5-1.5B-Instruct", Backend::M)
+            .expect("Apple Silicon model");
+        assert!(model.supports_backend(Backend::M));
+        assert!(!model.supports_backend(Backend::Cuda));
+    }
+
+    #[test]
+    fn apple_picker_includes_backend_compatible_duplicate_model() {
+        let options = selectable_catalog_options_for(Backend::M, Some(6553));
+        assert!(options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-1.5B-Instruct"));
     }
 
     #[test]

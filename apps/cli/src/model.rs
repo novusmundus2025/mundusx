@@ -1,5 +1,5 @@
 use crate::config::{config_dir, Config};
-use crate::model_catalog::{lookup_model, ModelOption};
+use crate::model_catalog::{lookup_model_for_backend, ModelOption};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -156,7 +156,7 @@ pub fn ensure_catalog_model_fits(
     backend: crate::types::Backend,
     available_vram_mb: Option<u64>,
 ) -> io::Result<()> {
-    let Some(option) = lookup_model(name) else {
+    let Some(option) = lookup_model_for_backend(name, backend) else {
         return Ok(());
     };
 
@@ -314,7 +314,7 @@ fn model_file_path(config: &Config, name: &str, option: &ModelOption) -> PathBuf
 }
 
 fn cached_model_path(config: &Config, name: &str) -> io::Result<Option<PathBuf>> {
-    if let Some(option) = lookup_model(name) {
+    if let Some(option) = lookup_model_for_backend(name, config.backend_preference) {
         let path = model_file_path(config, name, &option);
         if path.is_file() {
             return Ok(Some(path));
@@ -454,7 +454,7 @@ fn compatibility_for(
 }
 
 fn download_model_if_available(config: &Config, name: &str) -> io::Result<bool> {
-    let Some(option) = lookup_model(name) else {
+    let Some(option) = lookup_model_for_backend(name, config.backend_preference) else {
         return Ok(false);
     };
 
