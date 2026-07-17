@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -3591,6 +3591,67 @@ fn run_checked_command(mut command: Command, action: &str) -> Result<(), String>
     Err(format!("{action} failed: {detail}"))
 }
 
+fn run_streaming_command(mut command: Command, action: &str) -> Result<(), String> {
+    let status = command
+        .status()
+        .map_err(|error| format!("{action} failed to launch: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{action} failed with exit status {}",
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+fn is_hugging_face_model_id(model: &str) -> bool {
+    let mut parts = model.trim().split('/');
+    let Some(owner) = parts.next() else {
+        return false;
+    };
+    let Some(name) = parts.next() else {
+        return false;
+    };
+    !owner.is_empty()
+        && !name.is_empty()
+        && parts.next().is_none()
+        && !owner.starts_with('.')
+        && !name.starts_with('.')
+        && owner
+            .chars()
+            .chain(name.chars())
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn prefetch_mlx_model(python: &Path, model: &str) -> Result<(), String> {
+    if !is_hugging_face_model_id(model) {
+        return Err(format!(
+            "active model `{model}` is not a Hugging Face repository ID"
+        ));
+    }
+
+    println!("modelPrefetch: caching {model} for MLX");
+    let script = concat!(
+        "import sys; ",
+        "from huggingface_hub import snapshot_download; ",
+        "path=snapshot_download(repo_id=sys.argv[1]); ",
+        "snapshot_download(repo_id=sys.argv[1], local_files_only=True); ",
+        "print(f'modelPrefetchPath: {path}')"
+    );
+    let mut command = Command::new(python);
+    command.args(["-c", script, model]);
+    run_streaming_command(command, "prefetch MLX model")?;
+    println!("modelPrefetch: ready");
+    Ok(())
+}
+
+fn prefetch_active_mlx_model(config: &Config, python: &Path) -> Result<(), String> {
+    let model = active_model_name(config)
+        .ok_or_else(|| "an active model must be selected before installing MLX".to_string())?;
+    prefetch_mlx_model(python, &model)
+}
+
 fn verify_mlx_runtime() -> Result<PathBuf, String> {
     let python = mlx_runtime_python_path();
     if !python.exists() {
@@ -3614,6 +3675,7 @@ fn install_mlx_runtime(config: &mut Config) -> Result<PathBuf, String> {
     if let Ok(path) = verify_mlx_runtime() {
         config.runtime_preference = Some("mlx".to_string());
         config.fallback_runtime = Some("llama-metal".to_string());
+        prefetch_active_mlx_model(config, &path)?;
         return Ok(path);
     }
 
@@ -3637,6 +3699,7 @@ fn install_mlx_runtime(config: &mut Config) -> Result<PathBuf, String> {
     let python = verify_mlx_runtime()?;
     config.runtime_preference = Some("mlx".to_string());
     config.fallback_runtime = Some("llama-metal".to_string());
+    prefetch_active_mlx_model(config, &python)?;
     Ok(python)
 }
 
@@ -5399,9 +5462,9 @@ fn main() {
 mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
-        cuda_doctor_payload, doctor_payload, graph_progress_counts, job_is_terminal,
-        job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
-        normalize_control_plane_url, parse_worker_output, remote_job_output,
+        cuda_doctor_payload, doctor_payload, graph_progress_counts, is_hugging_face_model_id,
+        job_is_terminal, job_status_path, job_wait_progress_signature, local_readiness,
+        logs_payload, normalize_control_plane_url, parse_worker_output, remote_job_output,
         resolve_install_control_plane_url, runtime_metrics_from_output,
         runtime_metrics_from_payload, should_prompt_model_selection, vllm_doctor_payload, Cli,
         Commands, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
@@ -5680,6 +5743,22 @@ mod tests {
 
         config.active_model = Some("Qwen/Qwen2.5-1.5B-Instruct".to_string());
         assert!(!should_prompt_model_selection(&config));
+    }
+
+    #[test]
+    fn mlx_prefetch_accepts_catalog_model_ids() {
+        assert!(is_hugging_face_model_id("Qwen/Qwen2.5-0.5B-Instruct"));
+        assert!(is_hugging_face_model_id(
+            "HuggingFaceTB/SmolLM2-135M-Instruct"
+        ));
+    }
+
+    #[test]
+    fn mlx_prefetch_rejects_local_paths_and_malformed_ids() {
+        assert!(!is_hugging_face_model_id("model.gguf"));
+        assert!(!is_hugging_face_model_id("/tmp/model"));
+        assert!(!is_hugging_face_model_id("owner/../model"));
+        assert!(!is_hugging_face_model_id("owner/model/extra"));
     }
 
     #[test]
