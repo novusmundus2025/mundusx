@@ -876,21 +876,33 @@ fn run_llama_command(
 
 fn run_llama_server_completion(
     url: &str,
-    prompt: &str,
+    system_prompt: &str,
+    user_prompt: &str,
     backend: Backend,
     max_tokens: u32,
     temperature: f32,
     top_p: f32,
     seed: u64,
 ) -> Result<(String, String, RuntimeMetrics), String> {
+    let mut messages = Vec::new();
+    if !system_prompt.is_empty() {
+        messages.push(serde_json::json!({
+            "role": "system",
+            "content": system_prompt,
+        }));
+    }
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": user_prompt,
+    }));
     let payload = serde_json::json!({
-        "prompt": prompt,
-        "n_predict": max_tokens,
+        "messages": messages,
+        "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
         "seed": seed,
     });
-    let response = ureq::post(&format!("{url}/completion"))
+    let response = ureq::post(&format!("{url}/v1/chat/completions"))
         .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
         .send_json(payload)
         .map_err(|error| format!("llama-server completion failed: {error}"))?;
@@ -898,7 +910,8 @@ fn run_llama_server_completion(
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("llama-server returned invalid json: {error}"))?;
     let generated = value
-        .get("content")
+        .pointer("/choices/0/message/content")
+        .or_else(|| value.get("content"))
         .or_else(|| value.get("response"))
         .and_then(|value| value.as_str())
         .map(str::trim)
@@ -1424,7 +1437,16 @@ fn run_llama_request(
         .as_deref()
         .filter(|url| llama_server_health_ok(url))
         .map(|url| {
-            run_llama_server_completion(url, &prompt, backend, max_tokens, temperature, top_p, seed)
+            run_llama_server_completion(
+                url,
+                system_prompt,
+                &request.prompt,
+                backend,
+                max_tokens,
+                temperature,
+                top_p,
+                seed,
+            )
         });
     let (generated, runtime_mode, metrics) = match warm_result {
         Some(Ok(result)) => result,
@@ -1791,14 +1813,22 @@ mod tests {
                     "{}".to_string()
                 } else {
                     assert!(
-                        request.starts_with("POST /completion"),
+                        request.starts_with("POST /v1/chat/completions"),
                         "unexpected request: {request}"
                     );
                     assert!(
-                        request.contains("\"n_predict\""),
-                        "completion request should include token budget: {request}"
+                        request.contains("\"messages\"")
+                            && request.contains("\"role\":\"system\"")
+                            && request.contains("\"role\":\"user\"")
+                            && request.contains("\"max_tokens\""),
+                        "chat completion request should include messages and token budget: {request}"
                     );
-                    serde_json::json!({ "content": completion }).to_string()
+                    serde_json::json!({
+                        "choices": [{
+                            "message": { "role": "assistant", "content": completion }
+                        }]
+                    })
+                    .to_string()
                 };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -2175,7 +2205,7 @@ mod tests {
                 backend: Backend::M,
                 prompt: "hello".to_string(),
                 model: Some("qwen".to_string()),
-                system_prompt: None,
+                system_prompt: Some("Answer directly.".to_string()),
                 max_tokens: Some(4),
                 temperature: Some(0.2),
                 top_p: Some(0.9),
