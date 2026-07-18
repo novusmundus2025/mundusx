@@ -240,10 +240,16 @@ pub struct WorkerHealthReport {
     pub on_battery: bool,
     pub battery_percent: Option<u8>,
     pub runtime_mode: String,
+    #[serde(default = "default_parallel_slots")]
+    pub parallel_slots: u8,
     #[serde(default)]
     pub supported_runtime_modes: Vec<String>,
     pub checked_at: String,
     pub notes: Vec<String>,
+}
+
+fn default_parallel_slots() -> u8 {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -274,6 +280,8 @@ pub struct NodeCapabilityAdvertisement {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usable_vram_mb: Option<u32>,
     pub runtime_mode: String,
+    #[serde(default = "default_parallel_slots")]
+    pub parallel_slots: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_model: Option<ModelCapability>,
     pub ready_for_jobs: bool,

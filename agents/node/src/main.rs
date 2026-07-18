@@ -165,10 +165,16 @@ fn resolved_state(config: &AgentConfig) -> AgentState {
 
 fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyReport) {
     let model_dir = config.effective_model_dir();
-    let health = worker::probe_worker_health(
+    let mut health = worker::probe_worker_health(
         &model_dir,
         config.active_model.as_deref(),
         resolved_backend(config),
+    );
+    health.parallel_slots = worker::recommended_parallel_slots(
+        resolved_backend(config),
+        health.cuda_memory_mb,
+        config.contribution_percent,
+        config.active_model.as_deref(),
     );
     let policy = worker::probe_worker_policy(&health, config.contribution_percent);
     (health, policy)
@@ -247,6 +253,7 @@ fn build_capabilities(
         physical_vram_mb: health.cuda_memory_mb,
         usable_vram_mb: cap_applied_vram_mb(health.cuda_memory_mb, config.contribution_percent),
         runtime_mode: health.runtime_mode.clone(),
+        parallel_slots: health.parallel_slots,
         active_model,
         ready_for_jobs,
         readiness_reason,
@@ -429,6 +436,7 @@ fn print_capability_summary_with_control_plane(
         println!("controlPlaneState: {}", status.state);
     }
     println!("runtimeMode: {}", capabilities.runtime_mode);
+    println!("parallelSlots: {}", capabilities.parallel_slots);
     if let Some(vram_mb) = capabilities.physical_vram_mb {
         println!("physicalVramMb: {vram_mb}");
     }
@@ -952,7 +960,41 @@ fn stop_busy_heartbeat_supervisor(stop_tx: mpsc::Sender<()>, handle: thread::Joi
     let _ = handle.join();
 }
 
-fn process_pending_job(config: &AgentConfig, json: bool, verbose: bool) {
+fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRecord, json: bool) {
+    let request = WorkerLaunchRequest {
+        job_id: job.job_id.clone(),
+        node_id: config.device_id.clone(),
+        backend: job.backend.unwrap_or_else(|| resolved_backend(&config)),
+        prompt: job.prompt.clone(),
+        model: job.model.clone(),
+        system_prompt: job.system_prompt.clone(),
+        max_tokens: job.max_tokens,
+        temperature: job.temperature,
+        top_p: job.top_p,
+        seed: job.seed,
+    };
+    let started_at = Instant::now();
+    match launch_worker_process(&config, request, json) {
+        Ok(response) => {
+            let completion = build_completion_from_worker_response(
+                response,
+                started_at.elapsed().as_millis() as u64,
+            );
+            complete_job(&config, &identity, &completion);
+        }
+        Err(error) => {
+            let completion = build_worker_error_completion(
+                &job,
+                &config,
+                error,
+                started_at.elapsed().as_millis() as u64,
+            );
+            complete_job(&config, &identity, &completion);
+        }
+    }
+}
+
+fn process_pending_jobs(config: &AgentConfig, json: bool, verbose: bool) {
     let identity = load_identity_or_exit();
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
@@ -972,57 +1014,43 @@ fn process_pending_job(config: &AgentConfig, json: bool, verbose: bool) {
     if verbose {
         println!("jobPoll: checking control plane");
     }
-    let Some(job) = claim_next_job(config, &identity) else {
+    let Some(first_job) = claim_next_job(config, &identity) else {
         if verbose {
             println!("jobPoll: none");
         }
         return;
     };
 
-    println!("jobPoll: claimed {}", job.job_id);
+    println!("jobPoll: claimed {}", first_job.job_id);
 
     let busy_heartbeat = build_heartbeat_with_state(config, AgentState::Busy);
     let _ = save_agent_state(&busy_heartbeat);
     let _ = save_heartbeat(&busy_heartbeat);
     send_heartbeat(config, &identity, &busy_heartbeat, verbose);
+    let parallel_slots = worker_readiness(config).0.parallel_slots.max(1);
+    let mut jobs = vec![first_job];
+    for _ in 1..parallel_slots {
+        let Some(job) = claim_next_job(config, &identity) else {
+            break;
+        };
+        println!("jobPoll: claimed {}", job.job_id);
+        jobs.push(job);
+    }
 
-    let request = WorkerLaunchRequest {
-        job_id: job.job_id.clone(),
-        node_id: config.device_id.clone(),
-        backend: job.backend.unwrap_or_else(|| resolved_backend(config)),
-        prompt: job.prompt.clone(),
-        model: job.model.clone(),
-        system_prompt: job.system_prompt.clone(),
-        max_tokens: job.max_tokens,
-        temperature: job.temperature,
-        top_p: job.top_p,
-        seed: job.seed,
-    };
-
-    let started_at = Instant::now();
     let (stop_busy_heartbeat, busy_heartbeat_handle) =
         start_busy_heartbeat_supervisor(config.clone(), identity.clone(), Duration::from_secs(5));
-    let worker_result = launch_worker_process(config, request, json);
-    stop_busy_heartbeat_supervisor(stop_busy_heartbeat, busy_heartbeat_handle);
-
-    match worker_result {
-        Ok(response) => {
-            let completion = build_completion_from_worker_response(
-                response,
-                started_at.elapsed().as_millis() as u64,
-            );
-            complete_job(config, &identity, &completion);
-        }
-        Err(error) => {
-            let completion = build_worker_error_completion(
-                &job,
-                config,
-                error,
-                started_at.elapsed().as_millis() as u64,
-            );
-            complete_job(config, &identity, &completion);
-        }
+    let handles = jobs
+        .into_iter()
+        .map(|job| {
+            let config = config.clone();
+            let identity = identity.clone();
+            thread::spawn(move || execute_claimed_job(config, identity, job, json))
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        let _ = handle.join();
     }
+    stop_busy_heartbeat_supervisor(stop_busy_heartbeat, busy_heartbeat_handle);
 
     let ready_heartbeat = build_heartbeat_with_state(config, resolved_state(config));
     let _ = save_agent_state(&ready_heartbeat);
@@ -1092,6 +1120,7 @@ fn uses_mlx_runtime(config: &AgentConfig) -> bool {
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let config = load_config_or_exit();
     let identity = load_identity_or_exit();
+    let runtime_parallel_slots = worker_readiness(&config).0.parallel_slots;
     let mut persistent_runtime = if json || !should_keep_runtime_warm(&config) {
         None
     } else {
@@ -1099,6 +1128,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             &config.effective_model_dir(),
             config.active_model.as_deref(),
             resolved_backend(&config),
+            runtime_parallel_slots,
         ) {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -1172,7 +1202,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         eprintln_error_field("persistentRuntime", "stopped");
         std::process::exit(2);
     }
-    process_pending_job(&config, json, verbose);
+    process_pending_jobs(&config, json, verbose);
 
     println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
@@ -1228,7 +1258,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         if verbose {
             println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
         }
-        process_pending_job(&latest_config, json, verbose);
+        process_pending_jobs(&latest_config, json, verbose);
         let _ = io::stdout().flush();
     }
 }
@@ -1451,6 +1481,7 @@ mod tests {
             on_battery: false,
             battery_percent: None,
             runtime_mode: backend.as_str().to_string(),
+            parallel_slots: 1,
             supported_runtime_modes: vec!["local".to_string()],
             checked_at: "1".to_string(),
             notes: Vec::new(),

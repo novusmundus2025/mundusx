@@ -261,6 +261,7 @@ mod tests {
                 on_battery: false,
                 battery_percent: Some(100),
                 runtime_mode: "native".to_string(),
+                parallel_slots: 1,
                 supported_runtime_modes: vec!["local".to_string()],
                 checked_at: updated_at.to_string(),
                 notes: Vec::new(),
@@ -271,6 +272,7 @@ mod tests {
                 physical_vram_mb: None,
                 usable_vram_mb: None,
                 runtime_mode: "native".to_string(),
+                parallel_slots: 1,
                 active_model: Some(ModelCapability {
                     name: "llama3.1:8b".to_string(),
                     path: Some("/tmp/models/llama3.1-8b.gguf".to_string()),
