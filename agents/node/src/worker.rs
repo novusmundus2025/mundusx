@@ -596,6 +596,7 @@ pub fn start_persistent_runtime(
     model_dir: &Path,
     model_name: Option<&str>,
     backend: Backend,
+    parallel_slots: u8,
 ) -> Result<Option<PersistentRuntimeHandle>, String> {
     if env::var("OPENGPU_PERSISTENT_RUNTIME")
         .map(|value| value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("false"))
@@ -630,7 +631,9 @@ pub fn start_persistent_runtime(
         .arg("--port")
         .arg(port.to_string())
         .arg("-c")
-        .arg("4096")
+        .arg((4096_u32 * u32::from(parallel_slots.max(1))).to_string())
+        .arg("--parallel")
+        .arg(parallel_slots.max(1).to_string())
         .arg("--threads")
         .arg("2")
         .stdin(Stdio::null())
@@ -663,6 +666,43 @@ pub fn start_persistent_runtime(
     kill_process_tree(child.id());
     let _ = child.wait();
     Err("llama-server did not become healthy within 20s".to_string())
+}
+
+pub fn recommended_parallel_slots(
+    backend: Backend,
+    physical_vram_mb: Option<u32>,
+    contribution_percent: u8,
+    model_name: Option<&str>,
+) -> u8 {
+    if backend != Backend::Cuda {
+        return 1;
+    }
+    let Some(physical_vram_mb) = physical_vram_mb else {
+        return 1;
+    };
+    let usable_vram_mb = physical_vram_mb
+        .saturating_mul(u32::from(contribution_percent))
+        .saturating_add(99)
+        / 100;
+    let mut slots = match usable_vram_mb {
+        0..=8_192 => 1,
+        8_193..=16_384 => 2,
+        16_385..=24_575 => 3,
+        _ => 4,
+    };
+
+    let model = model_name.unwrap_or_default().to_ascii_lowercase();
+    if ["32b", "34b", "65b", "70b", "72b"]
+        .iter()
+        .any(|marker| model.contains(marker))
+    {
+        slots = 1;
+    } else if ["13b", "14b"].iter().any(|marker| model.contains(marker)) {
+        slots = slots.min(2);
+    } else if ["7b", "8b"].iter().any(|marker| model.contains(marker)) {
+        slots = slots.min(3);
+    }
+    slots.max(1)
 }
 
 fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
@@ -1249,6 +1289,7 @@ pub fn probe_worker_health(
         on_battery: power_state.on_battery,
         battery_percent: power_state.battery_percent,
         runtime_mode,
+        parallel_slots: 1,
         supported_runtime_modes,
         checked_at: now_unix_seconds(),
         notes,
@@ -1860,6 +1901,30 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("low-VRAM profile")));
+    }
+
+    #[test]
+    fn low_vram_cuda_nodes_disable_parallelism() {
+        assert_eq!(
+            recommended_parallel_slots(Backend::Cuda, Some(4096), 80, Some("Qwen2.5-3B")),
+            1
+        );
+    }
+
+    #[test]
+    fn rtx_5090_advertises_four_small_model_slots_at_eighty_percent() {
+        assert_eq!(
+            recommended_parallel_slots(Backend::Cuda, Some(32_768), 80, Some("Qwen2.5-3B")),
+            4
+        );
+        assert_eq!(
+            recommended_parallel_slots(Backend::Cuda, Some(32_768), 80, Some("Qwen2.5-7B")),
+            3
+        );
+        assert_eq!(
+            recommended_parallel_slots(Backend::Cuda, Some(32_768), 80, Some("Qwen2.5-32B")),
+            1
+        );
     }
 
     #[test]
