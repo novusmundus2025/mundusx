@@ -173,6 +173,7 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
     health.parallel_slots = worker::recommended_parallel_slots(
         resolved_backend(config),
         health.cuda_memory_mb,
+        Some(detect_memory_mb()),
         config.contribution_percent,
         config.active_model.as_deref(),
     );
