@@ -671,24 +671,36 @@ pub fn start_persistent_runtime(
 pub fn recommended_parallel_slots(
     backend: Backend,
     physical_vram_mb: Option<u32>,
+    unified_memory_mb: Option<u32>,
     contribution_percent: u8,
     model_name: Option<&str>,
 ) -> u8 {
-    if backend != Backend::Cuda {
-        return 1;
-    }
-    let Some(physical_vram_mb) = physical_vram_mb else {
+    let capacity_memory_mb = match backend {
+        Backend::Cuda => physical_vram_mb,
+        Backend::M => unified_memory_mb,
+        _ => None,
+    };
+    let Some(capacity_memory_mb) = capacity_memory_mb else {
         return 1;
     };
-    let usable_vram_mb = physical_vram_mb
+    let usable_memory_mb = capacity_memory_mb
         .saturating_mul(u32::from(contribution_percent))
         .saturating_add(99)
         / 100;
-    let mut slots = match usable_vram_mb {
-        0..=8_192 => 1,
-        8_193..=16_384 => 2,
-        16_385..=24_575 => 3,
-        _ => 4,
+    let mut slots = match backend {
+        Backend::Cuda => match usable_memory_mb {
+            0..=8_192 => 1,
+            8_193..=16_384 => 2,
+            16_385..=24_575 => 3,
+            _ => 4,
+        },
+        Backend::M => match usable_memory_mb {
+            0..=16_384 => 1,
+            16_385..=32_768 => 2,
+            32_769..=65_536 => 3,
+            _ => 4,
+        },
+        _ => 1,
     };
 
     let model = model_name.unwrap_or_default().to_ascii_lowercase();
@@ -1906,7 +1918,7 @@ mod tests {
     #[test]
     fn low_vram_cuda_nodes_disable_parallelism() {
         assert_eq!(
-            recommended_parallel_slots(Backend::Cuda, Some(4096), 80, Some("Qwen2.5-3B")),
+            recommended_parallel_slots(Backend::Cuda, Some(4096), None, 80, Some("Qwen2.5-3B"),),
             1
         );
     }
@@ -1914,15 +1926,47 @@ mod tests {
     #[test]
     fn rtx_5090_advertises_four_small_model_slots_at_eighty_percent() {
         assert_eq!(
-            recommended_parallel_slots(Backend::Cuda, Some(32_768), 80, Some("Qwen2.5-3B")),
+            recommended_parallel_slots(Backend::Cuda, Some(32_768), None, 80, Some("Qwen2.5-3B"),),
             4
         );
         assert_eq!(
-            recommended_parallel_slots(Backend::Cuda, Some(32_768), 80, Some("Qwen2.5-7B")),
+            recommended_parallel_slots(Backend::Cuda, Some(32_768), None, 80, Some("Qwen2.5-7B"),),
             3
         );
         assert_eq!(
-            recommended_parallel_slots(Backend::Cuda, Some(32_768), 80, Some("Qwen2.5-32B")),
+            recommended_parallel_slots(Backend::Cuda, Some(32_768), None, 80, Some("Qwen2.5-32B"),),
+            1
+        );
+    }
+
+    #[test]
+    fn mlx_slots_scale_with_cap_applied_unified_memory() {
+        assert_eq!(
+            recommended_parallel_slots(Backend::M, None, Some(16_384), 80, Some("Qwen2.5-3B")),
+            1
+        );
+        assert_eq!(
+            recommended_parallel_slots(Backend::M, None, Some(32_768), 80, Some("Qwen2.5-3B")),
+            2
+        );
+        assert_eq!(
+            recommended_parallel_slots(Backend::M, None, Some(64_000), 80, Some("Qwen2.5-3B")),
+            3
+        );
+        assert_eq!(
+            recommended_parallel_slots(Backend::M, None, Some(128_000), 80, Some("Qwen2.5-3B")),
+            4
+        );
+    }
+
+    #[test]
+    fn mlx_large_models_reduce_parallel_slots() {
+        assert_eq!(
+            recommended_parallel_slots(Backend::M, None, Some(128_000), 80, Some("Qwen2.5-14B")),
+            2
+        );
+        assert_eq!(
+            recommended_parallel_slots(Backend::M, None, Some(128_000), 80, Some("Qwen2.5-32B")),
             1
         );
     }
