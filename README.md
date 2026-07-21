@@ -1,3 +1,5 @@
+![MundusX decentralized compute control-plane mesh banner](media/banner.png)
+
 # MundusX
 
 **Build AI Together.**
