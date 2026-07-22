@@ -1,4 +1,4 @@
-export type NodeBackend = "m" | "cuda";
+export type NodeBackend = "m" | "cuda" | "vulkan";
 
 export interface NodeCapability {
   backend: NodeBackend;
