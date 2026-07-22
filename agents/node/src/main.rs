@@ -300,6 +300,11 @@ fn resolved_backend(config: &AgentConfig) -> Backend {
             return Backend::Cuda;
         }
 
+        #[cfg(target_os = "windows")]
+        if worker::probe_vulkan_device().is_ok() {
+            return Backend::Vulkan;
+        }
+
         Backend::Auto
     } else {
         config.backend_preference
