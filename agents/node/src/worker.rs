@@ -2171,7 +2171,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn parses_vulkan_device_from_llama_device_list() {
         let devices = "Available devices:\n  Vulkan0: Intel(R) Iris(R) Xe Graphics (8192 MiB, 7168 MiB free)\n";
         assert_eq!(
