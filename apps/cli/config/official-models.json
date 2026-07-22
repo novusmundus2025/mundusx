@@ -13,12 +13,7 @@
         "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
         "sha256": "8030f04528538d47bda434f6f0bdf3952c40a58123e4d5e755332f23731a8684",
         "format": "gguf",
-        "backend_compatibility": [
-          "auto",
-          "m",
-          "cuda",
-          "vulkan"
-        ],
+        "backend_compatibility": ["auto", "m", "cuda", "vulkan"],
         "estimated_vram_mb": 800
       },
       "recommended": {
@@ -29,12 +24,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
         "format": "gguf",
-        "backend_compatibility": [
-          "auto",
-          "m",
-          "cuda",
-          "vulkan"
-        ],
+        "backend_compatibility": ["auto", "m", "cuda", "vulkan"],
         "estimated_vram_mb": 1200
       }
     },
@@ -50,10 +40,7 @@
         "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
         "sha256": "8030f04528538d47bda434f6f0bdf3952c40a58123e4d5e755332f23731a8684",
         "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
+        "backend_compatibility": ["cuda"],
         "estimated_vram_mb": 800
       },
       "recommended": {
@@ -64,10 +51,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
         "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
+        "backend_compatibility": ["cuda"],
         "estimated_vram_mb": 1200
       }
     },
@@ -83,10 +67,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
         "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
+        "backend_compatibility": ["cuda"],
         "estimated_vram_mb": 1200
       },
       "recommended": {
@@ -97,10 +78,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
         "sha256": "b46661073c18e5b56a41fa320975f866a00def1ff08feef4718e013258896f8c",
         "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
+        "backend_compatibility": ["cuda"],
         "estimated_vram_mb": 2200
       }
     },
@@ -116,10 +94,7 @@
         "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
         "sha256": "8030f04528538d47bda434f6f0bdf3952c40a58123e4d5e755332f23731a8684",
         "format": "gguf",
-        "backend_compatibility": [
-          "m",
-          "vulkan"
-        ],
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 800
       },
       "recommended": {
@@ -130,10 +105,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
         "format": "gguf",
-        "backend_compatibility": [
-          "m",
-          "vulkan"
-        ],
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 1200
       }
     },
@@ -149,10 +121,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
         "format": "gguf",
-        "backend_compatibility": [
-          "m",
-          "vulkan"
-        ],
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 1200
       },
       "recommended": {
@@ -163,10 +132,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
         "sha256": "b46661073c18e5b56a41fa320975f866a00def1ff08feef4718e013258896f8c",
         "format": "gguf",
-        "backend_compatibility": [
-          "m",
-          "vulkan"
-        ],
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 2200
       }
     },
@@ -182,10 +148,7 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
         "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
         "format": "gguf",
-        "backend_compatibility": [
-          "m",
-          "vulkan"
-        ],
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 1200
       },
       "recommended": {
@@ -196,369 +159,44 @@
         "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
         "sha256": "b46661073c18e5b56a41fa320975f866a00def1ff08feef4718e013258896f8c",
         "format": "gguf",
-        "backend_compatibility": [
-          "m",
-          "vulkan"
-        ],
+        "backend_compatibility": ["m"],
         "estimated_vram_mb": 2200
       }
     },
     {
-      "backend": "m",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "mlx-community/Qwen2.5-3B-Instruct-4bit",
-        "label": "Qwen 2.5 3B MLX 4-bit",
-        "notes": "balanced quantized MLX model",
-        "source_kind": "huggingface-mlx",
-        "source_url": "https://huggingface.co/mlx-community/Qwen2.5-3B-Instruct-4bit",
-        "sha256": "",
-        "format": "mlx",
-        "backend_compatibility": [
-          "m"
-        ],
-        "estimated_vram_mb": 3200
-      },
-      "recommended": {
-        "name": "mlx-community/Qwen2.5-7B-Instruct-4bit",
-        "label": "Qwen 2.5 7B MLX 4-bit",
-        "notes": "strong quantized MLX model",
-        "source_kind": "huggingface-mlx",
-        "source_url": "https://huggingface.co/mlx-community/Qwen2.5-7B-Instruct-4bit",
-        "sha256": "",
-        "format": "mlx",
-        "backend_compatibility": [
-          "m"
-        ],
-        "estimated_vram_mb": 7000
-      }
+      "backend": "m", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"mlx-community/Qwen2.5-3B-Instruct-4bit","label":"Qwen 2.5 3B MLX 4-bit","notes":"balanced quantized MLX model","source_kind":"huggingface-mlx","source_url":"https://huggingface.co/mlx-community/Qwen2.5-3B-Instruct-4bit","sha256":"","format":"mlx","backend_compatibility":["m"],"estimated_vram_mb":3200},
+      "recommended": {"name":"mlx-community/Qwen2.5-7B-Instruct-4bit","label":"Qwen 2.5 7B MLX 4-bit","notes":"strong quantized MLX model","source_kind":"huggingface-mlx","source_url":"https://huggingface.co/mlx-community/Qwen2.5-7B-Instruct-4bit","sha256":"","format":"mlx","backend_compatibility":["m"],"estimated_vram_mb":7000}
     },
     {
-      "backend": "m",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "mlx-community/Qwen2.5-14B-Instruct-4bit",
-        "label": "Qwen 2.5 14B MLX 4-bit",
-        "notes": "high-quality quantized MLX model",
-        "source_kind": "huggingface-mlx",
-        "source_url": "https://huggingface.co/mlx-community/Qwen2.5-14B-Instruct-4bit",
-        "sha256": "",
-        "format": "mlx",
-        "backend_compatibility": [
-          "m"
-        ],
-        "estimated_vram_mb": 13000
-      },
-      "recommended": {
-        "name": "mlx-community/Qwen2.5-32B-Instruct-4bit",
-        "label": "Qwen 2.5 32B MLX 4-bit",
-        "notes": "recommended maximum for 64 GB Apple Silicon at high cap",
-        "source_kind": "huggingface-mlx",
-        "source_url": "https://huggingface.co/mlx-community/Qwen2.5-32B-Instruct-4bit",
-        "sha256": "",
-        "format": "mlx",
-        "backend_compatibility": [
-          "m"
-        ],
-        "estimated_vram_mb": 26000
-      }
+      "backend": "m", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"mlx-community/Qwen2.5-14B-Instruct-4bit","label":"Qwen 2.5 14B MLX 4-bit","notes":"high-quality quantized MLX model","source_kind":"huggingface-mlx","source_url":"https://huggingface.co/mlx-community/Qwen2.5-14B-Instruct-4bit","sha256":"","format":"mlx","backend_compatibility":["m"],"estimated_vram_mb":13000},
+      "recommended": {"name":"mlx-community/Qwen2.5-32B-Instruct-4bit","label":"Qwen 2.5 32B MLX 4-bit","notes":"recommended maximum for 64 GB Apple Silicon at high cap","source_kind":"huggingface-mlx","source_url":"https://huggingface.co/mlx-community/Qwen2.5-32B-Instruct-4bit","sha256":"","format":"mlx","backend_compatibility":["m"],"estimated_vram_mb":26000}
     },
     {
-      "backend": "m",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "mlx-community/Qwen2.5-72B-Instruct-4bit",
-        "label": "Qwen 2.5 72B MLX 4-bit",
-        "notes": "large quantized MLX model for 128 GB systems",
-        "source_kind": "huggingface-mlx",
-        "source_url": "https://huggingface.co/mlx-community/Qwen2.5-72B-Instruct-4bit",
-        "sha256": "",
-        "format": "mlx",
-        "backend_compatibility": [
-          "m"
-        ],
-        "estimated_vram_mb": 60000
-      },
-      "recommended": {
-        "name": "mlx-community/Qwen2.5-72B-Instruct-4bit",
-        "label": "Qwen 2.5 72B MLX 4-bit",
-        "notes": "large quantized MLX model for 128 GB systems",
-        "source_kind": "huggingface-mlx",
-        "source_url": "https://huggingface.co/mlx-community/Qwen2.5-72B-Instruct-4bit",
-        "sha256": "",
-        "format": "mlx",
-        "backend_compatibility": [
-          "m"
-        ],
-        "estimated_vram_mb": 60000
-      }
+      "backend": "m", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"mlx-community/Qwen2.5-72B-Instruct-4bit","label":"Qwen 2.5 72B MLX 4-bit","notes":"large quantized MLX model for 128 GB systems","source_kind":"huggingface-mlx","source_url":"https://huggingface.co/mlx-community/Qwen2.5-72B-Instruct-4bit","sha256":"","format":"mlx","backend_compatibility":["m"],"estimated_vram_mb":60000},
+      "recommended": {"name":"mlx-community/Qwen2.5-72B-Instruct-4bit","label":"Qwen 2.5 72B MLX 4-bit","notes":"large quantized MLX model for 128 GB systems","source_kind":"huggingface-mlx","source_url":"https://huggingface.co/mlx-community/Qwen2.5-72B-Instruct-4bit","sha256":"","format":"mlx","backend_compatibility":["m"],"estimated_vram_mb":60000}
     },
     {
-      "backend": "cuda",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "tensorblock/Qwen2.5-3B-Instruct-GGUF",
-        "label": "Qwen 2.5 3B GGUF Q3_K_M",
-        "notes": "compact CUDA llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q3_K_M.gguf",
-        "sha256": "9bbd3c5ecb9a56c582accd63f6677b3ecc19f92b7a8de542e041ceba9c192498",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 2200
-      },
-      "recommended": {
-        "name": "tensorblock/Qwen2.5-7B-Instruct-GGUF",
-        "label": "Qwen 2.5 7B GGUF Q3_K_M",
-        "notes": "balanced CUDA llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q3_K_M.gguf",
-        "sha256": "653c1dfd1991acee64aa3c91085f9978d3771f25af5d961bd7f86154cb4c2a8c",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 5000
-      }
+      "backend": "cuda", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"tensorblock/Qwen2.5-3B-Instruct-GGUF","label":"Qwen 2.5 3B GGUF Q3_K_M","notes":"compact CUDA llama.cpp model","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q3_K_M.gguf","sha256":"9bbd3c5ecb9a56c582accd63f6677b3ecc19f92b7a8de542e041ceba9c192498","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":2200},
+      "recommended": {"name":"tensorblock/Qwen2.5-7B-Instruct-GGUF","label":"Qwen 2.5 7B GGUF Q3_K_M","notes":"balanced CUDA llama.cpp model","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q3_K_M.gguf","sha256":"653c1dfd1991acee64aa3c91085f9978d3771f25af5d961bd7f86154cb4c2a8c","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":5000}
     },
     {
-      "backend": "cuda",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "tensorblock/Qwen2.5-14B-Instruct-GGUF",
-        "label": "Qwen 2.5 14B GGUF Q3_K_M",
-        "notes": "larger CUDA llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q3_K_M.gguf",
-        "sha256": "ea7f0f3ce0f66b8937cbd403bc20aa2004e3010b59f6c2adcd5cc996c1cd55b8",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 9000
-      },
-      "recommended": {
-        "name": "tensorblock/Qwen2.5-32B-Instruct-GGUF",
-        "label": "Qwen 2.5 32B GGUF Q3_K_M",
-        "notes": "high-capacity CUDA llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q3_K_M.gguf",
-        "sha256": "420f0aa1aa34a417b8332e1bfcb5e29d5d76a7560b7ffef469890d27d22d1939",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 19000
-      }
+      "backend": "cuda", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"tensorblock/Qwen2.5-14B-Instruct-GGUF","label":"Qwen 2.5 14B GGUF Q3_K_M","notes":"larger CUDA llama.cpp model","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q3_K_M.gguf","sha256":"ea7f0f3ce0f66b8937cbd403bc20aa2004e3010b59f6c2adcd5cc996c1cd55b8","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":9000},
+      "recommended": {"name":"tensorblock/Qwen2.5-32B-Instruct-GGUF","label":"Qwen 2.5 32B GGUF Q3_K_M","notes":"high-capacity CUDA llama.cpp model","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q3_K_M.gguf","sha256":"420f0aa1aa34a417b8332e1bfcb5e29d5d76a7560b7ffef469890d27d22d1939","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":19000}
     },
     {
-      "backend": "cuda",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "tensorblock/Qwen2.5-72B-Instruct-GGUF",
-        "label": "Qwen 2.5 72B GGUF Q3_K_M",
-        "notes": "very large CUDA llama.cpp model for 64 GB-class GPUs at an 80% cap",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf",
-        "sha256": "b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 43000
-      },
-      "recommended": {
-        "name": "tensorblock/Qwen2.5-72B-Instruct-GGUF",
-        "label": "Qwen 2.5 72B GGUF Q3_K_M",
-        "notes": "very large CUDA llama.cpp model for 64 GB-class GPUs at an 80% cap",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf",
-        "sha256": "b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 43000
-      }
+      "backend": "vulkan", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"HuggingFaceTB/SmolLM2-135M-Instruct","label":"SmolLM2 135M Vulkan","notes":"safe Vulkan starter for integrated GPUs and shared memory","source_kind":"huggingface-open","source_url":"https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf","sha256":"8030f04528538d47bda434f6f0bdf3952c40a58123e4d5e755332f23731a8684","format":"gguf","backend_compatibility":["vulkan"],"estimated_vram_mb":800},
+      "recommended": {"name":"Qwen/Qwen2.5-1.5B-Instruct","label":"Qwen 2.5 1.5B Vulkan","notes":"balanced Vulkan GGUF model for shared-memory Windows contributors","source_kind":"huggingface-open","source_url":"https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf","sha256":"b46661073c18e5b56a41fa320975f866a00def1ff08feef4718e013258896f8c","format":"gguf","backend_compatibility":["vulkan"],"estimated_vram_mb":2200}
     },
     {
-      "backend": "vulkan",
-      "min_memory_gb": 0,
-      "max_memory_gb": 15,
-      "lighter": {
-        "name": "HuggingFaceTB/SmolLM2-135M-Instruct",
-        "label": "SmolLM2 135M GGUF",
-        "notes": "cap-safe Windows Vulkan preset for very small VRAM budgets",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/QuantFactory/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct.Q4_K_M.gguf",
-        "sha256": "8030f04528538d47bda434f6f0bdf3952c40a58123e4d5e755332f23731a8684",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 800
-      },
-      "recommended": {
-        "name": "Qwen/Qwen2.5-0.5B-Instruct",
-        "label": "Qwen 2.5 0.5B GGUF",
-        "notes": "conservative Windows Vulkan preset for shared-memory contributors",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
-        "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 1200
-      }
-    },
-    {
-      "backend": "vulkan",
-      "min_memory_gb": 16,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "Qwen/Qwen2.5-0.5B-Instruct",
-        "label": "Qwen 2.5 0.5B GGUF",
-        "notes": "safe default for capped Windows Vulkan contributors",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf",
-        "sha256": "041474553fcabfc2a2d67903f9d2c2e50bd92528e670da4f33b5d0ce6e59fd55",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 1200
-      },
-      "recommended": {
-        "name": "Qwen/Qwen2.5-1.5B-Instruct",
-        "label": "Qwen 2.5 1.5B GGUF",
-        "notes": "larger Windows Vulkan preset, shown only when cap-applied VRAM fits",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf",
-        "sha256": "b46661073c18e5b56a41fa320975f866a00def1ff08feef4718e013258896f8c",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 2200
-      }
-    },
-    {
-      "backend": "vulkan",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "tensorblock/Qwen2.5-3B-Instruct-GGUF",
-        "label": "Qwen 2.5 3B GGUF Q3_K_M",
-        "notes": "compact Vulkan llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q3_K_M.gguf",
-        "sha256": "9bbd3c5ecb9a56c582accd63f6677b3ecc19f92b7a8de542e041ceba9c192498",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 2200
-      },
-      "recommended": {
-        "name": "tensorblock/Qwen2.5-7B-Instruct-GGUF",
-        "label": "Qwen 2.5 7B GGUF Q3_K_M",
-        "notes": "balanced Vulkan llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q3_K_M.gguf",
-        "sha256": "653c1dfd1991acee64aa3c91085f9978d3771f25af5d961bd7f86154cb4c2a8c",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 5000
-      }
-    },
-    {
-      "backend": "vulkan",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "tensorblock/Qwen2.5-14B-Instruct-GGUF",
-        "label": "Qwen 2.5 14B GGUF Q3_K_M",
-        "notes": "larger Vulkan llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q3_K_M.gguf",
-        "sha256": "ea7f0f3ce0f66b8937cbd403bc20aa2004e3010b59f6c2adcd5cc996c1cd55b8",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 9000
-      },
-      "recommended": {
-        "name": "tensorblock/Qwen2.5-32B-Instruct-GGUF",
-        "label": "Qwen 2.5 32B GGUF Q3_K_M",
-        "notes": "high-capacity Vulkan llama.cpp model",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q3_K_M.gguf",
-        "sha256": "420f0aa1aa34a417b8332e1bfcb5e29d5d76a7560b7ffef469890d27d22d1939",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 19000
-      }
-    },
-    {
-      "backend": "vulkan",
-      "min_memory_gb": 0,
-      "max_memory_gb": 999,
-      "lighter": {
-        "name": "tensorblock/Qwen2.5-72B-Instruct-GGUF",
-        "label": "Qwen 2.5 72B GGUF Q3_K_M",
-        "notes": "very large Vulkan llama.cpp model for 64 GB-class GPUs at an 80% cap",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf",
-        "sha256": "b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 43000
-      },
-      "recommended": {
-        "name": "tensorblock/Qwen2.5-72B-Instruct-GGUF",
-        "label": "Qwen 2.5 72B GGUF Q3_K_M",
-        "notes": "very large Vulkan llama.cpp model for 64 GB-class GPUs at an 80% cap",
-        "source_kind": "huggingface-open",
-        "source_url": "https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf",
-        "sha256": "b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed",
-        "format": "gguf",
-        "backend_compatibility": [
-          "cuda",
-          "vulkan"
-        ],
-        "estimated_vram_mb": 43000
-      }
+      "backend": "cuda", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"tensorblock/Qwen2.5-72B-Instruct-GGUF","label":"Qwen 2.5 72B GGUF Q3_K_M","notes":"very large CUDA llama.cpp model for 64 GB-class GPUs at an 80% cap","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf","sha256":"b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":43000},
+      "recommended": {"name":"tensorblock/Qwen2.5-72B-Instruct-GGUF","label":"Qwen 2.5 72B GGUF Q3_K_M","notes":"very large CUDA llama.cpp model for 64 GB-class GPUs at an 80% cap","source_kind":"huggingface-open","source_url":"https://huggingface.co/tensorblock/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_M.gguf","sha256":"b968dbbf02312aa93932b2ecee71aea29904e183f619c163a85290680fbdafed","format":"gguf","backend_compatibility":["cuda"],"estimated_vram_mb":43000}
     }
   ]
 }
