@@ -6,6 +6,7 @@ enum Backend {
   BACKEND_UNSPECIFIED = 0;
   BACKEND_M = 1;
   BACKEND_CUDA = 2;
+  BACKEND_VULKAN = 3;
 }
 
 enum AgentState {
