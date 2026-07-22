@@ -1,0 +1,59 @@
+name: Vulkan backend compatibility
+
+on:
+  pull_request:
+    paths:
+      - "agents/node/**"
+      - "apps/cli/**"
+      - "install.ps1"
+      - "packages/proto/**"
+      - "packages/shared/**"
+      - "scripts/package-windows-*-runtime.ps1"
+      - "scripts/release-signing.sh"
+      - "tests/release-cli-workflow.sh"
+      - ".github/workflows/release-cli-windows.yml"
+      - ".github/workflows/ci-vulkan-backend.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust contracts and runtimes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test CLI
+        run: cargo test --manifest-path apps/cli/Cargo.toml
+      - name: Test node agent
+        run: cargo test --manifest-path agents/node/Cargo.toml
+      - name: Verify release workflow surface
+        run: bash tests/release-cli-workflow.sh
+
+  windows-scripts:
+    name: Windows installer syntax
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $files = @(
+            "install.ps1",
+            "scripts/package-windows-llama-runtime.ps1",
+            "scripts/package-windows-vulkan-runtime.ps1"
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$file: $($_.Message)" }
+              throw "PowerShell parse failed for $file"
+            }
+          }
