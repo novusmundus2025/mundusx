@@ -121,7 +121,7 @@ fn message(title: &str, body: &str, error: bool) {
 fn main() {
     message(
         "MundusX Setup",
-        "MundusX will download and verify the CLI, node agent, tray application, and GPU runtime. After installation, contributor setup will open so you can choose your control plane, contribution cap, and model.",
+        "MundusX will download and verify the CLI, node agent, tray application, and the right GPU runtime for this PC. NVIDIA systems use CUDA; other Windows GPU systems use Vulkan. After installation, contributor setup will open so you can choose your control plane, contribution cap, and model.",
         false,
     );
     match run_installer() {
@@ -156,7 +156,7 @@ mod tests {
     fn embeds_the_windows_bootstrapper() {
         assert!(INSTALL_SCRIPT.contains("MundusX Windows installer"));
         assert!(INSTALL_SCRIPT.contains("mundusx-tray"));
-        assert!(INSTALL_SCRIPT.contains("mundusx.ico"));
+        assert!(INSTALL_SCRIPT.contains("runtime selection"));
         assert!(INSTALL_SCRIPT.contains("llama-server.exe"));
     }
 

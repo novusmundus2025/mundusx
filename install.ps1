@@ -23,6 +23,8 @@ Options:
   -GitHubToken <token>     Optional token for private GitHub release assets.
   -InstallCudaRuntime      Force CUDA llama runtime installation and pinning.
   -InstallVulkanRuntime    Force Vulkan llama runtime installation instead of CUDA.
+                          By default, the installer detects NVIDIA/CUDA and
+                          otherwise installs the Vulkan runtime for Windows.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
@@ -396,10 +398,23 @@ if ($Help) {
   exit 0
 }
 
+if ($InstallCudaRuntime -and $InstallVulkanRuntime) {
+  throw "choose only one runtime override: -InstallCudaRuntime or -InstallVulkanRuntime"
+}
+
 $target = Get-WindowsTarget
 $gpu = Find-NvidiaGpu
 $cudaRuntimeRequired = [bool](($gpu -or $InstallCudaRuntime) -and -not $InstallVulkanRuntime)
 $vulkanRuntimeRequired = [bool](-not $cudaRuntimeRequired)
+$runtimeSelectionReason = if ($InstallCudaRuntime) {
+  "forced CUDA"
+} elseif ($InstallVulkanRuntime) {
+  "forced Vulkan"
+} elseif ($gpu) {
+  "auto-detected NVIDIA/CUDA"
+} else {
+  "auto-selected Vulkan fallback"
+}
 $profile = if ($cudaRuntimeRequired) { "windows-x86_64-cuda" } else { "windows-x86_64-vulkan" }
 $assetName = "opengpu-$target.exe"
 $agentAssetName = "opengpu-node-agent-$target.exe"
@@ -447,6 +462,7 @@ Write-Output "  asset: $assetName"
 Write-Output "  node agent: $agentAssetName"
 Write-Output "  tray companion: $trayAssetName"
 Write-Output "  runtime: $(if ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { $vulkanRuntimeAssetName })"
+Write-Output "  runtime selection: $runtimeSelectionReason"
 Write-Output "  install: $InstallDir"
 Write-Output "  verification: $(if ($AllowUnsignedLocalPreview) { 'local preview override' } else { 'strict enterprise' })"
 Write-Output ""
@@ -526,15 +542,21 @@ try {
   $trayExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $trayAssetName -Destination $tempTray -ManifestAsset $trayManifestAsset
 
   $trayIconManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $trayIconAssetName
-  Write-Output "Fetching Windows tray icon..."
-  Write-Output "Verifying Windows tray icon checksum..."
-  $trayIconExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $trayIconAssetName -Destination $tempTrayIcon -ManifestAsset $trayIconManifestAsset
+  if ($trayIconManifestAsset) {
+    Write-Output "Fetching Windows tray icon..."
+    Write-Output "Verifying Windows tray icon checksum..."
+    $trayIconExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $trayIconAssetName -Destination $tempTrayIcon -ManifestAsset $trayIconManifestAsset
+  } else {
+    Write-Warning "release manifest does not include $trayIconAssetName; tray will use the embedded/system icon fallback"
+  }
 
   Move-Item -Force -Path $tempExe -Destination $finalExe
   Copy-Item -Force -LiteralPath $finalExe -Destination $compatExe
   Move-Item -Force -Path $tempAgent -Destination $finalAgent
   Move-Item -Force -Path $tempTray -Destination $finalTray
-  Move-Item -Force -Path $tempTrayIcon -Destination $finalTrayIcon
+  if (Test-Path -LiteralPath $tempTrayIcon) {
+    Move-Item -Force -Path $tempTrayIcon -Destination $finalTrayIcon
+  }
 
   if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
     if (Test-Path -LiteralPath $runtimeInstallDir) {
@@ -571,8 +593,10 @@ Write-Output "Installed opengpu to $finalExe"
 Write-Output "Installed mundusx compatibility alias to $compatExe"
 Write-Output "Installed node agent to $finalAgent"
 Write-Output "Installed tray companion to $finalTray"
-Write-Output "Installed tray icon to $finalTrayIcon"
-Write-Output "Tray icon checksum: $($trayIconExpected.ToLowerInvariant())"
+if ($trayIconExpected) {
+  Write-Output "Installed tray icon to $finalTrayIcon"
+  Write-Output "Tray icon checksum: $($trayIconExpected.ToLowerInvariant())"
+}
 if (-not $SkipTrayAutoStart) {
   $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
   New-Item -Path $runKey -Force | Out-Null
