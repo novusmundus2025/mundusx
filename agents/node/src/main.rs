@@ -13,6 +13,7 @@ use contracts::{
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
+use std::fs;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread;
@@ -298,6 +299,11 @@ fn resolved_backend(config: &AgentConfig) -> Backend {
             || worker::probe_cuda_diagnostics().device_available
         {
             return Backend::Cuda;
+        }
+
+        #[cfg(target_os = "windows")]
+        if worker::probe_vulkan_device().is_ok() {
+            return Backend::Vulkan;
         }
 
         Backend::Auto

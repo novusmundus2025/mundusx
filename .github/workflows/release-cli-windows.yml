@@ -26,6 +26,7 @@ env:
   SETUP_BINARY_NAME: MundusX-Setup.exe
   SETUP_EXECUTABLE_NAME: mundusx-bootstrap.exe
   RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-cuda.zip
+  VULKAN_RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-vulkan.zip
 
 jobs:
   release:
@@ -61,6 +62,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: .\scripts\package-windows-llama-runtime.ps1 -Tag b9856 -CudaVersion 12.4 -OutputPath $env:RUNTIME_BINARY_NAME
 
+      - name: Package pinned llama.cpp Vulkan runtime
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\\scripts\\package-windows-vulkan-runtime.ps1 -Tag b9856 -OutputPath $env:VULKAN_RUNTIME_BINARY_NAME
+
       - name: Prepare binaries
         shell: bash
         run: |
@@ -77,6 +84,7 @@ jobs:
           sha256sum "${TRAY_BINARY_NAME}" > "${TRAY_BINARY_NAME}.sha256"
           sha256sum "${SETUP_BINARY_NAME}" > "${SETUP_BINARY_NAME}.sha256"
           sha256sum "${RUNTIME_BINARY_NAME}" > "${RUNTIME_BINARY_NAME}.sha256"
+          sha256sum "${VULKAN_RUNTIME_BINARY_NAME}" > "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
 
       - name: Verify checksums
         shell: bash
@@ -86,6 +94,7 @@ jobs:
           sha256sum -c "${TRAY_BINARY_NAME}.sha256"
           sha256sum -c "${SETUP_BINARY_NAME}.sha256"
           sha256sum -c "${RUNTIME_BINARY_NAME}.sha256"
+          sha256sum -c "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
 
       - name: Verify packaging
         shell: bash
@@ -118,6 +127,8 @@ jobs:
             ${{ env.SETUP_BINARY_NAME }}.sha256
             ${{ env.RUNTIME_BINARY_NAME }}
             ${{ env.RUNTIME_BINARY_NAME }}.sha256
+            ${{ env.VULKAN_RUNTIME_BINARY_NAME }}
+            ${{ env.VULKAN_RUNTIME_BINARY_NAME }}.sha256
             release-manifest.json
             release-manifest.json.sig
           tag_name: ${{ env.RELEASE_TAG }}

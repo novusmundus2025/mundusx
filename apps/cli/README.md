@@ -42,6 +42,20 @@ Windows public release install uses the Windows-specific release:
 .\install.ps1 -ReleaseBaseUrl https://github.com/mundusx/mundusx/releases/download/cli-windows-v0.1.11
 ```
 
+Windows runtime selection is additive and preserves the existing paths:
+
+- NVIDIA GPUs use the pinned CUDA llama.cpp bundle.
+- Other Vulkan-capable GPUs (including Intel Iris Xe and supported AMD GPUs) use the pinned Vulkan bundle.
+- Vulkan is accepted only when `llama-cli --list-devices` reports a Vulkan device; otherwise the existing CPU/BLAS path remains the fallback.
+- Apple Silicon continues to prefer MLX with llama-metal fallback and is not affected by Windows runtime selection.
+
+Force a runtime only when diagnosing installer detection:
+
+```powershell
+.\install.ps1 -InstallCudaRuntime
+.\install.ps1 -InstallVulkanRuntime
+```
+
 Useful commands:
 
 ```bash
@@ -59,6 +73,7 @@ opengpu runtime install mlx
 opengpu model use
 opengpu model add
 opengpu model import ./models/local-model.gguf --name local-model --backend cuda --vram-mb 4096
+opengpu model import .\models\local-model.gguf --name local-vulkan --backend vulkan --vram-mb 8192
 opengpu run --prompt <text>
 opengpu jobs submit --model <model> --prompt <text>
 opengpu jobs status <job_id>

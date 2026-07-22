@@ -9,6 +9,7 @@ pub enum Backend {
     Auto,
     M,
     Cuda,
+    Vulkan,
     Vllm,
 }
 
@@ -24,6 +25,7 @@ impl Backend {
             Self::Auto => "auto",
             Self::M => "m",
             Self::Cuda => "cuda",
+            Self::Vulkan => "vulkan",
             Self::Vllm => "vllm",
         }
     }
@@ -41,8 +43,9 @@ impl FromStr for Backend {
             "auto" => Ok(Self::Auto),
             "m" => Ok(Self::M),
             "cuda" => Ok(Self::Cuda),
+            "vulkan" => Ok(Self::Vulkan),
             "vllm" => Ok(Self::Vllm),
-            _ => Err("backend must be one of: auto, m, cuda, vllm".to_string()),
+            _ => Err("backend must be one of: auto, m, cuda, vulkan, vllm".to_string()),
         }
     }
 }
@@ -327,6 +330,14 @@ mod tests {
             Backend::Cuda
         );
         assert_eq!(
+            <Backend as std::str::FromStr>::from_str("vulkan").expect("parse vulkan backend"),
+            Backend::Vulkan
+        );
+        assert_eq!(
+            <Backend as ValueEnum>::from_str("vulkan", false).expect("clap parse vulkan backend"),
+            Backend::Vulkan
+        );
+        assert_eq!(
             <Backend as std::str::FromStr>::from_str("vllm").expect("parse vllm backend"),
             Backend::Vllm
         );
@@ -348,6 +359,10 @@ mod tests {
         assert!(
             variants.iter().any(|variant| variant == "cuda"),
             "expected clap variants to expose cuda"
+        );
+        assert!(
+            variants.iter().any(|variant| variant == "vulkan"),
+            "expected clap variants to expose vulkan"
         );
         assert!(
             variants.iter().any(|variant| variant == "vllm"),
