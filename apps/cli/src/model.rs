@@ -189,7 +189,10 @@ pub fn ensure_catalog_model_fits(
         ));
     }
 
-    if backend != crate::types::Backend::Cuda && backend != crate::types::Backend::M {
+    if !matches!(
+        backend,
+        crate::types::Backend::Cuda | crate::types::Backend::M | crate::types::Backend::Vulkan
+    ) {
         return Ok(());
     }
 
@@ -429,7 +432,10 @@ fn compatibility_for(
         );
     }
 
-    if backend == crate::types::Backend::Cuda {
+    if matches!(
+        backend,
+        crate::types::Backend::Cuda | crate::types::Backend::Vulkan
+    ) {
         match available_vram_mb {
             Some(available) if estimated_vram_mb > available => (
                 "rejected".to_string(),
@@ -447,7 +453,10 @@ fn compatibility_for(
             ),
             None => (
                 "degraded".to_string(),
-                "CUDA VRAM was not supplied; compatibility needs runtime confirmation".to_string(),
+                format!(
+                    "{} memory budget was not supplied; compatibility needs runtime confirmation",
+                    backend.as_str()
+                ),
             ),
         }
     } else {
