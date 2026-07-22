@@ -28,6 +28,8 @@ jobs:
         run: cargo test --manifest-path apps/cli/Cargo.toml
       - name: Test node agent
         run: cargo test --manifest-path agents/node/Cargo.toml
+      - name: Install release test dependency
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Verify release workflow surface
         run: bash tests/release-cli-workflow.sh
 
