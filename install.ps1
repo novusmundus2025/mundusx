@@ -4,6 +4,7 @@ param(
   [string]$GitHubToken = "",
   [switch]$AllowUnsignedLocalPreview,
   [switch]$InstallCudaRuntime,
+  [switch]$InstallVulkanRuntime,
   [switch]$SkipTrayAutoStart,
   [switch]$Help
 )
@@ -21,6 +22,7 @@ Options:
   -ReleaseBaseUrl <url>    Release download base URL.
   -GitHubToken <token>     Optional token for private GitHub release assets.
   -InstallCudaRuntime      Force CUDA llama runtime installation and pinning.
+  -InstallVulkanRuntime    Force Vulkan llama runtime installation instead of CUDA.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
@@ -396,13 +398,15 @@ if ($Help) {
 
 $target = Get-WindowsTarget
 $gpu = Find-NvidiaGpu
-$profile = if ($gpu) { "windows-x86_64-cuda" } else { "windows-x86_64-generic" }
+$cudaRuntimeRequired = [bool](($gpu -or $InstallCudaRuntime) -and -not $InstallVulkanRuntime)
+$vulkanRuntimeRequired = [bool](-not $cudaRuntimeRequired)
+$profile = if ($cudaRuntimeRequired) { "windows-x86_64-cuda" } else { "windows-x86_64-vulkan" }
 $assetName = "opengpu-$target.exe"
 $agentAssetName = "opengpu-node-agent-$target.exe"
 $trayAssetName = "mundusx-tray-$target.exe"
 $trayIconAssetName = "mundusx.ico"
-$cudaRuntimeRequired = [bool]($gpu -or $InstallCudaRuntime)
 $cudaRuntimeAssetName = "llama-runtime-$target-cuda.zip"
+$vulkanRuntimeAssetName = "llama-runtime-$target-vulkan.zip"
 $releaseBase = $ReleaseBaseUrl.TrimEnd("/")
 $releaseUrl = "$releaseBase/$assetName"
 $checksumUrl = "$releaseUrl.sha256"
@@ -417,6 +421,7 @@ $tempAgent = Join-Path $tempDir $agentAssetName
 $tempTray = Join-Path $tempDir $trayAssetName
 $tempTrayIcon = Join-Path $tempDir $trayIconAssetName
 $tempCudaRuntime = Join-Path $tempDir $cudaRuntimeAssetName
+$tempVulkanRuntime = Join-Path $tempDir $vulkanRuntimeAssetName
 $finalExe = Join-Path $InstallDir "opengpu.exe"
 $compatExe = Join-Path $InstallDir "mundusx.exe"
 $finalAgent = Join-Path $InstallDir "opengpu-node-agent.exe"
@@ -441,7 +446,7 @@ Write-Output "  source: $releaseBase"
 Write-Output "  asset: $assetName"
 Write-Output "  node agent: $agentAssetName"
 Write-Output "  tray companion: $trayAssetName"
-Write-Output "  cuda runtime: $(if ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { 'not required' })"
+Write-Output "  runtime: $(if ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { $vulkanRuntimeAssetName })"
 Write-Output "  install: $InstallDir"
 Write-Output "  verification: $(if ($AllowUnsignedLocalPreview) { 'local preview override' } else { 'strict enterprise' })"
 Write-Output ""
@@ -503,6 +508,11 @@ try {
     Write-Output "Fetching CUDA llama runtime..."
     Write-Output "Verifying CUDA runtime checksum..."
     $runtimeExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $cudaRuntimeAssetName -Destination $tempCudaRuntime -ManifestAsset $runtimeManifestAsset
+  } else {
+    $runtimeManifestAsset = Find-ManifestRuntimeAsset -Manifest $manifest -Name $vulkanRuntimeAssetName
+    Write-Output "Fetching Vulkan llama runtime..."
+    Write-Output "Verifying Vulkan runtime checksum..."
+    $runtimeExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $vulkanRuntimeAssetName -Destination $tempVulkanRuntime -ManifestAsset $runtimeManifestAsset
   }
 
   $agentManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $agentAssetName
@@ -526,16 +536,18 @@ try {
   Move-Item -Force -Path $tempTray -Destination $finalTray
   Move-Item -Force -Path $tempTrayIcon -Destination $finalTrayIcon
 
-  if ($cudaRuntimeRequired) {
+  if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
     if (Test-Path -LiteralPath $runtimeInstallDir) {
       Remove-Item -Recurse -Force -LiteralPath $runtimeInstallDir
     }
     New-Item -ItemType Directory -Force -Path $runtimeInstallDir | Out-Null
-    Expand-Archive -LiteralPath $tempCudaRuntime -DestinationPath $runtimeInstallDir -Force
+    $selectedRuntimeArchive = if ($cudaRuntimeRequired) { $tempCudaRuntime } else { $tempVulkanRuntime }
+    $selectedRuntimeLabel = if ($cudaRuntimeRequired) { "CUDA" } else { "Vulkan" }
+    Expand-Archive -LiteralPath $selectedRuntimeArchive -DestinationPath $runtimeInstallDir -Force
     if (-not (Test-Path -LiteralPath $finalCudaRuntime)) {
       $foundRuntime = Get-ChildItem -Path $runtimeInstallDir -Recurse -Filter "llama-cli.exe" | Select-Object -First 1
       if (-not $foundRuntime) {
-        throw "CUDA runtime bundle did not contain llama-cli.exe"
+        throw "$selectedRuntimeLabel runtime bundle did not contain llama-cli.exe"
       }
       Copy-Item -LiteralPath $foundRuntime.FullName -Destination $finalCudaRuntime
     }
@@ -569,8 +581,9 @@ if (-not $SkipTrayAutoStart) {
   Start-Process -FilePath $finalTray
   Write-Output "Started MundusX tray companion"
 }
-if ($cudaRuntimeRequired) {
-  Write-Output "Installed CUDA llama runtime bundle to $runtimeInstallDir"
+if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
+  $installedRuntimeLabel = if ($cudaRuntimeRequired) { "CUDA" } else { "Vulkan" }
+  Write-Output "Installed $installedRuntimeLabel llama runtime bundle to $runtimeInstallDir"
   Write-Output "Runtime bundle checksum: $($runtimeExpected.ToLowerInvariant())"
   Write-Output "Pinned trusted runtime path in $trustedRuntimePath"
 }
