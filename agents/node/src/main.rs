@@ -13,6 +13,7 @@ use contracts::{
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
+use std::fs;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread;
