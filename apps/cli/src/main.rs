@@ -3422,6 +3422,7 @@ fn contribution_semantics(backend: Backend) -> &'static str {
     match backend {
         Backend::M => "memory-and-compute budget for Apple Silicon M-series",
         Backend::Cuda => "automatic routing budget",
+        Backend::Vulkan => "shared-memory Vulkan acceleration budget",
         Backend::Vllm => "Linux vLLM routing budget",
         Backend::Auto => "automatic routing budget",
     }
@@ -3430,6 +3431,7 @@ fn contribution_semantics(backend: Backend) -> &'static str {
 fn default_contribution_percent(backend: Backend) -> u8 {
     match backend {
         Backend::Cuda => 30,
+        Backend::Vulkan => 30,
         Backend::Vllm => 30,
         Backend::M => 30,
         Backend::Auto => 20,
@@ -3451,6 +3453,25 @@ fn detect_backend() -> Backend {
             .unwrap_or(false)
     {
         return Backend::Cuda;
+    }
+
+    if env::consts::OS == "windows" {
+        let llama_cli = env::var_os("OPENGPU_LLAMA_CLI")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| config::config_dir().join("runtimes").join("llama").join("llama-cli.exe"));
+        if Command::new(llama_cli)
+            .arg("--list-devices")
+            .output()
+            .map(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout)
+                        .to_ascii_lowercase()
+                        .contains("vulkan")
+            })
+            .unwrap_or(false)
+        {
+            return Backend::Vulkan;
+        }
     }
 
     Backend::Auto
@@ -3493,6 +3514,7 @@ fn install_profile_for(os: &str, arch: &str, backend: Backend) -> &'static str {
     match (os, arch, backend) {
         ("macos", "aarch64", Backend::M) => "macos-aarch64-apple-silicon",
         ("windows", "x86_64", Backend::Cuda) => "windows-x86_64-cuda",
+        ("windows", "x86_64", Backend::Vulkan) => "windows-x86_64-vulkan",
         ("linux", "x86_64", Backend::Cuda) => "linux-x86_64-cuda",
         ("linux", "aarch64", Backend::Cuda) => "linux-aarch64-cuda",
         ("linux", "x86_64", Backend::Vllm) => "linux-x86_64-vllm",
@@ -3825,7 +3847,7 @@ fn contribution_vram_budget_mb(
 
 fn model_vram_budget_mb(config: &Config, backend: Backend) -> Option<u64> {
     match backend {
-        Backend::M => contribution_vram_budget_mb(
+        Backend::M | Backend::Vulkan => contribution_vram_budget_mb(
             Some(detect_memory_gb().saturating_mul(1024)),
             config.contribution_percent,
         ),
@@ -6419,6 +6441,7 @@ mod tests {
     #[test]
     fn default_contribution_percent_matches_backend_risk() {
         assert_eq!(super::default_contribution_percent(Backend::Cuda), 30);
+        assert_eq!(super::default_contribution_percent(Backend::Vulkan), 30);
         assert_eq!(super::default_contribution_percent(Backend::Vllm), 30);
         assert_eq!(super::default_contribution_percent(Backend::M), 30);
         assert_eq!(super::default_contribution_percent(Backend::Auto), 20);
@@ -6446,6 +6469,10 @@ mod tests {
         assert_eq!(
             super::install_profile_for("windows", "x86_64", Backend::Cuda),
             "windows-x86_64-cuda"
+        );
+        assert_eq!(
+            super::install_profile_for("windows", "x86_64", Backend::Vulkan),
+            "windows-x86_64-vulkan"
         );
         assert_eq!(
             super::install_profile_for("linux", "x86_64", Backend::Cuda),
