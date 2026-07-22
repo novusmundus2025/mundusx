@@ -493,7 +493,7 @@ fn vulkan_device_name(devices: &str) -> Option<String> {
         })
 }
 
-fn probe_vulkan_device() -> Result<String, String> {
+pub fn probe_vulkan_device() -> Result<String, String> {
     let devices = probe_llama_cli_devices()?;
     vulkan_device_name(&devices).ok_or_else(|| {
         "Vulkan device not listed by llama-cli; install a Vulkan-capable graphics driver or use the CPU backend"
