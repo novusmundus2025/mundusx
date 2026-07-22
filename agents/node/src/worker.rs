@@ -479,6 +479,28 @@ fn probe_llama_cli_devices() -> Result<String, String> {
     Ok(stdout)
 }
 
+fn vulkan_device_name(devices: &str) -> Option<String> {
+    devices
+        .lines()
+        .map(str::trim)
+        .find(|line| line.to_ascii_lowercase().contains("vulkan"))
+        .map(|line| {
+            line.split_once(':')
+                .map(|(_, name)| name.trim())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(line)
+                .to_string()
+        })
+}
+
+fn probe_vulkan_device() -> Result<String, String> {
+    let devices = probe_llama_cli_devices()?;
+    vulkan_device_name(&devices).ok_or_else(|| {
+        "Vulkan device not listed by llama-cli; install a Vulkan-capable graphics driver or use the CPU backend"
+            .to_string()
+    })
+}
+
 fn probe_llama_cli_available() -> Result<(), String> {
     let llama_cli = trusted_runtime_executable("llama-cli")?;
     let output = Command::new(&llama_cli)
@@ -641,6 +663,12 @@ pub fn start_persistent_runtime(
         .stderr(Stdio::null());
     if matches!(backend, Backend::Cuda) {
         command.arg("--device").arg("CUDA0");
+    } else if matches!(backend, Backend::Vulkan) {
+        command
+            .arg("--device")
+            .arg("Vulkan0")
+            .arg("--gpu-layers")
+            .arg("99");
     }
 
     let mut child = command
@@ -873,12 +901,19 @@ fn run_llama_command(
     let llama_cli = trusted_runtime_executable("llama-cli")?;
     let runtime_mode = match backend {
         Backend::Cuda => "cuda",
+        Backend::Vulkan => "vulkan",
         _ => "blas",
     };
     let mut command = Command::new(&llama_cli);
     command.arg("-m").arg(model_path);
     if matches!(backend, Backend::Cuda) {
         command.arg("--device").arg("CUDA0");
+    } else if matches!(backend, Backend::Vulkan) {
+        command
+            .arg("--device")
+            .arg("Vulkan0")
+            .arg("--gpu-layers")
+            .arg("99");
     }
     command
         .arg("--no-conversation")
@@ -973,6 +1008,7 @@ fn run_llama_server_completion(
     let metrics = llama_server_metrics(&value);
     let runtime_mode = match backend {
         Backend::Cuda => "persistent-warm-cuda",
+        Backend::Vulkan => "persistent-warm-vulkan",
         Backend::M => "persistent-warm-blas",
         _ => "persistent-warm",
     };
@@ -1181,6 +1217,13 @@ pub fn probe_worker_health(
             Ok(()) => llama_cli_available = true,
             Err(error) => notes.push(error),
         },
+        Backend::Vulkan => match probe_vulkan_device() {
+            Ok(name) => {
+                llama_cli_available = true;
+                notes.push(format!("Vulkan device detected: {name}"));
+            }
+            Err(error) => notes.push(error),
+        },
         Backend::Vllm => {
             notes.push(
                 "vLLM backend is explicit opt-in and requires the Linux vLLM runtime adapter; this worker will not advertise jobs until that adapter is installed"
@@ -1237,6 +1280,8 @@ pub fn probe_worker_health(
             && local_runtime_available
             && cuda.device_available
             && cuda.driver_available
+    } else if backend == Backend::Vulkan {
+        model_path.is_some() && llama_cli_available
     } else if backend == Backend::Vllm {
         false
     } else if backend == Backend::M && mlx_available {
@@ -1249,6 +1294,7 @@ pub fn probe_worker_health(
 
     let runtime_mode = match backend {
         Backend::Cuda => "cuda",
+        Backend::Vulkan => "vulkan",
         Backend::Vllm => "vllm",
         Backend::M if mlx_available => "mlx",
         _ => "blas",
@@ -1533,7 +1579,7 @@ fn run_llama_request(
 
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
-    if matches!(backend, Backend::M | Backend::Cuda) {
+    if matches!(backend, Backend::M | Backend::Cuda | Backend::Vulkan) {
         return match run_llama_request(request, backend) {
             Ok(response) => response,
             Err(error) => WorkerLaunchResponse {
@@ -2122,6 +2168,36 @@ mod tests {
         assert_eq!(metrics.eval_count, Some(8));
         assert_eq!(metrics.eval_duration_ms, Some(160.0));
         assert_eq!(metrics.eval_rate, Some(50.0));
+    }
+
+    #[test]
+    #[test]
+    fn parses_vulkan_device_from_llama_device_list() {
+        let devices = "Available devices:\n  Vulkan0: Intel(R) Iris(R) Xe Graphics (8192 MiB, 7168 MiB free)\n";
+        assert_eq!(
+            vulkan_device_name(devices).as_deref(),
+            Some("Intel(R) Iris(R) Xe Graphics (8192 MiB, 7168 MiB free)")
+        );
+        assert_eq!(vulkan_device_name("BLAS: CPU"), None);
+    }
+
+    #[test]
+    fn vulkan_worker_uses_llama_runtime_path() {
+        let response = execute_request(&WorkerLaunchRequest {
+            job_id: "job-vulkan".to_string(),
+            node_id: "node-1".to_string(),
+            backend: Backend::Vulkan,
+            prompt: "hello".to_string(),
+            model: None,
+            system_prompt: None,
+            max_tokens: Some(4),
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            seed: Some(42),
+        });
+        assert_eq!(response.backend, Backend::Vulkan);
+        assert_eq!(response.runtime_mode.as_deref(), Some("vulkan"));
+        assert!(!response.error.as_deref().unwrap_or("").contains("not enabled"));
     }
 
     #[test]
