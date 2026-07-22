@@ -68,7 +68,7 @@ node_agent_name_for_binary() {
 }
 
 create_manifest() {
-  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum runtime_name runtime_checksum mac_pkg_name mac_pkg_checksum
+  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum runtime_name runtime_checksum vulkan_runtime_name vulkan_runtime_checksum mac_pkg_name mac_pkg_checksum
   checksum="$(checksum_for_binary "$binary_name")"
   tag_text="$(normalize_text "$tag_name")"
   version_text="$(normalize_text "$version")"
@@ -98,6 +98,14 @@ create_manifest() {
   if [ -n "$runtime_name" ] && [ -f "$artifact_dir/$runtime_name" ]; then
     runtime_checksum="$(checksum_for_binary "$runtime_name")"
   fi
+  vulkan_runtime_name=""
+  vulkan_runtime_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) vulkan_runtime_name="llama-runtime-x86_64-pc-windows-msvc-vulkan.zip" ;;
+  esac
+  if [ -n "$vulkan_runtime_name" ] && [ -f "$artifact_dir/$vulkan_runtime_name" ]; then
+    vulkan_runtime_checksum="$(checksum_for_binary "$vulkan_runtime_name")"
+  fi
   mac_pkg_name=""
   mac_pkg_checksum=""
   case "$binary_name" in
@@ -112,7 +120,7 @@ print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$vulkan_runtime_name" "$vulkan_runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -130,8 +138,10 @@ tray_name = sys.argv[10]
 tray_checksum = sys.argv[11]
 runtime_name = sys.argv[12]
 runtime_checksum = sys.argv[13]
-mac_pkg_name = sys.argv[14]
-mac_pkg_checksum = sys.argv[15]
+vulkan_runtime_name = sys.argv[14]
+vulkan_runtime_checksum = sys.argv[15]
+mac_pkg_name = sys.argv[16]
+mac_pkg_checksum = sys.argv[17]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -167,13 +177,23 @@ if mac_pkg_name and mac_pkg_checksum:
         "signed": False,
         "notarized": False,
     })
+runtime_assets = []
 if runtime_name and runtime_checksum:
-    payload["runtime_assets"] = [{
+    runtime_assets.append({
         "name": runtime_name,
         "install_as": "runtimes/llama",
         "kind": "llama-cpp-cuda-runtime-bundle",
         "checksum_sha256": runtime_checksum,
-    }]
+    })
+if vulkan_runtime_name and vulkan_runtime_checksum:
+    runtime_assets.append({
+        "name": vulkan_runtime_name,
+        "install_as": "runtimes/llama",
+        "kind": "llama-cpp-vulkan-runtime-bundle",
+        "checksum_sha256": vulkan_runtime_checksum,
+    })
+if runtime_assets:
+    payload["runtime_assets"] = runtime_assets
 manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
 }
