@@ -1286,6 +1286,8 @@ pub fn probe_worker_health(
         false
     } else if backend == Backend::M && mlx_available {
         model_name.is_some() || model_path.is_some()
+    } else if backend == Backend::Auto {
+        model_path.is_some() && local_runtime_available
     } else {
         model_path.is_some()
             && local_runtime_available
@@ -1579,7 +1581,10 @@ fn run_llama_request(
 
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
-    if matches!(backend, Backend::M | Backend::Cuda | Backend::Vulkan) {
+    if matches!(
+        backend,
+        Backend::Auto | Backend::M | Backend::Cuda | Backend::Vulkan
+    ) {
         return match run_llama_request(request, backend) {
             Ok(response) => response,
             Err(error) => WorkerLaunchResponse {
