@@ -338,10 +338,10 @@ mod tests {
 
         assert!(options
             .iter()
-            .any(|option| option.name == "Qwen/Qwen2.5-7B-Instruct"));
+            .any(|option| option.name == "Qwen/Qwen2.5-7B-Instruct-AWQ"));
         assert!(options
             .iter()
-            .any(|option| option.name == "Qwen/Qwen2.5-14B-Instruct"));
+            .any(|option| option.name == "Qwen/Qwen2.5-32B-Instruct-AWQ"));
         assert!(options
             .iter()
             .all(|option| option.source_kind == "huggingface-vllm"));
@@ -353,6 +353,9 @@ mod tests {
         assert!(high_cap_options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-32B-Instruct"));
+        assert!(high_cap_options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-72B-Instruct-AWQ"));
         assert!(!high_cap_options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-72B-Instruct"));

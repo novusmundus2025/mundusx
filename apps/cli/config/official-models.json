@@ -200,13 +200,33 @@
     },
     {
       "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
-      "lighter": {"name":"Qwen/Qwen2.5-7B-Instruct","label":"Qwen 2.5 7B","notes":"lighter native vLLM model for Linux NVIDIA nodes","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-7B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":16000},
-      "recommended": {"name":"Qwen/Qwen2.5-14B-Instruct","label":"Qwen 2.5 14B","notes":"recommended native vLLM model for GX10 at the balanced cap","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-14B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":30000}
+      "lighter": {"name":"Qwen/Qwen2.5-7B-Instruct-AWQ","label":"Qwen 2.5 7B — AWQ 4-bit","notes":"compressed; smallest practical download and memory use","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":6000},
+      "recommended": {"name":"Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4","label":"Qwen 2.5 7B — GPTQ Int4","notes":"quantized; compact alternative with GPTQ kernels","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":6000}
     },
     {
       "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
-      "lighter": {"name":"Qwen/Qwen2.5-32B-Instruct","label":"Qwen 2.5 32B","notes":"high-capacity native vLLM model for GX10 at a high cap","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-32B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":68000},
-      "recommended": {"name":"Qwen/Qwen2.5-72B-Instruct","label":"Qwen 2.5 72B","notes":"very large native vLLM model for hosts with at least 150 GB available","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-72B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":150000}
+      "lighter": {"name":"Qwen/Qwen2.5-7B-Instruct","label":"Qwen 2.5 7B — BF16","notes":"normal precision; highest fidelity and largest download","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-7B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":16000},
+      "recommended": {"name":"Qwen/Qwen2.5-14B-Instruct-AWQ","label":"Qwen 2.5 14B — AWQ 4-bit","notes":"compressed; recommended balance of quality and memory","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-AWQ","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":10000}
+    },
+    {
+      "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4","label":"Qwen 2.5 14B — GPTQ Int4","notes":"quantized; compact alternative with GPTQ kernels","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":10000},
+      "recommended": {"name":"Qwen/Qwen2.5-14B-Instruct","label":"Qwen 2.5 14B — BF16","notes":"normal precision; higher fidelity and larger download","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-14B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":30000}
+    },
+    {
+      "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"Qwen/Qwen2.5-32B-Instruct-AWQ","label":"Qwen 2.5 32B — AWQ 4-bit","notes":"compressed; recommended GX10 32B variant","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-AWQ","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":22000},
+      "recommended": {"name":"Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4","label":"Qwen 2.5 32B — GPTQ Int4","notes":"quantized; compact 32B alternative with GPTQ kernels","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":22000}
+    },
+    {
+      "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"Qwen/Qwen2.5-32B-Instruct","label":"Qwen 2.5 32B — BF16","notes":"normal precision; about 65 GB before runtime overhead","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-32B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":68000},
+      "recommended": {"name":"Qwen/Qwen2.5-72B-Instruct-AWQ","label":"Qwen 2.5 72B — AWQ 4-bit","notes":"compressed; large model for high-memory contributors","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-72B-Instruct-AWQ","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":45000}
+    },
+    {
+      "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4","label":"Qwen 2.5 72B — GPTQ Int4","notes":"quantized; large GPTQ model for high-memory contributors","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":45000},
+      "recommended": {"name":"Qwen/Qwen2.5-72B-Instruct","label":"Qwen 2.5 72B — BF16","notes":"normal precision; requires at least 150 GB available","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-72B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":150000}
     }
   ]
 }

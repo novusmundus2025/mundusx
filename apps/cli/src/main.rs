@@ -4318,6 +4318,8 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     } else {
         selectable_options_for(backend, gb, available_vram_mb)
     };
+    let allow_local_gguf = backend != Backend::Vllm;
+    let choice_count = options.len() + usize::from(allow_local_gguf);
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return options
@@ -4355,23 +4357,30 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
         raw_println!("----------------------------------");
         for (i, option) in options.iter().enumerate() {
             let marker = if i == selected { ">>" } else { "  " };
+            let estimated = option
+                .estimated_vram_mb
+                .map(|value| format!("~{:.1} GB runtime", value as f64 / 1024.0))
+                .unwrap_or_else(|| "runtime memory unknown".to_string());
             raw_println!(
-                "{marker} {}. {} [{}] — {}",
+                "{marker} {}. {} [{}] — {}; {}",
                 i + 1,
                 option.label,
                 option.name,
-                option.notes
+                option.notes,
+                estimated
             );
         }
-        let marker = if selected == options.len() {
-            ">>"
-        } else {
-            "  "
-        };
-        raw_println!(
-            "{marker} {}. Import local GGUF / LM Studio model",
-            options.len() + 1
-        );
+        if allow_local_gguf {
+            let marker = if selected == options.len() {
+                ">>"
+            } else {
+                "  "
+            };
+            raw_println!(
+                "{marker} {}. Import local GGUF / LM Studio model",
+                options.len() + 1
+            );
+        }
         raw_println!();
         raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter — you must choose one");
         let _ = io::stdout().flush();
@@ -4393,7 +4402,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
                     render(selected);
                 }
                 KeyCode::Down | KeyCode::Tab => {
-                    if selected < options.len() {
+                    if selected + 1 < choice_count {
                         selected += 1;
                     }
                     render(selected);
@@ -4402,13 +4411,13 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
                 _ => {}
             },
             Ok(_) => {}
-            Err(_) => break 1,
+            Err(_) => break selected,
         }
     };
 
     let _ = disable_raw_mode();
 
-    if result == options.len() {
+    if allow_local_gguf && result == options.len() {
         clear_menu_screen();
         print!("Path to local .gguf model file: ");
         let _ = io::stdout().flush();
