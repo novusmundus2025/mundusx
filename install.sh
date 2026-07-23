@@ -4,7 +4,10 @@ set -euo pipefail
 REPO="mundusx/mundusx"
 BIN_NAME="opengpu"
 COMPAT_BIN_NAME="mundusx"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+DEFAULT_INSTALL_DIR="$HOME/.local/bin"
+INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+GLOBAL_BIN_DIR_OVERRIDE="${OPENGPU_GLOBAL_BIN_DIR:-}"
+GLOBAL_BIN_DIR="${OPENGPU_GLOBAL_BIN_DIR:-/usr/local/bin}"
 RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
 OPENGPU_HOME="${OPENGPU_HOME:-$HOME/.opengpu}"
 VLLM_IMAGE="${OPENGPU_VLLM_IMAGE:-nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e}"
@@ -177,6 +180,42 @@ smoke_installed_binary() {
   fi
 }
 
+path_contains_dir() {
+  case ":${PATH}:" in
+    *":$1:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+expose_installed_commands() {
+  if [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ] && [ -z "$GLOBAL_BIN_DIR_OVERRIDE" ]; then
+    return
+  fi
+  if path_contains_dir "$INSTALL_DIR"; then
+    return
+  fi
+  if ! path_contains_dir "$GLOBAL_BIN_DIR"; then
+    echo "Installed commands are not on PATH; add ${INSTALL_DIR} to PATH." >&2
+    return
+  fi
+
+  echo "Making opengpu available immediately through ${GLOBAL_BIN_DIR}..."
+  if [ -d "$GLOBAL_BIN_DIR" ] && [ -w "$GLOBAL_BIN_DIR" ]; then
+    ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
+    ln -sf "$INSTALL_DIR/$COMPAT_BIN_NAME" "$GLOBAL_BIN_DIR/$COMPAT_BIN_NAME"
+    ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo mkdir -p "$GLOBAL_BIN_DIR"
+    sudo ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
+    sudo ln -sf "$INSTALL_DIR/$COMPAT_BIN_NAME" "$GLOBAL_BIN_DIR/$COMPAT_BIN_NAME"
+    sudo ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
+  else
+    echo "Cannot write ${GLOBAL_BIN_DIR}; rerun with ${INSTALL_DIR} on PATH." >&2
+    return
+  fi
+  echo "Commands are available now; no terminal restart is required."
+}
+
 install_vllm_runtime() {
   local runtime_dir="${OPENGPU_HOME}/runtimes/vllm"
   local config_path="${runtime_dir}/runtime.conf"
@@ -260,6 +299,7 @@ if [ "$runtime_only" -eq 0 ]; then
   mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
   mv "$tmp_agent" "$INSTALL_DIR/opengpu-node-agent"
   ln -sf "$BIN_NAME" "$INSTALL_DIR/$COMPAT_BIN_NAME"
+  expose_installed_commands
 
   echo "Running installed binary smoke checks..."
   smoke_installed_binary "$INSTALL_DIR/$BIN_NAME" "$BIN_NAME"
@@ -269,7 +309,6 @@ if [ "$runtime_only" -eq 0 ]; then
   echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
   echo "Installed ${COMPAT_BIN_NAME} compatibility alias to ${INSTALL_DIR}/${COMPAT_BIN_NAME}"
   echo "Installed opengpu-node-agent to ${INSTALL_DIR}/opengpu-node-agent"
-  echo "If needed, add ${INSTALL_DIR} to your PATH."
 fi
 
 if [ "$with_vllm" -eq 1 ]; then

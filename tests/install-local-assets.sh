@@ -35,13 +35,18 @@ done
 output="$(
   PATH="$bin_dir:$PATH" \
   INSTALL_DIR="$install_dir" \
+  OPENGPU_GLOBAL_BIN_DIR="$bin_dir" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
   bash "$repo_root/install.sh" --local-assets "$asset_dir" --without-vllm 2>&1
 )"
 
 printf '%s\n' "$output" | grep -F "source: $asset_dir" >/dev/null
+printf '%s\n' "$output" | grep -F "no terminal restart is required" >/dev/null
 test -x "$install_dir/opengpu"
 test -x "$install_dir/opengpu-node-agent"
 test -L "$install_dir/mundusx"
+test -L "$bin_dir/opengpu"
+test -L "$bin_dir/mundusx"
+test -L "$bin_dir/opengpu-node-agent"
 
 echo "PASS: install.sh installs verified binaries directly from a local asset directory"
