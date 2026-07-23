@@ -81,5 +81,6 @@ grep -F "run --rm --gpus all nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 nvidia-
 grep -F "pull nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e" "$TEST_DOCKER_LOG" >/dev/null
 grep -F "VLLM_GPU_MEMORY_UTILIZATION=0.70" "$opengpu_home/runtimes/vllm/runtime.conf" >/dev/null
 grep -F "VLLM_MAX_NUM_SEQS=4" "$opengpu_home/runtimes/vllm/runtime.conf" >/dev/null
+grep -F "VLLM_START_TIMEOUT_SECONDS=1800" "$opengpu_home/runtimes/vllm/runtime.conf" >/dev/null
 
 echo "PASS: install.sh auto-detects GB10 and provisions the pinned Linux ARM64 vLLM runtime"
