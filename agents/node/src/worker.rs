@@ -9,7 +9,7 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -677,6 +677,83 @@ impl Drop for PersistentRuntimeHandle {
     }
 }
 
+fn percentage_token(line: &str) -> Option<&str> {
+    line.split_whitespace().rev().find_map(|token| {
+        let percent_index = token.find('%')?;
+        let start = token[..percent_index]
+            .rfind(|ch: char| !ch.is_ascii_digit())
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        (start < percent_index).then(|| &token[start..=percent_index])
+    })
+}
+
+fn shard_fraction(line: &str) -> Option<&str> {
+    line.split_whitespace().find(|token| {
+        let Some((loaded, total)) = token.split_once('/') else {
+            return false;
+        };
+        loaded.chars().all(|ch| ch.is_ascii_digit())
+            && total.chars().all(|ch| ch.is_ascii_digit())
+    })
+}
+
+fn vllm_startup_progress(line: &str) -> Option<String> {
+    if line.contains("Loading safetensors checkpoint shards:") {
+        let percent = percentage_token(line)?;
+        let shards = shard_fraction(line)?;
+        return Some(format!("loading checkpoint shards {shards} ({percent})"));
+    }
+    if line.contains("Downloading (incomplete total") {
+        return percentage_token(line).map(|percent| format!("downloading model files ({percent})"));
+    }
+    if line.contains("Fetching ") && line.contains(" files:") {
+        return percentage_token(line).map(|percent| format!("fetching model files ({percent})"));
+    }
+    if line.contains("Parse safetensors files:") {
+        return percentage_token(line).map(|percent| format!("indexing model files ({percent})"));
+    }
+    if line.contains("Model loading took") {
+        return Some("model weights loaded; preparing KV cache".to_string());
+    }
+    if line.contains("init engine (profile, create kv cache, warmup model) took") {
+        return Some("CUDA and KV-cache warm-up complete".to_string());
+    }
+    if line.contains("Application startup complete") {
+        return Some("ready (100%)".to_string());
+    }
+    None
+}
+
+fn emit_vllm_startup_progress(
+    log_path: &Path,
+    log_offset: &mut u64,
+    last_progress: &mut Option<String>,
+) {
+    let Ok(mut file) = OpenOptions::new().read(true).open(log_path) else {
+        return;
+    };
+    if file.seek(SeekFrom::Start(*log_offset)).is_err() {
+        return;
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return;
+    }
+    *log_offset = log_offset.saturating_add(bytes.len() as u64);
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.split(['\r', '\n']) {
+        let Some(progress) = vllm_startup_progress(line) else {
+            continue;
+        };
+        if last_progress.as_ref() == Some(&progress) {
+            continue;
+        }
+        println!("vllmStartup: {progress}");
+        *last_progress = Some(progress);
+    }
+}
+
 fn start_vllm_runtime(
     model_dir: &Path,
     model_name: Option<&str>,
@@ -721,6 +798,10 @@ fn start_vllm_runtime(
     fs::create_dir_all(model_dir)
         .map_err(|error| format!("failed to create vLLM model directory: {error}"))?;
     let log_path = runtime_dir.join("runtime.log");
+    let mut log_offset = fs::metadata(&log_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or_default();
+    let mut last_progress = None;
     let stdout = OpenOptions::new()
         .create(true)
         .append(true)
@@ -780,6 +861,7 @@ fn start_vllm_runtime(
         .unwrap_or(1800);
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
+        emit_vllm_startup_progress(&log_path, &mut log_offset, &mut last_progress);
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("failed to poll vLLM container: {error}"))?
@@ -791,6 +873,9 @@ fn start_vllm_runtime(
             ));
         }
         if vllm_health_ok(&url) {
+            if last_progress.as_deref() != Some("ready (100%)") {
+                println!("vllmStartup: ready (100%)");
+            }
             return Ok(Some(PersistentRuntimeHandle {
                 child,
                 url,
@@ -2356,6 +2441,26 @@ mod tests {
                 Some("Qwen2.5-14B"),
             ),
             2
+        );
+    }
+
+    #[test]
+    fn parses_vllm_startup_progress_for_any_shard_count() {
+        assert_eq!(
+            vllm_startup_progress(
+                "Loading safetensors checkpoint shards:  31% Completed | 5/16 [03:27<07:40]"
+            )
+            .as_deref(),
+            Some("loading checkpoint shards 5/16 (31%)")
+        );
+        assert_eq!(
+            vllm_startup_progress("Downloading (incomplete total...):  64%| 35.8G/56.0G")
+                .as_deref(),
+            Some("downloading model files (64%)")
+        );
+        assert_eq!(
+            vllm_startup_progress("INFO: Application startup complete.").as_deref(),
+            Some("ready (100%)")
         );
     }
 
