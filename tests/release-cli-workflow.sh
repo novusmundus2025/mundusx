@@ -7,6 +7,7 @@ cd "$repo_root"
 legacy_workflow=".github/workflows/release-cli.yml"
 macos_workflow=".github/workflows/release-cli-macos.yml"
 windows_workflow=".github/workflows/release-cli-windows.yml"
+linux_workflow=".github/workflows/release-cli-linux.yml"
 
 assert_contains() {
   local workflow="$1"
@@ -58,4 +59,13 @@ assert_contains "$windows_workflow" "cargo build --release --manifest-path apps/
 assert_contains "$windows_workflow" "tag_name: \${{ env.RELEASE_TAG }}"
 assert_contains "$windows_workflow" "name: MundusX Windows x86_64 CLI \${{ env.RELEASE_TAG }}"
 
-echo "release CLI workflows publish separate macOS and Windows CLI releases"
+assert_contains "$linux_workflow" "name: Release CLI Linux"
+assert_contains "$linux_workflow" "cli-linux-v*"
+assert_contains "$linux_workflow" "target: aarch64-unknown-linux-gnu"
+assert_contains "$linux_workflow" "runner: ubuntu-24.04-arm"
+assert_contains "$linux_workflow" "BINARY_NAME: opengpu-\${{ matrix.target }}"
+assert_contains "$linux_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-\${{ matrix.target }}"
+assert_contains "$linux_workflow" 'mv release-manifest.json "release-manifest-${TARGET}.json"'
+assert_contains "$linux_workflow" "name: MundusX Linux CLI \${{ env.RELEASE_TAG }}"
+
+echo "release CLI workflows publish separate Linux, macOS, and Windows CLI releases"

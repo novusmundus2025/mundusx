@@ -538,9 +538,10 @@ fn command_available(command: &str, args: &[&str]) -> bool {
 fn vllm_doctor_payload(
     os: &str,
     backend: Backend,
-    python_available: bool,
-    vllm_available: bool,
+    docker_available: bool,
+    runtime_config_available: bool,
     nvidia_smi_available: bool,
+    endpoint_healthy: bool,
 ) -> serde_json::Value {
     let supported_os = os == "linux";
     let selected = backend == Backend::Vllm;
@@ -553,14 +554,16 @@ fn vllm_doctor_payload(
         );
     }
 
-    if supported_os && !python_available {
-        notes.push("python3 is unavailable; install Python before enabling vLLM".to_string());
+    if supported_os && !docker_available {
+        notes.push(
+            "Docker is unavailable to the current user; the MundusX vLLM runtime requires Docker daemon access"
+                .to_string(),
+        );
     }
 
-    if supported_os && python_available && !vllm_available {
+    if supported_os && docker_available && !runtime_config_available {
         notes.push(
-            "python3 is available, but the vllm module is not importable in this environment"
-                .to_string(),
+            "the pinned vLLM runtime is not configured; run install.sh --with-vllm".to_string(),
         );
     }
 
@@ -576,47 +579,63 @@ fn vllm_doctor_payload(
             backend.as_str()
         ));
     }
+    if supported_os && runtime_config_available && !endpoint_healthy {
+        notes.push(
+            "the vLLM runtime is installed but its localhost endpoint is not healthy".to_string(),
+        );
+    }
 
     let readiness = if !selected {
         "informational"
     } else if !supported_os {
         "unsupported-on-this-os"
-    } else if !python_available {
-        "blocked-python-unavailable"
-    } else if !vllm_available {
-        "blocked-vllm-unavailable"
+    } else if !docker_available {
+        "blocked-docker-unavailable"
+    } else if !runtime_config_available {
+        "blocked-runtime-unconfigured"
     } else if !nvidia_smi_available {
         "blocked-nvidia-smi-unavailable"
+    } else if !endpoint_healthy {
+        "runtime-installed-not-running"
     } else {
-        "vllm-prerequisites-detected"
+        "vllm-runtime-ready"
     };
 
     serde_json::json!({
         "os": os,
         "selected_backend": backend.as_str(),
         "supported_os": supported_os,
-        "python_available": python_available,
-        "vllm_available": vllm_available,
+        "docker_available": docker_available,
+        "runtime_config_available": runtime_config_available,
         "nvidia_smi_available": nvidia_smi_available,
+        "endpoint_healthy": endpoint_healthy,
         "runtime_readiness": readiness,
         "notes": notes,
     })
 }
 
 fn live_vllm_doctor_payload(backend: Backend) -> serde_json::Value {
-    let python_available =
-        command_available("python3", &["--version"]) || command_available("python", &["--version"]);
-    let vllm_available = command_available("python3", &["-c", "import vllm"])
-        || command_available("python", &["-c", "import vllm"]);
+    let docker_available = command_available("docker", &["info"]);
+    let runtime_config_available = config::config_dir()
+        .join("runtimes")
+        .join("vllm")
+        .join("runtime.conf")
+        .is_file();
     let nvidia_smi_available =
         run_nvidia_smi_query(&["--query-gpu=name", "--format=csv,noheader"]).is_ok();
+    let endpoint_healthy = ureq::get("http://127.0.0.1:8000/health")
+        .timeout(Duration::from_secs(2))
+        .call()
+        .map(|response| response.status() < 500)
+        .unwrap_or(false);
 
     vllm_doctor_payload(
         env::consts::OS,
         backend,
-        python_available,
-        vllm_available,
+        docker_available,
+        runtime_config_available,
         nvidia_smi_available,
+        endpoint_healthy,
     )
 }
 
@@ -817,17 +836,25 @@ fn print_doctor_report(config: &Config, json: bool) {
         theme::boolean(vllm["supported_os"].as_bool().unwrap_or(false), "yes", "no"),
     );
     theme::field(
-        "vllm.pythonAvailable",
+        "vllm.dockerAvailable",
         theme::boolean(
-            vllm["python_available"].as_bool().unwrap_or(false),
+            vllm["docker_available"].as_bool().unwrap_or(false),
             "yes",
             "no",
         ),
     );
     theme::field(
-        "vllm.moduleAvailable",
+        "vllm.runtimeConfigured",
         theme::boolean(
-            vllm["vllm_available"].as_bool().unwrap_or(false),
+            vllm["runtime_config_available"].as_bool().unwrap_or(false),
+            "yes",
+            "no",
+        ),
+    );
+    theme::field(
+        "vllm.endpointHealthy",
+        theme::boolean(
+            vllm["endpoint_healthy"].as_bool().unwrap_or(false),
             "yes",
             "no",
         ),
@@ -6590,7 +6617,7 @@ mod tests {
 
     #[test]
     fn vllm_doctor_blocks_vllm_on_windows_without_touching_cuda_path() {
-        let payload = vllm_doctor_payload("windows", Backend::Vllm, true, true, true);
+        let payload = vllm_doctor_payload("windows", Backend::Vllm, true, true, true, true);
 
         assert_eq!(payload["selected_backend"].as_str(), Some("vllm"));
         assert!(!payload["supported_os"].as_bool().unwrap_or(true));
@@ -6606,12 +6633,12 @@ mod tests {
 
     #[test]
     fn vllm_doctor_reports_linux_dependency_readiness() {
-        let payload = vllm_doctor_payload("linux", Backend::Vllm, true, true, true);
+        let payload = vllm_doctor_payload("linux", Backend::Vllm, true, true, true, true);
 
         assert!(payload["supported_os"].as_bool().unwrap_or(false));
         assert_eq!(
             payload["runtime_readiness"].as_str(),
-            Some("vllm-prerequisites-detected")
+            Some("vllm-runtime-ready")
         );
     }
 

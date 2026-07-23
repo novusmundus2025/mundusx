@@ -1106,9 +1106,7 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    should_agent_run(config)
-        && resolved_backend(config) != Backend::Vllm
-        && !uses_mlx_runtime(config)
+    should_agent_run(config) && !uses_mlx_runtime(config)
 }
 
 fn should_agent_run(config: &AgentConfig) -> bool {
@@ -1122,6 +1120,11 @@ fn uses_mlx_runtime(config: &AgentConfig) -> bool {
             .as_deref()
             .map(|runtime| runtime.eq_ignore_ascii_case("mlx"))
             .unwrap_or(false)
+}
+
+fn clear_runtime_environment() {
+    std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+    std::env::remove_var("OPENGPU_VLLM_URL");
 }
 
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
@@ -1145,7 +1148,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         }
     };
     if let Some(runtime) = persistent_runtime.as_ref() {
-        std::env::set_var("OPENGPU_LLAMA_SERVER_URL", runtime.url());
+        std::env::set_var(runtime.environment_variable(), runtime.url());
     }
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
@@ -1203,7 +1206,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     );
     if let Some(reason) = control_plane_blocks_jobs(control_plane_status.as_ref()) {
         drop(persistent_runtime.take());
-        std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+        clear_runtime_environment();
         eprintln_error_field("agentAdmission", "blocked by control plane");
         eprintln_error_field("agentAdmissionReason", reason);
         eprintln_error_field("persistentRuntime", "stopped");
@@ -1225,7 +1228,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             Ok(None) => {
                 eprintln!("agentStop: config missing; cooling persistent runtime");
                 drop(persistent_runtime.take());
-                std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+                clear_runtime_environment();
                 break;
             }
             Err(error) => {
@@ -1233,7 +1236,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                     "agentStop: failed to reload config ({error}); cooling persistent runtime"
                 );
                 drop(persistent_runtime.take());
-                std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+                clear_runtime_environment();
                 break;
             }
         };
@@ -1243,7 +1246,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             let _ = save_heartbeat(&heartbeat);
             send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
             drop(persistent_runtime.take());
-            std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+            clear_runtime_environment();
             println!("persistentRuntime: stopped");
             println!(
                 "{}",
@@ -1443,7 +1446,7 @@ mod tests {
 
         config.connected = true;
         config.backend_preference = Backend::Vllm;
-        assert!(!should_keep_runtime_warm(&config));
+        assert!(should_keep_runtime_warm(&config));
 
         config.backend_preference = Backend::M;
         config.runtime_preference = Some("mlx".to_string());

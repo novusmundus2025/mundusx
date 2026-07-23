@@ -9,23 +9,40 @@ MundusX treats `vllm` as an explicit Linux NVIDIA backend. It is not selected by
 - `opengpu start` with `backendPreference: auto` still detects Apple Silicon or
   CUDA only.
 - `opengpu start --backend vllm` is accepted as an explicit preference, but the
-  node agent will not advertise itself as ready until a vLLM runtime adapter is
-  installed.
-- `opengpu doctor --json` includes a `vllm` diagnostic block with OS, Python,
-  vLLM module, NVIDIA driver visibility, and readiness details.
+  node agent advertises itself as ready only after its localhost vLLM endpoint
+  passes the health probe.
+- `opengpu doctor --json` includes a `vllm` diagnostic block with OS, Docker
+  access, runtime configuration, NVIDIA driver visibility, endpoint health,
+  and readiness details.
 
-## Ubuntu target
+## Ubuntu ARM64 GB10/GX10 target
 
-The intended first vLLM target is Ubuntu/Linux with:
+The first supported vLLM target is Ubuntu 24.04 on ARM64 GB10/GX10 systems with:
 
 - NVIDIA GPU visible through `nvidia-smi`
-- Python available as `python3`
-- importable `vllm` module
-- a future MundusX vLLM adapter that speaks the worker contract and returns
+- Docker Engine available to the installing user
+- NVIDIA Container Toolkit available as `nvidia-ctk`
+- GPU access working inside an NVIDIA CUDA container
+- the pinned multi-architecture NVIDIA vLLM container
+- a MundusX vLLM adapter that speaks the worker contract and returns
   output, error, model, runtime, backend, worker ID, and node ID metadata
 
-Until that adapter exists, vLLM nodes are allowed to configure the backend for
-diagnostics but must remain unavailable for scheduler claims.
+Install the CLI, node agent, and pinned runtime configuration with:
+
+```bash
+bash install.sh --with-vllm
+```
+
+Use `--runtime-only` to configure the vLLM runtime around an existing MundusX
+CLI installation. The installer binds the API to `127.0.0.1`, defaults
+GPU memory utilization to `0.70`, limits concurrent sequences to four, and
+stores its configuration under `~/.opengpu/runtimes/vllm/runtime.conf`.
+
+When the contributor starts a connected vLLM node, the node agent starts the
+pinned container for the active model, waits for `/health`, and routes jobs to
+`/v1/chat/completions`. Pausing, disconnecting, or exiting the node stops the
+container and releases the GPU. Nodes remain unavailable for scheduler claims
+when the container, active model, or endpoint is not ready.
 
 ## Why this is separated from Windows
 
