@@ -12,14 +12,16 @@ VLLM_IMAGE_TAG="${OPENGPU_VLLM_IMAGE_TAG:-26.06-py3}"
 with_vllm=0
 runtime_only=0
 without_vllm=0
+local_assets=""
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--with-vllm] [--without-vllm] [--runtime-only] [--help]
+Usage: install.sh [--with-vllm] [--without-vllm] [--runtime-only] [--local-assets DIR] [--help]
 
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
   --without-vllm Skip automatic vLLM installation on detected GB10/GX10 hosts.
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
+  --local-assets Install release binaries and checksums directly from DIR.
   --help         Show this help.
 EOF
 }
@@ -35,6 +37,15 @@ while [ "$#" -gt 0 ]; do
     --runtime-only)
       with_vllm=1
       runtime_only=1
+      ;;
+    --local-assets)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--local-assets requires a directory" >&2
+        usage >&2
+        exit 1
+      fi
+      local_assets="$2"
+      shift
       ;;
     -h|--help)
       usage
@@ -88,9 +99,18 @@ esac
 
 asset_name="${BIN_NAME}-${target}"
 agent_asset_name="opengpu-node-agent-${target}"
-release_url="${RELEASE_BASE_URL%/}/${asset_name}"
+if [ -n "$local_assets" ]; then
+  if [ ! -d "$local_assets" ]; then
+    echo "local asset directory not found: $local_assets" >&2
+    exit 1
+  fi
+  release_source="${local_assets%/}"
+else
+  release_source="${RELEASE_BASE_URL%/}"
+fi
+release_url="${release_source}/${asset_name}"
 checksum_url="${release_url}.sha256"
-agent_url="${RELEASE_BASE_URL%/}/${agent_asset_name}"
+agent_url="${release_source}/${agent_asset_name}"
 agent_checksum_url="${agent_url}.sha256"
 tmp_dir="$(mktemp -d)"
 tmp_bin="${tmp_dir}/${asset_name}"
@@ -107,13 +127,22 @@ if [ "$runtime_only" -eq 0 ]; then
 fi
 
 download_to() {
-  local url="$1"
+  local source="$1"
   local output="$2"
 
+  if [ -n "$local_assets" ]; then
+    if [ ! -f "$source" ]; then
+      echo "local release asset not found: $source" >&2
+      exit 1
+    fi
+    cp "$source" "$output"
+    return
+  fi
+
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$output"
+    curl -fsSL "$source" -o "$output"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$output" "$url"
+    wget -qO "$output" "$source"
   else
     echo "curl or wget is required" >&2
     exit 1
@@ -207,7 +236,7 @@ EOF
 
 echo "MundusX installer"
 echo "  target: ${target}"
-echo "  source: ${RELEASE_BASE_URL%/}"
+echo "  source: ${release_source}"
 echo "  node agent: ${agent_asset_name}"
 echo "  install: ${INSTALL_DIR}"
 
