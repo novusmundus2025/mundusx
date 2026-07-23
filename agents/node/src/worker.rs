@@ -769,11 +769,15 @@ fn start_vllm_runtime(
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to launch vLLM container: {error}"))?;
-    let timeout_seconds = env::var("OPENGPU_VLLM_START_TIMEOUT_SECONDS")
+    let timeout_seconds = vllm_setting(
+        "OPENGPU_VLLM_START_TIMEOUT_SECONDS",
+        "VLLM_START_TIMEOUT_SECONDS",
+        "1800",
+    )
+        .parse::<u64>()
         .ok()
-        .and_then(|value| value.parse::<u64>().ok())
         .filter(|seconds| *seconds > 0)
-        .unwrap_or(600);
+        .unwrap_or(1800);
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
         if let Some(status) = child
