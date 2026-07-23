@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
 use std::io::Read;
 use std::path::Path;
@@ -588,7 +589,55 @@ fn configured_llama_server_url() -> Option<String> {
         .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
 }
 
+fn vllm_runtime_config_path() -> PathBuf {
+    opengpu_home_dir()
+        .join("runtimes")
+        .join("vllm")
+        .join("runtime.conf")
+}
+
+fn vllm_runtime_setting(key: &str) -> Option<String> {
+    let raw = fs::read_to_string(vllm_runtime_config_path()).ok()?;
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .find(|(candidate, _)| candidate.trim() == key)
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn vllm_setting(environment_key: &str, config_key: &str, default: &str) -> String {
+    env::var(environment_key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| vllm_runtime_setting(config_key))
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn configured_vllm_url() -> Option<String> {
+    env::var("OPENGPU_VLLM_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+        .or_else(|| {
+            if !vllm_runtime_config_path().is_file() {
+                return None;
+            }
+            let port = vllm_runtime_setting("VLLM_PORT").unwrap_or_else(|| "8000".to_string());
+            Some(format!("http://127.0.0.1:{port}"))
+        })
+}
+
 fn llama_server_health_ok(url: &str) -> bool {
+    ureq::get(&format!("{url}/health"))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .map(|response| response.status() < 500)
+        .unwrap_or(false)
+}
+
+fn vllm_health_ok(url: &str) -> bool {
     ureq::get(&format!("{url}/health"))
         .timeout(Duration::from_secs(2))
         .call()
@@ -599,19 +648,164 @@ fn llama_server_health_ok(url: &str) -> bool {
 pub struct PersistentRuntimeHandle {
     child: Child,
     url: String,
+    environment_variable: &'static str,
+    container_name: Option<String>,
 }
 
 impl PersistentRuntimeHandle {
     pub fn url(&self) -> &str {
         &self.url
     }
+
+    pub fn environment_variable(&self) -> &'static str {
+        self.environment_variable
+    }
 }
 
 impl Drop for PersistentRuntimeHandle {
     fn drop(&mut self) {
+        if let Some(container_name) = self.container_name.as_deref() {
+            let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
+            let _ = Command::new(docker)
+                .args(["stop", "--timeout", "10", container_name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
         kill_process_tree(self.child.id());
         let _ = self.child.wait();
     }
+}
+
+fn start_vllm_runtime(
+    model_dir: &Path,
+    model_name: Option<&str>,
+) -> Result<Option<PersistentRuntimeHandle>, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("vLLM persistent runtime is supported only on Linux".to_string());
+    }
+    let model_name = model_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "vLLM persistent runtime requires an active model".to_string())?;
+    let port = vllm_setting("OPENGPU_VLLM_PORT", "VLLM_PORT", "8000")
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port > 0)
+        .unwrap_or(8000);
+    let url = format!("http://127.0.0.1:{port}");
+    if vllm_health_ok(&url) {
+        return Ok(None);
+    }
+
+    let image = vllm_setting(
+        "OPENGPU_VLLM_IMAGE",
+        "VLLM_IMAGE",
+        "nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e",
+    );
+    let container_name = vllm_setting(
+        "OPENGPU_VLLM_CONTAINER_NAME",
+        "VLLM_CONTAINER_NAME",
+        "mundusx-vllm",
+    );
+    let memory_utilization = vllm_setting(
+        "OPENGPU_VLLM_GPU_MEMORY_UTILIZATION",
+        "VLLM_GPU_MEMORY_UTILIZATION",
+        "0.70",
+    );
+    let max_num_seqs = vllm_setting("OPENGPU_VLLM_MAX_NUM_SEQS", "VLLM_MAX_NUM_SEQS", "4");
+    let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
+    let runtime_dir = opengpu_home_dir().join("runtimes").join("vllm");
+    fs::create_dir_all(&runtime_dir)
+        .map_err(|error| format!("failed to create vLLM runtime directory: {error}"))?;
+    fs::create_dir_all(model_dir)
+        .map_err(|error| format!("failed to create vLLM model directory: {error}"))?;
+    let log_path = runtime_dir.join("runtime.log");
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("failed to open vLLM runtime log: {error}"))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|error| format!("failed to clone vLLM runtime log: {error}"))?;
+
+    let mut command = Command::new(docker);
+    command
+        .args([
+            "run",
+            "--rm",
+            "--gpus",
+            "all",
+            "--ipc=host",
+            "--ulimit",
+            "memlock=-1",
+            "--ulimit",
+            "stack=67108864",
+            "--name",
+        ])
+        .arg(&container_name)
+        .arg("-p")
+        .arg(format!("127.0.0.1:{port}:8000"))
+        .arg("-v")
+        .arg(format!("{}:/models", model_dir.display()))
+        .args(["-e", "HF_HOME=/models/.huggingface"]);
+    if env::var_os("HF_TOKEN").is_some() {
+        command.args(["-e", "HF_TOKEN"]);
+    }
+    command
+        .arg(&image)
+        .args(["vllm", "serve"])
+        .arg(model_name)
+        .args(["--host", "0.0.0.0", "--port", "8000"])
+        .arg("--gpu-memory-utilization")
+        .arg(&memory_utilization)
+        .arg("--max-num-seqs")
+        .arg(&max_num_seqs)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to launch vLLM container: {error}"))?;
+    let timeout_seconds = env::var("OPENGPU_VLLM_START_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(600);
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    while Instant::now() < deadline {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to poll vLLM container: {error}"))?
+        {
+            return Err(format!(
+                "vLLM container exited during startup with {}; see {}",
+                status.code().unwrap_or(-1),
+                log_path.display()
+            ));
+        }
+        if vllm_health_ok(&url) {
+            return Ok(Some(PersistentRuntimeHandle {
+                child,
+                url,
+                environment_variable: "OPENGPU_VLLM_URL",
+                container_name: Some(container_name),
+            }));
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+
+    let _ = Command::new(env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into()))
+        .args(["stop", "--timeout", "10", &container_name])
+        .status();
+    kill_process_tree(child.id());
+    let _ = child.wait();
+    Err(format!(
+        "vLLM runtime did not become healthy within {timeout_seconds}s; see {}",
+        log_path.display()
+    ))
 }
 
 pub fn start_persistent_runtime(
@@ -625,6 +819,9 @@ pub fn start_persistent_runtime(
         .unwrap_or(false)
     {
         return Ok(None);
+    }
+    if backend == Backend::Vllm {
+        return start_vllm_runtime(model_dir, model_name);
     }
 
     let Some(model_path) = resolve_model_path(model_dir, model_name).ok() else {
@@ -686,7 +883,12 @@ pub fn start_persistent_runtime(
             ));
         }
         if llama_server_health_ok(&url) {
-            return Ok(Some(PersistentRuntimeHandle { child, url }));
+            return Ok(Some(PersistentRuntimeHandle {
+                child,
+                url,
+                environment_variable: "OPENGPU_LLAMA_SERVER_URL",
+                container_name: None,
+            }));
         }
         thread::sleep(Duration::from_millis(300));
     }
@@ -1015,6 +1217,51 @@ fn run_llama_server_completion(
     Ok((generated, runtime_mode.to_string(), metrics))
 }
 
+fn run_vllm_completion(
+    url: &str,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    seed: u64,
+) -> Result<String, String> {
+    let mut messages = Vec::new();
+    if !system_prompt.is_empty() {
+        messages.push(serde_json::json!({
+            "role": "system",
+            "content": system_prompt,
+        }));
+    }
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": user_prompt,
+    }));
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "seed": seed,
+    });
+    let response = ureq::post(&format!("{url}/v1/chat/completions"))
+        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
+        .send_json(payload)
+        .map_err(|error| format!("vLLM completion failed: {error}"))?;
+    let value = response
+        .into_json::<serde_json::Value>()
+        .map_err(|error| format!("vLLM returned invalid json: {error}"))?;
+    value
+        .pointer("/choices/0/message/content")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "vLLM response did not include choices[0].message.content".to_string())
+        .map(str::to_string)
+}
+
 fn run_mlx_command(
     model_name: &str,
     prompt: &str,
@@ -1206,10 +1453,14 @@ pub fn probe_worker_health(
     let mut blas_device_available = false;
     let power_state = probe_power_state();
     let cuda = probe_cuda_diagnostics();
+    let vllm_url = configured_vllm_url();
+    let vllm_ready = vllm_url.as_deref().map(vllm_health_ok).unwrap_or(false);
 
-    match resolve_model_path(model_dir, model_name) {
-        Ok(path) => model_path = Some(path.display().to_string()),
-        Err(error) => notes.push(format!("model cache missing: {error}")),
+    if backend != Backend::Vllm {
+        match resolve_model_path(model_dir, model_name) {
+            Ok(path) => model_path = Some(path.display().to_string()),
+            Err(error) => notes.push(format!("model cache missing: {error}")),
+        }
     }
 
     match backend {
@@ -1225,10 +1476,21 @@ pub fn probe_worker_health(
             Err(error) => notes.push(error),
         },
         Backend::Vllm => {
-            notes.push(
-                "vLLM backend is explicit opt-in and requires the Linux vLLM runtime adapter; this worker will not advertise jobs until that adapter is installed"
-                    .to_string(),
-            );
+            if let Some(url) = vllm_url.as_deref() {
+                if vllm_ready {
+                    notes.push(format!("vLLM runtime is healthy at {url}"));
+                } else {
+                    notes.push(format!("vLLM runtime is configured but unhealthy at {url}"));
+                }
+            } else {
+                notes.push(
+                    "vLLM runtime URL is not configured; set OPENGPU_VLLM_URL to the local OpenAI-compatible endpoint"
+                        .to_string(),
+                );
+            }
+            if model_name.is_none() {
+                notes.push("vLLM requires an explicit active model".to_string());
+            }
         }
         _ => match probe_llama_cli_devices() {
             Ok(stdout) => {
@@ -1283,7 +1545,7 @@ pub fn probe_worker_health(
     } else if backend == Backend::Vulkan {
         model_path.is_some() && llama_cli_available
     } else if backend == Backend::Vllm {
-        false
+        cfg!(target_os = "linux") && model_name.is_some() && vllm_ready
     } else if backend == Backend::M && mlx_available {
         model_name.is_some() || model_path.is_some()
     } else if backend == Backend::Auto {
@@ -1302,7 +1564,11 @@ pub fn probe_worker_health(
         _ => "blas",
     };
     let runtime_mode = runtime_mode.to_string();
-    let runtime_kind = if persistent_runtime_warm {
+    let runtime_kind = if backend == Backend::Vllm && vllm_ready {
+        "persistent-warm".to_string()
+    } else if backend == Backend::Vllm {
+        "persistent-unavailable".to_string()
+    } else if persistent_runtime_warm {
         "persistent-warm".to_string()
     } else if llama_server_available {
         "persistent-unavailable".to_string()
@@ -1579,8 +1845,69 @@ fn run_llama_request(
     })
 }
 
+fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchResponse, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("vLLM execution is supported only on Linux nodes".to_string());
+    }
+    let url = configured_vllm_url()
+        .ok_or_else(|| "vLLM runtime URL is not configured; set OPENGPU_VLLM_URL".to_string())?;
+    if !vllm_health_ok(&url) {
+        return Err(format!("vLLM runtime is not healthy at {url}"));
+    }
+    let model = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "vLLM jobs require an explicit model".to_string())?;
+    let max_tokens = request.max_tokens.unwrap_or(16).max(1);
+    let temperature = request.temperature.unwrap_or(0.2).max(0.0);
+    let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
+    let seed = request.seed.unwrap_or(42);
+    let generated = run_vllm_completion(
+        &url,
+        model,
+        request.system_prompt.as_deref().unwrap_or("").trim(),
+        &request.prompt,
+        max_tokens,
+        temperature,
+        top_p,
+        seed,
+    )?;
+
+    Ok(WorkerLaunchResponse {
+        job_id: request.job_id.clone(),
+        worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+        status: "completed".to_string(),
+        output: format!(
+            "vLLM mode=persistent-warm; model={model}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}; response={generated}"
+        ),
+        error: None,
+        backend: Backend::Vllm,
+        node_id: request.node_id.clone(),
+        model: Some(model.to_string()),
+        runtime_mode: Some("vllm".to_string()),
+    })
+}
+
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
+    if backend == Backend::Vllm {
+        return match run_vllm_request(request) {
+            Ok(response) => response,
+            Err(error) => WorkerLaunchResponse {
+                job_id: request.job_id.clone(),
+                worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                status: "failed".to_string(),
+                output: String::new(),
+                error: Some(error),
+                backend,
+                node_id: request.node_id.clone(),
+                model: request.model.clone(),
+                runtime_mode: Some("vllm".to_string()),
+            },
+        };
+    }
     if matches!(
         backend,
         Backend::Auto | Backend::M | Backend::Cuda | Backend::Vulkan
@@ -1839,11 +2166,14 @@ mod tests {
         let previous_home = env::var_os("OPENGPU_HOME");
         let previous_paths = env::var_os("OPENGPU_TRUSTED_RUNTIME_PATHS");
         let previous_server_url = env::var_os("OPENGPU_LLAMA_SERVER_URL");
+        let previous_vllm_url = env::var_os("OPENGPU_VLLM_URL");
         env::set_var("OPENGPU_HOME", &temp_dir);
         env::set_var(
             "OPENGPU_TRUSTED_RUNTIME_PATHS",
             temp_dir.join("trusted-runtime-paths.json"),
         );
+        env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+        env::remove_var("OPENGPU_VLLM_URL");
 
         test(&temp_dir);
 
@@ -1858,6 +2188,10 @@ mod tests {
         match previous_server_url {
             Some(value) => env::set_var("OPENGPU_LLAMA_SERVER_URL", value),
             None => env::remove_var("OPENGPU_LLAMA_SERVER_URL"),
+        }
+        match previous_vllm_url {
+            Some(value) => env::set_var("OPENGPU_VLLM_URL", value),
+            None => env::remove_var("OPENGPU_VLLM_URL"),
         }
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -2287,7 +2621,7 @@ mod tests {
     }
 
     #[test]
-    fn vllm_health_is_explicitly_unavailable_until_adapter_exists() {
+    fn vllm_health_requires_a_configured_runtime_endpoint() {
         with_temp_runtime_home(|home| {
             let model_dir = home.join("models");
             let model_cache = model_dir.join("qwen");
@@ -2302,33 +2636,61 @@ mod tests {
             assert!(health
                 .notes
                 .iter()
-                .any(|note| note.contains("vLLM backend")));
+                .any(|note| note.contains("OPENGPU_VLLM_URL")));
         });
     }
 
     #[test]
-    fn vllm_worker_fails_with_clear_adapter_message() {
-        let response = execute_request(&WorkerLaunchRequest {
-            job_id: "job-vllm".to_string(),
-            node_id: "node-1".to_string(),
-            backend: Backend::Vllm,
-            prompt: "hello".to_string(),
-            model: Some("qwen".to_string()),
-            system_prompt: None,
-            max_tokens: Some(4),
-            temperature: Some(0.2),
-            top_p: Some(0.9),
-            seed: Some(42),
-        });
+    fn vllm_worker_fails_with_clear_runtime_message() {
+        with_temp_runtime_home(|_| {
+            let response = execute_request(&WorkerLaunchRequest {
+                job_id: "job-vllm".to_string(),
+                node_id: "node-1".to_string(),
+                backend: Backend::Vllm,
+                prompt: "hello".to_string(),
+                model: Some("qwen".to_string()),
+                system_prompt: None,
+                max_tokens: Some(4),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                seed: Some(42),
+            });
 
-        assert_eq!(response.backend, Backend::Vllm);
-        assert_eq!(response.status, "failed");
-        assert_eq!(response.runtime_mode.as_deref(), Some("vllm"));
-        assert!(response
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("not enabled in this worker runtime"));
+            assert_eq!(response.backend, Backend::Vllm);
+            assert_eq!(response.status, "failed");
+            assert_eq!(response.runtime_mode.as_deref(), Some("vllm"));
+            assert!(response
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("OPENGPU_VLLM_URL"));
+        });
+    }
+
+    #[test]
+    fn vllm_worker_uses_openai_compatible_endpoint() {
+        with_temp_runtime_home(|_| {
+            let url = start_mock_llama_server("hello from vllm", 2);
+            env::set_var("OPENGPU_VLLM_URL", &url);
+
+            let response = execute_request(&WorkerLaunchRequest {
+                job_id: "job-vllm".to_string(),
+                node_id: "node-1".to_string(),
+                backend: Backend::Vllm,
+                prompt: "hello".to_string(),
+                model: Some("Qwen/Qwen3-8B".to_string()),
+                system_prompt: Some("Answer directly.".to_string()),
+                max_tokens: Some(4),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                seed: Some(42),
+            });
+
+            assert_eq!(response.status, "completed");
+            assert_eq!(response.runtime_mode.as_deref(), Some("vllm"));
+            assert_eq!(response.model.as_deref(), Some("Qwen/Qwen3-8B"));
+            assert!(response.output.contains("response=hello from vllm"));
+        });
     }
 
     #[test]
