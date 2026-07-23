@@ -4313,7 +4313,11 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     let gb = detect_memory_gb();
     let selection = selection_for(backend, gb);
     let available_vram_mb = model_vram_budget_mb(config, backend);
-    let options = selectable_options_for(backend, gb, available_vram_mb);
+    let options = if backend == Backend::Vllm {
+        selectable_catalog_options_for(backend, available_vram_mb)
+    } else {
+        selectable_options_for(backend, gb, available_vram_mb)
+    };
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return options

@@ -202,6 +202,11 @@
       "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
       "lighter": {"name":"Qwen/Qwen2.5-7B-Instruct","label":"Qwen 2.5 7B","notes":"lighter native vLLM model for Linux NVIDIA nodes","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-7B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":16000},
       "recommended": {"name":"Qwen/Qwen2.5-14B-Instruct","label":"Qwen 2.5 14B","notes":"recommended native vLLM model for GX10 at the balanced cap","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-14B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":30000}
+    },
+    {
+      "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"Qwen/Qwen2.5-32B-Instruct","label":"Qwen 2.5 32B","notes":"high-capacity native vLLM model for GX10 at a high cap","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-32B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":68000},
+      "recommended": {"name":"Qwen/Qwen2.5-72B-Instruct","label":"Qwen 2.5 72B","notes":"very large native vLLM model for hosts with at least 150 GB available","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-72B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":150000}
     }
   ]
 }

@@ -345,6 +345,17 @@ mod tests {
         assert!(options
             .iter()
             .all(|option| option.source_kind == "huggingface-vllm"));
+        assert!(!options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-32B-Instruct"));
+
+        let high_cap_options = selectable_catalog_options_for(Backend::Vllm, Some(80_000));
+        assert!(high_cap_options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-32B-Instruct"));
+        assert!(!high_cap_options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-72B-Instruct"));
     }
 
     #[test]
