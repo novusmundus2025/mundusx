@@ -907,7 +907,7 @@ pub fn recommended_parallel_slots(
 ) -> u8 {
     let capacity_memory_mb = match backend {
         Backend::Cuda => physical_vram_mb,
-        Backend::M => unified_memory_mb,
+        Backend::M | Backend::Vllm => unified_memory_mb,
         _ => None,
     };
     let Some(capacity_memory_mb) = capacity_memory_mb else {
@@ -924,7 +924,7 @@ pub fn recommended_parallel_slots(
             16_385..=24_575 => 3,
             _ => 4,
         },
-        Backend::M => match usable_memory_mb {
+        Backend::M | Backend::Vllm => match usable_memory_mb {
             0..=16_384 => 1,
             16_385..=32_768 => 2,
             32_769..=65_536 => 3,
@@ -949,6 +949,7 @@ pub fn recommended_parallel_slots(
 
 fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
     let mut best: Option<(String, u32)> = None;
+    let mut detected_device_name = None;
 
     for line in stdout
         .lines()
@@ -958,10 +959,13 @@ fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
         let Some((name, memory)) = line.rsplit_once(',') else {
             continue;
         };
+        let name = name.trim().to_string();
+        if !name.is_empty() && detected_device_name.is_none() {
+            detected_device_name = Some(name.clone());
+        }
         let Some(memory_mb) = memory.trim().parse::<u32>().ok() else {
             continue;
         };
-        let name = name.trim().to_string();
         if best
             .as_ref()
             .map(|(_, best_memory)| memory_mb > *best_memory)
@@ -987,6 +991,18 @@ fn parse_nvidia_smi_query(stdout: &str) -> CudaDiagnostics {
             memory_mb: Some(memory_mb),
             low_vram_profile,
             notes,
+        }
+    } else if let Some(device_name) = detected_device_name {
+        CudaDiagnostics {
+            device_available: true,
+            driver_available: true,
+            device_name: Some(device_name),
+            memory_mb: None,
+            low_vram_profile: false,
+            notes: vec![
+                "nvidia-smi reported a GPU without dedicated VRAM; using unified system memory"
+                    .to_string(),
+            ],
         }
     } else {
         CudaDiagnostics {
@@ -2298,6 +2314,45 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("low-VRAM profile")));
+    }
+
+    #[test]
+    fn detects_gb10_when_nvidia_smi_reports_unified_memory() {
+        let diagnostics = parse_nvidia_smi_query("NVIDIA GB10, [N/A]\n");
+
+        assert!(diagnostics.device_available);
+        assert!(diagnostics.driver_available);
+        assert_eq!(diagnostics.device_name.as_deref(), Some("NVIDIA GB10"));
+        assert_eq!(diagnostics.memory_mb, None);
+        assert!(!diagnostics.low_vram_profile);
+        assert!(diagnostics
+            .notes
+            .iter()
+            .any(|note| note.contains("unified system memory")));
+    }
+
+    #[test]
+    fn vllm_slots_use_cap_applied_unified_memory() {
+        assert_eq!(
+            recommended_parallel_slots(
+                Backend::Vllm,
+                None,
+                Some(124_000),
+                65,
+                Some("Qwen2.5-32B"),
+            ),
+            1
+        );
+        assert_eq!(
+            recommended_parallel_slots(
+                Backend::Vllm,
+                None,
+                Some(124_000),
+                65,
+                Some("Qwen2.5-14B"),
+            ),
+            2
+        );
     }
 
     #[test]

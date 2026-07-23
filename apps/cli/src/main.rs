@@ -40,7 +40,7 @@ impl ExecutionMode {
     }
 }
 
-use config::{config_exists, load_config, resolved_config_path, save_config, Config};
+use config::{config_dir, config_exists, load_config, resolved_config_path, save_config, Config};
 use identity::{device_id_for_identity, ensure_identity, load_identity, load_or_create_identity};
 use model::{
     active_model_name, add_model, configured_model_dir_string, ensure_catalog_model_fits,
@@ -3846,7 +3846,14 @@ struct MachineProfile {
 }
 
 fn detect_machine_profile() -> MachineProfile {
-    let backend = detect_backend();
+    let detected_backend = detect_backend();
+    let vllm_runtime_available = config_dir()
+        .join("runtimes")
+        .join("vllm")
+        .join("runtime.conf")
+        .is_file();
+    let backend =
+        preferred_installed_backend(env::consts::OS, detected_backend, vllm_runtime_available);
     MachineProfile {
         os: env::consts::OS,
         arch: env::consts::ARCH,
@@ -3865,6 +3872,18 @@ fn detect_machine_profile() -> MachineProfile {
     }
 }
 
+fn preferred_installed_backend(
+    os: &str,
+    detected_backend: Backend,
+    vllm_runtime_available: bool,
+) -> Backend {
+    if os == "linux" && detected_backend == Backend::Cuda && vllm_runtime_available {
+        Backend::Vllm
+    } else {
+        detected_backend
+    }
+}
+
 fn contribution_vram_budget_mb(
     total_vram_mb: Option<u64>,
     contribution_percent: u8,
@@ -3874,7 +3893,7 @@ fn contribution_vram_budget_mb(
 
 fn model_vram_budget_mb(config: &Config, backend: Backend) -> Option<u64> {
     match backend {
-        Backend::M | Backend::Vulkan => contribution_vram_budget_mb(
+        Backend::M | Backend::Vulkan | Backend::Vllm => contribution_vram_budget_mb(
             Some(detect_memory_gb().saturating_mul(1024)),
             config.contribution_percent,
         ),
@@ -4294,7 +4313,13 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     let gb = detect_memory_gb();
     let selection = selection_for(backend, gb);
     let available_vram_mb = model_vram_budget_mb(config, backend);
-    let options = selectable_options_for(backend, gb, available_vram_mb);
+    let options = if backend == Backend::Vllm {
+        selectable_catalog_options_for(backend, available_vram_mb)
+    } else {
+        selectable_options_for(backend, gb, available_vram_mb)
+    };
+    let allow_local_gguf = backend != Backend::Vllm;
+    let choice_count = options.len() + usize::from(allow_local_gguf);
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return options
@@ -4332,23 +4357,30 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
         raw_println!("----------------------------------");
         for (i, option) in options.iter().enumerate() {
             let marker = if i == selected { ">>" } else { "  " };
+            let estimated = option
+                .estimated_vram_mb
+                .map(|value| format!("~{:.1} GB runtime", value as f64 / 1024.0))
+                .unwrap_or_else(|| "runtime memory unknown".to_string());
             raw_println!(
-                "{marker} {}. {} [{}] — {}",
+                "{marker} {}. {} [{}] — {}; {}",
                 i + 1,
                 option.label,
                 option.name,
-                option.notes
+                option.notes,
+                estimated
             );
         }
-        let marker = if selected == options.len() {
-            ">>"
-        } else {
-            "  "
-        };
-        raw_println!(
-            "{marker} {}. Import local GGUF / LM Studio model",
-            options.len() + 1
-        );
+        if allow_local_gguf {
+            let marker = if selected == options.len() {
+                ">>"
+            } else {
+                "  "
+            };
+            raw_println!(
+                "{marker} {}. Import local GGUF / LM Studio model",
+                options.len() + 1
+            );
+        }
         raw_println!();
         raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter — you must choose one");
         let _ = io::stdout().flush();
@@ -4370,7 +4402,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
                     render(selected);
                 }
                 KeyCode::Down | KeyCode::Tab => {
-                    if selected < options.len() {
+                    if selected + 1 < choice_count {
                         selected += 1;
                     }
                     render(selected);
@@ -4379,13 +4411,13 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
                 _ => {}
             },
             Ok(_) => {}
-            Err(_) => break 1,
+            Err(_) => break selected,
         }
     };
 
     let _ = disable_raw_mode();
 
-    if result == options.len() {
+    if allow_local_gguf && result == options.len() {
         clear_menu_screen();
         print!("Path to local .gguf model file: ");
         let _ = io::stdout().flush();
@@ -6512,6 +6544,22 @@ mod tests {
         assert_eq!(
             super::install_profile_for("windows", "x86_64", Backend::Auto),
             "windows-x86_64-generic"
+        );
+    }
+
+    #[test]
+    fn installed_vllm_runtime_is_preferred_over_linux_cuda() {
+        assert_eq!(
+            super::preferred_installed_backend("linux", Backend::Cuda, true),
+            Backend::Vllm
+        );
+        assert_eq!(
+            super::preferred_installed_backend("linux", Backend::Cuda, false),
+            Backend::Cuda
+        );
+        assert_eq!(
+            super::preferred_installed_backend("windows", Backend::Cuda, true),
+            Backend::Cuda
         );
     }
 
