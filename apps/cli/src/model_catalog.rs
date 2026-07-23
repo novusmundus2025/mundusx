@@ -115,7 +115,7 @@ pub fn options_for_machine(
             continue;
         }
 
-        if backend == Backend::Cuda {
+        if matches!(backend, Backend::Cuda | Backend::Vllm) {
             let Some(estimated_vram_mb) = option.estimated_vram_mb else {
                 continue;
             };
@@ -171,7 +171,10 @@ pub fn selectable_catalog_options_for(
         .presets
         .into_iter()
         .flat_map(|preset| [preset.lighter, preset.recommended])
-        .filter(|option| option.supports_backend(backend))
+        .filter(|option| {
+            option.supports_backend(backend)
+                && (backend != Backend::Vllm || option.source_kind == "huggingface-vllm")
+        })
         .fold(Vec::new(), |mut options, option| {
             if !options
                 .iter()
@@ -183,7 +186,7 @@ pub fn selectable_catalog_options_for(
         })
         .into_iter()
         .filter(|option| {
-            if backend != Backend::Cuda && backend != Backend::M {
+            if !matches!(backend, Backend::Cuda | Backend::M | Backend::Vllm) {
                 return true;
             }
 
@@ -327,6 +330,21 @@ mod tests {
         assert!(sixty_four_gb_at_eighty_percent
             .iter()
             .any(|option| option.name == "tensorblock/Qwen2.5-72B-Instruct-GGUF"));
+    }
+
+    #[test]
+    fn vllm_picker_offers_native_hugging_face_models() {
+        let options = selectable_catalog_options_for(Backend::Vllm, Some(36_000));
+
+        assert!(options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-7B-Instruct"));
+        assert!(options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen2.5-14B-Instruct"));
+        assert!(options
+            .iter()
+            .all(|option| option.source_kind == "huggingface-vllm"));
     }
 
     #[test]

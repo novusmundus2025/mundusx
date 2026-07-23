@@ -40,7 +40,7 @@ impl ExecutionMode {
     }
 }
 
-use config::{config_exists, load_config, resolved_config_path, save_config, Config};
+use config::{config_dir, config_exists, load_config, resolved_config_path, save_config, Config};
 use identity::{device_id_for_identity, ensure_identity, load_identity, load_or_create_identity};
 use model::{
     active_model_name, add_model, configured_model_dir_string, ensure_catalog_model_fits,
@@ -3846,7 +3846,14 @@ struct MachineProfile {
 }
 
 fn detect_machine_profile() -> MachineProfile {
-    let backend = detect_backend();
+    let detected_backend = detect_backend();
+    let vllm_runtime_available = config_dir()
+        .join("runtimes")
+        .join("vllm")
+        .join("runtime.conf")
+        .is_file();
+    let backend =
+        preferred_installed_backend(env::consts::OS, detected_backend, vllm_runtime_available);
     MachineProfile {
         os: env::consts::OS,
         arch: env::consts::ARCH,
@@ -3865,6 +3872,18 @@ fn detect_machine_profile() -> MachineProfile {
     }
 }
 
+fn preferred_installed_backend(
+    os: &str,
+    detected_backend: Backend,
+    vllm_runtime_available: bool,
+) -> Backend {
+    if os == "linux" && detected_backend == Backend::Cuda && vllm_runtime_available {
+        Backend::Vllm
+    } else {
+        detected_backend
+    }
+}
+
 fn contribution_vram_budget_mb(
     total_vram_mb: Option<u64>,
     contribution_percent: u8,
@@ -3874,7 +3893,7 @@ fn contribution_vram_budget_mb(
 
 fn model_vram_budget_mb(config: &Config, backend: Backend) -> Option<u64> {
     match backend {
-        Backend::M | Backend::Vulkan => contribution_vram_budget_mb(
+        Backend::M | Backend::Vulkan | Backend::Vllm => contribution_vram_budget_mb(
             Some(detect_memory_gb().saturating_mul(1024)),
             config.contribution_percent,
         ),
@@ -6512,6 +6531,22 @@ mod tests {
         assert_eq!(
             super::install_profile_for("windows", "x86_64", Backend::Auto),
             "windows-x86_64-generic"
+        );
+    }
+
+    #[test]
+    fn installed_vllm_runtime_is_preferred_over_linux_cuda() {
+        assert_eq!(
+            super::preferred_installed_backend("linux", Backend::Cuda, true),
+            Backend::Vllm
+        );
+        assert_eq!(
+            super::preferred_installed_backend("linux", Backend::Cuda, false),
+            Backend::Cuda
+        );
+        assert_eq!(
+            super::preferred_installed_backend("windows", Backend::Cuda, true),
+            Backend::Cuda
         );
     }
 

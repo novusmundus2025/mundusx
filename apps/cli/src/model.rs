@@ -103,11 +103,16 @@ pub fn add_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
 pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     ensure_effective_model_dir(config);
     let _ = download_model_if_available(config, name)?;
-    let remote_mlx = lookup_model_for_backend(name, config.backend_preference)
-        .map(|option| option.source_kind == "huggingface-mlx")
+    let remote_runtime_model = lookup_model_for_backend(name, config.backend_preference)
+        .map(|option| {
+            matches!(
+                option.source_kind.as_str(),
+                "huggingface-mlx" | "huggingface-vllm"
+            )
+        })
         .unwrap_or(false);
     let cached_path = cached_model_path(config, name)?;
-    if cached_path.is_none() && !remote_mlx {
+    if cached_path.is_none() && !remote_runtime_model {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("model `{name}` is not cached; download or import it before activating"),
@@ -163,10 +168,10 @@ pub fn ensure_catalog_model_fits(
         return Ok(());
     };
 
-    let expected_format = if backend == crate::types::Backend::M {
-        ["gguf", "mlx"].as_slice()
-    } else {
-        ["gguf"].as_slice()
+    let expected_format = match backend {
+        crate::types::Backend::M => ["gguf", "mlx"].as_slice(),
+        crate::types::Backend::Vllm => ["safetensors"].as_slice(),
+        _ => ["gguf"].as_slice(),
     };
     if !option
         .format
@@ -176,7 +181,9 @@ pub fn ensure_catalog_model_fits(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("refusing to download `{name}`: catalog entry is not a GGUF model"),
+            format!(
+                "refusing to use `{name}`: catalog format is not supported by {backend}"
+            ),
         ));
     }
 
@@ -191,7 +198,10 @@ pub fn ensure_catalog_model_fits(
 
     if !matches!(
         backend,
-        crate::types::Backend::Cuda | crate::types::Backend::M | crate::types::Backend::Vulkan
+        crate::types::Backend::Cuda
+            | crate::types::Backend::M
+            | crate::types::Backend::Vulkan
+            | crate::types::Backend::Vllm
     ) {
         return Ok(());
     }
@@ -472,7 +482,10 @@ fn download_model_if_available(config: &Config, name: &str) -> io::Result<bool> 
         return Ok(false);
     };
 
-    if option.source_kind == "huggingface-mlx" {
+    if matches!(
+        option.source_kind.as_str(),
+        "huggingface-mlx" | "huggingface-vllm"
+    ) {
         return Ok(false);
     }
 
@@ -868,6 +881,19 @@ mod tests {
         let name = "mlx-community/Qwen2.5-3B-Instruct-4bit";
 
         let active = use_model(&mut config, name).expect("activate MLX model");
+        assert_eq!(active.name, name);
+        assert_eq!(config.active_model.as_deref(), Some(name));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn activates_vllm_hub_model_without_local_file_cache() {
+        let (mut config, temp_dir) = temp_config();
+        config.backend_preference = crate::types::Backend::Vllm;
+        let name = "Qwen/Qwen2.5-14B-Instruct";
+
+        let active = use_model(&mut config, name).expect("activate vLLM model");
         assert_eq!(active.name, name);
         assert_eq!(config.active_model.as_deref(), Some(name));
 
