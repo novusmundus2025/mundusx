@@ -220,6 +220,11 @@
     },
     {
       "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
+      "lighter": {"name":"Qwen/Qwen3-Coder-30B-A3B-Instruct","label":"Qwen3 Coder 30B-A3B — BF16 MoE","notes":"coding-specialized MoE; 30.5B total and 3.3B active parameters; about 61 GB download","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":68000},
+      "recommended": {"name":"Qwen/Qwen3-Coder-30B-A3B-Instruct","label":"Qwen3 Coder 30B-A3B — BF16 MoE","notes":"coding-specialized MoE; 30.5B total and 3.3B active parameters; about 61 GB download","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":68000}
+    },
+    {
+      "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
       "lighter": {"name":"Qwen/Qwen2.5-32B-Instruct","label":"Qwen 2.5 32B — BF16","notes":"normal precision; about 65 GB before runtime overhead","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-32B-Instruct","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":68000},
       "recommended": {"name":"Qwen/Qwen2.5-72B-Instruct-AWQ","label":"Qwen 2.5 72B — AWQ 4-bit","notes":"compressed; large model for high-memory contributors","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/Qwen/Qwen2.5-72B-Instruct-AWQ","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":45000}
     },

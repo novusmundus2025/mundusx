@@ -348,11 +348,17 @@ mod tests {
         assert!(!options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-32B-Instruct"));
+        assert!(!options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"));
 
         let high_cap_options = selectable_catalog_options_for(Backend::Vllm, Some(80_000));
         assert!(high_cap_options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-32B-Instruct"));
+        assert!(high_cap_options
+            .iter()
+            .any(|option| option.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"));
         assert!(high_cap_options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-72B-Instruct-AWQ"));
