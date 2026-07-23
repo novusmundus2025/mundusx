@@ -3738,6 +3738,86 @@ fn prefetch_mlx_catalog_model(config: &Config, model: &str) -> Result<(), String
     prefetch_mlx_model(&python, model)
 }
 
+fn vllm_runtime_config_value(key: &str) -> Option<String> {
+    let path = config_dir().join("runtimes").join("vllm").join("runtime.conf");
+    let contents = std::fs::read_to_string(path).ok()?;
+    contents.lines().find_map(|line| {
+        let (candidate, value) = line.split_once('=')?;
+        (candidate.trim() == key)
+            .then(|| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn should_prefetch_vllm_catalog_model(config: &Config, model: &str) -> bool {
+    resolved_backend(config) == Backend::Vllm
+        && lookup_model_for_backend(model, Backend::Vllm)
+            .map(|option| option.source_kind == "huggingface-vllm")
+            .unwrap_or(false)
+}
+
+fn prefetch_vllm_catalog_model(config: &Config, model: &str) -> Result<(), String> {
+    if !should_prefetch_vllm_catalog_model(config, model) {
+        return Ok(());
+    }
+    if !cfg!(target_os = "linux") {
+        return Err("vLLM model downloads are supported only on Linux".to_string());
+    }
+    if !is_hugging_face_model_id(model) {
+        return Err(format!("model `{model}` is not a Hugging Face repository ID"));
+    }
+
+    let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
+    let image = env::var("OPENGPU_VLLM_IMAGE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| vllm_runtime_config_value("VLLM_IMAGE"))
+        .ok_or_else(|| {
+            "the vLLM runtime image is not configured; run the Linux installer with --with-vllm"
+                .to_string()
+        })?;
+    let model_dir = PathBuf::from(configured_model_dir_string(config));
+    std::fs::create_dir_all(&model_dir)
+        .map_err(|error| format!("failed to create model cache directory: {error}"))?;
+
+    println!("modelPrefetch: downloading {model} for vLLM");
+    println!("modelPrefetchCache: {}", model_dir.display());
+    let script = concat!(
+        "import sys; ",
+        "from huggingface_hub import snapshot_download; ",
+        "path=snapshot_download(repo_id=sys.argv[1]); ",
+        "print(f'\\nmodelPrefetchPath: {path}')"
+    );
+    let mut command = Command::new(docker);
+    command.args([
+        "run",
+        "--rm",
+        "--gpus",
+        "all",
+        "--ipc=host",
+        "--ulimit",
+        "memlock=-1",
+        "--ulimit",
+        "stack=67108864",
+    ]);
+    if io::stderr().is_terminal() {
+        command.arg("-t");
+    }
+    command
+        .arg("-v")
+        .arg(format!("{}:/models", model_dir.display()))
+        .args(["-e", "HF_HOME=/models/.huggingface"]);
+    if env::var_os("HF_TOKEN").is_some() {
+        command.args(["-e", "HF_TOKEN"]);
+    }
+    command
+        .arg(image)
+        .args(["python3", "-c", script, model]);
+    run_streaming_command(command, "prefetch vLLM model")?;
+    println!("modelPrefetch: ready");
+    Ok(())
+}
+
 fn verify_mlx_runtime() -> Result<PathBuf, String> {
     let python = mlx_runtime_python_path();
     if !python.exists() {
@@ -5229,6 +5309,10 @@ fn main() {
                         eprintln!("failed to download MLX model `{name}`: {error}");
                         std::process::exit(1);
                     }
+                    if let Err(error) = prefetch_vllm_catalog_model(&config, &name) {
+                        eprintln!("failed to download vLLM model `{name}`: {error}");
+                        std::process::exit(1);
+                    }
                     if let Err(error) = use_model(&mut config, &name) {
                         eprintln!("failed to activate model `{name}`: {error}");
                         std::process::exit(1);
@@ -5254,6 +5338,10 @@ fn main() {
                     }
                     if let Err(error) = prefetch_mlx_catalog_model(&config, &name) {
                         eprintln!("failed to download MLX model `{name}`: {error}");
+                        std::process::exit(1);
+                    }
+                    if let Err(error) = prefetch_vllm_catalog_model(&config, &name) {
+                        eprintln!("failed to download vLLM model `{name}`: {error}");
                         std::process::exit(1);
                     }
                     if let Err(error) = add_model(&mut config, &name) {
@@ -5600,9 +5688,9 @@ mod tests {
         job_is_terminal, job_status_path, job_wait_progress_signature, local_readiness,
         logs_payload, normalize_control_plane_url, parse_worker_output, remote_job_output,
         resolve_install_control_plane_url, runtime_metrics_from_output,
-        runtime_metrics_from_payload, should_prompt_model_selection, terminal_line_endings,
-        vllm_doctor_payload, Cli, Commands, ExecutionMode, JobsCommands, PowerState,
-        PUBLIC_CONTROL_PLANE_URL,
+        runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
+        should_prompt_model_selection, terminal_line_endings, vllm_doctor_payload, Cli, Commands,
+        ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -5894,6 +5982,26 @@ mod tests {
         assert!(!is_hugging_face_model_id("/tmp/model"));
         assert!(!is_hugging_face_model_id("owner/../model"));
         assert!(!is_hugging_face_model_id("owner/model/extra"));
+    }
+
+    #[test]
+    fn vllm_prefetch_accepts_only_vllm_catalog_models() {
+        let mut config = Config::default();
+        config.backend_preference = Backend::Vllm;
+        assert!(should_prefetch_vllm_catalog_model(
+            &config,
+            "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+        ));
+        assert!(!should_prefetch_vllm_catalog_model(
+            &config,
+            "example/not-in-catalog"
+        ));
+
+        config.backend_preference = Backend::M;
+        assert!(!should_prefetch_vllm_catalog_model(
+            &config,
+            "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+        ));
     }
 
     #[test]
