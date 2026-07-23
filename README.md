@@ -62,6 +62,15 @@ On Windows, use the native PowerShell bootstrapper:
 .\install.ps1 -ReleaseBaseUrl https://github.com/mundusx/mundusx/releases/download/cli-windows-v0.1.11
 ```
 
+On Linux ARM64 GB10/GX10, the same POSIX installer automatically installs the
+CLI, node agent, and pinned NVIDIA vLLM runtime:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | bash
+opengpu install
+opengpu start
+```
+
 The installer downloads the matching release binary for the user's operating system and CPU architecture from the local release preview, then verifies the checksum when available. After the binary is installed, `opengpu install` detects the machine profile, control-plane choice, community contribution cap, and model fit.
 
 See [docs/install-page.md](/Users/DBATALL/Documents/mundusx/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/mundusx/docs/install-strategy.md) for the distribution plan.

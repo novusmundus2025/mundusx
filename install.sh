@@ -11,12 +11,14 @@ VLLM_IMAGE="${OPENGPU_VLLM_IMAGE:-nvcr.io/nvidia/vllm@sha256:63b808804826a028e38
 VLLM_IMAGE_TAG="${OPENGPU_VLLM_IMAGE_TAG:-26.06-py3}"
 with_vllm=0
 runtime_only=0
+without_vllm=0
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--with-vllm] [--runtime-only] [--help]
+Usage: install.sh [--with-vllm] [--without-vllm] [--runtime-only] [--help]
 
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
+  --without-vllm Skip automatic vLLM installation on detected GB10/GX10 hosts.
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
   --help         Show this help.
 EOF
@@ -26,6 +28,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --with-vllm)
       with_vllm=1
+      ;;
+    --without-vllm)
+      without_vllm=1
       ;;
     --runtime-only)
       with_vllm=1
@@ -53,6 +58,16 @@ case "$os" in
   mingw*|msys*|cygwin*) echo "Windows installs must use PowerShell: powershell -ExecutionPolicy Bypass -File .\\install.ps1" >&2; exit 1 ;;
   *) echo "unsupported operating system: $os" >&2; exit 1 ;;
 esac
+
+if [ "$without_vllm" -eq 0 ] \
+  && [ "$with_vllm" -eq 0 ] \
+  && [ "$os" = "linux" ] \
+  && { [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; } \
+  && command -v nvidia-smi >/dev/null 2>&1 \
+  && nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -Fq "GB10"; then
+  with_vllm=1
+  echo "Detected NVIDIA GB10/GX10; including the pinned vLLM runtime."
+fi
 
 case "$arch" in
   arm64|aarch64)
@@ -230,4 +245,11 @@ fi
 
 if [ "$with_vllm" -eq 1 ]; then
   install_vllm_runtime
+fi
+
+if [ "$runtime_only" -eq 0 ]; then
+  echo
+  echo "Next steps:"
+  echo "  opengpu install"
+  echo "  opengpu start"
 fi

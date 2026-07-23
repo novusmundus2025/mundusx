@@ -68,10 +68,13 @@ output="$(
   INSTALL_DIR="$install_dir" \
   OPENGPU_HOME="$opengpu_home" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
-  bash "$repo_root/install.sh" --with-vllm 2>&1
+  bash "$repo_root/install.sh" 2>&1
 )"
 
+printf '%s\n' "$output" | grep -F "Detected NVIDIA GB10/GX10" >/dev/null
 printf '%s\n' "$output" | grep -F "target: aarch64-unknown-linux-gnu" >/dev/null
+printf '%s\n' "$output" | grep -F "  opengpu install" >/dev/null
+printf '%s\n' "$output" | grep -F "  opengpu start" >/dev/null
 grep -F "opengpu-aarch64-unknown-linux-gnu" "$TEST_DOWNLOAD_LOG" >/dev/null
 grep -F "opengpu-node-agent-aarch64-unknown-linux-gnu" "$TEST_DOWNLOAD_LOG" >/dev/null
 grep -F "run --rm --gpus all nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 nvidia-smi" "$TEST_DOCKER_LOG" >/dev/null
@@ -79,4 +82,4 @@ grep -F "pull nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf67
 grep -F "VLLM_GPU_MEMORY_UTILIZATION=0.70" "$opengpu_home/runtimes/vllm/runtime.conf" >/dev/null
 grep -F "VLLM_MAX_NUM_SEQS=4" "$opengpu_home/runtimes/vllm/runtime.conf" >/dev/null
 
-echo "PASS: install.sh provisions the pinned Linux ARM64 vLLM runtime"
+echo "PASS: install.sh auto-detects GB10 and provisions the pinned Linux ARM64 vLLM runtime"

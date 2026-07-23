@@ -30,8 +30,14 @@ The first supported vLLM target is Ubuntu 24.04 on ARM64 GB10/GX10 systems with:
 Install the CLI, node agent, and pinned runtime configuration with:
 
 ```bash
-bash install.sh --with-vllm
+bash install.sh
+opengpu install
+opengpu start
 ```
+
+The installer detects GB10/GX10 automatically. Use `--with-vllm` to request the
+same runtime explicitly on another supported Linux ARM64 NVIDIA host, or
+`--without-vllm` to install only the MundusX CLI and node agent.
 
 Use `--runtime-only` to configure the vLLM runtime around an existing MundusX
 CLI installation. The installer binds the API to `127.0.0.1`, defaults
