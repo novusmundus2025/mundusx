@@ -9,7 +9,7 @@ mod types;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::cursor::MoveTo;
-use crossterm::event::{poll, read, Event, KeyCode, KeyModifiers};
+use crossterm::event::{poll, read, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::style::Color;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
@@ -332,6 +332,10 @@ fn current_config_or_default() -> Config {
 fn clear_menu_screen() {
     let mut stdout = io::stdout();
     let _ = execute!(stdout, Clear(ClearType::All), MoveTo(0, 0));
+}
+
+fn handles_terminal_key(kind: KeyEventKind) -> bool {
+    kind != KeyEventKind::Release
 }
 
 macro_rules! raw_println {
@@ -3164,9 +3168,10 @@ fn run_node_agent_foreground(
         match poll(Duration::from_millis(200)) {
             Ok(true) => match read() {
                 Ok(Event::Key(event))
-                    if event.code == KeyCode::Esc
-                        || event.code == KeyCode::Char('c')
-                            && event.modifiers.contains(KeyModifiers::CONTROL) =>
+                    if handles_terminal_key(event.kind)
+                        && (event.code == KeyCode::Esc
+                            || event.code == KeyCode::Char('c')
+                                && event.modifiers.contains(KeyModifiers::CONTROL)) =>
                 {
                     mark_disconnected()?;
                     drop(raw_mode.take());
@@ -3485,7 +3490,12 @@ fn detect_backend() -> Backend {
     if env::consts::OS == "windows" {
         let llama_cli = env::var_os("OPENGPU_LLAMA_CLI")
             .map(PathBuf::from)
-            .unwrap_or_else(|| config::config_dir().join("runtimes").join("llama").join("llama-cli.exe"));
+            .unwrap_or_else(|| {
+                config::config_dir()
+                    .join("runtimes")
+                    .join("llama")
+                    .join("llama-cli.exe")
+            });
         if Command::new(llama_cli)
             .arg("--list-devices")
             .output()
@@ -4037,7 +4047,7 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
 
     let result = loop {
         match read() {
-            Ok(Event::Key(key)) => match key.code {
+            Ok(Event::Key(key)) if handles_terminal_key(key.kind) => match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let _ = disable_raw_mode();
                     println!();
@@ -4207,7 +4217,7 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
 
     let result = loop {
         match read() {
-            Ok(Event::Key(key)) => match key.code {
+            Ok(Event::Key(key)) if handles_terminal_key(key.kind) => match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let _ = disable_raw_mode();
                     println!();
@@ -4470,7 +4480,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
 
     let result = loop {
         match read() {
-            Ok(Event::Key(key)) => match key.code {
+            Ok(Event::Key(key)) if handles_terminal_key(key.kind) => match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let _ = disable_raw_mode();
                     println!();
@@ -4595,7 +4605,7 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
 
     let result = loop {
         match read() {
-            Ok(Event::Key(key)) => match key.code {
+            Ok(Event::Key(key)) if handles_terminal_key(key.kind) => match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let _ = disable_raw_mode();
                     println!();
@@ -5684,10 +5694,10 @@ fn main() {
 mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
-        cuda_doctor_payload, doctor_payload, graph_progress_counts, is_hugging_face_model_id,
-        job_is_terminal, job_status_path, job_wait_progress_signature, local_readiness,
-        logs_payload, normalize_control_plane_url, parse_worker_output, remote_job_output,
-        resolve_install_control_plane_url, runtime_metrics_from_output,
+        cuda_doctor_payload, doctor_payload, graph_progress_counts, handles_terminal_key,
+        is_hugging_face_model_id, job_is_terminal, job_status_path, job_wait_progress_signature,
+        local_readiness, logs_payload, normalize_control_plane_url, parse_worker_output,
+        remote_job_output, resolve_install_control_plane_url, runtime_metrics_from_output,
         runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
         should_prompt_model_selection, terminal_line_endings, vllm_doctor_payload, Cli, Commands,
         ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
@@ -5696,6 +5706,7 @@ mod tests {
     use crate::model::ModelRecord;
     use crate::types::Backend;
     use clap::Parser;
+    use crossterm::event::KeyEventKind;
     use std::fs;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
@@ -5703,6 +5714,13 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn terminal_menus_ignore_windows_key_release_events() {
+        assert!(handles_terminal_key(KeyEventKind::Press));
+        assert!(handles_terminal_key(KeyEventKind::Repeat));
+        assert!(!handles_terminal_key(KeyEventKind::Release));
     }
 
     fn ac_power() -> PowerState {

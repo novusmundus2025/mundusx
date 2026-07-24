@@ -112,7 +112,12 @@ fn message(title: &str, body: &str, error: bool) {
             ptr::null_mut(),
             body.as_ptr(),
             title.as_ptr(),
-            MB_OK | if error { MB_ICONERROR } else { MB_ICONINFORMATION },
+            MB_OK
+                | if error {
+                    MB_ICONERROR
+                } else {
+                    MB_ICONINFORMATION
+                },
         );
     }
 }
@@ -163,8 +168,12 @@ mod tests {
     #[test]
     fn powershell_arguments_use_the_embedded_script() {
         let arguments = installer_arguments(std::path::Path::new("C:\\Temp\\install.ps1"));
-        assert!(arguments.windows(2).any(|pair| pair == ["-ExecutionPolicy", "Bypass"]));
-        assert!(arguments.windows(2).any(|pair| pair == ["-File", "C:\\Temp\\install.ps1"]));
+        assert!(arguments
+            .windows(2)
+            .any(|pair| pair == ["-ExecutionPolicy", "Bypass"]));
+        assert!(arguments
+            .windows(2)
+            .any(|pair| pair == ["-File", "C:\\Temp\\install.ps1"]));
     }
 
     #[test]
