@@ -7,8 +7,8 @@ mod worker;
 use clap::{Parser, Subcommand};
 use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    NodeAdmissionStatus, NodeCapabilityAdvertisement, WorkerHealthReport, WorkerLaunchRequest,
-    WorkerLaunchResponse, WorkerPolicyReport,
+    NodeAdmissionStatus, NodeCapabilityAdvertisement, NodeCapabilityProfile, NodeRole,
+    WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
 };
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
@@ -262,15 +262,105 @@ fn build_capabilities(
     }
 }
 
+fn default_context_tokens_for_model(model: Option<&contracts::ModelCapability>) -> Option<u32> {
+    let name = model?.name.to_ascii_lowercase();
+    if name.contains("32b") || name.contains("14b") || name.contains("coder") {
+        Some(16_384)
+    } else if name.contains("7b") || name.contains("8b") || name.contains("3b") {
+        Some(8_192)
+    } else {
+        Some(4_096)
+    }
+}
+
+fn node_roles_for(
+    backend: Backend,
+    health: &WorkerHealthReport,
+    capabilities: &NodeCapabilityAdvertisement,
+    available_memory_mb: u32,
+) -> Vec<NodeRole> {
+    if !capabilities.ready_for_jobs {
+        return Vec::new();
+    }
+
+    let mut roles = vec![NodeRole::Chat, NodeRole::Batch];
+    if health.runtime_mode == "vllm"
+        || matches!(backend, Backend::Cuda | Backend::Vulkan | Backend::M)
+    {
+        roles.push(NodeRole::Coding);
+    }
+    let usable_vram = capabilities.usable_vram_mb.unwrap_or(0);
+    if health.runtime_mode == "vllm"
+        || usable_vram >= 8_192
+        || health.parallel_slots >= 2
+        || (backend == Backend::M && available_memory_mb >= 65_536)
+    {
+        roles.push(NodeRole::Reducer);
+    }
+    roles.sort_by_key(|role| role.as_str());
+    roles.dedup();
+    roles
+}
+
+fn build_scheduler_capabilities(
+    config: &AgentConfig,
+    health: &WorkerHealthReport,
+    capabilities: &NodeCapabilityAdvertisement,
+    available_memory_mb: u32,
+    available_gpu_percent: u32,
+) -> NodeCapabilityProfile {
+    let backend = resolved_backend(config);
+    let model = capabilities.active_model.clone();
+    let context_tokens = default_context_tokens_for_model(model.as_ref());
+    let models = model.into_iter().collect::<Vec<_>>();
+    let available_vram_mb = capabilities
+        .usable_vram_mb
+        .or(capabilities.physical_vram_mb)
+        .or(health.cuda_memory_mb);
+    let total_vram_mb = capabilities.physical_vram_mb.or(health.cuda_memory_mb);
+    let current_load_percent = Some(100_u8.saturating_sub(available_gpu_percent.min(100) as u8));
+    let active_model_name = config
+        .active_model
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    NodeCapabilityProfile {
+        models,
+        max_context_tokens: context_tokens,
+        total_vram_mb,
+        available_vram_mb,
+        supports_vision: false,
+        supports_embeddings: active_model_name.contains("embed"),
+        supports_tools: false,
+        max_parallel_jobs: health.parallel_slots.max(1) as u32,
+        current_load_percent,
+        roles: node_roles_for(backend, health, capabilities, available_memory_mb),
+        skill_tags: vec![
+            format!("backend:{}", backend.as_str()),
+            format!("runtime:{}", health.runtime_mode),
+        ],
+    }
+}
+
 fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> Heartbeat {
-    let (health, policy) = worker_readiness(config);
+    let (mut health, policy) = worker_readiness(config);
     let capabilities = build_capabilities(config, &health, policy.allowed);
+    let available_memory_mb = detect_memory_mb();
+    let available_gpu_percent = detect_available_gpu_percent(config);
+    health.capabilities = build_scheduler_capabilities(
+        config,
+        &health,
+        &capabilities,
+        available_memory_mb,
+        available_gpu_percent,
+    );
     Heartbeat {
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
         agent_state,
-        available_memory_mb: detect_memory_mb(),
-        available_gpu_percent: detect_available_gpu_percent(config),
+        available_memory_mb,
+        available_gpu_percent,
         updated_at: now_unix_seconds(),
         contribution_percent: config.contribution_percent,
         hostname: detect_hostname(),
@@ -1493,6 +1583,7 @@ mod tests {
             runtime_mode: backend.as_str().to_string(),
             parallel_slots: 1,
             supported_runtime_modes: vec!["local".to_string()],
+            capabilities: NodeCapabilityProfile::default(),
             checked_at: "1".to_string(),
             notes: Vec::new(),
         }
@@ -1686,6 +1777,55 @@ mod tests {
         );
         assert!(capability.ready_for_jobs);
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn scheduler_capability_profile_advertises_roles_and_budget() {
+        let mut config = test_config();
+        let temp = std::env::temp_dir().join(format!(
+            "opengpu-scheduler-capability-test-{}",
+            now_unix_seconds()
+        ));
+        config.model_dir = Some(temp.display().to_string());
+        config.contribution_percent = 50;
+        write_active_model_manifest(&config, "accepted");
+        let mut health = test_health(Backend::Cuda);
+        health.parallel_slots = 2;
+        let capability = build_capabilities(&config, &health, true);
+
+        let scheduler_capability =
+            build_scheduler_capabilities(&config, &health, &capability, 32_768, 75);
+
+        assert_eq!(scheduler_capability.models.len(), 1);
+        assert_eq!(scheduler_capability.models[0].name, "tiny-cuda");
+        assert_eq!(scheduler_capability.max_context_tokens, Some(4_096));
+        assert_eq!(scheduler_capability.total_vram_mb, Some(4096));
+        assert_eq!(scheduler_capability.available_vram_mb, Some(2048));
+        assert_eq!(scheduler_capability.max_parallel_jobs, 2);
+        assert_eq!(scheduler_capability.current_load_percent, Some(25));
+        assert!(scheduler_capability.roles.contains(&NodeRole::Chat));
+        assert!(scheduler_capability.roles.contains(&NodeRole::Coding));
+        assert!(scheduler_capability.roles.contains(&NodeRole::Reducer));
+        assert!(scheduler_capability.roles.contains(&NodeRole::Batch));
+        assert_eq!(
+            scheduler_capability.skill_tags,
+            vec!["backend:cuda".to_string(), "runtime:cuda".to_string()]
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn unready_node_advertises_no_scheduler_roles() {
+        let config = test_config();
+        let health = test_health(Backend::Cuda);
+        let capability = build_capabilities(&config, &health, false);
+
+        let scheduler_capability =
+            build_scheduler_capabilities(&config, &health, &capability, 32_768, 80);
+
+        assert!(!capability.ready_for_jobs);
+        assert!(scheduler_capability.roles.is_empty());
+        assert_eq!(scheduler_capability.models.len(), 1);
     }
 
     #[test]

@@ -211,11 +211,13 @@ pub struct WorkerHealthReport {
     pub runtime_mode: String,
     #[serde(default)]
     pub supported_runtime_modes: Vec<String>,
+    #[serde(default)]
+    pub capabilities: NodeCapabilityProfile,
     pub checked_at: String,
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelCapability {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -232,6 +234,66 @@ pub struct ModelCapability {
     pub compatibility: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    Chat,
+    Coding,
+    Vision,
+    Embedding,
+    ToolUse,
+    Reducer,
+    Batch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeCapabilityProfile {
+    #[serde(default)]
+    pub models: Vec<ModelCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_vram_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_vram_mb: Option<u32>,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_embeddings: bool,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default = "default_parallel_jobs")]
+    pub max_parallel_jobs: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_load_percent: Option<u8>,
+    #[serde(default)]
+    pub roles: Vec<NodeRole>,
+    #[serde(default)]
+    pub skill_tags: Vec<String>,
+}
+
+impl Default for NodeCapabilityProfile {
+    fn default() -> Self {
+        Self {
+            models: Vec::new(),
+            max_context_tokens: None,
+            total_vram_mb: None,
+            available_vram_mb: None,
+            supports_vision: false,
+            supports_embeddings: false,
+            supports_tools: false,
+            max_parallel_jobs: 1,
+            current_load_percent: None,
+            roles: Vec::new(),
+            skill_tags: Vec::new(),
+        }
+    }
+}
+
+fn default_parallel_jobs() -> u32 {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -427,6 +489,22 @@ mod tests {
                     "on_battery": true,
                     "battery_percent": 42,
                     "runtime_mode": "cpu",
+                    "capabilities": {
+                        "models": [
+                            {
+                                "name": "llama",
+                                "format": "gguf",
+                                "quantization": "Q4_K_M"
+                            }
+                        ],
+                        "max_context_tokens": 8192,
+                        "available_vram_mb": 2048,
+                        "supports_embeddings": true,
+                        "max_parallel_jobs": 2,
+                        "current_load_percent": 45,
+                        "roles": ["chat", "embedding", "batch"],
+                        "skill_tags": ["backend:cuda", "runtime:cpu"]
+                    },
                     "checked_at": "2026-06-02T12:00:00Z",
                     "notes": ["using fallback"]
                 }
@@ -449,6 +527,24 @@ mod tests {
                 .and_then(|value| value.get("runtime_mode"))
                 .and_then(|value| value.as_str()),
             Some("cpu")
+        );
+        let worker_capabilities = json
+            .get("worker_health")
+            .and_then(|value| value.get("capabilities"))
+            .expect("worker capability profile");
+        assert_eq!(
+            worker_capabilities
+                .get("max_context_tokens")
+                .and_then(|value| value.as_u64()),
+            Some(8192)
+        );
+        assert_eq!(
+            worker_capabilities
+                .get("roles")
+                .and_then(|value| value.as_array())
+                .and_then(|roles| roles.first())
+                .and_then(|value| value.as_str()),
+            Some("chat")
         );
     }
 

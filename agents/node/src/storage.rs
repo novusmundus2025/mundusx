@@ -196,7 +196,8 @@ fn save_json<T: Serialize>(path: PathBuf, value: &T) -> std::io::Result<PathBuf>
 mod tests {
     use super::*;
     use crate::contracts::{
-        AgentState, ModelCapability, NodeCapabilityAdvertisement, WorkerHealthReport,
+        AgentState, ModelCapability, NodeCapabilityAdvertisement, NodeCapabilityProfile,
+        WorkerHealthReport,
     };
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -263,6 +264,7 @@ mod tests {
                 runtime_mode: "native".to_string(),
                 parallel_slots: 1,
                 supported_runtime_modes: vec!["local".to_string()],
+                capabilities: NodeCapabilityProfile::default(),
                 checked_at: updated_at.to_string(),
                 notes: Vec::new(),
             },

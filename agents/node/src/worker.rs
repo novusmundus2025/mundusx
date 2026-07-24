@@ -1722,6 +1722,7 @@ pub fn probe_worker_health(
         runtime_mode,
         parallel_slots: 1,
         supported_runtime_modes,
+        capabilities: Default::default(),
         checked_at: now_unix_seconds(),
         notes,
     }
@@ -2699,7 +2700,11 @@ mod tests {
         });
         assert_eq!(response.backend, Backend::Vulkan);
         assert_eq!(response.runtime_mode.as_deref(), Some("vulkan"));
-        assert!(!response.error.as_deref().unwrap_or("").contains("not enabled"));
+        assert!(!response
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("not enabled"));
     }
 
     #[test]

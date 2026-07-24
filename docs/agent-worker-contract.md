@@ -37,6 +37,7 @@ The agent should periodically send a heartbeat that includes:
 - contribution percent
 - worker health snapshot
 - cap-aware capability advertisement
+- scheduler capability profile inside `worker_health.capabilities`
 - timestamp
 
 The control plane uses that heartbeat to decide whether the node is:
@@ -126,4 +127,16 @@ The device keypair is now the node identity layer. The control plane verifies th
 
 The health check command now verifies the local Mac runner without starting a full job, and it also reports whether the current contribution cap is allowed by the Mac power state. The agent now converts that policy into paused heartbeats so the control plane will not assign work when the Mac should stay quiet. The same heartbeat also carries the worker health snapshot so the control plane can show readiness before it assigns work. The worker launch payload now carries the execution profile too, so the control plane can hand the worker a real system prompt, max token count, temperature, top-p, and seed instead of only a bare prompt string.
 
-Registration and heartbeat payloads also carry a `capabilities` object. That object is the scheduler-facing source for the selected contribution cap, physical CUDA VRAM when known, cap-applied usable VRAM, runtime mode, active model metadata, model compatibility, and whether the node is ready for jobs. If no active model is configured, the worker health is degraded, policy blocks execution, or the active model is rejected, the node must advertise `ready_for_jobs=false` with a reason instead of appearing schedulable.
+Registration and heartbeat payloads also carry a top-level `capabilities` object. That object is the readiness gate for the selected contribution cap, physical CUDA VRAM when known, cap-applied usable VRAM, runtime mode, active model metadata, model compatibility, and whether the node is ready for jobs. If no active model is configured, the worker health is degraded, policy blocks execution, or the active model is rejected, the node must advertise `ready_for_jobs=false` with a reason instead of appearing schedulable.
+
+Heartbeats also carry `worker_health.capabilities`, which is the first-class scheduler profile used to group and rank nodes after readiness is known. It includes:
+
+- `models`: the active model metadata the node can serve now
+- `max_context_tokens`: conservative context budget inferred from the active model
+- `total_vram_mb` and `available_vram_mb`: physical and contribution-capped GPU budget when known
+- `max_parallel_jobs`: worker concurrency budget
+- `current_load_percent`: current load derived from available GPU percentage
+- `roles`: scheduler roles such as `chat`, `coding`, `batch`, `reducer`, `vision`, `embedding`, or `tool_use`
+- `skill_tags`: normalized matching tags such as `backend:cuda` and `runtime:cuda`
+
+The scheduler should treat the top-level `capabilities.ready_for_jobs` as the eligibility gate, then use `worker_health.capabilities.roles`, budgets, and tags to select the right node group for a job.

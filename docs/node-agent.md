@@ -43,6 +43,7 @@ The prototype agent:
 - includes the worker health snapshot in heartbeats so the control plane can surface backend readiness
 - starts a pinned `llama-server` warm runtime when available, routes local inference through it, and falls back to batch `llama-cli` if the warm runtime is unavailable
 - reports NVIDIA CUDA driver/device availability, device name, VRAM, and low-VRAM classification when the selected backend is `cuda`
+- reports a scheduler capability profile in each heartbeat, including active model metadata, context budget, VRAM budget, load, roles, and backend/runtime tags
 - treats the configured model directory as a local cache, not as something the control plane owns
 - emits policy-aware heartbeats on a loop
 - sends the power source, battery state, and policy allowance with each heartbeat
@@ -79,6 +80,8 @@ Expected health behavior:
 - missing drivers or CUDA runtime support produce an actionable health note and keep policy from allowing CUDA jobs.
 
 The CUDA worker execution loop is still intentionally conservative. A low-VRAM node should advertise capability metadata and stay eligible only for modest CUDA work until model compatibility checks land.
+
+The scheduler-facing node role profile is intentionally separate from the basic readiness gate. A node can be healthy enough to register but still publish no scheduler roles when policy, model compatibility, or worker health makes it ineligible. Ready CUDA, Vulkan, MLX, and vLLM nodes advertise roles such as `chat`, `coding`, and `batch`; nodes with enough VRAM, parallel capacity, vLLM runtime, or large MLX memory also advertise `reducer` so the control plane can route synthesis work away from small contributors.
 
 The vLLM worker path is currently diagnostic/adapter-ready only. A node configured
 with `backendPreference: vllm` reports vLLM readiness through `opengpu doctor`,

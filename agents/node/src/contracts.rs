@@ -247,6 +247,8 @@ pub struct WorkerHealthReport {
     pub parallel_slots: u8,
     #[serde(default)]
     pub supported_runtime_modes: Vec<String>,
+    #[serde(default)]
+    pub capabilities: NodeCapabilityProfile,
     pub checked_at: String,
     pub notes: Vec<String>,
 }
@@ -255,7 +257,7 @@ fn default_parallel_slots() -> u8 {
     1
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelCapability {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,6 +274,80 @@ pub struct ModelCapability {
     pub compatibility: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    Chat,
+    Coding,
+    Vision,
+    Embedding,
+    ToolUse,
+    Reducer,
+    Batch,
+}
+
+impl NodeRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Coding => "coding",
+            Self::Vision => "vision",
+            Self::Embedding => "embedding",
+            Self::ToolUse => "tool_use",
+            Self::Reducer => "reducer",
+            Self::Batch => "batch",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeCapabilityProfile {
+    #[serde(default)]
+    pub models: Vec<ModelCapability>,
+    #[serde(default)]
+    pub max_context_tokens: Option<u32>,
+    #[serde(default)]
+    pub total_vram_mb: Option<u32>,
+    #[serde(default)]
+    pub available_vram_mb: Option<u32>,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_embeddings: bool,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default = "default_parallel_jobs")]
+    pub max_parallel_jobs: u32,
+    #[serde(default)]
+    pub current_load_percent: Option<u8>,
+    #[serde(default)]
+    pub roles: Vec<NodeRole>,
+    #[serde(default)]
+    pub skill_tags: Vec<String>,
+}
+
+impl Default for NodeCapabilityProfile {
+    fn default() -> Self {
+        Self {
+            models: Vec::new(),
+            max_context_tokens: None,
+            total_vram_mb: None,
+            available_vram_mb: None,
+            supports_vision: false,
+            supports_embeddings: false,
+            supports_tools: false,
+            max_parallel_jobs: 1,
+            current_load_percent: None,
+            roles: Vec::new(),
+            skill_tags: Vec::new(),
+        }
+    }
+}
+
+fn default_parallel_jobs() -> u32 {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
