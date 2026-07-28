@@ -47,6 +47,11 @@ Node Agent makes the final admission decision before execution.
   machine satisfies the task requirements
 
 Expert, reducer, and synthesizer are job roles, not permanent node types.
+The control plane must enforce advertised roles for critical graph stages. A
+small contributor may execute chunks but must not be promoted to reducer or
+synthesizer merely because no stronger node is online. While a critical role is
+unavailable, completed outputs remain stored and clients display the structured
+retryable degradation status returned by the control plane.
 
 ## Contributor job flow
 

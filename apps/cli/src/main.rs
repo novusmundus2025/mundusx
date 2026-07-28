@@ -1312,6 +1312,17 @@ fn active_graph_action_label(payload: &serde_json::Value) -> &'static str {
         .unwrap_or("waiting")
 }
 
+fn job_degradation_message(payload: &serde_json::Value) -> Option<&str> {
+    job_plan_payload(payload)
+        .pointer("/degradation/message")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            payload
+                .pointer("/degradation/message")
+                .and_then(|value| value.as_str())
+        })
+}
+
 fn graph_node_label(node: &serde_json::Value) -> String {
     node.get("name")
         .and_then(|value| value.as_str())
@@ -1373,6 +1384,9 @@ fn job_wait_progress_signature(payload: &serde_json::Value) -> Option<String> {
 }
 
 fn print_job_wait_progress(payload: &serde_json::Value) {
+    if let Some(message) = job_degradation_message(payload) {
+        eprintln!("job degradation: {message}");
+    }
     if let Some((completed, running, total)) = graph_progress_counts(payload) {
         let active =
             active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
@@ -1434,6 +1448,9 @@ impl CliSpinner {
 
 fn job_wait_spinner_label(payload: &serde_json::Value) -> String {
     let status = job_state(payload);
+    if let Some(message) = job_degradation_message(payload) {
+        return format!("waiting for job: status={status}, {message}");
+    }
     if let Some((completed, running, total)) = graph_progress_counts(payload) {
         let active =
             active_graph_node_name(payload).unwrap_or_else(|| "waiting for next chunk".to_string());
@@ -5788,12 +5805,13 @@ mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
         cuda_doctor_payload, doctor_payload, graph_progress_counts, handles_terminal_key,
-        is_hugging_face_model_id, job_is_terminal, job_status_path, job_wait_progress_signature,
-        local_readiness, logs_payload, normalize_control_plane_url, parse_worker_output,
-        remote_job_output, resolve_install_control_plane_url, runtime_metrics_from_output,
-        runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
-        should_prompt_model_selection, terminal_line_endings, vllm_doctor_payload, Cli, Commands,
-        ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
+        is_hugging_face_model_id, job_degradation_message, job_is_terminal, job_status_path,
+        job_wait_progress_signature, local_readiness, logs_payload, normalize_control_plane_url,
+        parse_worker_output, remote_job_output, resolve_install_control_plane_url,
+        runtime_metrics_from_output, runtime_metrics_from_payload,
+        should_prefetch_vllm_catalog_model, should_prompt_model_selection, terminal_line_endings,
+        vllm_doctor_payload, Cli, Commands, ExecutionMode, JobsCommands, PowerState,
+        PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -6497,6 +6515,25 @@ mod tests {
         assert_eq!(
             job_wait_progress_signature(&payload).as_deref(),
             Some("queued|1|1|3|processing|Early development|Early development/worker=pending")
+        );
+    }
+
+    #[test]
+    fn job_status_reads_structured_degradation_message() {
+        let payload = serde_json::json!({
+            "status": "queued",
+            "job": {
+                "status": "queued",
+                "degradation": {
+                    "code": "NO_CREDIBLE_REDUCER",
+                    "message": "Expert work is preserved. Waiting for a qualified reducer before continuing."
+                }
+            }
+        });
+
+        assert_eq!(
+            job_degradation_message(&payload),
+            Some("Expert work is preserved. Waiting for a qualified reducer before continuing.")
         );
     }
 
