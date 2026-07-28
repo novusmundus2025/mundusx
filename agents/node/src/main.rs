@@ -283,7 +283,7 @@ fn node_roles_for(
         return Vec::new();
     }
 
-    let mut roles = vec![NodeRole::Chat, NodeRole::Batch];
+    let mut roles = vec![NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis];
     if health.runtime_mode == "vllm"
         || matches!(backend, Backend::Cuda | Backend::Vulkan | Backend::M)
     {
@@ -296,6 +296,13 @@ fn node_roles_for(
         || (backend == Backend::M && available_memory_mb >= 65_536)
     {
         roles.push(NodeRole::Reducer);
+    }
+    if health.runtime_mode == "vllm"
+        || usable_vram >= 12_288
+        || (backend == Backend::M && available_memory_mb >= 32_768)
+        || available_memory_mb >= 65_536
+    {
+        roles.push(NodeRole::Synthesizer);
     }
     roles.sort_by_key(|role| role.as_str());
     roles.dedup();
@@ -1821,12 +1828,37 @@ mod tests {
         assert_eq!(scheduler_capability.current_load_percent, Some(25));
         assert!(scheduler_capability.roles.contains(&NodeRole::Chat));
         assert!(scheduler_capability.roles.contains(&NodeRole::Coding));
+        assert!(scheduler_capability
+            .roles
+            .contains(&NodeRole::ChunkAnalysis));
         assert!(scheduler_capability.roles.contains(&NodeRole::Reducer));
         assert!(scheduler_capability.roles.contains(&NodeRole::Batch));
         assert_eq!(
             scheduler_capability.skill_tags,
             vec!["backend:cuda".to_string(), "runtime:cuda".to_string()]
         );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn sixteen_gb_cuda_node_advertises_synthesis_role() {
+        let mut config = test_config();
+        let temp = std::env::temp_dir().join(format!(
+            "opengpu-synthesis-capability-test-{}",
+            now_unix_seconds()
+        ));
+        config.model_dir = Some(temp.display().to_string());
+        config.contribution_percent = 100;
+        write_active_model_manifest(&config, "accepted");
+        let mut health = test_health(Backend::Cuda);
+        health.cuda_memory_mb = Some(16_384);
+        let capability = build_capabilities(&config, &health, true);
+
+        let scheduler_capability =
+            build_scheduler_capabilities(&config, &health, &capability, 32_768, 100);
+
+        assert!(scheduler_capability.roles.contains(&NodeRole::Synthesizer));
+        assert!(scheduler_capability.roles.contains(&NodeRole::Reducer));
         let _ = fs::remove_dir_all(temp);
     }
 

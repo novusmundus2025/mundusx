@@ -284,7 +284,9 @@ pub enum NodeRole {
     Vision,
     Embedding,
     ToolUse,
+    ChunkAnalysis,
     Reducer,
+    Synthesizer,
     Batch,
 }
 
@@ -296,7 +298,9 @@ impl NodeRole {
             Self::Vision => "vision",
             Self::Embedding => "embedding",
             Self::ToolUse => "tool_use",
+            Self::ChunkAnalysis => "chunk_analysis",
             Self::Reducer => "reducer",
+            Self::Synthesizer => "synthesizer",
             Self::Batch => "batch",
         }
     }

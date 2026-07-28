@@ -29,6 +29,8 @@ The node agent is the background service that lives on a provider machine.
 
 The prototype agent:
 
+- derives first-class scheduler roles from verified local capacity, including
+  `chunk_analysis`, `reducer`, and `synthesizer`
 - loads the existing provider config
 - resolves the backend
 - emits a registration payload
