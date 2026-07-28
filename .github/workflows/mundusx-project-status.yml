@@ -31,13 +31,16 @@ on:
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
+  repository-projects: write
 
 jobs:
   sync-status:
     runs-on: ubuntu-latest
 
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN || github.token }}
       PROJECT_OWNER: mundusx
       PROJECT_NUMBER: "3"
 
@@ -105,53 +108,62 @@ jobs:
         run: |
           set -euo pipefail
 
-          project_data="$({
-            gh api graphql -f query='
-              query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 20) {
-                      nodes {
-                        ... on ProjectV2Field {
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::warning::No GitHub token available for project sync; skipping status update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! project_data="$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              organization(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2Field {
+                        id
+                        name
+                      }
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options {
                           id
                           name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          id
-                          name
-                          options {
-                            id
-                            name
-                          }
                         }
                       }
                     }
                   }
                 }
-                user(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 20) {
-                      nodes {
-                        ... on ProjectV2Field {
+              }
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2Field {
+                        id
+                        name
+                      }
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options {
                           id
                           name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          id
-                          name
-                          options {
-                            id
-                            name
-                          }
                         }
                       }
                     }
                   }
                 }
-              }' -f owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER";
-          })"
+              }
+            }' -f owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" 2>project_error.log)"; then
+            echo "::warning::Could not fetch project metadata; skipping status update."
+            sed 's/^/project sync: /' project_error.log >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           project_id="$(jq -r '(.data.organization.projectV2 // .data.user.projectV2).id' <<<"$project_data")"
           status_field_id="$(jq -r '(.data.organization.projectV2 // .data.user.projectV2).fields.nodes[] | select(.name == "Status") | .id' <<<"$project_data")"
@@ -162,26 +174,30 @@ jobs:
           fi
 
           if [[ -z "$project_id" || "$project_id" == "null" ]]; then
-            echo "Could not resolve project metadata." >&2
-            exit 1
+            echo "::warning::Could not resolve project metadata; skipping status update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           if [[ -z "$status_field_id" || "$status_field_id" == "null" ]]; then
-            echo "Could not find the Status field on the project." >&2
-            exit 1
+            echo "::warning::Could not find the Status field on the project; skipping status update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           if [[ -z "$status_option_id" || "$status_option_id" == "null" ]]; then
-            echo "Could not find project status option '${{ steps.target.outputs.target_status }}'." >&2
-            exit 1
+            echo "::warning::Could not find project status option '${{ steps.target.outputs.target_status }}'; skipping status update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
           echo "status_field_id=$status_field_id" >> "$GITHUB_OUTPUT"
           echo "status_option_id=$status_option_id" >> "$GITHUB_OUTPUT"
 
       - name: Add item to project
-        if: steps.target.outputs.skip != 'true'
+        if: steps.target.outputs.skip != 'true' && steps.project.outputs.skip != 'true'
         id: add_item
         shell: bash
         run: |
@@ -239,7 +255,7 @@ jobs:
           echo "item_id=$item_id" >> "$GITHUB_OUTPUT"
 
       - name: Update project status
-        if: steps.target.outputs.skip != 'true'
+        if: steps.target.outputs.skip != 'true' && steps.project.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail

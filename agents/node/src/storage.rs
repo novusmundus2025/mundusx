@@ -104,6 +104,10 @@ pub fn load_agent_config() -> std::io::Result<Option<AgentConfig>> {
     Ok(Some(config))
 }
 
+pub fn save_agent_config(config: &AgentConfig) -> std::io::Result<PathBuf> {
+    save_json(config_path(), config)
+}
+
 pub fn save_agent_state(heartbeat: &Heartbeat) -> std::io::Result<PathBuf> {
     save_json(agent_state_path(), heartbeat)
 }
