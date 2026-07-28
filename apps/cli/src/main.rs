@@ -3082,6 +3082,83 @@ fn terminal_line_endings(bytes: &[u8], previous_was_carriage_return: &mut bool) 
     rendered
 }
 
+fn relay_background_startup_output(log_path: &Path, offset: &mut u64) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(log_path)
+        .map_err(|error| format!("failed to read agent log `{}`: {error}", log_path.display()))?;
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(*offset))
+        .map_err(|error| format!("failed to seek agent log `{}`: {error}", log_path.display()))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to tail agent log `{}`: {error}", log_path.display()))?;
+    *offset = offset.saturating_add(bytes.len() as u64);
+
+    for line in String::from_utf8_lossy(&bytes).split(['\r', '\n']) {
+        let line = line.trim();
+        if line.starts_with("vllmStartup:") {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+fn background_worker_is_healthy(previous_state: Option<&str>) -> bool {
+    let state_path = config::config_dir().join("agent-state.json");
+    let Ok(raw) = std::fs::read_to_string(state_path) else {
+        return false;
+    };
+    if previous_state == Some(raw.as_str()) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|state| state["worker_health"]["healthy"].as_bool())
+        .unwrap_or(false)
+}
+
+fn wait_for_background_agent_startup(
+    child: &mut std::process::Child,
+    agent: &Path,
+    log_path: &Path,
+    error_log_path: &Path,
+    mut log_offset: u64,
+    previous_state: Option<&str>,
+) -> Result<(), String> {
+    let timeout_seconds = env::var("OPENGPU_AGENT_START_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1800);
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    while Instant::now() < deadline {
+        relay_background_startup_output(log_path, &mut log_offset)?;
+        if background_worker_is_healthy(previous_state) {
+            println!("agentStartup: ready");
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait().map_err(|error| {
+            format!(
+                "failed to inspect node agent `{}`: {error}",
+                agent.display()
+            )
+        })? {
+            remove_node_agent_pid();
+            return Err(format!(
+                "node agent exited during startup with {status}; see `{}` and `{}`",
+                log_path.display(),
+                error_log_path.display()
+            ));
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    Err(format!(
+        "node agent did not become healthy within {timeout_seconds}s; it remains in the background; see `{}`",
+        log_path.display()
+    ))
+}
+
 fn run_node_agent_foreground(
     mut command: Command,
     agent: PathBuf,
@@ -3223,6 +3300,11 @@ fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create agent log directory: {error}"))?;
     }
+    let log_offset = std::fs::metadata(&log_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or_default();
+    let previous_state =
+        std::fs::read_to_string(config::config_dir().join("agent-state.json")).ok();
     let stdout = OpenOptions::new()
         .create(true)
         .append(true)
@@ -3280,7 +3362,14 @@ fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
     println!("agentMode: background");
     println!("agentLog: {}", log_path.display());
     println!("agentErrorLog: {}", error_log_path.display());
-    Ok(())
+    wait_for_background_agent_startup(
+        &mut child,
+        &agent,
+        &log_path,
+        &error_log_path,
+        log_offset,
+        previous_state.as_deref(),
+    )
 }
 
 fn current_hostname() -> String {
