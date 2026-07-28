@@ -20,7 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use storage::{
     agent_state_path, config_path, heartbeat_log_path, load_agent_config, load_last_heartbeat,
-    save_agent_state, save_heartbeat, AgentConfig,
+    save_agent_config, save_agent_state, save_heartbeat, AgentConfig,
 };
 
 #[derive(Parser, Debug)]
@@ -1428,6 +1428,11 @@ fn stop_agent() {
     config.paused = true;
     let heartbeat = build_heartbeat(&config);
 
+    if let Err(error) = save_agent_config(&config) {
+        eprintln!("failed to save stopped config: {error}");
+        std::process::exit(1);
+    }
+
     if let Err(error) = save_agent_state(&heartbeat) {
         eprintln!("failed to save stopped state: {error}");
         std::process::exit(1);
@@ -1439,6 +1444,17 @@ fn stop_agent() {
     println!("{}", red(format!("disconnected {}", config.device_id)));
     println!("connected: no");
     println!("paused: yes");
+    match worker::stop_persistent_runtime_from_state() {
+        Ok(Some(runtime)) => {
+            println!("persistentRuntime: stopped");
+            println!("persistentRuntimePid: {}", runtime.pid);
+        }
+        Ok(None) => println!("persistentRuntime: not running"),
+        Err(error) => {
+            eprintln!("persistentRuntimeStop: {error}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() {

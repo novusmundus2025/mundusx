@@ -652,7 +652,33 @@ pub struct PersistentRuntimeHandle {
     container_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct PersistentRuntimeState {
+    pid: u32,
+    url: String,
+    environment_variable: String,
+    #[serde(default)]
+    container_name: Option<String>,
+    updated_at: String,
+}
+
 impl PersistentRuntimeHandle {
+    fn new(
+        child: Child,
+        url: String,
+        environment_variable: &'static str,
+        container_name: Option<String>,
+    ) -> Self {
+        let handle = Self {
+            child,
+            url,
+            environment_variable,
+            container_name,
+        };
+        let _ = write_persistent_runtime_state(&handle);
+        handle
+    }
+
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -664,17 +690,102 @@ impl PersistentRuntimeHandle {
 
 impl Drop for PersistentRuntimeHandle {
     fn drop(&mut self) {
-        if let Some(container_name) = self.container_name.as_deref() {
-            let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
-            let _ = Command::new(docker)
-                .args(["stop", "--timeout", "10", container_name])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        kill_process_tree(self.child.id());
+        stop_persistent_runtime_process(self.child.id(), self.container_name.as_deref());
         let _ = self.child.wait();
+        remove_persistent_runtime_state();
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistentRuntimeStop {
+    pub pid: u32,
+    pub url: String,
+    pub container_name: Option<String>,
+}
+
+fn persistent_runtime_state_path() -> PathBuf {
+    config_dir().join("persistent-runtime.json")
+}
+
+fn write_persistent_runtime_state(handle: &PersistentRuntimeHandle) -> Result<(), String> {
+    let path = persistent_runtime_state_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create runtime state directory: {error}"))?;
+    }
+    let state = PersistentRuntimeState {
+        pid: handle.child.id(),
+        url: handle.url.clone(),
+        environment_variable: handle.environment_variable.to_string(),
+        container_name: handle.container_name.clone(),
+        updated_at: now_unix_seconds(),
+    };
+    let payload = serde_json::to_string_pretty(&state)
+        .map_err(|error| format!("failed to serialize runtime state: {error}"))?;
+    fs::write(&path, format!("{payload}\n")).map_err(|error| {
+        format!(
+            "failed to write runtime state `{}`: {error}",
+            path.display()
+        )
+    })
+}
+
+fn remove_persistent_runtime_state() {
+    let _ = fs::remove_file(persistent_runtime_state_path());
+}
+
+fn read_persistent_runtime_state() -> Result<Option<PersistentRuntimeState>, String> {
+    let path = persistent_runtime_state_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read runtime state `{}`: {error}", path.display()))?;
+    let state = serde_json::from_str::<PersistentRuntimeState>(&raw).map_err(|error| {
+        format!(
+            "failed to parse runtime state `{}`: {error}",
+            path.display()
+        )
+    })?;
+    Ok(Some(state))
+}
+
+fn stop_persistent_runtime_process(pid: u32, container_name: Option<&str>) {
+    if let Some(container_name) = container_name {
+        let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
+        let _ = Command::new(docker)
+            .args(["stop", "--timeout", "10", container_name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    if !runtime_pid_is_safe_to_kill(pid) {
+        return;
+    }
+    kill_process_tree(pid);
+}
+
+#[cfg(windows)]
+fn runtime_pid_is_safe_to_kill(pid: u32) -> bool {
+    pid > 0
+}
+
+#[cfg(not(windows))]
+fn runtime_pid_is_safe_to_kill(pid: u32) -> bool {
+    pid > 0 && pid <= i32::MAX as u32
+}
+
+pub fn stop_persistent_runtime_from_state() -> Result<Option<PersistentRuntimeStop>, String> {
+    let Some(state) = read_persistent_runtime_state()? else {
+        return Ok(None);
+    };
+    stop_persistent_runtime_process(state.pid, state.container_name.as_deref());
+    remove_persistent_runtime_state();
+    Ok(Some(PersistentRuntimeStop {
+        pid: state.pid,
+        url: state.url,
+        container_name: state.container_name,
+    }))
 }
 
 fn percentage_token(line: &str) -> Option<&str> {
@@ -693,8 +804,7 @@ fn shard_fraction(line: &str) -> Option<&str> {
         let Some((loaded, total)) = token.split_once('/') else {
             return false;
         };
-        loaded.chars().all(|ch| ch.is_ascii_digit())
-            && total.chars().all(|ch| ch.is_ascii_digit())
+        loaded.chars().all(|ch| ch.is_ascii_digit()) && total.chars().all(|ch| ch.is_ascii_digit())
     })
 }
 
@@ -705,7 +815,8 @@ fn vllm_startup_progress(line: &str) -> Option<String> {
         return Some(format!("loading checkpoint shards {shards} ({percent})"));
     }
     if line.contains("Downloading (incomplete total") {
-        return percentage_token(line).map(|percent| format!("downloading model files ({percent})"));
+        return percentage_token(line)
+            .map(|percent| format!("downloading model files ({percent})"));
     }
     if line.contains("Fetching ") && line.contains(" files:") {
         return percentage_token(line).map(|percent| format!("fetching model files ({percent})"));
@@ -855,10 +966,10 @@ fn start_vllm_runtime(
         "VLLM_START_TIMEOUT_SECONDS",
         "1800",
     )
-        .parse::<u64>()
-        .ok()
-        .filter(|seconds| *seconds > 0)
-        .unwrap_or(1800);
+    .parse::<u64>()
+    .ok()
+    .filter(|seconds| *seconds > 0)
+    .unwrap_or(1800);
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
         emit_vllm_startup_progress(&log_path, &mut log_offset, &mut last_progress);
@@ -876,12 +987,12 @@ fn start_vllm_runtime(
             if last_progress.as_deref() != Some("ready (100%)") {
                 println!("vllmStartup: ready (100%)");
             }
-            return Ok(Some(PersistentRuntimeHandle {
+            return Ok(Some(PersistentRuntimeHandle::new(
                 child,
                 url,
-                environment_variable: "OPENGPU_VLLM_URL",
-                container_name: Some(container_name),
-            }));
+                "OPENGPU_VLLM_URL",
+                Some(container_name),
+            )));
         }
         thread::sleep(Duration::from_secs(1));
     }
@@ -972,12 +1083,12 @@ pub fn start_persistent_runtime(
             ));
         }
         if llama_server_health_ok(&url) {
-            return Ok(Some(PersistentRuntimeHandle {
+            return Ok(Some(PersistentRuntimeHandle::new(
                 child,
                 url,
-                environment_variable: "OPENGPU_LLAMA_SERVER_URL",
-                container_name: None,
-            }));
+                "OPENGPU_LLAMA_SERVER_URL",
+                None,
+            )));
         }
         thread::sleep(Duration::from_millis(300));
     }
@@ -2261,6 +2372,41 @@ mod tests {
         assert_eq!(context_size_for("hi", 100_000), 4096);
     }
 
+    #[test]
+    fn stop_persistent_runtime_without_state_is_noop() {
+        with_temp_runtime_home(|_| {
+            let stopped = stop_persistent_runtime_from_state().expect("stop runtime");
+            assert!(stopped.is_none());
+        });
+    }
+
+    #[test]
+    fn stop_persistent_runtime_removes_recorded_state() {
+        with_temp_runtime_home(|home| {
+            let state_path = home.join("persistent-runtime.json");
+            fs::write(
+                &state_path,
+                serde_json::json!({
+                    "pid": 4_294_967_295_u32,
+                    "url": "http://127.0.0.1:8789",
+                    "environment_variable": "OPENGPU_LLAMA_SERVER_URL",
+                    "container_name": null,
+                    "updated_at": "123",
+                })
+                .to_string(),
+            )
+            .expect("runtime state");
+
+            let stopped = stop_persistent_runtime_from_state()
+                .expect("stop runtime")
+                .expect("runtime state should be returned");
+
+            assert_eq!(stopped.pid, 4_294_967_295_u32);
+            assert_eq!(stopped.url, "http://127.0.0.1:8789");
+            assert!(!state_path.exists());
+        });
+    }
+
     fn with_temp_runtime_home(test: impl FnOnce(&Path)) {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
@@ -2424,23 +2570,11 @@ mod tests {
     #[test]
     fn vllm_slots_use_cap_applied_unified_memory() {
         assert_eq!(
-            recommended_parallel_slots(
-                Backend::Vllm,
-                None,
-                Some(124_000),
-                65,
-                Some("Qwen2.5-32B"),
-            ),
+            recommended_parallel_slots(Backend::Vllm, None, Some(124_000), 65, Some("Qwen2.5-32B"),),
             1
         );
         assert_eq!(
-            recommended_parallel_slots(
-                Backend::Vllm,
-                None,
-                Some(124_000),
-                65,
-                Some("Qwen2.5-14B"),
-            ),
+            recommended_parallel_slots(Backend::Vllm, None, Some(124_000), 65, Some("Qwen2.5-14B"),),
             2
         );
     }
@@ -2828,11 +2962,12 @@ mod tests {
             assert_eq!(response.backend, Backend::Vllm);
             assert_eq!(response.status, "failed");
             assert_eq!(response.runtime_mode.as_deref(), Some("vllm"));
-            assert!(response
-                .error
-                .as_deref()
-                .unwrap_or("")
-                .contains("OPENGPU_VLLM_URL"));
+            let error = response.error.as_deref().unwrap_or("");
+            if cfg!(target_os = "linux") {
+                assert!(error.contains("OPENGPU_VLLM_URL"));
+            } else {
+                assert!(error.contains("Linux nodes"));
+            }
         });
     }
 
@@ -2855,10 +2990,19 @@ mod tests {
                 seed: Some(42),
             });
 
-            assert_eq!(response.status, "completed");
             assert_eq!(response.runtime_mode.as_deref(), Some("vllm"));
             assert_eq!(response.model.as_deref(), Some("Qwen/Qwen3-8B"));
-            assert!(response.output.contains("response=hello from vllm"));
+            if cfg!(target_os = "linux") {
+                assert_eq!(response.status, "completed");
+                assert!(response.output.contains("response=hello from vllm"));
+            } else {
+                assert_eq!(response.status, "failed");
+                assert!(response
+                    .error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("Linux nodes"));
+            }
         });
     }
 
