@@ -30,6 +30,9 @@ assert_legacy_contains "workflow_dispatch:"
 assert_legacy_contains "release_tag:"
 assert_legacy_contains "channel: macos"
 assert_legacy_contains "channel: windows"
+assert_legacy_contains "uses: actions/checkout@v4"
+assert_legacy_contains 'chmod +x "$upload_dir/${{ matrix.binary_name }}"'
+assert_legacy_contains 'chmod +x "$upload_dir/${{ matrix.agent_name }}"'
 
 assert_contains "$macos_workflow" "name: Release CLI macOS"
 assert_contains "$macos_workflow" "cli-macos-v*"

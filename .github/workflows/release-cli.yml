@@ -209,6 +209,8 @@ jobs:
             exit 1
           fi
           cp "$artifact_dir"/* "$upload_dir"/
+          chmod +x "$upload_dir/${{ matrix.binary_name }}"
+          chmod +x "$upload_dir/${{ matrix.agent_name }}"
           echo "tag=$platform_tag" >> "$GITHUB_OUTPUT"
           echo "name=$release_name" >> "$GITHUB_OUTPUT"
           echo "upload_dir=$upload_dir" >> "$GITHUB_OUTPUT"
