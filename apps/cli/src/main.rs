@@ -6,6 +6,7 @@ mod model_catalog;
 mod routing;
 mod theme;
 mod types;
+mod updater;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::cursor::MoveTo;
@@ -5498,10 +5499,13 @@ fn main() {
             }
         },
         Commands::Update => {
-            println!("updateChannel: localhost preview");
-            println!("installPage: http://127.0.0.1:3002/install");
-            println!("releasePreview: http://127.0.0.1:8788/releases/latest/download");
-            println!("smokeCheck: npm run smoke:local");
+            if let Err(error) = updater::update_installed_binaries() {
+                eprintln!("update failed: {error}");
+                eprintln!(
+                    "updateHint: set OPENGPU_RELEASE_BASE_URL to a trusted release mirror if needed"
+                );
+                std::process::exit(1);
+            }
         }
         Commands::Run {
             prompt,
