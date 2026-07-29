@@ -595,13 +595,24 @@ fn build_worker_launch_request(
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
         prompt,
-        model,
+        model: resolve_job_model(config, model),
         system_prompt,
         max_tokens,
         temperature,
         top_p,
         seed,
     }
+}
+
+fn resolve_job_model(config: &AgentConfig, requested_model: Option<String>) -> Option<String> {
+    requested_model
+        .map(|model| model.trim().to_string())
+        .filter(|model| {
+            !model.is_empty()
+                && !model.eq_ignore_ascii_case("default")
+                && !model.eq_ignore_ascii_case("auto")
+        })
+        .or_else(|| config.active_model.clone())
 }
 
 fn emit_json_line<T: Serialize>(value: &T) {
@@ -1070,7 +1081,7 @@ fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRe
         node_id: config.device_id.clone(),
         backend: job.backend.unwrap_or_else(|| resolved_backend(&config)),
         prompt: job.prompt.clone(),
-        model: job.model.clone(),
+        model: resolve_job_model(&config, job.model.clone()),
         system_prompt: job.system_prompt.clone(),
         max_tokens: job.max_tokens,
         temperature: job.temperature,
@@ -1543,6 +1554,32 @@ mod tests {
             runtime_preference: None,
             fallback_runtime: None,
         }
+    }
+
+    #[test]
+    fn omitted_and_default_job_models_use_the_active_model() {
+        let config = test_config();
+        assert_eq!(
+            resolve_job_model(&config, None).as_deref(),
+            Some("tiny-cuda")
+        );
+        assert_eq!(
+            resolve_job_model(&config, Some("default".to_string())).as_deref(),
+            Some("tiny-cuda")
+        );
+        assert_eq!(
+            resolve_job_model(&config, Some(" auto ".to_string())).as_deref(),
+            Some("tiny-cuda")
+        );
+    }
+
+    #[test]
+    fn explicit_job_model_is_preserved_and_trimmed() {
+        let config = test_config();
+        assert_eq!(
+            resolve_job_model(&config, Some(" Qwen/Explicit ".to_string())).as_deref(),
+            Some("Qwen/Explicit")
+        );
     }
 
     #[test]
