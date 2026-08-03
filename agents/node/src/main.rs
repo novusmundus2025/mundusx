@@ -200,12 +200,45 @@ fn cap_applied_vram_mb(physical_vram_mb: Option<u32>, contribution_percent: u8) 
     })
 }
 
+fn cap_applied_memory_mb(physical_memory_mb: u32, contribution_percent: u8) -> u32 {
+    physical_memory_mb
+        .saturating_mul(contribution_percent as u32)
+        .saturating_add(99)
+        / 100
+}
+
+fn classify_capacity(
+    backend: Backend,
+    usable_memory_mb: u32,
+    usable_vram_mb: Option<u32>,
+) -> &'static str {
+    let vram = usable_vram_mb.unwrap_or(0);
+    if backend == Backend::Vllm {
+        "server"
+    } else if usable_memory_mb >= 65_536 || vram >= 49_152 {
+        "synthesis"
+    } else if usable_memory_mb >= 32_768 || vram >= 24_576 {
+        "heavy"
+    } else if usable_memory_mb >= 16_384 || vram >= 12_288 {
+        "performance"
+    } else if usable_memory_mb >= 8_192 || vram >= 6_144 {
+        "standard"
+    } else {
+        "micro"
+    }
+}
+
 fn build_capabilities(
     config: &AgentConfig,
     health: &WorkerHealthReport,
     policy_allowed: bool,
 ) -> NodeCapabilityAdvertisement {
     let backend = resolved_backend(config);
+    let physical_memory_mb = detect_memory_mb();
+    let available_memory_mb = detect_available_memory_mb();
+    let usable_memory_mb = cap_applied_memory_mb(physical_memory_mb, config.contribution_percent)
+        .min(available_memory_mb);
+    let usable_vram_mb = cap_applied_vram_mb(health.cuda_memory_mb, config.contribution_percent);
     let active_model = worker::active_model_capability(
         &config.effective_model_dir(),
         config.active_model.as_deref(),
@@ -250,12 +283,19 @@ fn build_capabilities(
     }
 
     NodeCapabilityAdvertisement {
+        schema_version: 2,
         backend,
         contribution_percent: config.contribution_percent,
+        physical_memory_mb: Some(physical_memory_mb),
+        usable_memory_mb: Some(usable_memory_mb),
+        available_memory_mb: Some(available_memory_mb),
         physical_vram_mb: health.cuda_memory_mb,
-        usable_vram_mb: cap_applied_vram_mb(health.cuda_memory_mb, config.contribution_percent),
+        usable_vram_mb,
         runtime_mode: health.runtime_mode.clone(),
         parallel_slots: health.parallel_slots,
+        capacity_class: classify_capacity(backend, usable_memory_mb, usable_vram_mb).to_string(),
+        supported_roles: Vec::new(),
+        supported_tools: Vec::new(),
         active_model,
         ready_for_jobs,
         readiness_reason,
@@ -331,9 +371,21 @@ fn build_scheduler_capabilities(
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
+    let roles = node_roles_for(backend, health, capabilities, available_memory_mb);
+    let mut supported_tools = capabilities.supported_tools.clone();
+    if roles.contains(&NodeRole::Coding) {
+        supported_tools.push("repository".to_string());
+    }
+    supported_tools.sort();
+    supported_tools.dedup();
 
     NodeCapabilityProfile {
+        schema_version: capabilities.schema_version,
         models,
+        physical_memory_mb: capabilities.physical_memory_mb,
+        usable_memory_mb: capabilities.usable_memory_mb,
+        available_memory_mb: capabilities.available_memory_mb,
+        capacity_class: capabilities.capacity_class.clone(),
         max_context_tokens: context_tokens,
         total_vram_mb,
         available_vram_mb,
@@ -342,18 +394,21 @@ fn build_scheduler_capabilities(
         supports_tools: false,
         max_parallel_jobs: health.parallel_slots.max(1) as u32,
         current_load_percent,
-        roles: node_roles_for(backend, health, capabilities, available_memory_mb),
+        roles,
         skill_tags: vec![
             format!("backend:{}", backend.as_str()),
             format!("runtime:{}", health.runtime_mode),
         ],
+        supported_tools,
     }
 }
 
 fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> Heartbeat {
     let (mut health, policy) = worker_readiness(config);
-    let capabilities = build_capabilities(config, &health, policy.allowed);
-    let available_memory_mb = detect_memory_mb();
+    let mut capabilities = build_capabilities(config, &health, policy.allowed);
+    let available_memory_mb = capabilities
+        .available_memory_mb
+        .unwrap_or_else(detect_available_memory_mb);
     let available_gpu_percent = detect_available_gpu_percent(config);
     health.capabilities = build_scheduler_capabilities(
         config,
@@ -362,6 +417,8 @@ fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> 
         available_memory_mb,
         available_gpu_percent,
     );
+    capabilities.supported_roles = health.capabilities.roles.clone();
+    capabilities.supported_tools = supported_tools_for(&health.capabilities);
     Heartbeat {
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
@@ -467,12 +524,74 @@ fn detect_memory_mb() -> u32 {
     0
 }
 
+fn detect_available_memory_mb() -> u32 {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            dwMemoryLoad: 0,
+            ullTotalPhys: 0,
+            ullAvailPhys: 0,
+            ullTotalPageFile: 0,
+            ullAvailPageFile: 0,
+            ullTotalVirtual: 0,
+            ullAvailVirtual: 0,
+            ullAvailExtendedVirtual: 0,
+        };
+        if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 {
+            return (status.ullAvailPhys / 1024 / 1024) as u32;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Ok(raw) = fs::read_to_string("/proc/meminfo") {
+        if let Some(kb) = raw.lines().find_map(|line| {
+            line.strip_prefix("MemAvailable:")?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        }) {
+            return (kb / 1024) as u32;
+        }
+    }
+
+    detect_memory_mb()
+}
+
+fn supported_tools_for(capabilities: &NodeCapabilityProfile) -> Vec<String> {
+    let mut tools = Vec::new();
+    if capabilities.supports_tools {
+        tools.push("tool_use".to_string());
+    }
+    if capabilities.roles.contains(&NodeRole::Coding) {
+        tools.push("repository".to_string());
+    }
+    tools.sort();
+    tools.dedup();
+    tools
+}
+
 fn detect_available_gpu_percent(config: &AgentConfig) -> u32 {
     100u32.saturating_sub(config.contribution_percent as u32)
 }
 
 fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentRegistration {
-    let (health, policy) = worker_readiness(config);
+    let (mut health, policy) = worker_readiness(config);
+    let mut capabilities = build_capabilities(config, &health, policy.allowed);
+    let available_memory_mb = capabilities
+        .available_memory_mb
+        .unwrap_or_else(detect_available_memory_mb);
+    health.capabilities = build_scheduler_capabilities(
+        config,
+        &health,
+        &capabilities,
+        available_memory_mb,
+        detect_available_gpu_percent(config),
+    );
+    capabilities.supported_roles = health.capabilities.roles.clone();
+    capabilities.supported_tools = supported_tools_for(&health.capabilities);
     AgentRegistration {
         node_id: config.device_id.clone(),
         public_key_fingerprint: identity.fingerprint.clone(),
@@ -481,7 +600,7 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
         identity_trust_path: identity::trust_path(),
         backend: resolved_backend(config),
         contribution_percent: config.contribution_percent,
-        capabilities: build_capabilities(config, &health, policy.allowed),
+        capabilities,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
@@ -540,7 +659,18 @@ fn print_capability_summary_with_control_plane(
         println!("controlPlaneState: {}", status.state);
     }
     println!("runtimeMode: {}", capabilities.runtime_mode);
+    println!("capabilitySchemaVersion: {}", capabilities.schema_version);
+    println!("capacityClass: {}", capabilities.capacity_class);
     println!("parallelSlots: {}", capabilities.parallel_slots);
+    if let Some(memory_mb) = capabilities.physical_memory_mb {
+        println!("physicalMemoryMb: {memory_mb}");
+    }
+    if let Some(memory_mb) = capabilities.usable_memory_mb {
+        println!("usableMemoryMb: {memory_mb}");
+    }
+    if let Some(memory_mb) = capabilities.available_memory_mb {
+        println!("availableMemoryMb: {memory_mb}");
+    }
     if let Some(vram_mb) = capabilities.physical_vram_mb {
         println!("physicalVramMb: {vram_mb}");
     }
@@ -1836,7 +1966,21 @@ mod tests {
             Some("tiny-cuda")
         );
         assert!(capability.ready_for_jobs);
+        assert_eq!(capability.schema_version, 2);
+        assert!(capability.physical_memory_mb.is_some());
+        assert!(capability.usable_memory_mb.is_some());
+        assert!(capability.available_memory_mb.is_some());
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn normalized_capacity_classes_cover_supported_machine_shapes() {
+        assert_eq!(classify_capacity(Backend::Auto, 8_192, None), "standard");
+        assert_eq!(classify_capacity(Backend::M, 16_384, None), "performance");
+        assert_eq!(classify_capacity(Backend::Cuda, 24_576, Some(24_576)), "heavy");
+        assert_eq!(classify_capacity(Backend::Cuda, 49_152, Some(49_152)), "synthesis");
+        assert_eq!(classify_capacity(Backend::M, 65_536, None), "synthesis");
+        assert_eq!(classify_capacity(Backend::Vllm, 8_192, None), "server");
     }
 
     #[test]
