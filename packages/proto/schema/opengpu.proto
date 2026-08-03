@@ -181,4 +181,11 @@ message NodeCapabilityAdvertisement {
   optional ModelCapability active_model = 6;
   bool ready_for_jobs = 7;
   optional string readiness_reason = 8;
+  uint32 schema_version = 9;
+  optional uint32 physical_memory_mb = 10;
+  optional uint32 usable_memory_mb = 11;
+  optional uint32 available_memory_mb = 12;
+  string capacity_class = 13;
+  repeated string supported_roles = 14;
+  repeated string supported_tools = 15;
 }

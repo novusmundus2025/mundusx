@@ -251,7 +251,17 @@ pub enum NodeRole {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeCapabilityProfile {
     #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
     pub models: Vec<ModelCapability>,
+    #[serde(default)]
+    pub physical_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub usable_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub available_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub capacity_class: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_context_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,12 +282,19 @@ pub struct NodeCapabilityProfile {
     pub roles: Vec<NodeRole>,
     #[serde(default)]
     pub skill_tags: Vec<String>,
+    #[serde(default)]
+    pub supported_tools: Vec<String>,
 }
 
 impl Default for NodeCapabilityProfile {
     fn default() -> Self {
         Self {
+            schema_version: 0,
             models: Vec::new(),
+            physical_memory_mb: None,
+            usable_memory_mb: None,
+            available_memory_mb: None,
+            capacity_class: String::new(),
             max_context_tokens: None,
             total_vram_mb: None,
             available_vram_mb: None,
@@ -288,6 +305,7 @@ impl Default for NodeCapabilityProfile {
             current_load_percent: None,
             roles: Vec::new(),
             skill_tags: Vec::new(),
+            supported_tools: Vec::new(),
         }
     }
 }
@@ -298,13 +316,27 @@ fn default_parallel_jobs() -> u32 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeCapabilityAdvertisement {
+    #[serde(default)]
+    pub schema_version: u32,
     pub backend: Backend,
     pub contribution_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_memory_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usable_memory_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_memory_mb: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physical_vram_mb: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usable_vram_mb: Option<u32>,
     pub runtime_mode: String,
+    #[serde(default)]
+    pub capacity_class: String,
+    #[serde(default)]
+    pub supported_roles: Vec<String>,
+    #[serde(default)]
+    pub supported_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_model: Option<ModelCapability>,
     pub ready_for_jobs: bool,
