@@ -2453,12 +2453,43 @@ fn output_summary_line(output: &str) -> String {
     }
 }
 
+/// Path to re-exec for the worker subprocess.
+///
+/// Linux reports a replaced binary as `/path/to/exe (deleted)`, which is what
+/// `env::current_exe` returns after an upgrade replaced the file underneath a
+/// running agent. Spawning that path fails with ENOENT, so strip the marker and
+/// use the current file at the same location when one exists.
+fn worker_executable() -> Result<PathBuf, String> {
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    if exe.exists() {
+        return Ok(exe);
+    }
+
+    let raw = exe.to_string_lossy();
+    if let Some(path) = raw.strip_suffix(" (deleted)") {
+        let replaced = PathBuf::from(path);
+        if replaced.exists() {
+            return Ok(replaced);
+        }
+    }
+
+    Err(format!(
+        "the node agent binary at {} was replaced or removed while running; restart `opengpu start` to pick up the new build",
+        raw.trim_end_matches(" (deleted)")
+    ))
+}
+
 pub fn launch_worker(
     request: &WorkerLaunchRequest,
     model_dir: &Path,
 ) -> Result<WorkerLaunchResponse, String> {
-    let exe = env::current_exe().map_err(|error| error.to_string())?;
-    let mut command = Command::new(exe);
+    // A contributed cluster is served over HTTP, so there is nothing to isolate
+    // in a subprocess and no reason to depend on re-execing this binary.
+    if let Some(cluster) = contributed_cluster() {
+        return Ok(execute_request_with_cluster(request, Some(&cluster)));
+    }
+
+    let mut command = Command::new(worker_executable()?);
     command
         .env("OPENGPU_MODEL_DIR", model_dir)
         .arg("worker")
@@ -3223,6 +3254,56 @@ mod tests {
                 assert!(error.contains("Linux nodes"));
             }
         });
+    }
+
+    #[test]
+    fn worker_executable_resolves_the_current_binary() {
+        let resolved = super::worker_executable().expect("current exe");
+
+        assert!(resolved.exists());
+        assert!(!resolved.to_string_lossy().ends_with(" (deleted)"));
+    }
+
+    #[test]
+    fn a_contributed_cluster_job_needs_no_worker_subprocess() {
+        // The endpoint is unreachable, so this fails — but it must fail on the
+        // HTTP call, not by trying to re-exec the agent binary.
+        let cluster = crate::storage::ContributedCluster {
+            kind: "llama.cpp".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            models: vec!["m".to_string()],
+            model: Some("m".to_string()),
+            model_params: None,
+            model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
+            adopted_at: None,
+        };
+
+        let response = super::execute_request_with_cluster(
+            &WorkerLaunchRequest {
+                job_id: "j".to_string(),
+                node_id: "n".to_string(),
+                prompt: "hello".to_string(),
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(8),
+                temperature: None,
+                top_p: None,
+                seed: None,
+                backend: Backend::Cuda,
+            },
+            Some(&cluster),
+        );
+
+        assert_eq!(response.status, "failed");
+        assert_eq!(
+            response.runtime_mode.as_deref(),
+            Some("contributed-cluster")
+        );
+        let error = response.error.expect("error");
+        assert!(error.contains("not answering"), "unexpected error: {error}");
+        assert!(!error.contains("launch worker"));
     }
 
     #[test]
