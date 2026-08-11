@@ -80,6 +80,11 @@ pub struct ModelInfo {
     pub params: Option<u64>,
     /// On-disk size in bytes, when the runtime reports it.
     pub bytes: Option<u64>,
+    /// Capabilities the runtime advertises, e.g. `completion`, `tools`.
+    pub capabilities: Vec<String>,
+    /// Trained context length: llama.cpp `meta.n_ctx_train` or Ollama
+    /// `details.context_length`.
+    pub context_tokens: Option<u32>,
 }
 
 impl ModelInfo {
@@ -88,7 +93,29 @@ impl ModelInfo {
             name: name.into(),
             params,
             bytes,
+            capabilities: Vec::new(),
+            context_tokens: None,
         }
+    }
+
+    fn has_capability(&self, needle: &str) -> bool {
+        self.capabilities
+            .iter()
+            .any(|value| value.to_ascii_lowercase().contains(needle))
+    }
+
+    /// The runtime advertises tool/function calling.
+    pub fn supports_tools(&self) -> bool {
+        self.has_capability("tool")
+    }
+
+    /// An embedding model, by advertised capability or by name.
+    pub fn supports_embeddings(&self) -> bool {
+        self.has_capability("embed") || self.name.to_ascii_lowercase().contains("embed")
+    }
+
+    pub fn supports_vision(&self) -> bool {
+        self.has_capability("vision")
     }
 
     /// Ranking key: parameter count dominates, on-disk bytes break ties. A
@@ -411,6 +438,41 @@ fn entry_params(entry: &serde_json::Value) -> Option<u64> {
         .and_then(parse_parameter_size)
 }
 
+fn entry_capabilities(entry: &serde_json::Value) -> Vec<String> {
+    entry
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn entry_context_tokens(entry: &serde_json::Value) -> Option<u32> {
+    entry
+        .get("meta")
+        .and_then(|meta| meta.get("n_ctx_train"))
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            entry
+                .get("details")
+                .and_then(|details| details.get("context_length"))
+                .and_then(serde_json::Value::as_u64)
+        })
+        .or_else(|| {
+            entry
+                .get("context_length")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .and_then(|value| u32::try_from(value).ok())
+}
+
 fn entry_bytes(entry: &serde_json::Value) -> Option<u64> {
     entry
         .get("meta")
@@ -431,6 +493,24 @@ pub fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
         return Vec::new();
     };
 
+    // llama.cpp answers with both arrays and splits the information between
+    // them: `data[]` carries the size metadata, `models[]` carries the
+    // capability list. Look up the sibling entry by name so neither is lost.
+    let siblings = body
+        .get("models")
+        .and_then(serde_json::Value::as_array)
+        .filter(|_| body.get("data").is_some());
+    let sibling_for = |name: &str| -> Option<&serde_json::Value> {
+        siblings?.iter().find(|entry| {
+            entry
+                .get("name")
+                .or_else(|| entry.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .map(|candidate| candidate.trim() == name)
+                .unwrap_or(false)
+        })
+    };
+
     let mut models: Vec<ModelInfo> = Vec::new();
     for entry in entries {
         let name = entry
@@ -445,11 +525,21 @@ pub fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
             if models.iter().any(|existing| existing.name == name) {
                 continue;
             }
-            models.push(ModelInfo::new(
-                name,
-                entry_params(entry),
-                entry_bytes(entry),
-            ));
+            let sibling = sibling_for(name);
+            let mut capabilities = entry_capabilities(entry);
+            if capabilities.is_empty() {
+                if let Some(sibling) = sibling {
+                    capabilities = entry_capabilities(sibling);
+                }
+            }
+            models.push(ModelInfo {
+                name: name.to_string(),
+                params: entry_params(entry).or_else(|| sibling.and_then(entry_params)),
+                bytes: entry_bytes(entry).or_else(|| sibling.and_then(entry_bytes)),
+                capabilities,
+                context_tokens: entry_context_tokens(entry)
+                    .or_else(|| sibling.and_then(entry_context_tokens)),
+            });
         }
     }
 
@@ -732,6 +822,62 @@ mod tests {
             identify_kind(&body, "http://127.0.0.1:8000"),
             ClusterKind::LlamaCpp
         );
+    }
+
+    #[test]
+    fn merges_llama_cpp_split_listing_arrays() {
+        // llama.cpp answers with both arrays and splits the information:
+        // sizes and context live in `data[]`, capabilities in `models[]`.
+        let body = json!({
+            "models": [{"name": "UD-IQ2_M", "capabilities": ["completion"]}],
+            "object": "list",
+            "data": [{
+                "id": "UD-IQ2_M",
+                "owned_by": "llamacpp",
+                "meta": {
+                    "n_params": 753_864_139_008u64,
+                    "size": 238_568_039_424u64,
+                    "n_ctx_train": 1_048_576,
+                },
+            }]
+        });
+
+        let models = parse_models(&body);
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].params, Some(753_864_139_008));
+        assert_eq!(models[0].context_tokens, Some(1_048_576));
+        assert_eq!(models[0].capabilities, vec!["completion"]);
+        assert!(!models[0].supports_tools());
+    }
+
+    #[test]
+    fn reads_capabilities_and_context_from_an_ollama_listing() {
+        let body = json!({
+            "models": [{
+                "name": "hermes3:70b",
+                "capabilities": ["completion", "tools"],
+                "details": {"parameter_size": "70.6B", "context_length": 131_072},
+            }]
+        });
+
+        let models = parse_models(&body);
+
+        assert!(models[0].supports_tools());
+        assert_eq!(models[0].context_tokens, Some(131_072));
+    }
+
+    #[test]
+    fn recognizes_embedding_and_vision_capabilities() {
+        let embed = json!({"data": [{"id": "nomic-embed-text", "capabilities": ["embedding"]}]});
+        assert!(parse_models(&embed)[0].supports_embeddings());
+
+        // Name is a fallback when the runtime reports nothing.
+        let unnamed = json!({"data": [{"id": "text-embedding-3-small"}]});
+        assert!(parse_models(&unnamed)[0].supports_embeddings());
+
+        let vision = json!({"data": [{"id": "llava", "capabilities": ["vision"]}]});
+        assert!(parse_models(&vision)[0].supports_vision());
     }
 
     #[test]

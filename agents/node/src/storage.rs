@@ -24,6 +24,12 @@ pub struct ContributedCluster {
     /// On-disk size of the advertised model, used when params are unknown.
     #[serde(default)]
     pub model_bytes: Option<u64>,
+    /// Capabilities the runtime advertises for the model, e.g. `tools`.
+    #[serde(default)]
+    pub model_capabilities: Vec<String>,
+    /// Trained context length the runtime reports for the model.
+    #[serde(default)]
+    pub model_context_tokens: Option<u32>,
     #[serde(default)]
     pub adopted_at: Option<String>,
 }
