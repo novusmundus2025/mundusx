@@ -7,6 +7,27 @@ use std::path::PathBuf;
 
 const HEARTBEAT_LOG_TTL_SECONDS: i64 = 30 * 60;
 
+/// Mirror of the CLI's `ContributedCluster` so rewriting `config.json` from the
+/// agent never drops the contributor's adopted-cluster decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContributedCluster {
+    pub kind: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Parameter count of the advertised model, when the runtime reported it.
+    /// Drives the node's capacity class instead of host memory.
+    #[serde(default)]
+    pub model_params: Option<u64>,
+    /// On-disk size of the advertised model, used when params are unknown.
+    #[serde(default)]
+    pub model_bytes: Option<u64>,
+    #[serde(default)]
+    pub adopted_at: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub version: u32,
@@ -31,6 +52,10 @@ pub struct AgentConfig {
     pub runtime_preference: Option<String>,
     #[serde(default)]
     pub fallback_runtime: Option<String>,
+    #[serde(default)]
+    pub contributed_cluster: Option<ContributedCluster>,
+    #[serde(default)]
+    pub cluster_prompt_declined: bool,
 }
 
 impl Default for AgentConfig {
@@ -51,6 +76,8 @@ impl Default for AgentConfig {
             models: Vec::new(),
             runtime_preference: None,
             fallback_runtime: None,
+            contributed_cluster: None,
+            cluster_prompt_declined: false,
         }
     }
 }

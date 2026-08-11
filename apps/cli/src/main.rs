@@ -1,4 +1,5 @@
 mod auth_token;
+mod cluster;
 mod config;
 mod identity;
 mod model;
@@ -41,7 +42,11 @@ impl ExecutionMode {
     }
 }
 
-use config::{config_dir, config_exists, load_config, resolved_config_path, save_config, Config};
+use cluster::{ClusterPromptDecision, DetectedCluster};
+use config::{
+    config_dir, config_exists, load_config, resolved_config_path, save_config, Config,
+    ContributedCluster,
+};
 use identity::{device_id_for_identity, ensure_identity, load_identity, load_or_create_identity};
 use model::{
     active_model_name, add_model, configured_model_dir_string, ensure_catalog_model_fits,
@@ -86,6 +91,15 @@ enum Commands {
         /// Contribution cap to save without opening the selector
         #[arg(long)]
         cap_percent: Option<u8>,
+        /// Contribute a detected running local LLM cluster without being asked
+        #[arg(long, conflicts_with = "no_contribute_cluster")]
+        contribute_cluster: bool,
+        /// Never contribute a detected running local LLM cluster
+        #[arg(long, conflicts_with = "contribute_cluster")]
+        no_contribute_cluster: bool,
+        /// Probe this cluster endpoint instead of the well-known local ports
+        #[arg(long)]
+        cluster_url: Option<String>,
     },
     /// Start the MundusX network
     Start {
@@ -95,6 +109,15 @@ enum Commands {
         /// Run the foreground session with explicit diagnostic labeling
         #[arg(long, conflicts_with = "background")]
         debug: bool,
+        /// Contribute a detected running local LLM cluster without being asked
+        #[arg(long, conflicts_with = "no_contribute_cluster")]
+        contribute_cluster: bool,
+        /// Never contribute a detected running local LLM cluster
+        #[arg(long, conflicts_with = "contribute_cluster")]
+        no_contribute_cluster: bool,
+        /// Probe this cluster endpoint instead of the well-known local ports
+        #[arg(long)]
+        cluster_url: Option<String>,
     },
     /// Join the MundusX network (boots local state on first use)
     Connect,
@@ -154,6 +177,11 @@ enum Commands {
     Runtime {
         #[command(subcommand)]
         command: RuntimeCommands,
+    },
+    /// Inspect or change the running local LLM cluster this node contributes
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommands,
     },
     /// Update the MundusX binary
     Update,
@@ -254,6 +282,28 @@ enum ModelCommands {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum ClusterCommands {
+    /// Probe the local ports for a running LLM cluster and print what answered
+    Scan {
+        /// Probe this endpoint instead of the well-known local ports
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Contribute a running cluster without waiting for the install prompt
+    Use {
+        /// Cluster endpoint, e.g. http://127.0.0.1:11434
+        url: String,
+        /// Model this node should advertise from the cluster
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Stop contributing the recorded cluster and allow the prompt again
+    Forget,
 }
 
 #[derive(Subcommand, Debug)]
@@ -667,7 +717,8 @@ fn doctor_payload(config: &Config) -> serde_json::Value {
         "model_dir": model_dir,
         "model_dir_exists": model_dir.exists(),
         "model_dir_writable": std::fs::create_dir_all(&model_dir).is_ok(),
-        "active_model": active_model_name(config),
+        "active_model": effective_active_model(config),
+        "contributed_cluster": config.contributed_cluster,
         "auth_token_present": auth_token::operator_token_present(config),
         "cuda": cuda,
         "vllm": vllm,
@@ -2605,7 +2656,7 @@ fn live_readiness_from_agent(agent: &Heartbeat) -> Option<LocalReadiness> {
 fn print_config_summary(config: &Config, path: &std::path::Path) {
     let detected_backend = resolved_backend(config);
     let power = probe_power_state();
-    let active_model = active_model_name(config);
+    let active_model = effective_active_model(config);
     let agent = latest_agent_state(config);
     let identity_ready = identity_ready()
         || agent
@@ -2669,6 +2720,13 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
     theme::field("identityTrustPath", identity::trust_path());
     theme::field("providerCount", provider_count);
     theme::field("modelDir", configured_model_dir_string(config));
+    match config.contributed_cluster.as_ref() {
+        Some(cluster) => theme::field(
+            "contributedCluster",
+            format!("{} at {}", cluster.kind, cluster.base_url),
+        ),
+        None => theme::field("contributedCluster", "none"),
+    }
     theme::field(
         "activeModel",
         active_model.clone().unwrap_or_else(|| "unset".to_string()),
@@ -2724,7 +2782,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         .map(|value| value.get())
         .unwrap_or(1);
     let power = probe_power_state();
-    let active_model = active_model_name(config);
+    let active_model = effective_active_model(config);
     let identity_ready = identity_ready();
     let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
     let readiness = local_readiness(config, &power, active_model.as_deref(), identity_ready);
@@ -2757,6 +2815,13 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
     theme::field("identityReady", theme::boolean(identity_ready, "yes", "no"));
     theme::field("identityTrustPath", identity::trust_path());
     theme::field("modelDir", configured_model_dir_string(config));
+    match config.contributed_cluster.as_ref() {
+        Some(cluster) => theme::field(
+            "contributedCluster",
+            format!("{} at {}", cluster.kind, cluster.base_url),
+        ),
+        None => theme::field("contributedCluster", "none"),
+    }
     theme::field(
         "activeModel",
         active_model.clone().unwrap_or_else(|| "unset".to_string()),
@@ -3402,7 +3467,7 @@ fn current_hostname() -> String {
 fn print_onboarding_checklist(config: &Config, path: &std::path::Path, completed: bool) {
     let detected_backend = resolved_backend(config);
     let power = probe_power_state();
-    let active_model = active_model_name(config);
+    let active_model = effective_active_model(config);
     let identity_ready = identity_ready();
     let allowed = policy_allowed(config, &power, active_model.as_deref(), identity_ready);
     let body = vec![
@@ -4113,6 +4178,8 @@ fn ensure_catalog_model_fits_machine(
 
 enum PromptOutcome {
     Selected(u8),
+    /// The "Clusters detected" row was chosen: show the cluster list instead.
+    UseCluster,
     Cancelled,
 }
 
@@ -4121,32 +4188,40 @@ enum ControlPlaneChoice {
     Private,
 }
 
-fn prompt_control_plane_choice() -> ControlPlaneChoice {
-    const OPTIONS: &[(&str, &str)] = &[
-        ("Public MundusX", "use the hosted mundusx.ai control plane"),
-        ("Private / custom", "enter your own control-plane URL"),
-    ];
-
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return ControlPlaneChoice::Public;
+/// Arrow-key selector shared by the setup menus.
+///
+/// Returns the chosen index, or `None` when the contributor pressed Esc.
+fn select_menu_option(
+    header: &[String],
+    options: &[(String, String)],
+    footer: &str,
+    initial: usize,
+) -> Option<usize> {
+    if options.is_empty() {
+        return None;
     }
 
-    let mut selected = 0usize;
+    let mut selected = initial.min(options.len() - 1);
     if enable_raw_mode().is_err() {
-        return ControlPlaneChoice::Public;
+        return Some(selected);
     }
     drain_pending_terminal_events();
 
     let render_menu = |selected: usize| {
         clear_menu_screen();
-        raw_println!("Which control plane should this node use?");
-        raw_println!("-----------------------------------------");
-        for (index, (label, detail)) in OPTIONS.iter().enumerate() {
+        for line in header {
+            raw_println!("{line}");
+        }
+        for (index, (label, detail)) in options.iter().enumerate() {
             let marker = if index == selected { ">>" } else { "  " };
-            raw_println!("{marker} {label} - {detail}");
+            if detail.is_empty() {
+                raw_println!("{marker} {label}");
+            } else {
+                raw_println!("{marker} {label} - {detail}");
+            }
         }
         raw_println!();
-        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter");
+        raw_println!("{footer}");
         let _ = io::stdout().flush();
     };
 
@@ -4166,25 +4241,98 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
                     render_menu(selected);
                 }
                 KeyCode::Down | KeyCode::Tab => {
-                    if selected + 1 < OPTIONS.len() {
+                    if selected + 1 < options.len() {
                         selected += 1;
                     }
                     render_menu(selected);
                 }
-                KeyCode::Enter => break selected,
-                KeyCode::Esc => break 0,
+                KeyCode::Enter => break Some(selected),
+                KeyCode::Esc => break None,
                 _ => {}
             },
             Ok(_) => {}
-            Err(_) => break 0,
+            Err(_) => break None,
         }
     };
 
     let _ = disable_raw_mode();
-    if result == 1 {
-        ControlPlaneChoice::Private
-    } else {
-        ControlPlaneChoice::Public
+    result
+}
+
+/// Result of the cluster picker shown after the contribution cap.
+enum ClusterPickOutcome {
+    /// Esc: skip the question for this run without recording an answer.
+    Skipped,
+    /// `None` was chosen: do not contribute, and stop asking.
+    Declined,
+    /// Index into the ranked cluster list.
+    Picked(usize),
+}
+
+/// Picker listing every running cluster, biggest model first, so the
+/// contributor chooses which one this node should serve.
+fn prompt_cluster_pick(clusters: &[&cluster::DetectedCluster]) -> ClusterPickOutcome {
+    let header = vec![
+        "A local LLM cluster is already running on this machine.".to_string(),
+        "Contribute one to MundusX instead of downloading a model?".to_string(),
+        "----------------------------------------------------------".to_string(),
+    ];
+
+    let mut options: Vec<(String, String)> = clusters
+        .iter()
+        .map(|entry| {
+            let model = entry
+                .largest_model()
+                .map(cluster::ModelInfo::label)
+                .unwrap_or_else(|| "no models loaded".to_string());
+            (
+                format!("{} at {}", entry.kind.label(), entry.base_url),
+                format!("{model}; {} available", entry.models.len()),
+            )
+        })
+        .collect();
+    options.push((
+        "None".to_string(),
+        "do not contribute a cluster; choose a MundusX model instead".to_string(),
+    ));
+
+    let none_index = options.len() - 1;
+
+    match select_menu_option(
+        &header,
+        &options,
+        "Use ↑/↓ or Tab/Shift+Tab and Enter; Esc skips for now",
+        0,
+    ) {
+        None => ClusterPickOutcome::Skipped,
+        Some(index) if index == none_index => ClusterPickOutcome::Declined,
+        Some(index) => ClusterPickOutcome::Picked(index),
+    }
+}
+
+fn prompt_control_plane_choice() -> ControlPlaneChoice {
+    const OPTIONS: [(&str, &str); 2] = [
+        ("Public MundusX", "use the hosted mundusx.ai control plane"),
+        ("Private / custom", "enter your own control-plane URL"),
+    ];
+
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return ControlPlaneChoice::Public;
+    }
+
+    let header = vec![
+        "Which control plane should this node use?".to_string(),
+        "-----------------------------------------".to_string(),
+    ];
+    let options: Vec<(String, String)> = OPTIONS
+        .iter()
+        .map(|(label, detail)| (label.to_string(), detail.to_string()))
+        .collect();
+
+    match select_menu_option(&header, &options, "Use ↑/↓ or Tab/Shift+Tab and Enter", 0) {
+        Some(1) => ControlPlaneChoice::Private,
+        // Enter on the public row, or Esc, keeps the public default.
+        _ => ControlPlaneChoice::Public,
     }
 }
 
@@ -4224,6 +4372,8 @@ fn normalize_control_plane_url(url: &str) -> Result<String, String> {
     Err("control-plane URL must start with http:// or https://".to_string())
 }
 
+/// Resolves the control-plane URL and, when the menu was shown, the cluster the
+/// contributor picked from it. The cluster index refers to `clusters`.
 fn resolve_install_control_plane_url(
     public: bool,
     private: bool,
@@ -4235,10 +4385,11 @@ fn resolve_install_control_plane_url(
     }
 
     if let Some(url) = control_plane_url {
-        return normalize_control_plane_url(&url).unwrap_or_else(|error| {
+        let url = normalize_control_plane_url(&url).unwrap_or_else(|error| {
             eprintln!("{error}");
             std::process::exit(2);
         });
+        return url;
     }
 
     if public {
@@ -4259,11 +4410,15 @@ fn resolve_install_control_plane_url(
     }
 }
 
+/// A node contributing a running cluster already has a model to serve, so the
+/// MundusX model selector stays out of the way.
 fn should_prompt_model_selection(config: &Config) -> bool {
-    active_model_name(config).is_none()
+    config.contributed_cluster.is_none() && active_model_name(config).is_none()
 }
 
-fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
+/// The contribution level menu. When running clusters were detected it gains a
+/// final "Clusters detected" row that opens the cluster list.
+fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> PromptOutcome {
     const OPTIONS: &[Option<(u8, &str)>] = &[
         Some((20, "light")),
         Some((30, "balanced")),
@@ -4272,6 +4427,8 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
         Some((80, "maximum")),
         None,
     ];
+    let cluster_index = OPTIONS.len();
+    let row_count = OPTIONS.len() + usize::from(cluster_count > 0);
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let mut input = String::new();
@@ -4315,6 +4472,14 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
                 None => raw_println!("{marker} custom - type exact percent (1-80)"),
             }
         }
+        if cluster_count > 0 {
+            let marker = if selected == cluster_index {
+                ">>"
+            } else {
+                "  "
+            };
+            raw_println!("{marker} Clusters detected ({cluster_count}) - show all and pick one to contribute");
+        }
         raw_println!();
         raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press 1-5");
         let _ = io::stdout().flush();
@@ -4335,7 +4500,7 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
                     render_menu(selected);
                 }
                 KeyCode::Down | KeyCode::Tab => {
-                    if selected + 1 < OPTIONS.len() {
+                    if selected + 1 < row_count {
                         selected += 1;
                     }
                     render_menu(selected);
@@ -4351,6 +4516,10 @@ fn prompt_contribution_percent(default_percent: u8) -> PromptOutcome {
                             render_menu(selected);
                         }
                     }
+                }
+                KeyCode::Enter if cluster_count > 0 && selected == cluster_index => {
+                    let _ = disable_raw_mode();
+                    return PromptOutcome::UseCluster;
                 }
                 KeyCode::Enter => match OPTIONS[selected] {
                     Some((percent, _)) => break Some(percent),
@@ -4828,6 +4997,411 @@ fn apply_model_choice(config: &mut Config, choice: ModelChoice, active: bool) {
     }
 }
 
+/// The model a contributed cluster advertises, when one is recorded.
+fn contributed_cluster_model(config: &Config) -> Option<String> {
+    let cluster = config.contributed_cluster.as_ref()?;
+    cluster
+        .model
+        .clone()
+        .or_else(|| cluster.models.first().cloned())
+}
+
+/// The model this node actually serves: the contributed cluster's model when a
+/// cluster was adopted, otherwise the locally cached active model.
+fn effective_active_model(config: &Config) -> Option<String> {
+    contributed_cluster_model(config).or_else(|| active_model_name(config))
+}
+
+fn cluster_choice_flag(contribute: bool, no_contribute: bool) -> Option<bool> {
+    match (contribute, no_contribute) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+fn contributed_cluster_from(
+    cluster: &DetectedCluster,
+    model: Option<String>,
+) -> ContributedCluster {
+    // Size travels with the advertised model so the node agent can classify its
+    // capacity from the model rather than from host memory.
+    let advertised = model
+        .as_deref()
+        .and_then(|name| cluster.models.iter().find(|entry| entry.name == name))
+        .or_else(|| cluster.largest_model());
+
+    ContributedCluster {
+        kind: cluster.kind.as_str().to_string(),
+        base_url: cluster.base_url.clone(),
+        models: cluster.model_names(),
+        model: model.or_else(|| cluster.primary_model().map(str::to_string)),
+        model_params: advertised.and_then(|entry| entry.params),
+        model_bytes: advertised.and_then(|entry| entry.bytes),
+        adopted_at: Some(now_unix_seconds()),
+    }
+}
+
+fn print_cluster_adopted_panel(cluster: &ContributedCluster) {
+    let body = vec![
+        format!("runtime: {}", cluster.kind),
+        format!("endpoint: {}", cluster.base_url),
+        format!(
+            "model: {}",
+            cluster.model.as_deref().unwrap_or("none advertised")
+        ),
+        format!("models available: {}", cluster.models.len()),
+        "MundusX will serve work from this cluster instead of downloading its own model"
+            .to_string(),
+        "run `opengpu cluster forget` to stop contributing it".to_string(),
+    ];
+    print_retro_panel(
+        "CLUSTER CONTRIBUTED",
+        "existing local cluster joined",
+        &body,
+        Color::Green,
+    );
+}
+
+fn discover_clusters(cluster_url: Option<&str>) -> Vec<DetectedCluster> {
+    match cluster_url {
+        Some(url) => match cluster::normalize_base_url(url) {
+            Some(_) => cluster::probe_cluster(url).into_iter().collect(),
+            None => {
+                eprintln!("clusterError: `{url}` must be a full http:// or https:// URL");
+                std::process::exit(2);
+            }
+        },
+        None => cluster::detect_running_clusters(),
+    }
+}
+
+/// Probes for running clusters during setup, honoring the detection opt-out.
+fn detect_clusters_for_setup(cluster_url: Option<&str>) -> Vec<DetectedCluster> {
+    if cluster_url.is_none() && cluster::detection_disabled() {
+        return Vec::new();
+    }
+    discover_clusters(cluster_url)
+}
+
+/// Records a cluster as contributed and prints the confirmation panel.
+fn contribute_detected_cluster(config: &mut Config, cluster: &DetectedCluster) {
+    let contributed = contributed_cluster_from(cluster, None);
+    print_cluster_adopted_panel(&contributed);
+    config.contributed_cluster = Some(contributed);
+    config.cluster_prompt_declined = false;
+}
+
+/// Detects a running local cluster and asks whether to contribute it.
+///
+/// Returns true when the node ends up contributing a cluster, which lets the
+/// caller skip MundusX model provisioning entirely.
+fn maybe_contribute_running_cluster(
+    config: &mut Config,
+    forced: Option<bool>,
+    cluster_url: Option<&str>,
+    pre_detected: Option<&[DetectedCluster]>,
+    // True when the caller already offered the cluster list itself, so this
+    // function must not open a second picker.
+    suppress_prompt: bool,
+) -> bool {
+    let explicit_probe = cluster_url.is_some();
+    if pre_detected.is_none() && cluster::detection_disabled() && !explicit_probe {
+        return config.contributed_cluster.is_some();
+    }
+
+    let probed;
+    let clusters = match pre_detected {
+        Some(clusters) => clusters,
+        None => {
+            probed = discover_clusters(cluster_url);
+            &probed
+        }
+    };
+    let candidate = cluster::preferred_cluster(clusters).cloned();
+    let servable = candidate
+        .as_ref()
+        .map(DetectedCluster::is_servable)
+        .unwrap_or(false);
+
+    if let Some(idle) = candidate.as_ref().filter(|entry| !entry.is_servable()) {
+        println!("clusterDetected: {}", idle.summary());
+        println!(
+            "clusterHint: load a model in that runtime and re-run `opengpu cluster scan` to contribute it"
+        );
+    }
+
+    let decision = cluster::cluster_prompt_decision(
+        servable,
+        config.contributed_cluster.is_some(),
+        config.cluster_prompt_declined,
+        forced,
+        !suppress_prompt && io::stdin().is_terminal() && io::stdout().is_terminal(),
+    );
+
+    let contribute = match decision {
+        ClusterPromptDecision::Skip(reason) => {
+            match config.contributed_cluster.as_ref() {
+                Some(cluster) => println!(
+                    "clusterContributed: {} at {}",
+                    cluster.kind, cluster.base_url
+                ),
+                None if servable => println!("clusterSkipped: {reason}"),
+                None => {}
+            }
+            return config.contributed_cluster.is_some();
+        }
+        ClusterPromptDecision::AutoContribute => true,
+        ClusterPromptDecision::AutoDecline => false,
+        ClusterPromptDecision::Ask => {
+            let ranked = cluster::servable_clusters_by_size(clusters);
+            match prompt_cluster_pick(&ranked) {
+                ClusterPickOutcome::Picked(index) => {
+                    contribute_detected_cluster(config, ranked[index]);
+                    return true;
+                }
+                ClusterPickOutcome::Declined => false,
+                // Esc: leave the question open so the next run asks again.
+                ClusterPickOutcome::Skipped => {
+                    println!("clusterSkipped: no answer recorded; you will be asked again");
+                    println!("clusterHint: run `opengpu cluster use <url>` to contribute one now");
+                    return false;
+                }
+            }
+        }
+    };
+
+    let Some(cluster) = candidate else {
+        return config.contributed_cluster.is_some();
+    };
+
+    if !contribute {
+        config.contributed_cluster = None;
+        config.cluster_prompt_declined = true;
+        println!("clusterDeclined: no running cluster will be contributed");
+        println!("clusterHint: run `opengpu cluster use <url>` if you change your mind");
+        return false;
+    }
+
+    contribute_detected_cluster(config, &cluster);
+    true
+}
+
+fn run_cluster_scan(cluster_url: Option<&str>, json: bool) {
+    let config = current_config_or_default();
+    let clusters = discover_clusters(cluster_url);
+
+    if json {
+        let payload = serde_json::json!({
+            "detection_disabled": cluster::detection_disabled() && cluster_url.is_none(),
+            "contributed": config.contributed_cluster,
+            "detected": clusters
+                .iter()
+                .map(|entry| serde_json::json!({
+                    "kind": entry.kind.as_str(),
+                    "base_url": entry.base_url,
+                    "models": entry.models.iter().map(|model| serde_json::json!({
+                        "name": model.name,
+                        "params": model.params,
+                        "bytes": model.bytes,
+                    })).collect::<Vec<_>>(),
+                    "largest_model": entry.primary_model(),
+                    "servable": entry.is_servable(),
+                }))
+                .collect::<Vec<_>>(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).expect("cluster scan payload")
+        );
+        return;
+    }
+
+    theme::section("Cluster scan");
+    match config.contributed_cluster.as_ref() {
+        Some(cluster) => {
+            theme::field(
+                "contributed",
+                format!("{} at {}", cluster.kind, cluster.base_url),
+            );
+            theme::field(
+                "contributedModel",
+                cluster.model.as_deref().unwrap_or("none advertised"),
+            );
+        }
+        None => theme::field("contributed", "none"),
+    }
+
+    if clusters.is_empty() {
+        theme::field("detected", "none");
+        if cluster::detection_disabled() && cluster_url.is_none() {
+            theme::note("detection is disabled by OPENGPU_SKIP_CLUSTER_DETECT=1");
+        }
+        return;
+    }
+
+    for entry in cluster::servable_clusters_by_size(&clusters) {
+        theme::field(entry.kind.as_str(), entry.summary());
+    }
+    for entry in clusters.iter().filter(|entry| !entry.is_servable()) {
+        theme::field(entry.kind.as_str(), entry.summary());
+    }
+    theme::note("listed biggest model first; run `opengpu cluster use <url>` to contribute one");
+}
+
+fn run_cluster_use(url: &str, model: Option<String>) {
+    let Some(base_url) = cluster::normalize_base_url(url) else {
+        eprintln!("clusterError: `{url}` must be a full http:// or https:// URL");
+        std::process::exit(2);
+    };
+
+    let Some(detected) = cluster::probe_cluster(&base_url) else {
+        eprintln!("clusterError: no LLM cluster answered at {base_url}");
+        eprintln!(
+            "clusterHint: confirm the runtime is serving and exposes /v1/models or /api/tags"
+        );
+        std::process::exit(1);
+    };
+
+    if let Some(requested) = model.as_ref() {
+        if !detected.models.is_empty()
+            && !detected.models.iter().any(|entry| &entry.name == requested)
+        {
+            eprintln!("clusterError: `{requested}` is not served by {base_url}");
+            eprintln!("clusterModels: {}", detected.model_names().join(", "));
+            std::process::exit(1);
+        }
+    }
+
+    if !detected.is_servable() && model.is_none() {
+        eprintln!("clusterError: {base_url} is running but advertises no model");
+        eprintln!("clusterHint: load a model in that runtime, or pass `--model <name>`");
+        std::process::exit(1);
+    }
+
+    let mut config = current_config_or_default();
+    let contributed = contributed_cluster_from(&detected, model);
+    print_cluster_adopted_panel(&contributed);
+    config.contributed_cluster = Some(contributed);
+    config.cluster_prompt_declined = false;
+
+    if let Err(error) = save_config(&config) {
+        eprintln!("failed to save contributed cluster: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run_cluster_forget() {
+    let mut config = current_config_or_default();
+    match config.contributed_cluster.take() {
+        Some(cluster) => println!("clusterForgotten: {} at {}", cluster.kind, cluster.base_url),
+        None => println!("clusterForgotten: none was contributed"),
+    }
+    config.cluster_prompt_declined = false;
+
+    if let Err(error) = save_config(&config) {
+        eprintln!("failed to clear contributed cluster: {error}");
+        std::process::exit(1);
+    }
+
+    if active_model_name(&config).is_none() {
+        println!("clusterHint: run `opengpu start` to choose a MundusX model for this node");
+    }
+}
+
+fn now_unix_seconds() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+/// Everything `opengpu start` needs that install can verify without a network
+/// call. Reported at the end of install so a machine that cannot start says so
+/// now instead of failing later.
+///
+/// Pure so the reporting can be tested without touching the filesystem.
+fn start_preflight_blockers(
+    config: &Config,
+    identity_ready: bool,
+    node_agent_installed: bool,
+    cluster_serving_model: Option<bool>,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+
+    if !identity_ready {
+        blockers.push("secure device identity is unavailable".to_string());
+    }
+    if !node_agent_installed {
+        blockers.push(format!(
+            "`{}` is not installed beside `opengpu`",
+            companion_node_agent_name()
+        ));
+    }
+    if config.contribution_percent == 0 {
+        blockers.push("contribution cap is unset; run `opengpu cap`".to_string());
+    }
+
+    match config.contributed_cluster.as_ref() {
+        Some(cluster) => match cluster_serving_model {
+            Some(true) => {}
+            Some(false) => blockers.push(format!(
+                "contributed cluster at {} is not serving `{}`",
+                cluster.base_url,
+                cluster.model.as_deref().unwrap_or("its advertised model")
+            )),
+            None => blockers.push(format!(
+                "contributed cluster at {} is not answering",
+                cluster.base_url
+            )),
+        },
+        None => {
+            if active_model_name(config).is_none() {
+                blockers.push("no active model is selected".to_string());
+            }
+        }
+    }
+
+    blockers
+}
+
+/// Re-probes a contributed cluster: `None` when the endpoint is silent, and
+/// `Some(false)` when it answers but no longer serves the advertised model.
+fn contributed_cluster_serving_model(config: &Config) -> Option<bool> {
+    let cluster = config.contributed_cluster.as_ref()?;
+    let detected = cluster::probe_cluster(&cluster.base_url)?;
+    let Some(expected) = cluster.model.as_deref() else {
+        return Some(detected.is_servable());
+    };
+    Some(detected.models.iter().any(|model| model.name == expected))
+}
+
+fn print_start_preflight(config: &Config) {
+    let cluster_serving = contributed_cluster_serving_model(config);
+    let blockers = start_preflight_blockers(
+        config,
+        identity_ready(),
+        resolve_node_agent_executable().is_absolute(),
+        cluster_serving,
+    );
+
+    if blockers.is_empty() {
+        println!("startReadiness: ready");
+        if config.contributed_cluster.is_some() {
+            println!(
+                "startNote: this node serves work from the contributed cluster, so the control plane must admit the `contributed-cluster` runtime mode"
+            );
+        }
+        return;
+    }
+
+    println!("startReadiness: blocked");
+    for blocker in &blockers {
+        println!("startBlocker: {blocker}");
+    }
+    println!("startHint: fix the above before running `opengpu start`");
+}
+
 fn run_init() -> Config {
     let (identity, created, identity_path) = match ensure_identity() {
         Ok(result) => result,
@@ -4864,6 +5438,8 @@ fn run_install(
     private: bool,
     control_plane_url: Option<String>,
     cap_percent: Option<u8>,
+    cluster_choice: Option<bool>,
+    cluster_url: Option<String>,
 ) {
     let profile = detect_machine_profile();
     let mut config = if config_exists() {
@@ -4879,6 +5455,10 @@ fn run_install(
     };
     config.backend_preference = profile.backend;
     let detected = resolved_backend(&config);
+
+    // Probe up front so the cluster step after the cap has results ready.
+    let detected_clusters = detect_clusters_for_setup(cluster_url.as_deref());
+
     config.control_plane_url =
         resolve_install_control_plane_url(public, private, control_plane_url);
     if let Err(error) = save_config(&config) {
@@ -4886,6 +5466,10 @@ fn run_install(
         std::process::exit(1);
     }
     println!("controlPlaneUrl: {}", config.control_plane_url);
+
+    let ranked_clusters = cluster::servable_clusters_by_size(&detected_clusters);
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let mut contributed_from_menu = false;
 
     let selected_cap = if let Some(value) = cap_percent {
         match normalize_contribution_percent(u16::from(value)) {
@@ -4895,15 +5479,33 @@ fn run_install(
                 std::process::exit(2);
             }
         }
-    } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
+    } else if interactive {
         println!(
             "contributionQuestion: how much of this {} machine can MundusX use?",
             detected.as_str()
         );
         println!("contributionMeaning: {}", contribution_semantics(detected));
-        match prompt_contribution_percent(default_contribution_percent(detected)) {
-            PromptOutcome::Selected(value) => Some(value),
-            PromptOutcome::Cancelled => None,
+        let default_percent = default_contribution_percent(detected);
+        // The cluster list is reached from this menu, and Esc or "None" inside it
+        // comes back here so the cap can still be chosen.
+        loop {
+            match prompt_contribution_percent(default_percent, ranked_clusters.len()) {
+                PromptOutcome::Selected(value) => break Some(value),
+                PromptOutcome::Cancelled => break None,
+                PromptOutcome::UseCluster => match prompt_cluster_pick(&ranked_clusters) {
+                    ClusterPickOutcome::Picked(index) => {
+                        contribute_detected_cluster(&mut config, ranked_clusters[index]);
+                        contributed_from_menu = true;
+                        // A contributed cluster is not gated by the cap, but the
+                        // node still needs one saved to pass local policy.
+                        println!(
+                            "capNote: the contribution cap does not gate a contributed cluster; saved {default_percent}% for local policy"
+                        );
+                        break Some(default_percent);
+                    }
+                    ClusterPickOutcome::Declined | ClusterPickOutcome::Skipped => {}
+                },
+            }
         }
     } else if config.contribution_percent == 0 {
         Some(default_contribution_percent(detected))
@@ -4915,13 +5517,25 @@ fn run_install(
         config.contribution_percent = value;
     }
 
+    let contributing_cluster = contributed_from_menu
+        || maybe_contribute_running_cluster(
+            &mut config,
+            cluster_choice,
+            cluster_url.as_deref(),
+            Some(&detected_clusters),
+            // Interactive installs ask through the contribution level menu.
+            !interactive,
+        );
+
     if should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
         let choice = prompt_model_selection(&config, backend);
         apply_model_choice(&mut config, choice, true);
     }
 
-    configure_macos_runtime(&mut config);
+    if !contributing_cluster {
+        configure_macos_runtime(&mut config);
+    }
 
     match save_config(&config) {
         Ok(path) => {
@@ -4968,8 +5582,16 @@ fn run_install(
                     }
                 ),
                 format!(
+                    "contributed cluster: {}",
+                    config
+                        .contributed_cluster
+                        .as_ref()
+                        .map(|cluster| format!("{} at {}", cluster.kind, cluster.base_url))
+                        .unwrap_or_else(|| "none".to_string())
+                ),
+                format!(
                     "active model: {}",
-                    active_model_name(&config).unwrap_or_else(|| "none".to_string())
+                    effective_active_model(&config).unwrap_or_else(|| "none".to_string())
                 ),
                 format!("config: {}", path.display()),
                 "next step: run `opengpu start`".to_string(),
@@ -4980,6 +5602,7 @@ fn run_install(
                 &body,
                 Color::Green,
             );
+            print_start_preflight(&config);
         }
         Err(error) => {
             eprintln!("failed to save install setup: {error}");
@@ -4988,7 +5611,11 @@ fn run_install(
     }
 }
 
-fn run_start_or_connect(mode: AgentLaunchMode) {
+fn run_start_or_connect(
+    mode: AgentLaunchMode,
+    cluster_choice: Option<bool>,
+    cluster_url: Option<String>,
+) {
     // auto-init on first run
     if !config_exists() {
         run_init();
@@ -5013,16 +5640,25 @@ fn run_start_or_connect(mode: AgentLaunchMode) {
             detected.as_str()
         );
         println!("contributionMeaning: {}", contribution_semantics(detected));
-        match prompt_contribution_percent(default_contribution_percent(detected)) {
+        match prompt_contribution_percent(default_contribution_percent(detected), 0) {
             PromptOutcome::Selected(value) => {
                 config.contribution_percent = value;
             }
-            PromptOutcome::Cancelled => {
+            // The cluster row is not offered here; `start` asks separately below.
+            PromptOutcome::UseCluster | PromptOutcome::Cancelled => {
                 println!("capHint: run `opengpu cap` before starting contribution");
             }
         }
     }
-    if active_model_name(&config).is_none() {
+    maybe_contribute_running_cluster(
+        &mut config,
+        cluster_choice,
+        cluster_url.as_deref(),
+        None,
+        false,
+    );
+
+    if should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
         let choice = prompt_model_selection(&config, backend);
         apply_model_choice(&mut config, choice, true);
@@ -5089,8 +5725,24 @@ fn main() {
             private,
             control_plane_url,
             cap_percent,
-        } => run_install(public, private, control_plane_url, cap_percent),
-        Commands::Start { background, debug } => {
+            contribute_cluster,
+            no_contribute_cluster,
+            cluster_url,
+        } => run_install(
+            public,
+            private,
+            control_plane_url,
+            cap_percent,
+            cluster_choice_flag(contribute_cluster, no_contribute_cluster),
+            cluster_url,
+        ),
+        Commands::Start {
+            background,
+            debug,
+            contribute_cluster,
+            no_contribute_cluster,
+            cluster_url,
+        } => {
             let mode = if background {
                 AgentLaunchMode::Background
             } else if debug {
@@ -5098,9 +5750,13 @@ fn main() {
             } else {
                 AgentLaunchMode::Foreground
             };
-            run_start_or_connect(mode)
+            run_start_or_connect(
+                mode,
+                cluster_choice_flag(contribute_cluster, no_contribute_cluster),
+                cluster_url,
+            )
         }
-        Commands::Connect => run_start_or_connect(AgentLaunchMode::Background),
+        Commands::Connect => run_start_or_connect(AgentLaunchMode::Background, None, None),
         Commands::Pause => {
             if !config_exists() {
                 eprintln!("not connected");
@@ -5127,7 +5783,7 @@ fn main() {
                 }
             }
         }
-        Commands::Resume => run_start_or_connect(AgentLaunchMode::Background),
+        Commands::Resume => run_start_or_connect(AgentLaunchMode::Background, None, None),
         Commands::Login { token } => {
             let mut config = current_config_or_default();
             let token = match token {
@@ -5209,7 +5865,7 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let active_model = active_model_name(&config);
+            let active_model = effective_active_model(&config);
             let identity_ready = identity_ready();
             let power = probe_power_state();
             let policy_allowed =
@@ -5270,16 +5926,20 @@ fn main() {
                 config.contribution_percent = value;
                 Some(value)
             } else {
-                match prompt_contribution_percent(if config.contribution_percent == 0 {
-                    30
-                } else {
-                    config.contribution_percent
-                }) {
+                match prompt_contribution_percent(
+                    if config.contribution_percent == 0 {
+                        30
+                    } else {
+                        config.contribution_percent
+                    },
+                    0,
+                ) {
                     PromptOutcome::Selected(value) => {
                         config.contribution_percent = value;
                         Some(value)
                     }
-                    PromptOutcome::Cancelled => {
+                    // `opengpu cap` never offers the cluster row.
+                    PromptOutcome::UseCluster | PromptOutcome::Cancelled => {
                         eprintln!("cancelled");
                         std::process::exit(130);
                     }
@@ -5346,7 +6006,7 @@ fn main() {
             let config = current_config_or_default();
             let preferred_backend = resolved_backend(&config);
             let power = probe_power_state();
-            let active_model = active_model_name(&config);
+            let active_model = effective_active_model(&config);
             let identity_ready = identity_ready();
             let policy_allowed =
                 policy_allowed(&config, &power, active_model.as_deref(), identity_ready);
@@ -5378,6 +6038,8 @@ fn main() {
                     ),
                     "ready_for_jobs": readiness.ready_for_jobs,
                     "readiness_reason": readiness.readiness_reason,
+                    "active_model": active_model,
+                    "contributed_cluster": config.contributed_cluster,
                     "active_model_compatibility": readiness.model_compatibility,
                     "active_model_compatibility_reason": readiness.model_compatibility_reason,
                 });
@@ -5604,6 +6266,11 @@ fn main() {
                 }
             }
         },
+        Commands::Cluster { command } => match command {
+            ClusterCommands::Scan { url, json } => run_cluster_scan(url.as_deref(), json),
+            ClusterCommands::Use { url, model } => run_cluster_use(&url, model),
+            ClusterCommands::Forget => run_cluster_forget(),
+        },
         Commands::Update => {
             if let Err(error) = updater::update_installed_binaries() {
                 eprintln!("update failed: {error}");
@@ -5625,7 +6292,7 @@ fn main() {
             json,
         } => {
             let config = current_config_or_default();
-            let default_model = active_model_name(&config);
+            let default_model = effective_active_model(&config);
             let requested_model = model.as_deref().or(default_model.as_deref());
             let max_tokens_source = max_tokens_source(max_tokens);
             let max_tokens = effective_max_tokens(&prompt, max_tokens);
@@ -5694,7 +6361,7 @@ fn main() {
                     execution_mode,
                     json,
                 } => {
-                    let default_model = active_model_name(&config);
+                    let default_model = effective_active_model(&config);
                     let requested_model = model.as_deref().or(default_model.as_deref());
                     let max_tokens_source = max_tokens_source(max_tokens);
                     let max_tokens = effective_max_tokens(&prompt, max_tokens);
@@ -5803,14 +6470,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_graph_node_name, build_job_submission_payload, control_plane_endpoint,
-        cuda_doctor_payload, doctor_payload, graph_progress_counts, handles_terminal_key,
+        active_graph_node_name, build_job_submission_payload, cluster, cluster_choice_flag,
+        contributed_cluster_from, control_plane_endpoint, cuda_doctor_payload, doctor_payload,
+        effective_active_model, graph_progress_counts, handles_terminal_key,
         is_hugging_face_model_id, job_degradation_message, job_is_terminal, job_status_path,
         job_wait_progress_signature, local_readiness, logs_payload, normalize_control_plane_url,
         parse_worker_output, remote_job_output, resolve_install_control_plane_url,
         runtime_metrics_from_output, runtime_metrics_from_payload,
-        should_prefetch_vllm_catalog_model, should_prompt_model_selection, terminal_line_endings,
-        vllm_doctor_payload, Cli, Commands, ExecutionMode, JobsCommands, PowerState,
+        should_prefetch_vllm_catalog_model, should_prompt_model_selection,
+        start_preflight_blockers, terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands,
+        Commands, ContributedCluster, ExecutionMode, JobsCommands, PowerState,
         PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
@@ -5981,7 +6650,8 @@ mod tests {
             cli.command,
             Commands::Start {
                 background: false,
-                debug: true
+                debug: true,
+                ..
             }
         ));
     }
@@ -5994,7 +6664,8 @@ mod tests {
             cli.command,
             Commands::Start {
                 background: true,
-                debug: false
+                debug: false,
+                ..
             }
         ));
     }
@@ -6011,8 +6682,302 @@ mod tests {
                 private: false,
                 control_plane_url: None,
                 cap_percent: Some(30),
+                ..
             }
         ));
+    }
+
+    #[test]
+    fn install_command_parses_cluster_contribution_flags() {
+        let cli = Cli::try_parse_from([
+            "opengpu",
+            "install",
+            "--public",
+            "--contribute-cluster",
+            "--cluster-url",
+            "http://127.0.0.1:11434",
+        ])
+        .expect("install should parse cluster flags");
+
+        match cli.command {
+            Commands::Install {
+                contribute_cluster,
+                no_contribute_cluster,
+                cluster_url,
+                ..
+            } => {
+                assert!(contribute_cluster);
+                assert!(!no_contribute_cluster);
+                assert_eq!(cluster_url.as_deref(), Some("http://127.0.0.1:11434"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn install_rejects_contradicting_cluster_flags() {
+        let error = Cli::try_parse_from([
+            "opengpu",
+            "install",
+            "--contribute-cluster",
+            "--no-contribute-cluster",
+        ]);
+
+        assert!(error.is_err());
+    }
+
+    #[test]
+    fn start_command_parses_cluster_contribution_flags() {
+        let cli = Cli::try_parse_from(["opengpu", "start", "--no-contribute-cluster"])
+            .expect("start should parse cluster flags");
+
+        match cli.command {
+            Commands::Start {
+                contribute_cluster,
+                no_contribute_cluster,
+                ..
+            } => {
+                assert!(!contribute_cluster);
+                assert!(no_contribute_cluster);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cluster_commands_parse() {
+        let scan = Cli::try_parse_from(["opengpu", "cluster", "scan", "--json"])
+            .expect("cluster scan should parse");
+        assert!(matches!(
+            scan.command,
+            Commands::Cluster {
+                command: ClusterCommands::Scan {
+                    url: None,
+                    json: true
+                }
+            }
+        ));
+
+        let forget =
+            Cli::try_parse_from(["opengpu", "cluster", "forget"]).expect("cluster forget parses");
+        assert!(matches!(
+            forget.command,
+            Commands::Cluster {
+                command: ClusterCommands::Forget
+            }
+        ));
+
+        let use_cluster = Cli::try_parse_from([
+            "opengpu",
+            "cluster",
+            "use",
+            "http://127.0.0.1:1234",
+            "--model",
+            "qwen2.5-7b",
+        ])
+        .expect("cluster use parses");
+        match use_cluster.command {
+            Commands::Cluster {
+                command: ClusterCommands::Use { url, model },
+            } => {
+                assert_eq!(url, "http://127.0.0.1:1234");
+                assert_eq!(model.as_deref(), Some("qwen2.5-7b"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_passes_for_a_ready_cluster_node() {
+        let mut config = Config::default();
+        config.contribution_percent = 30;
+        config.contributed_cluster = Some(ContributedCluster {
+            kind: "llama.cpp".to_string(),
+            base_url: "http://127.0.0.1:8000".to_string(),
+            models: vec!["UD-IQ2_M".to_string()],
+            model: Some("UD-IQ2_M".to_string()),
+            model_params: Some(753_864_139_008),
+            model_bytes: None,
+            adopted_at: None,
+        });
+
+        assert!(start_preflight_blockers(&config, true, true, Some(true)).is_empty());
+    }
+
+    #[test]
+    fn preflight_reports_a_cluster_that_stopped_answering() {
+        let mut config = Config::default();
+        config.contribution_percent = 30;
+        config.contributed_cluster = Some(ContributedCluster {
+            kind: "llama.cpp".to_string(),
+            base_url: "http://127.0.0.1:8000".to_string(),
+            models: vec!["UD-IQ2_M".to_string()],
+            model: Some("UD-IQ2_M".to_string()),
+            model_params: None,
+            model_bytes: None,
+            adopted_at: None,
+        });
+
+        let silent = start_preflight_blockers(&config, true, true, None);
+        assert_eq!(silent.len(), 1);
+        assert!(silent[0].contains("is not answering"));
+
+        let wrong_model = start_preflight_blockers(&config, true, true, Some(false));
+        assert_eq!(wrong_model.len(), 1);
+        assert!(wrong_model[0].contains("is not serving `UD-IQ2_M`"));
+    }
+
+    #[test]
+    fn preflight_reports_everything_start_would_need() {
+        // No identity, no agent binary, no cap, no model and no cluster.
+        let blockers = start_preflight_blockers(&Config::default(), false, false, None);
+
+        assert_eq!(blockers.len(), 4);
+        assert!(blockers.iter().any(|b| b.contains("device identity")));
+        assert!(blockers.iter().any(|b| b.contains("opengpu-node-agent")));
+        assert!(blockers.iter().any(|b| b.contains("contribution cap")));
+        assert!(blockers.iter().any(|b| b.contains("no active model")));
+    }
+
+    #[test]
+    fn preflight_does_not_ask_a_cluster_node_for_a_local_model() {
+        let mut config = Config::default();
+        config.contribution_percent = 30;
+        config.contributed_cluster = Some(ContributedCluster {
+            kind: "ollama".to_string(),
+            base_url: "http://127.0.0.1:11434".to_string(),
+            models: vec!["hermes3:70b".to_string()],
+            model: Some("hermes3:70b".to_string()),
+            model_params: None,
+            model_bytes: None,
+            adopted_at: None,
+        });
+
+        let blockers = start_preflight_blockers(&config, true, true, Some(true));
+
+        assert!(!blockers.iter().any(|b| b.contains("active model")));
+    }
+
+    #[test]
+    fn cluster_choice_flag_maps_both_directions() {
+        assert_eq!(cluster_choice_flag(true, false), Some(true));
+        assert_eq!(cluster_choice_flag(false, true), Some(false));
+        assert_eq!(cluster_choice_flag(false, false), None);
+    }
+
+    #[test]
+    fn contributed_cluster_supplies_the_effective_active_model() {
+        let mut config = Config::default();
+        config.contributed_cluster = Some(ContributedCluster {
+            kind: "ollama".to_string(),
+            base_url: "http://127.0.0.1:11434".to_string(),
+            models: vec!["llama3.1:8b".to_string(), "mistral:7b".to_string()],
+            model: None,
+            model_params: None,
+            model_bytes: None,
+            adopted_at: None,
+        });
+
+        assert_eq!(
+            effective_active_model(&config).as_deref(),
+            Some("llama3.1:8b")
+        );
+    }
+
+    #[test]
+    fn explicit_cluster_model_wins_over_the_first_listed_model() {
+        let mut config = Config::default();
+        config.contributed_cluster = Some(ContributedCluster {
+            kind: "lm-studio".to_string(),
+            base_url: "http://127.0.0.1:1234".to_string(),
+            models: vec!["a".to_string(), "b".to_string()],
+            model: Some("b".to_string()),
+            model_params: None,
+            model_bytes: None,
+            adopted_at: None,
+        });
+
+        assert_eq!(effective_active_model(&config).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn contributing_a_cluster_skips_the_mundusx_model_selector() {
+        let mut config = Config::default();
+        assert!(should_prompt_model_selection(&config));
+
+        config.contributed_cluster = Some(ContributedCluster {
+            kind: "vllm".to_string(),
+            base_url: "http://127.0.0.1:8000".to_string(),
+            models: vec!["qwen2.5-7b".to_string()],
+            model: None,
+            model_params: None,
+            model_bytes: None,
+            adopted_at: None,
+        });
+
+        assert!(!should_prompt_model_selection(&config));
+    }
+
+    #[test]
+    fn detected_cluster_becomes_a_contributed_record() {
+        let detected = cluster::DetectedCluster {
+            kind: cluster::ClusterKind::Ollama,
+            base_url: "http://127.0.0.1:11434".to_string(),
+            models: vec![cluster::ModelInfo::new(
+                "llama3.1:8b",
+                Some(8_000_000_000),
+                None,
+            )],
+        };
+
+        let contributed = contributed_cluster_from(&detected, None);
+
+        assert_eq!(contributed.kind, "ollama");
+        assert_eq!(contributed.base_url, "http://127.0.0.1:11434");
+        assert_eq!(contributed.model.as_deref(), Some("llama3.1:8b"));
+        assert!(contributed.adopted_at.is_some());
+    }
+
+    #[test]
+    fn contributed_cluster_survives_a_config_round_trip() {
+        let mut config = Config::default();
+        config.contributed_cluster = Some(ContributedCluster {
+            kind: "ollama".to_string(),
+            base_url: "http://127.0.0.1:11434".to_string(),
+            models: vec!["llama3.1:8b".to_string()],
+            model: Some("llama3.1:8b".to_string()),
+            model_params: Some(8_000_000_000),
+            model_bytes: None,
+            adopted_at: Some("1".to_string()),
+        });
+        config.cluster_prompt_declined = false;
+
+        let encoded = serde_json::to_string(&config).expect("serialize config");
+        let decoded: Config = serde_json::from_str(&encoded).expect("deserialize config");
+
+        assert_eq!(decoded.contributed_cluster, config.contributed_cluster);
+    }
+
+    #[test]
+    fn configs_written_before_cluster_support_still_load() {
+        let legacy = serde_json::json!({
+            "version": 1,
+            "device_id": "node-legacy",
+            "public_key_fingerprint": null,
+            "profile_name": null,
+            "auth_token": null,
+            "connected": false,
+            "paused": false,
+            "backend_preference": "auto",
+            "contribution_percent": 30,
+            "control_plane_url": "https://uat.mundusx.ai",
+        });
+
+        let decoded: Config =
+            serde_json::from_value(legacy).expect("legacy config should still load");
+
+        assert!(decoded.contributed_cluster.is_none());
+        assert!(!decoded.cluster_prompt_declined);
     }
 
     #[test]
