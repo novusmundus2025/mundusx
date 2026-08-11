@@ -17,6 +17,7 @@
     "test:automation-notifications": "bash tests/automation-notifications.sh",
     "test:branding": "bash tests/branding-surface.sh",
     "test:cli-docs": "bash tests/cli-docs-surface.sh",
+    "test:cluster-contribution": "bash tests/cluster-contribution-smoke.sh",
     "test:docs-site": "bash tests/public-docs-site.sh",
     "test:homebrew-formula": "bash tests/homebrew-formula.sh",
     "test:install-ps1": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-ps1-local-release.ps1",

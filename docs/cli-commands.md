@@ -28,6 +28,9 @@ pause, resume, or disconnect workflows.
 - `opengpu model import <path> --name <name> --backend cuda --vram-mb <mb>` - record an existing local model file with format, quantization, size, and compatibility metadata
 - `opengpu model remove <name>` - remove a cached model
 - `opengpu model prune --yes` - remove inactive cached models
+- `opengpu cluster scan` - probe the well-known local ports for a running LLM cluster and show what answered
+- `opengpu cluster use <url>` - contribute a running local cluster without waiting for the setup prompt
+- `opengpu cluster forget` - stop contributing the recorded cluster and allow the setup prompt again
 - `opengpu doctor` - inspect config paths, writability, CUDA prerequisite state, low-VRAM profile, Windows LM Studio runtime guidance, and opt-in Linux vLLM readiness
 - `opengpu logs` - show local log source information
 - `opengpu update` - show the local install page and release preview URLs
@@ -53,7 +56,8 @@ These remain available, but they are hidden from the default `--help` output so 
 - When backend preference is `auto`, `status` resolves the machine backend first and shows your machine as the active provider when connected and policy allows it.
 - `vllm` is explicit opt-in for Linux/Ubuntu NVIDIA nodes. `auto` does not select it, and Windows continues to use the llama.cpp CUDA path.
 - `nodes` still shows demo inventory from `apps/cli/src/nodes.rs`, but `status` no longer does.
-- `status` and `start` also report `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, `policyReason`, `readyForJobs`, and `readinessReason` so a connected node can still explain why it is not schedulable yet.
+- `status` and `start` also report `powerSource`, `onBattery`, `batteryPercent`, `identityTrustPath`, `policyAllowed`, `policyReason`, `readyForJobs`, `readinessReason`, and `contributedCluster` so a connected node can still explain why it is not schedulable yet.
+- When a cluster is contributed, its model is the node's effective active model: `status`, `doctor`, the startup summary, and the default model for `run` and `jobs submit` all resolve to it, and the local model cache stays empty.
 - `readyForJobs: yes` means the node is connected, not paused, has secure identity, has a selected active model, passes local power policy, and is not using a model manifest marked `rejected`.
 - The foreground node agent also prints the advertised registration capability at connect time, including `readyForJobs`, `readinessReason`, `runtimeMode`, active model, and VRAM budget when available.
 - `login` and `logout` manage the local operator bearer token used for the control-plane API when operator auth is enabled. On Windows, `login` stores the token in a DPAPI-protected blob outside `config.json`, and `logout` removes that protected token.
@@ -64,5 +68,16 @@ These remain available, but they are hidden from the default `--help` output so 
 - `start` asks for the contribution budget on interactive first run; `cap` is the explicit command for changing it later.
 - Community contribution quick picks are `20%`, `30%`, `50%`, `65%`, and `80%`; custom caps can be any whole percent from `1%` through `80%`.
 - `install` is the guided setup command after the binary is installed. Public mode saves the hosted MundusX control plane; private mode asks for a full custom URL; blank URL means public. The wizard also asks for the model and refuses choices that do not fit the selected contribution cap and detected machine capacity.
+- `install` and `start` probe the machine for a local LLM cluster that is already running (Ollama on `11434`, LM Studio on `1234`, vLLM on `8000`, and any OpenAI-compatible server on `8080`). When one answers with at least one model, the contributor is asked whether to contribute that running cluster instead of provisioning a MundusX runtime and downloading another copy of the weights. The MundusX-managed `llama-server` port `8789` is never treated as a foreign cluster.
+- The cluster question lives on the contribution level menu as a final `Clusters detected (N)` row. Choosing it lists every running cluster, biggest model first, plus a `None` row; picking one contributes it, saves the default cap for local policy, and skips model selection entirely. `None` or `Esc` returns to the contribution level menu.
+- The runtime is identified from its own model listing (`owned_by`, llama.cpp `meta` fields, Ollama `details`/`digest`), not from the port, so a llama.cpp server on `8000` is reported as llama.cpp rather than vLLM.
+- A contributed cluster advertises `runtime_mode: contributed-cluster`, a capacity class derived from the advertised model's size, no VRAM budget, one parallel slot, and `reducer`/`synthesizer` roles when that class is heavy/synthesis or above.
+- Clusters and models are ranked by size, not probe order: a node advertises the largest model its cluster serves, and the cluster serving the largest model wins across endpoints. Parameter count decides first (llama.cpp `meta.n_params`, Ollama `details.parameter_size`), with on-disk bytes breaking ties. `cluster use --model <name>` overrides the automatic pick.
+- `cluster scan` lists servable endpoints biggest first, then any that are running with nothing loaded.
+- Answering yes records the cluster in `config.json`, skips the MundusX model selector, and skips runtime provisioning. Answering no is remembered so setup stops asking; `opengpu cluster use <url>` or `--contribute-cluster` reopens the decision.
+- `install --contribute-cluster` / `start --contribute-cluster` contributes a detected cluster without prompting, and `--no-contribute-cluster` always declines, so scripted installs never block on the question. `--cluster-url <url>` probes one endpoint instead of the well-known ports.
+- Non-interactive runs never contribute a cluster silently: without a flag they print the detection and the `--contribute-cluster` hint, then continue with normal MundusX setup.
+- `OPENGPU_CLUSTER_PROBE_URLS` replaces the default probe list with a comma-separated set of base URLs, and `OPENGPU_SKIP_CLUSTER_DETECT=1` turns detection off entirely.
+- A detected endpoint that is running but advertises no model is reported as detected-but-idle and is not offered for contribution, because it cannot serve work yet.
 - `start` only marks the node ready when the secure device identity is available.
 - Config inspection now happens through `status` and `doctor`; dedicated `config` subcommands are not part of the current CLI surface.

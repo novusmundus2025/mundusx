@@ -170,14 +170,21 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
         &model_dir,
         config.active_model.as_deref(),
         resolved_backend(config),
+        config.contributed_cluster.as_ref(),
     );
-    health.parallel_slots = worker::recommended_parallel_slots(
-        resolved_backend(config),
-        health.cuda_memory_mb,
-        Some(detect_memory_mb()),
-        config.contribution_percent,
-        config.active_model.as_deref(),
-    );
+    health.parallel_slots = if config.contributed_cluster.is_some() {
+        // The cluster does its own batching and queueing, and we cannot see how
+        // it is configured, so advertise one slot rather than over-promising.
+        1
+    } else {
+        worker::recommended_parallel_slots(
+            resolved_backend(config),
+            health.cuda_memory_mb,
+            Some(detect_memory_mb()),
+            config.contribution_percent,
+            config.active_model.as_deref(),
+        )
+    };
     let policy = worker::probe_worker_policy(&health, config.contribution_percent);
     (health, policy)
 }
@@ -205,6 +212,61 @@ fn cap_applied_memory_mb(physical_memory_mb: u32, contribution_percent: u8) -> u
         .saturating_mul(contribution_percent as u32)
         .saturating_add(99)
         / 100
+}
+
+/// Capacity class for a contributed cluster, derived from the advertised model
+/// rather than from host memory. Host memory says nothing useful here: the
+/// cluster manages its own allocation, and on unified-memory machines the
+/// available-memory reading collapses once a large model is resident.
+///
+/// Returns `None` when the runtime reported no size signal, leaving the caller
+/// to fall back to the memory ladder.
+fn cluster_capacity_class(
+    model_params: Option<u64>,
+    model_bytes: Option<u64>,
+) -> Option<&'static str> {
+    if let Some(params) = model_params.filter(|value| *value > 0) {
+        return Some(if params >= 70_000_000_000 {
+            "synthesis"
+        } else if params >= 30_000_000_000 {
+            "heavy"
+        } else if params >= 13_000_000_000 {
+            "performance"
+        } else if params >= 7_000_000_000 {
+            "standard"
+        } else {
+            "micro"
+        });
+    }
+
+    const GB: u64 = 1024 * 1024 * 1024;
+    model_bytes.filter(|value| *value > 0).map(|bytes| {
+        if bytes >= 40 * GB {
+            "synthesis"
+        } else if bytes >= 20 * GB {
+            "heavy"
+        } else if bytes >= 8 * GB {
+            "performance"
+        } else if bytes >= 4 * GB {
+            "standard"
+        } else {
+            "micro"
+        }
+    })
+}
+
+/// Ordinal for the capacity ladder, so role thresholds can be expressed as
+/// "this class or above". Unknown names rank lowest.
+fn capacity_rank(class: &str) -> u8 {
+    match class.trim().to_ascii_lowercase().as_str() {
+        "server" => 6,
+        "synthesis" => 5,
+        "heavy" => 4,
+        "performance" => 3,
+        "standard" => 2,
+        "micro" => 1,
+        _ => 0,
+    }
 }
 
 fn classify_capacity(
@@ -238,26 +300,48 @@ fn build_capabilities(
     let available_memory_mb = detect_available_memory_mb();
     let usable_memory_mb = cap_applied_memory_mb(physical_memory_mb, config.contribution_percent)
         .min(available_memory_mb);
-    let usable_vram_mb = cap_applied_vram_mb(health.cuda_memory_mb, config.contribution_percent);
-    let active_model = worker::active_model_capability(
-        &config.effective_model_dir(),
-        config.active_model.as_deref(),
-    )
-    .or_else(|| {
-        config
-            .active_model
-            .as_ref()
+    let cluster = config.contributed_cluster.as_ref();
+    // A contributed cluster owns its own memory, so the contribution cap does not
+    // translate into a VRAM budget for it.
+    let usable_vram_mb = match cluster {
+        Some(_) => None,
+        None => cap_applied_vram_mb(health.cuda_memory_mb, config.contribution_percent),
+    };
+    let active_model = match cluster {
+        Some(cluster) => cluster
+            .model
+            .clone()
+            .or_else(|| cluster.models.first().cloned())
             .map(|name| contracts::ModelCapability {
-                name: name.clone(),
-                path: health.model_path.clone(),
+                name,
+                path: None,
                 format: None,
                 quantization: None,
-                size_bytes: None,
+                size_bytes: cluster.model_bytes,
                 estimated_vram_mb: None,
                 compatibility: None,
                 compatibility_reason: None,
-            })
-    });
+            }),
+        None => worker::active_model_capability(
+            &config.effective_model_dir(),
+            config.active_model.as_deref(),
+        )
+        .or_else(|| {
+            config
+                .active_model
+                .as_ref()
+                .map(|name| contracts::ModelCapability {
+                    name: name.clone(),
+                    path: health.model_path.clone(),
+                    format: None,
+                    quantization: None,
+                    size_bytes: None,
+                    estimated_vram_mb: None,
+                    compatibility: None,
+                    compatibility_reason: None,
+                })
+        }),
+    };
 
     let mut ready_for_jobs = policy_allowed && health.healthy;
     let mut readiness_reason = None;
@@ -272,7 +356,11 @@ fn build_capabilities(
         Some(_) => {}
         None => {
             ready_for_jobs = false;
-            readiness_reason = Some("no active model is configured".to_string());
+            readiness_reason = Some(if cluster.is_some() {
+                "contributed cluster advertises no model".to_string()
+            } else {
+                "no active model is configured".to_string()
+            });
         }
     }
 
@@ -293,7 +381,10 @@ fn build_capabilities(
         usable_vram_mb,
         runtime_mode: health.runtime_mode.clone(),
         parallel_slots: health.parallel_slots,
-        capacity_class: classify_capacity(backend, usable_memory_mb, usable_vram_mb).to_string(),
+        capacity_class: cluster
+            .and_then(|cluster| cluster_capacity_class(cluster.model_params, cluster.model_bytes))
+            .unwrap_or_else(|| classify_capacity(backend, usable_memory_mb, usable_vram_mb))
+            .to_string(),
         supported_roles: Vec::new(),
         supported_tools: Vec::new(),
         active_model,
@@ -323,14 +414,26 @@ fn node_roles_for(
         return Vec::new();
     }
 
+    // A contributed cluster has no MundusX-managed VRAM budget and does its own
+    // batching, so the VRAM and slot thresholds below can never fire for it.
+    // Its roles come from the capacity class already derived from model size.
+    let cluster_class = if health.runtime_mode == "contributed-cluster" {
+        Some(capabilities.capacity_class.as_str())
+    } else {
+        None
+    };
+    let cluster_rank = cluster_class.map(capacity_rank).unwrap_or(0);
+
     let mut roles = vec![NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis];
     if health.runtime_mode == "vllm"
+        || cluster_rank >= capacity_rank("standard")
         || matches!(backend, Backend::Cuda | Backend::Vulkan | Backend::M)
     {
         roles.push(NodeRole::Coding);
     }
     let usable_vram = capabilities.usable_vram_mb.unwrap_or(0);
     if health.runtime_mode == "vllm"
+        || cluster_rank >= capacity_rank("heavy")
         || usable_vram >= 8_192
         || health.parallel_slots >= 2
         || (backend == Backend::M && available_memory_mb >= 65_536)
@@ -338,6 +441,7 @@ fn node_roles_for(
         roles.push(NodeRole::Reducer);
     }
     if health.runtime_mode == "vllm"
+        || cluster_rank >= capacity_rank("synthesis")
         || usable_vram >= 12_288
         || (backend == Backend::M && available_memory_mb >= 32_768)
         || available_memory_mb >= 65_536
@@ -1683,7 +1787,188 @@ mod tests {
             models: vec!["tiny-cuda".to_string()],
             runtime_preference: None,
             fallback_runtime: None,
+            contributed_cluster: None,
+            cluster_prompt_declined: false,
         }
+    }
+
+    /// Health as `contributed_cluster_health` reports it: endpoint reachable, no
+    /// local model file, no llama runtime.
+    fn cluster_health(model: &str) -> WorkerHealthReport {
+        let mut health = test_health(Backend::Cuda);
+        health.model_name = Some(model.to_string());
+        health.model_path = None;
+        health.llama_cli_available = false;
+        health.persistent_runtime_warm = true;
+        health.persistent_runtime_url = Some("http://127.0.0.1:8000".to_string());
+        health.runtime_kind = "contributed-cluster".to_string();
+        health.runtime_mode = "contributed-cluster".to_string();
+        health.cuda_memory_mb = None;
+        health
+    }
+
+    fn cluster_config(model: &str, params: Option<u64>, bytes: Option<u64>) -> AgentConfig {
+        let mut config = test_config();
+        config.active_model = None;
+        config.models = Vec::new();
+        config.contributed_cluster = Some(crate::storage::ContributedCluster {
+            kind: "vllm".to_string(),
+            base_url: "http://127.0.0.1:8000".to_string(),
+            models: vec![model.to_string()],
+            model: Some(model.to_string()),
+            model_params: params,
+            model_bytes: bytes,
+            adopted_at: Some("1".to_string()),
+        });
+        config
+    }
+
+    #[test]
+    fn cluster_capacity_class_scales_with_parameter_count() {
+        assert_eq!(
+            cluster_capacity_class(Some(753_864_139_008), None),
+            Some("synthesis")
+        );
+        assert_eq!(
+            cluster_capacity_class(Some(70_000_000_000), None),
+            Some("synthesis")
+        );
+        assert_eq!(
+            cluster_capacity_class(Some(32_000_000_000), None),
+            Some("heavy")
+        );
+        assert_eq!(
+            cluster_capacity_class(Some(14_000_000_000), None),
+            Some("performance")
+        );
+        assert_eq!(
+            cluster_capacity_class(Some(8_000_000_000), None),
+            Some("standard")
+        );
+        assert_eq!(
+            cluster_capacity_class(Some(1_500_000_000), None),
+            Some("micro")
+        );
+    }
+
+    #[test]
+    fn cluster_capacity_class_falls_back_to_on_disk_size() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(
+            cluster_capacity_class(None, Some(45 * GB)),
+            Some("synthesis")
+        );
+        assert_eq!(cluster_capacity_class(None, Some(22 * GB)), Some("heavy"));
+        assert_eq!(cluster_capacity_class(None, Some(5 * GB)), Some("standard"));
+    }
+
+    #[test]
+    fn cluster_capacity_class_defers_when_no_size_was_reported() {
+        // Nothing to derive from, so the caller keeps the memory ladder.
+        assert_eq!(cluster_capacity_class(None, None), None);
+        assert_eq!(cluster_capacity_class(Some(0), Some(0)), None);
+    }
+
+    #[test]
+    fn a_contributed_cluster_advertises_its_model_without_a_local_cache() {
+        let config = cluster_config("UD-IQ2_M", Some(753_864_139_008), Some(238_568_039_424));
+        let health = cluster_health("UD-IQ2_M");
+
+        let capabilities = build_capabilities(&config, &health, true);
+
+        assert_eq!(
+            capabilities
+                .active_model
+                .as_ref()
+                .map(|model| model.name.as_str()),
+            Some("UD-IQ2_M")
+        );
+        // Nothing is cached locally, so there is no model path to advertise.
+        assert!(capabilities
+            .active_model
+            .as_ref()
+            .and_then(|model| model.path.as_ref())
+            .is_none());
+        assert!(capabilities.ready_for_jobs);
+    }
+
+    #[test]
+    fn a_contributed_cluster_is_classified_by_its_model_not_host_memory() {
+        let config = cluster_config("UD-IQ2_M", Some(753_864_139_008), None);
+        let capabilities = build_capabilities(&config, &cluster_health("UD-IQ2_M"), true);
+
+        assert_eq!(capabilities.capacity_class, "synthesis");
+    }
+
+    #[test]
+    fn the_contribution_cap_does_not_produce_a_vram_budget_for_a_cluster() {
+        let mut config = cluster_config("UD-IQ2_M", Some(753_864_139_008), None);
+        config.contribution_percent = 30;
+        let mut health = cluster_health("UD-IQ2_M");
+        health.cuda_memory_mb = Some(24_576);
+
+        let capabilities = build_capabilities(&config, &health, true);
+
+        assert_eq!(capabilities.usable_vram_mb, None);
+        // The cap is still reported so the control plane can see what was chosen.
+        assert_eq!(capabilities.contribution_percent, 30);
+    }
+
+    #[test]
+    fn a_cluster_without_a_model_is_not_advertised_ready() {
+        let mut config = cluster_config("UD-IQ2_M", None, None);
+        if let Some(cluster) = config.contributed_cluster.as_mut() {
+            cluster.model = None;
+            cluster.models = Vec::new();
+        }
+
+        let capabilities = build_capabilities(&config, &cluster_health("UD-IQ2_M"), true);
+
+        assert!(!capabilities.ready_for_jobs);
+        assert_eq!(
+            capabilities.readiness_reason.as_deref(),
+            Some("contributed cluster advertises no model")
+        );
+    }
+
+    #[test]
+    fn capacity_rank_orders_the_ladder() {
+        assert!(capacity_rank("server") > capacity_rank("synthesis"));
+        assert!(capacity_rank("synthesis") > capacity_rank("heavy"));
+        assert!(capacity_rank("heavy") > capacity_rank("standard"));
+        assert_eq!(capacity_rank("nonsense"), 0);
+    }
+
+    #[test]
+    fn a_big_contributed_cluster_earns_reducer_and_synthesizer_roles() {
+        // Without this, the control plane silently skips the node for the heavy
+        // graph nodes: it gates those two roles strictly on role membership.
+        let config = cluster_config("UD-IQ2_M", Some(753_864_139_008), None);
+        let health = cluster_health("UD-IQ2_M");
+        let capabilities = build_capabilities(&config, &health, true);
+
+        let roles = node_roles_for(resolved_backend(&config), &health, &capabilities, 5_400);
+
+        assert_eq!(capabilities.capacity_class, "synthesis");
+        assert!(roles.contains(&NodeRole::Synthesizer));
+        assert!(roles.contains(&NodeRole::Reducer));
+        assert!(roles.contains(&NodeRole::Coding));
+    }
+
+    #[test]
+    fn a_small_contributed_cluster_does_not_claim_heavy_roles() {
+        let config = cluster_config("hermes3:8b", Some(8_000_000_000), None);
+        let health = cluster_health("hermes3:8b");
+        let capabilities = build_capabilities(&config, &health, true);
+
+        // Backend on this host would grant Coding regardless; the point is that
+        // an 8B cluster must not advertise Reducer or Synthesizer.
+        let roles = node_roles_for(Backend::Auto, &health, &capabilities, 4_096);
+
+        assert_eq!(capabilities.capacity_class, "standard");
+        assert!(!roles.contains(&NodeRole::Synthesizer));
+        assert!(!roles.contains(&NodeRole::Reducer));
+        assert!(roles.contains(&NodeRole::Chat));
     }
 
     #[test]
@@ -1977,8 +2262,14 @@ mod tests {
     fn normalized_capacity_classes_cover_supported_machine_shapes() {
         assert_eq!(classify_capacity(Backend::Auto, 8_192, None), "standard");
         assert_eq!(classify_capacity(Backend::M, 16_384, None), "performance");
-        assert_eq!(classify_capacity(Backend::Cuda, 24_576, Some(24_576)), "heavy");
-        assert_eq!(classify_capacity(Backend::Cuda, 49_152, Some(49_152)), "synthesis");
+        assert_eq!(
+            classify_capacity(Backend::Cuda, 24_576, Some(24_576)),
+            "heavy"
+        );
+        assert_eq!(
+            classify_capacity(Backend::Cuda, 49_152, Some(49_152)),
+            "synthesis"
+        );
         assert_eq!(classify_capacity(Backend::M, 65_536, None), "synthesis");
         assert_eq!(classify_capacity(Backend::Vllm, 8_192, None), "server");
     }

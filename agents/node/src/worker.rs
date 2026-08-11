@@ -637,6 +637,32 @@ fn llama_server_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The running cluster this node contributes, when one was recorded by the CLI.
+pub fn contributed_cluster() -> Option<crate::storage::ContributedCluster> {
+    crate::storage::load_agent_config()
+        .ok()
+        .flatten()?
+        .contributed_cluster
+}
+
+/// A contributed cluster is healthy when its endpoint still answers a model
+/// listing. `/health` is accepted as a fallback for runtimes that do not expose
+/// `/v1/models` without auth.
+pub fn cluster_endpoint_healthy(base_url: &str) -> bool {
+    let base_url = base_url.trim_end_matches('/');
+    for path in ["/v1/models", "/api/tags", "/health"] {
+        let ok = ureq::get(&format!("{base_url}{path}"))
+            .timeout(Duration::from_secs(2))
+            .call()
+            .map(|response| response.status() < 400)
+            .unwrap_or(false);
+        if ok {
+            return true;
+        }
+    }
+    false
+}
+
 fn vllm_health_ok(url: &str) -> bool {
     ureq::get(&format!("{url}/health"))
         .timeout(Duration::from_secs(2))
@@ -1469,13 +1495,50 @@ fn run_vllm_completion(
     let value = response
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("vLLM returned invalid json: {error}"))?;
-    value
+    if let Some(content) = value
         .pointer("/choices/0/message/content")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "vLLM response did not include choices[0].message.content".to_string())
-        .map(str::to_string)
+    {
+        return Ok(content.to_string());
+    }
+
+    Err(empty_completion_error(&value))
+}
+
+/// Explains an empty `content` instead of reporting a missing field.
+///
+/// Reasoning models emit `reasoning_content` first, so a small `max_tokens`
+/// leaves `content` empty with `finish_reason: "length"`. That is a budget
+/// problem, not a malformed response, and the message needs to say so.
+fn empty_completion_error(value: &serde_json::Value) -> String {
+    let finish_reason = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let reasoning_only = value
+        .pointer("/choices/0/message/reasoning_content")
+        .and_then(|value| value.as_str())
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+
+    if finish_reason == "length" && reasoning_only {
+        return "model spent the whole token budget on reasoning and returned no content; raise max_tokens".to_string();
+    }
+    if finish_reason == "length" {
+        return "model hit the token limit before producing content; raise max_tokens".to_string();
+    }
+    if reasoning_only {
+        return "model returned only reasoning_content and no content".to_string();
+    }
+    if let Some(message) = value
+        .pointer("/error/message")
+        .and_then(|value| value.as_str())
+    {
+        return format!("runtime returned an error: {message}");
+    }
+    "response did not include choices[0].message.content".to_string()
 }
 
 fn run_mlx_command(
@@ -1655,7 +1718,15 @@ pub fn probe_worker_health(
     model_dir: &Path,
     model_name: Option<&str>,
     backend: Backend,
+    contributed_cluster: Option<&crate::storage::ContributedCluster>,
 ) -> WorkerHealthReport {
+    // A node contributing an already-running cluster has no MundusX runtime to
+    // inspect: its health is whether that endpoint still answers. Taken as an
+    // argument so the probe stays a function of its inputs.
+    if let Some(cluster) = contributed_cluster {
+        return contributed_cluster_health(model_dir, backend, cluster);
+    }
+
     let mut notes = Vec::new();
     let mut model_path = None;
     let mut llama_cli_available = false;
@@ -1833,6 +1904,83 @@ pub fn probe_worker_health(
         runtime_mode,
         parallel_slots: 1,
         supported_runtime_modes,
+        capabilities: Default::default(),
+        checked_at: now_unix_seconds(),
+        notes,
+    }
+}
+
+/// Health report for a node serving an already-running local cluster.
+fn contributed_cluster_health(
+    model_dir: &Path,
+    backend: Backend,
+    cluster: &crate::storage::ContributedCluster,
+) -> WorkerHealthReport {
+    let power_state = probe_power_state();
+    let cuda = probe_cuda_diagnostics();
+    let reachable = cluster_endpoint_healthy(&cluster.base_url);
+    let model_name = cluster
+        .model
+        .clone()
+        .or_else(|| cluster.models.first().cloned());
+
+    let mut notes = Vec::new();
+    if reachable {
+        notes.push(format!(
+            "contributed {} cluster is answering at {}",
+            cluster.kind, cluster.base_url
+        ));
+    } else {
+        notes.push(format!(
+            "contributed {} cluster at {} is not answering; start it or run `opengpu cluster forget`",
+            cluster.kind, cluster.base_url
+        ));
+    }
+    if model_name.is_none() {
+        notes.push("contributed cluster advertises no model".to_string());
+    }
+    notes.push(format!(
+        "contribution cap does not gate a contributed cluster; detected backend is {}",
+        backend.as_str()
+    ));
+
+    // The cluster owns its own memory and batching, so the contribution cap does
+    // not gate it and no local model file is expected.
+    let healthy = reachable && model_name.is_some();
+
+    WorkerHealthReport {
+        healthy,
+        model_dir: model_dir.display().to_string(),
+        model_name,
+        model_path: None,
+        llama_cli_available: false,
+        llama_server_available: false,
+        persistent_runtime_warm: reachable,
+        persistent_runtime_url: Some(cluster.base_url.clone()),
+        runtime_kind: if reachable {
+            "contributed-cluster".to_string()
+        } else {
+            "contributed-cluster-unreachable".to_string()
+        },
+        runtime_preference: Some(cluster.kind.clone()),
+        fallback_runtime: None,
+        mlx_available: false,
+        blas_device_available: false,
+        cuda_device_available: cuda.device_available,
+        cuda_driver_available: cuda.driver_available,
+        cuda_device_name: cuda.device_name,
+        cuda_memory_mb: cuda.memory_mb,
+        cuda_low_vram_profile: cuda.low_vram_profile,
+        power_source: power_state.source,
+        on_battery: power_state.on_battery,
+        battery_percent: power_state.battery_percent,
+        runtime_mode: "contributed-cluster".to_string(),
+        parallel_slots: 1,
+        supported_runtime_modes: if healthy {
+            vec!["local".to_string()]
+        } else {
+            Vec::new()
+        },
         capabilities: Default::default(),
         checked_at: now_unix_seconds(),
         notes,
@@ -2107,8 +2255,97 @@ fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespons
     })
 }
 
+/// Runs a job against the contributed cluster's OpenAI-compatible endpoint.
+fn run_contributed_cluster_request(
+    request: &WorkerLaunchRequest,
+    cluster: &crate::storage::ContributedCluster,
+) -> Result<WorkerLaunchResponse, String> {
+    if !cluster_endpoint_healthy(&cluster.base_url) {
+        return Err(format!(
+            "contributed {} cluster is not answering at {}",
+            cluster.kind, cluster.base_url
+        ));
+    }
+
+    // The cluster decides what it serves, so a job asking for a different model
+    // is refused rather than silently answered by the wrong one.
+    let advertised = cluster
+        .model
+        .clone()
+        .or_else(|| cluster.models.first().cloned())
+        .ok_or_else(|| "contributed cluster advertises no model".to_string())?;
+    if let Some(requested) = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if requested != advertised && !cluster.models.iter().any(|entry| entry == requested) {
+            return Err(format!(
+                "contributed cluster serves {advertised}, not {requested}"
+            ));
+        }
+    }
+    let model = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&advertised);
+
+    let max_tokens = request.max_tokens.unwrap_or(16).max(1);
+    let temperature = request.temperature.unwrap_or(0.2).max(0.0);
+    let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
+    let seed = request.seed.unwrap_or(42);
+    let generated = run_vllm_completion(
+        cluster.base_url.trim_end_matches('/'),
+        model,
+        request.system_prompt.as_deref().unwrap_or("").trim(),
+        &request.prompt,
+        max_tokens,
+        temperature,
+        top_p,
+        seed,
+    )?;
+
+    Ok(WorkerLaunchResponse {
+        job_id: request.job_id.clone(),
+        worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+        status: "completed".to_string(),
+        output: format!(
+            "contributed-cluster kind={}; endpoint={}; model={model}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}; response={generated}",
+            cluster.kind, cluster.base_url
+        ),
+        error: None,
+        backend: resolved_backend(request.backend),
+        node_id: request.node_id.clone(),
+        model: Some(model.to_string()),
+        runtime_mode: Some("contributed-cluster".to_string()),
+    })
+}
+
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
+
+    // A contributed cluster serves every job for this node, whatever the
+    // machine's own backend would have been.
+    if let Some(cluster) = contributed_cluster() {
+        return match run_contributed_cluster_request(request, &cluster) {
+            Ok(response) => response,
+            Err(error) => WorkerLaunchResponse {
+                job_id: request.job_id.clone(),
+                worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                status: "failed".to_string(),
+                output: String::new(),
+                error: Some(error),
+                backend,
+                node_id: request.node_id.clone(),
+                model: request.model.clone(),
+                runtime_mode: Some("contributed-cluster".to_string()),
+            },
+        };
+    }
+
     if backend == Backend::Vllm {
         return match run_vllm_request(request) {
             Ok(response) => response,
@@ -2907,7 +3144,7 @@ mod tests {
                 },
             );
 
-            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::Cuda);
+            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::Cuda, None);
 
             assert!(!health.healthy);
             assert!(!health.llama_cli_available);
@@ -2931,7 +3168,7 @@ mod tests {
             fs::create_dir_all(&model_cache).expect("model dir");
             fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
 
-            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::Vllm);
+            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::Vllm, None);
 
             assert!(!health.healthy);
             assert_eq!(health.runtime_mode, "vllm");
@@ -2969,6 +3206,45 @@ mod tests {
                 assert!(error.contains("Linux nodes"));
             }
         });
+    }
+
+    #[test]
+    fn truncated_reasoning_output_reports_a_token_budget_problem() {
+        // llama.cpp shape when a reasoning model burns the budget before content.
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": "", "reasoning_content": "The user is asking"},
+            }]
+        });
+
+        assert_eq!(
+            empty_completion_error(&body),
+            "model spent the whole token budget on reasoning and returned no content; raise max_tokens"
+        );
+    }
+
+    #[test]
+    fn plain_truncation_and_runtime_errors_are_distinguished() {
+        let truncated = serde_json::json!({
+            "choices": [{"finish_reason": "length", "message": {"content": ""}}]
+        });
+        assert_eq!(
+            empty_completion_error(&truncated),
+            "model hit the token limit before producing content; raise max_tokens"
+        );
+
+        let failed = serde_json::json!({"error": {"message": "model not loaded"}});
+        assert_eq!(
+            empty_completion_error(&failed),
+            "runtime returned an error: model not loaded"
+        );
+
+        let unknown = serde_json::json!({"choices": []});
+        assert_eq!(
+            empty_completion_error(&unknown),
+            "response did not include choices[0].message.content"
+        );
     }
 
     #[test]
@@ -3029,7 +3305,7 @@ mod tests {
             let url = start_mock_llama_server("ready", 1);
             env::set_var("OPENGPU_LLAMA_SERVER_URL", url);
 
-            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::M);
+            let health = probe_worker_health(&model_dir, Some("qwen"), Backend::M, None);
 
             assert!(health.healthy);
             assert!(!health.llama_cli_available);

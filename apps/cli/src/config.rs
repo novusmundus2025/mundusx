@@ -3,6 +3,28 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// A local LLM cluster the contributor already runs and has agreed to
+/// contribute. When this is set the node serves work from that endpoint instead
+/// of provisioning a MundusX runtime and downloading its own weights.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContributedCluster {
+    pub kind: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Parameter count of the advertised model, when the runtime reported it.
+    /// Drives the node's capacity class instead of host memory.
+    #[serde(default)]
+    pub model_params: Option<u64>,
+    /// On-disk size of the advertised model, used when params are unknown.
+    #[serde(default)]
+    pub model_bytes: Option<u64>,
+    #[serde(default)]
+    pub adopted_at: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
@@ -27,6 +49,12 @@ pub struct Config {
     pub runtime_preference: Option<String>,
     #[serde(default)]
     pub fallback_runtime: Option<String>,
+    /// The running local cluster this node contributes, when one was adopted.
+    #[serde(default)]
+    pub contributed_cluster: Option<ContributedCluster>,
+    /// Remembers a "no" so install/start stop asking on every run.
+    #[serde(default)]
+    pub cluster_prompt_declined: bool,
 }
 
 impl Default for Config {
@@ -48,6 +76,8 @@ impl Default for Config {
             onboarding_completed: false,
             runtime_preference: None,
             fallback_runtime: None,
+            contributed_cluster: None,
+            cluster_prompt_declined: false,
         }
     }
 }
