@@ -178,6 +178,11 @@ pub struct DetectedCluster {
     pub kind: ClusterKind,
     pub base_url: String,
     pub models: Vec<ModelInfo>,
+    /// Context window the endpoint is actually serving, when it reports one.
+    /// This can be far smaller than a model's trained context — a llama.cpp
+    /// server started with `-c 256` serves 256 tokens no matter what the GGUF
+    /// was trained at — so it is what the node must advertise.
+    pub served_context_tokens: Option<u32>,
 }
 
 impl DetectedCluster {
@@ -390,10 +395,14 @@ where
             let Some(body) = fetch(&format!("{base_url}{path}")) else {
                 continue;
             };
+            let served_context_tokens = fetch(&format!("{base_url}/props"))
+                .as_ref()
+                .and_then(parse_served_context);
             found.push(DetectedCluster {
                 kind: identify_kind(&body, &base_url),
                 base_url: base_url.clone(),
                 models: parse_models(&body),
+                served_context_tokens,
             });
             break;
         }
@@ -546,6 +555,17 @@ pub fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
     models
 }
 
+/// Reads the context window a llama.cpp-style server is actually serving from
+/// its `/props` endpoint.
+pub fn parse_served_context(body: &serde_json::Value) -> Option<u32> {
+    body.get("default_generation_settings")
+        .and_then(|settings| settings.get("n_ctx"))
+        .or_else(|| body.get("n_ctx"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value > 0)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
 /// Identifies the runtime from its own model listing rather than from the port
 /// it happens to occupy. A llama.cpp server on `8000` is llama.cpp, not vLLM.
 pub fn identify_kind(body: &serde_json::Value, base_url: &str) -> ClusterKind {
@@ -640,6 +660,7 @@ mod tests {
             kind,
             base_url: base_url.to_string(),
             models,
+            served_context_tokens: None,
         }
     }
 
@@ -822,6 +843,46 @@ mod tests {
             identify_kind(&body, "http://127.0.0.1:8000"),
             ClusterKind::LlamaCpp
         );
+    }
+
+    #[test]
+    fn reads_the_context_window_the_server_actually_serves() {
+        // A llama.cpp server started with `-c 256` serves 256 tokens even when
+        // the GGUF was trained at 1M, so /props is the authority.
+        let props = json!({"default_generation_settings": {"n_ctx": 256}, "total_slots": 1});
+
+        assert_eq!(parse_served_context(&props), Some(256));
+        assert_eq!(parse_served_context(&json!({"n_ctx": 8192})), Some(8192));
+        assert_eq!(parse_served_context(&json!({"n_ctx": 0})), None);
+        assert_eq!(parse_served_context(&json!({})), None);
+    }
+
+    #[test]
+    fn detection_records_the_served_context() {
+        let clusters = detect_with(
+            vec!["http://127.0.0.1:8000".to_string()],
+            fetcher(vec![
+                (
+                    "http://127.0.0.1:8000/v1/models",
+                    json!({"data": [{
+                        "id": "UD-IQ2_M",
+                        "owned_by": "llamacpp",
+                        "meta": {"n_params": 753_864_139_008u64, "n_ctx_train": 1_048_576},
+                    }]}),
+                ),
+                (
+                    "http://127.0.0.1:8000/props",
+                    json!({"default_generation_settings": {"n_ctx": 256}}),
+                ),
+            ]),
+        );
+
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].kind, ClusterKind::LlamaCpp);
+        // Trained context is still parsed from the listing...
+        assert_eq!(clusters[0].models[0].context_tokens, Some(1_048_576));
+        // ...but the served window is what the node will advertise.
+        assert_eq!(clusters[0].served_context_tokens, Some(256));
     }
 
     #[test]

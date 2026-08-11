@@ -5041,7 +5041,11 @@ fn contributed_cluster_from(
         model_capabilities: advertised
             .map(|entry| entry.capabilities.clone())
             .unwrap_or_default(),
-        model_context_tokens: advertised.and_then(|entry| entry.context_tokens),
+        // What the endpoint serves wins over what the model was trained at: a
+        // server started with a small `-c` cannot honour the trained length.
+        model_context_tokens: cluster
+            .served_context_tokens
+            .or_else(|| advertised.and_then(|entry| entry.context_tokens)),
         adopted_at: Some(now_unix_seconds()),
     }
 }
@@ -6944,6 +6948,7 @@ mod tests {
                 Some(8_000_000_000),
                 None,
             )],
+            served_context_tokens: None,
         };
 
         let contributed = contributed_cluster_from(&detected, None);

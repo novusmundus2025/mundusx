@@ -1495,12 +1495,23 @@ fn run_vllm_completion(
     let value = response
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("vLLM returned invalid json: {error}"))?;
+    let finish_reason = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
     if let Some(content) = value
         .pointer("/choices/0/message/content")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
+        // A generation cut off by the token or context limit must never be
+        // presented as a finished answer, so say so alongside the text.
+        if finish_reason == "length" {
+            return Ok(format!("[truncated: hit the generation limit] {content}"));
+        }
         return Ok(content.to_string());
     }
 
@@ -1523,11 +1534,19 @@ fn empty_completion_error(value: &serde_json::Value) -> String {
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
 
+    let generated = value
+        .pointer("/usage/completion_tokens")
+        .and_then(serde_json::Value::as_u64);
     if finish_reason == "length" && reasoning_only {
-        return "model spent the whole token budget on reasoning and returned no content; raise max_tokens".to_string();
+        return format!(
+            "model spent its whole budget on reasoning and returned no content{}; raise max_tokens, and check the runtime's context size if raising it does not help",
+            generated
+                .map(|count| format!(" ({count} tokens generated)"))
+                .unwrap_or_default()
+        );
     }
     if finish_reason == "length" {
-        return "model hit the token limit before producing content; raise max_tokens".to_string();
+        return "model hit the generation limit before producing content; raise max_tokens or the runtime's context size".to_string();
     }
     if reasoning_only {
         return "model returned only reasoning_content and no content".to_string();
@@ -3316,9 +3335,27 @@ mod tests {
             }]
         });
 
-        assert_eq!(
-            empty_completion_error(&body),
-            "model spent the whole token budget on reasoning and returned no content; raise max_tokens"
+        let message = empty_completion_error(&body);
+        assert!(message.contains("spent its whole budget on reasoning"));
+        assert!(message.contains("context size"), "message: {message}");
+    }
+
+    #[test]
+    fn reasoning_truncation_reports_how_many_tokens_were_generated() {
+        // GLM-5.2 on a 256-token context: 18 prompt + 238 generated, no content.
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"content": "", "reasoning_content": "thinking"},
+            }],
+            "usage": {"prompt_tokens": 18, "completion_tokens": 238, "total_tokens": 256},
+        });
+
+        let message = empty_completion_error(&body);
+
+        assert!(
+            message.contains("238 tokens generated"),
+            "message: {message}"
         );
     }
 
@@ -3327,10 +3364,7 @@ mod tests {
         let truncated = serde_json::json!({
             "choices": [{"finish_reason": "length", "message": {"content": ""}}]
         });
-        assert_eq!(
-            empty_completion_error(&truncated),
-            "model hit the token limit before producing content; raise max_tokens"
-        );
+        assert!(empty_completion_error(&truncated).contains("generation limit"));
 
         let failed = serde_json::json!({"error": {"message": "model not loaded"}});
         assert_eq!(
