@@ -462,21 +462,48 @@ fn build_scheduler_capabilities(
 ) -> NodeCapabilityProfile {
     let backend = resolved_backend(config);
     let model = capabilities.active_model.clone();
-    let context_tokens = default_context_tokens_for_model(model.as_ref());
-    let models = model.into_iter().collect::<Vec<_>>();
+    let context_tokens = config
+        .contributed_cluster
+        .as_ref()
+        .and_then(|cluster| cluster.model_context_tokens)
+        .or_else(|| default_context_tokens_for_model(model.as_ref()));
+    let models = model.clone().into_iter().collect::<Vec<_>>();
     let available_vram_mb = capabilities
         .usable_vram_mb
         .or(capabilities.physical_vram_mb)
         .or(health.cuda_memory_mb);
     let total_vram_mb = capabilities.physical_vram_mb.or(health.cuda_memory_mb);
     let current_load_percent = Some(100_u8.saturating_sub(available_gpu_percent.min(100) as u8));
-    let active_model_name = config
-        .active_model
-        .as_deref()
+    let cluster = config.contributed_cluster.as_ref();
+    // A contributed cluster node has no local active model, so the name-derived
+    // flags must come from the model the cluster advertises.
+    let active_model_name = model
+        .as_ref()
+        .map(|entry| entry.name.clone())
+        .or_else(|| config.active_model.clone())
         .unwrap_or_default()
         .to_ascii_lowercase();
+    // The runtime tells us what its model can do, so prefer that over guesswork.
+    let advertised_capabilities: Vec<String> = cluster
+        .map(|cluster| {
+            cluster
+                .model_capabilities
+                .iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+    let advertises = |needle: &str| {
+        advertised_capabilities
+            .iter()
+            .any(|value| value.contains(needle))
+    };
     let roles = node_roles_for(backend, health, capabilities, available_memory_mb);
+    let supports_tools = advertises("tool");
     let mut supported_tools = capabilities.supported_tools.clone();
+    if supports_tools {
+        supported_tools.push("tool_use".to_string());
+    }
     if roles.contains(&NodeRole::Coding) {
         supported_tools.push("repository".to_string());
     }
@@ -493,9 +520,9 @@ fn build_scheduler_capabilities(
         max_context_tokens: context_tokens,
         total_vram_mb,
         available_vram_mb,
-        supports_vision: false,
-        supports_embeddings: active_model_name.contains("embed"),
-        supports_tools: false,
+        supports_vision: advertises("vision"),
+        supports_embeddings: advertises("embed") || active_model_name.contains("embed"),
+        supports_tools,
         max_parallel_jobs: health.parallel_slots.max(1) as u32,
         current_load_percent,
         roles,
@@ -1818,6 +1845,8 @@ mod tests {
             model: Some(model.to_string()),
             model_params: params,
             model_bytes: bytes,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
             adopted_at: Some("1".to_string()),
         });
         config
@@ -1929,6 +1958,55 @@ mod tests {
             capabilities.readiness_reason.as_deref(),
             Some("contributed cluster advertises no model")
         );
+    }
+
+    #[test]
+    fn a_cluster_advertising_tools_reports_tool_support() {
+        let mut config = cluster_config("hermes3:70b", Some(70_600_000_000), None);
+        if let Some(cluster) = config.contributed_cluster.as_mut() {
+            cluster.model_capabilities = vec!["completion".to_string(), "tools".to_string()];
+            cluster.model_context_tokens = Some(131_072);
+        }
+
+        let health = cluster_health("hermes3:70b");
+        let capabilities = build_capabilities(&config, &health, true);
+        let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
+
+        assert!(profile.supports_tools);
+        assert!(!profile.supports_embeddings);
+        // The reported context length beats the name-based heuristic.
+        assert_eq!(profile.max_context_tokens, Some(131_072));
+        assert!(profile.supported_tools.contains(&"tool_use".to_string()));
+    }
+
+    #[test]
+    fn a_cluster_without_tool_capability_does_not_claim_it() {
+        // llama.cpp reports only ["completion"] for this model.
+        let mut config = cluster_config("UD-IQ2_M", Some(753_864_139_008), None);
+        if let Some(cluster) = config.contributed_cluster.as_mut() {
+            cluster.model_capabilities = vec!["completion".to_string()];
+        }
+
+        let health = cluster_health("UD-IQ2_M");
+        let capabilities = build_capabilities(&config, &health, true);
+        let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
+
+        assert!(!profile.supports_tools);
+        assert!(!profile.supports_vision);
+    }
+
+    #[test]
+    fn a_cluster_serving_an_embedding_model_reports_embeddings() {
+        let mut config = cluster_config("nomic-embed-text", Some(137_000_000), None);
+        if let Some(cluster) = config.contributed_cluster.as_mut() {
+            cluster.model_capabilities = vec!["embedding".to_string()];
+        }
+
+        let health = cluster_health("nomic-embed-text");
+        let capabilities = build_capabilities(&config, &health, true);
+        let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
+
+        assert!(profile.supports_embeddings);
     }
 
     #[test]

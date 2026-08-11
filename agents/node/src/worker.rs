@@ -2325,12 +2325,21 @@ fn run_contributed_cluster_request(
 }
 
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
+    execute_request_with_cluster(request, contributed_cluster().as_ref())
+}
+
+/// Job execution with the contributed cluster supplied explicitly, so tests do
+/// not depend on whatever config happens to be on the developer's machine.
+fn execute_request_with_cluster(
+    request: &WorkerLaunchRequest,
+    contributed_cluster: Option<&crate::storage::ContributedCluster>,
+) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
 
     // A contributed cluster serves every job for this node, whatever the
     // machine's own backend would have been.
-    if let Some(cluster) = contributed_cluster() {
-        return match run_contributed_cluster_request(request, &cluster) {
+    if let Some(cluster) = contributed_cluster {
+        return match run_contributed_cluster_request(request, cluster) {
             Ok(response) => response,
             Err(error) => WorkerLaunchResponse {
                 job_id: request.job_id.clone(),
@@ -2582,6 +2591,14 @@ fn kill_process_tree(pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    /// Job execution with no contributed cluster, so these tests never depend on
+    /// a `config.json` that happens to exist on the machine running them.
+    fn execute_without_cluster(
+        request: &super::WorkerLaunchRequest,
+    ) -> super::WorkerLaunchResponse {
+        super::execute_request_with_cluster(request, None)
+    }
+
     use super::*;
     use std::io::Write;
     use std::net::TcpListener;
@@ -3057,7 +3074,7 @@ mod tests {
 
     #[test]
     fn vulkan_worker_uses_llama_runtime_path() {
-        let response = execute_request(&WorkerLaunchRequest {
+        let response = execute_without_cluster(&WorkerLaunchRequest {
             job_id: "job-vulkan".to_string(),
             node_id: "node-1".to_string(),
             backend: Backend::Vulkan,
@@ -3099,7 +3116,7 @@ mod tests {
             let previous_model_dir = env::var_os("OPENGPU_MODEL_DIR");
             env::set_var("OPENGPU_MODEL_DIR", &model_dir);
 
-            let response = execute_request(&WorkerLaunchRequest {
+            let response = execute_without_cluster(&WorkerLaunchRequest {
                 job_id: "job-1".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Cuda,
@@ -3183,7 +3200,7 @@ mod tests {
     #[test]
     fn vllm_worker_fails_with_clear_runtime_message() {
         with_temp_runtime_home(|_| {
-            let response = execute_request(&WorkerLaunchRequest {
+            let response = execute_without_cluster(&WorkerLaunchRequest {
                 job_id: "job-vllm".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Vllm,
@@ -3253,7 +3270,7 @@ mod tests {
             let url = start_mock_llama_server("hello from vllm", 2);
             env::set_var("OPENGPU_VLLM_URL", &url);
 
-            let response = execute_request(&WorkerLaunchRequest {
+            let response = execute_without_cluster(&WorkerLaunchRequest {
                 job_id: "job-vllm".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Vllm,
@@ -3339,7 +3356,7 @@ mod tests {
             let url = start_mock_llama_server("hello from warm server", 2);
             env::set_var("OPENGPU_LLAMA_SERVER_URL", url);
 
-            let response = execute_request(&WorkerLaunchRequest {
+            let response = execute_without_cluster(&WorkerLaunchRequest {
                 job_id: "job-1".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::M,

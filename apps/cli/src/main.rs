@@ -5038,6 +5038,10 @@ fn contributed_cluster_from(
         model: model.or_else(|| cluster.primary_model().map(str::to_string)),
         model_params: advertised.and_then(|entry| entry.params),
         model_bytes: advertised.and_then(|entry| entry.bytes),
+        model_capabilities: advertised
+            .map(|entry| entry.capabilities.clone())
+            .unwrap_or_default(),
+        model_context_tokens: advertised.and_then(|entry| entry.context_tokens),
         adopted_at: Some(now_unix_seconds()),
     }
 }
@@ -6798,6 +6802,8 @@ mod tests {
             model: Some("UD-IQ2_M".to_string()),
             model_params: Some(753_864_139_008),
             model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
             adopted_at: None,
         });
 
@@ -6815,6 +6821,8 @@ mod tests {
             model: Some("UD-IQ2_M".to_string()),
             model_params: None,
             model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
             adopted_at: None,
         });
 
@@ -6850,6 +6858,8 @@ mod tests {
             model: Some("hermes3:70b".to_string()),
             model_params: None,
             model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
             adopted_at: None,
         });
 
@@ -6875,6 +6885,8 @@ mod tests {
             model: None,
             model_params: None,
             model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
             adopted_at: None,
         });
 
@@ -6894,6 +6906,8 @@ mod tests {
             model: Some("b".to_string()),
             model_params: None,
             model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
             adopted_at: None,
         });
 
@@ -6912,6 +6926,8 @@ mod tests {
             model: None,
             model_params: None,
             model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
             adopted_at: None,
         });
 
@@ -6948,6 +6964,8 @@ mod tests {
             model: Some("llama3.1:8b".to_string()),
             model_params: Some(8_000_000_000),
             model_bytes: None,
+            model_capabilities: vec!["tools".to_string()],
+            model_context_tokens: Some(131_072),
             adopted_at: Some("1".to_string()),
         });
         config.cluster_prompt_declined = false;
