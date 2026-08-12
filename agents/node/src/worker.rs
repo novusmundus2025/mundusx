@@ -1495,12 +1495,23 @@ fn run_vllm_completion(
     let value = response
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("vLLM returned invalid json: {error}"))?;
+    let finish_reason = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
     if let Some(content) = value
         .pointer("/choices/0/message/content")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
+        // A generation cut off by the token or context limit must never be
+        // presented as a finished answer, so say so alongside the text.
+        if finish_reason == "length" {
+            return Ok(format!("[truncated: hit the generation limit] {content}"));
+        }
         return Ok(content.to_string());
     }
 
@@ -1523,11 +1534,19 @@ fn empty_completion_error(value: &serde_json::Value) -> String {
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
 
+    let generated = value
+        .pointer("/usage/completion_tokens")
+        .and_then(serde_json::Value::as_u64);
     if finish_reason == "length" && reasoning_only {
-        return "model spent the whole token budget on reasoning and returned no content; raise max_tokens".to_string();
+        return format!(
+            "model spent its whole budget on reasoning and returned no content{}; raise max_tokens, and check the runtime's context size if raising it does not help",
+            generated
+                .map(|count| format!(" ({count} tokens generated)"))
+                .unwrap_or_default()
+        );
     }
     if finish_reason == "length" {
-        return "model hit the token limit before producing content; raise max_tokens".to_string();
+        return "model hit the generation limit before producing content; raise max_tokens or the runtime's context size".to_string();
     }
     if reasoning_only {
         return "model returned only reasoning_content and no content".to_string();
@@ -2453,12 +2472,43 @@ fn output_summary_line(output: &str) -> String {
     }
 }
 
+/// Path to re-exec for the worker subprocess.
+///
+/// Linux reports a replaced binary as `/path/to/exe (deleted)`, which is what
+/// `env::current_exe` returns after an upgrade replaced the file underneath a
+/// running agent. Spawning that path fails with ENOENT, so strip the marker and
+/// use the current file at the same location when one exists.
+fn worker_executable() -> Result<PathBuf, String> {
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    if exe.exists() {
+        return Ok(exe);
+    }
+
+    let raw = exe.to_string_lossy();
+    if let Some(path) = raw.strip_suffix(" (deleted)") {
+        let replaced = PathBuf::from(path);
+        if replaced.exists() {
+            return Ok(replaced);
+        }
+    }
+
+    Err(format!(
+        "the node agent binary at {} was replaced or removed while running; restart `opengpu start` to pick up the new build",
+        raw.trim_end_matches(" (deleted)")
+    ))
+}
+
 pub fn launch_worker(
     request: &WorkerLaunchRequest,
     model_dir: &Path,
 ) -> Result<WorkerLaunchResponse, String> {
-    let exe = env::current_exe().map_err(|error| error.to_string())?;
-    let mut command = Command::new(exe);
+    // A contributed cluster is served over HTTP, so there is nothing to isolate
+    // in a subprocess and no reason to depend on re-execing this binary.
+    if let Some(cluster) = contributed_cluster() {
+        return Ok(execute_request_with_cluster(request, Some(&cluster)));
+    }
+
+    let mut command = Command::new(worker_executable()?);
     command
         .env("OPENGPU_MODEL_DIR", model_dir)
         .arg("worker")
@@ -3226,6 +3276,56 @@ mod tests {
     }
 
     #[test]
+    fn worker_executable_resolves_the_current_binary() {
+        let resolved = super::worker_executable().expect("current exe");
+
+        assert!(resolved.exists());
+        assert!(!resolved.to_string_lossy().ends_with(" (deleted)"));
+    }
+
+    #[test]
+    fn a_contributed_cluster_job_needs_no_worker_subprocess() {
+        // The endpoint is unreachable, so this fails — but it must fail on the
+        // HTTP call, not by trying to re-exec the agent binary.
+        let cluster = crate::storage::ContributedCluster {
+            kind: "llama.cpp".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            models: vec!["m".to_string()],
+            model: Some("m".to_string()),
+            model_params: None,
+            model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: None,
+            adopted_at: None,
+        };
+
+        let response = super::execute_request_with_cluster(
+            &WorkerLaunchRequest {
+                job_id: "j".to_string(),
+                node_id: "n".to_string(),
+                prompt: "hello".to_string(),
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(8),
+                temperature: None,
+                top_p: None,
+                seed: None,
+                backend: Backend::Cuda,
+            },
+            Some(&cluster),
+        );
+
+        assert_eq!(response.status, "failed");
+        assert_eq!(
+            response.runtime_mode.as_deref(),
+            Some("contributed-cluster")
+        );
+        let error = response.error.expect("error");
+        assert!(error.contains("not answering"), "unexpected error: {error}");
+        assert!(!error.contains("launch worker"));
+    }
+
+    #[test]
     fn truncated_reasoning_output_reports_a_token_budget_problem() {
         // llama.cpp shape when a reasoning model burns the budget before content.
         let body = serde_json::json!({
@@ -3235,9 +3335,27 @@ mod tests {
             }]
         });
 
-        assert_eq!(
-            empty_completion_error(&body),
-            "model spent the whole token budget on reasoning and returned no content; raise max_tokens"
+        let message = empty_completion_error(&body);
+        assert!(message.contains("spent its whole budget on reasoning"));
+        assert!(message.contains("context size"), "message: {message}");
+    }
+
+    #[test]
+    fn reasoning_truncation_reports_how_many_tokens_were_generated() {
+        // GLM-5.2 on a 256-token context: 18 prompt + 238 generated, no content.
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"content": "", "reasoning_content": "thinking"},
+            }],
+            "usage": {"prompt_tokens": 18, "completion_tokens": 238, "total_tokens": 256},
+        });
+
+        let message = empty_completion_error(&body);
+
+        assert!(
+            message.contains("238 tokens generated"),
+            "message: {message}"
         );
     }
 
@@ -3246,10 +3364,7 @@ mod tests {
         let truncated = serde_json::json!({
             "choices": [{"finish_reason": "length", "message": {"content": ""}}]
         });
-        assert_eq!(
-            empty_completion_error(&truncated),
-            "model hit the token limit before producing content; raise max_tokens"
-        );
+        assert!(empty_completion_error(&truncated).contains("generation limit"));
 
         let failed = serde_json::json!({"error": {"message": "model not loaded"}});
         assert_eq!(
