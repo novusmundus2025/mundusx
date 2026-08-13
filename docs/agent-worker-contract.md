@@ -143,8 +143,10 @@ The scheduler should treat the top-level `capabilities.ready_for_jobs` as the el
 
 ## SpeakAI structured completion gate
 
-The node worker recognizes SpeakAI jobs from the canonical SpeakAI system-prompt
-prefix. These jobs use a stricter completion pipeline than ordinary chat:
+The node worker recognizes SpeakAI jobs from `mode: "speakai"`. The control plane
+forwards that mode and the user's message without adding SpeakAI schema or retry
+instructions. MundusX owns the complete SpeakAI prompt and schema. These jobs use a
+stricter completion pipeline than ordinary chat:
 
 - OpenAI-compatible llama-server, vLLM, and contributed-cluster requests include a
   strict `json_schema` response format. Direct llama.cpp CLI execution uses an
@@ -166,5 +168,7 @@ prefix. These jobs use a stricter completion pipeline than ordinary chat:
   Gemma manifests are treated as structured-output-capable fallbacks. Explicit model
   requests are never silently replaced.
 
-The control-plane validator and retry remain defense in depth. Production promotion
-or deployment is outside this worker contract and requires separate approval.
+Greeting reply purposes are normalized from this owned contract to
+`RETURN_GREETING`, `START_CONVERSATION`, and `WARM_VARIATION`, even when a model
+generates conflicting labels. Production promotion or deployment is outside this
+worker contract and requires separate approval.

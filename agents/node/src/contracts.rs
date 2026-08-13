@@ -142,6 +142,8 @@ pub struct JobRecord {
     pub prompt: String,
     pub preferred_backend: Backend,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
@@ -187,6 +189,8 @@ pub struct WorkerLaunchRequest {
     pub backend: Backend,
     pub prompt: String,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
