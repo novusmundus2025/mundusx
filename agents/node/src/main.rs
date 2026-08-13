@@ -65,6 +65,8 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
         #[arg(long)]
+        mode: Option<String>,
+        #[arg(long)]
         system_prompt: Option<String>,
         #[arg(long)]
         max_tokens: Option<u32>,
@@ -845,6 +847,7 @@ fn build_worker_launch_request(
     job_id: String,
     prompt: String,
     model: Option<String>,
+    mode: Option<String>,
     system_prompt: Option<String>,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
@@ -857,6 +860,7 @@ fn build_worker_launch_request(
         backend: resolved_backend(config),
         prompt,
         model: resolve_job_model(config, model),
+        mode,
         system_prompt,
         max_tokens,
         temperature,
@@ -1343,6 +1347,7 @@ fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRe
         backend: job.backend.unwrap_or_else(|| resolved_backend(&config)),
         prompt: job.prompt.clone(),
         model: resolve_job_model(&config, job.model.clone()),
+        mode: job.mode.clone(),
         system_prompt: job.system_prompt.clone(),
         max_tokens: job.max_tokens,
         temperature: job.temperature,
@@ -1752,6 +1757,7 @@ fn main() {
             job_id,
             prompt,
             model,
+            mode,
             system_prompt,
             max_tokens,
             temperature,
@@ -1765,6 +1771,7 @@ fn main() {
                 job_id,
                 prompt,
                 model,
+                mode,
                 system_prompt,
                 max_tokens,
                 temperature,
@@ -2168,6 +2175,7 @@ mod tests {
             prompt: "summarize".to_string(),
             preferred_backend: Backend::Cuda,
             model: Some("tiny-cuda".to_string()),
+            mode: None,
             system_prompt: None,
             max_tokens: Some(32),
             temperature: None,

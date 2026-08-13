@@ -75,6 +75,8 @@ pub struct WorkerCli {
     #[arg(long)]
     pub model: Option<String>,
     #[arg(long)]
+    pub mode: Option<String>,
+    #[arg(long)]
     pub system_prompt: Option<String>,
     #[arg(long)]
     pub max_tokens: Option<u32>,
@@ -179,8 +181,26 @@ struct CachedModelRecord {
     supports_structured_output: bool,
 }
 
-const SPEAKAI_SYSTEM_PREFIX: &str = "You are SpeakAI,";
 const SPEAKAI_MAX_ATTEMPTS: u32 = 3;
+
+const SPEAKAI_SYSTEM_PROMPT: &str = r#"You are SpeakAI, a conversation-learning response generator.
+Analyze the user's utterance and return only one complete JSON object. Do not use Markdown or commentary.
+Use speechAct: opinion, question, observation, request, invitation, suggestion, greeting, thanks, apology, compliment, emotion, or information.
+Always include non-empty English topic and summary strings and exactly three replies. Each reply must contain strategy, purpose, text, and meaning. Reply text must use the utterance language; meaning must be a natural English translation.
+For questions only, include questionType: factual, personal, opinion, clarification, preference, hypothetical, or other.
+Use these strategy/purpose pairs in order:
+opinion: supportive/AGREE, continue/EXPLORE, alternative/DISAGREE_POLITELY
+question: direct/ANSWER, continue/ANSWER_AND_EXPLORE, boundary/DECLINE_POLITELY
+observation: acknowledge/ACKNOWLEDGE, continue/EXPLORE, alternative/OFFER_ALTERNATIVE
+request: accept/ACCEPT, clarify/CLARIFY, boundary/DECLINE_POLITELY
+invitation: accept/ACCEPT, clarify/ASK_DETAILS, boundary/DECLINE_POLITELY
+suggestion: supportive/SUPPORT, continue/EXPLORE, alternative/SUGGEST_ALTERNATIVE
+greeting: direct/RETURN_GREETING, continue/START_CONVERSATION, warm/WARM_VARIATION
+thanks: direct/ACCEPT_THANKS, warm/RESPOND_WARMLY, continue/CONTINUE
+apology: accept/ACCEPT_APOLOGY, reassure/REASSURE, continue/DISCUSS_FURTHER
+compliment: accept/ACCEPT_COMPLIMENT, reciprocal/RECIPROCATE, modest/RESPOND_MODESTLY
+emotion: empathetic/EMPATHIZE, continue/EXPLORE, supportive/OFFER_SUPPORT
+information: acknowledge/ACKNOWLEDGE, continue/ASK_FOLLOW_UP, related/ADD_RELATED_POINT"#;
 
 const SPEAKAI_JSON_GRAMMAR: &str = r#"root ::= object
 object ::= "{" ws speech-act "," ws topic "," ws summary question-type? "," ws replies ws "}"
@@ -197,9 +217,17 @@ ws ::= [ \t\n\r]*
 
 fn is_speakai_request(request: &WorkerLaunchRequest) -> bool {
     request
-        .system_prompt
+        .mode
         .as_deref()
-        .is_some_and(|prompt| prompt.trim_start().starts_with(SPEAKAI_SYSTEM_PREFIX))
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("speakai"))
+}
+
+fn effective_system_prompt(request: &WorkerLaunchRequest) -> &str {
+    if is_speakai_request(request) {
+        SPEAKAI_SYSTEM_PROMPT
+    } else {
+        request.system_prompt.as_deref().unwrap_or("").trim()
+    }
 }
 
 fn speakai_json_schema() -> serde_json::Value {
@@ -2554,7 +2582,7 @@ fn run_llama_request(
     let model_name = preferred_speakai_model_name(&model_dir, request.model.as_deref(), speakai)
         .unwrap_or_else(|| "active".to_string());
 
-    let base_system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
+    let base_system_prompt = effective_system_prompt(request);
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
     let temperature = request.temperature.unwrap_or(0.2).max(0.0);
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
@@ -2729,7 +2757,7 @@ fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespons
     let seed = request.seed.unwrap_or(42);
     let speakai = is_speakai_request(request);
     let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
-    let base_system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
+    let base_system_prompt = effective_system_prompt(request);
     let mut last_validation_error = None;
     for attempt in 0..attempts {
         let system_prompt = speakai_retry_system_prompt(
@@ -2844,7 +2872,7 @@ fn run_contributed_cluster_request(
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
     let seed = request.seed.unwrap_or(42);
     let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
-    let base_system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
+    let base_system_prompt = effective_system_prompt(request);
     let mut last_validation_error = None;
     for attempt in 0..attempts {
         let system_prompt = speakai_retry_system_prompt(
@@ -2992,6 +3020,7 @@ pub fn worker_main(cli: WorkerCli) {
         backend: cli.backend,
         prompt: cli.prompt,
         model: cli.model,
+        mode: cli.mode,
         system_prompt: cli.system_prompt,
         max_tokens: cli.max_tokens,
         temperature: cli.temperature,
@@ -3083,6 +3112,9 @@ pub fn launch_worker(
 
     if let Some(model) = request.model.as_ref() {
         command.arg("--model").arg(model);
+    }
+    if let Some(mode) = request.mode.as_ref() {
+        command.arg("--mode").arg(mode);
     }
     if let Some(system_prompt) = request.system_prompt.as_ref() {
         command.arg("--system-prompt").arg(system_prompt);
@@ -3474,9 +3506,8 @@ mod tests {
             backend: Backend::M,
             prompt: "Heute ist das Wetter schön.".to_string(),
             model: model.map(str::to_string),
-            system_prompt: Some(
-                "You are SpeakAI, a conversation-learning response generator.".to_string(),
-            ),
+            mode: Some("speakai".to_string()),
+            system_prompt: None,
             max_tokens: Some(512),
             temperature: Some(0.2),
             top_p: Some(0.9),
@@ -3511,6 +3542,19 @@ mod tests {
             r#"{"speechAct":"greeting","topic":"hello","summary":"greeting","replies":[]}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn normalizes_conflicting_greeting_purposes_to_the_owned_contract() {
+        let output = r#"{"speechAct":"greeting","topic":"Greeting","summary":"The speaker greets the listener.","replies":[{"strategy":"friendly","purpose":"GREET","text":"Hallo, guten Tag!","meaning":"Hello, good day!"},{"strategy":"question","purpose":"ASK_WELLBEING","text":"Wie geht es Ihnen?","meaning":"How are you?"},{"strategy":"polite","purpose":"WELCOME","text":"Schön, Sie zu sehen.","meaning":"Nice to see you."}]}"#;
+
+        let normalized = validate_and_normalize_speakai_output(output).expect("valid greeting");
+        let value: serde_json::Value = serde_json::from_str(&normalized).expect("normalized JSON");
+        assert_eq!(value["replies"][0]["strategy"], "direct");
+        assert_eq!(value["replies"][0]["purpose"], "RETURN_GREETING");
+        assert_eq!(value["replies"][1]["purpose"], "START_CONVERSATION");
+        assert_eq!(value["replies"][2]["purpose"], "WARM_VARIATION");
+        assert_eq!(value["replies"][0]["text"], "Hallo, guten Tag!");
     }
 
     #[test]
@@ -3910,6 +3954,7 @@ mod tests {
             backend: Backend::Vulkan,
             prompt: "hello".to_string(),
             model: None,
+            mode: None,
             system_prompt: None,
             max_tokens: Some(4),
             temperature: Some(0.2),
@@ -3952,6 +3997,7 @@ mod tests {
                 backend: Backend::Cuda,
                 prompt: "hello".to_string(),
                 model: Some("qwen".to_string()),
+                mode: None,
                 system_prompt: None,
                 max_tokens: Some(4),
                 temperature: Some(0.2),
@@ -4036,6 +4082,7 @@ mod tests {
                 backend: Backend::Vllm,
                 prompt: "hello".to_string(),
                 model: Some("qwen".to_string()),
+                mode: None,
                 system_prompt: None,
                 max_tokens: Some(4),
                 temperature: Some(0.2),
@@ -4085,6 +4132,7 @@ mod tests {
                 node_id: "n".to_string(),
                 prompt: "hello".to_string(),
                 model: None,
+                mode: None,
                 system_prompt: None,
                 max_tokens: Some(8),
                 temperature: None,
@@ -4171,6 +4219,7 @@ mod tests {
                 backend: Backend::Vllm,
                 prompt: "hello".to_string(),
                 model: Some("Qwen/Qwen3-8B".to_string()),
+                mode: None,
                 system_prompt: Some("Answer directly.".to_string()),
                 max_tokens: Some(4),
                 temperature: Some(0.2),
@@ -4257,6 +4306,7 @@ mod tests {
                 backend: Backend::M,
                 prompt: "hello".to_string(),
                 model: Some("qwen".to_string()),
+                mode: None,
                 system_prompt: Some("Answer directly.".to_string()),
                 max_tokens: Some(4),
                 temperature: Some(0.2),

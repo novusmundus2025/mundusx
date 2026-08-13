@@ -80,6 +80,7 @@ message JobRecord {
   Backend backend = 12;
   string output = 13;
   string error = 14;
+  string mode = 15;
 }
 
 message JobClaimResponse {
@@ -122,6 +123,7 @@ message WorkerLaunchRequest {
   float temperature = 8;
   float top_p = 9;
   uint64 seed = 10;
+  string mode = 11;
 }
 
 message WorkerLaunchResponse {
