@@ -153,7 +153,7 @@ pub struct TrustedRuntimePaths {
     pub nvidia_smi: Option<TrustedExecutable>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CachedModelRecord {
     name: String,
     active: bool,
@@ -173,6 +173,269 @@ struct CachedModelRecord {
     compatibility: Option<String>,
     #[serde(default)]
     compatibility_reason: Option<String>,
+    #[serde(default)]
+    specialties: Vec<String>,
+    #[serde(default)]
+    supports_structured_output: bool,
+}
+
+const SPEAKAI_SYSTEM_PREFIX: &str = "You are SpeakAI,";
+const SPEAKAI_MAX_ATTEMPTS: u32 = 3;
+
+const SPEAKAI_JSON_GRAMMAR: &str = r#"root ::= object
+object ::= "{" ws speech-act "," ws topic "," ws summary question-type? "," ws replies ws "}"
+speech-act ::= "\"speechAct\"" ws ":" ws ("\"opinion\"" | "\"question\"" | "\"observation\"" | "\"request\"" | "\"invitation\"" | "\"suggestion\"" | "\"greeting\"" | "\"thanks\"" | "\"apology\"" | "\"compliment\"" | "\"emotion\"" | "\"information\"")
+topic ::= "\"topic\"" ws ":" ws string
+summary ::= "\"summary\"" ws ":" ws string
+question-type ::= "," ws "\"questionType\"" ws ":" ws ("\"factual\"" | "\"personal\"" | "\"opinion\"" | "\"clarification\"" | "\"preference\"" | "\"hypothetical\"" | "\"other\"")
+replies ::= "\"replies\"" ws ":" ws "[" ws reply "," ws reply "," ws reply ws "]"
+reply ::= "{" ws "\"strategy\"" ws ":" ws string "," ws "\"purpose\"" ws ":" ws string "," ws "\"text\"" ws ":" ws string "," ws "\"meaning\"" ws ":" ws string ws "}"
+string ::= "\"" chars "\""
+chars ::= ([^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))*
+ws ::= [ \t\n\r]*
+"#;
+
+fn is_speakai_request(request: &WorkerLaunchRequest) -> bool {
+    request
+        .system_prompt
+        .as_deref()
+        .is_some_and(|prompt| prompt.trim_start().starts_with(SPEAKAI_SYSTEM_PREFIX))
+}
+
+fn speakai_json_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["speechAct", "topic", "summary", "replies"],
+        "properties": {
+            "speechAct": {
+                "type": "string",
+                "enum": ["opinion", "question", "observation", "request", "invitation", "suggestion", "greeting", "thanks", "apology", "compliment", "emotion", "information"]
+            },
+            "questionType": {
+                "type": "string",
+                "enum": ["factual", "personal", "opinion", "clarification", "preference", "hypothetical", "other"]
+            },
+            "topic": { "type": "string", "minLength": 1 },
+            "summary": { "type": "string", "minLength": 1 },
+            "replies": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["strategy", "purpose", "text", "meaning"],
+                    "properties": {
+                        "strategy": { "type": "string", "minLength": 1 },
+                        "purpose": { "type": "string", "minLength": 1 },
+                        "text": { "type": "string", "minLength": 1 },
+                        "meaning": { "type": "string", "minLength": 1 }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn speakai_response_format() -> serde_json::Value {
+    serde_json::json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "speakai_response",
+            "strict": true,
+            "schema": speakai_json_schema()
+        }
+    })
+}
+
+fn speakai_reply_contract(speech_act: &str) -> Option<[(&'static str, &'static str); 3]> {
+    Some(match speech_act {
+        "opinion" => [
+            ("supportive", "AGREE"),
+            ("continue", "EXPLORE"),
+            ("alternative", "DISAGREE_POLITELY"),
+        ],
+        "question" => [
+            ("direct", "ANSWER"),
+            ("continue", "ANSWER_AND_EXPLORE"),
+            ("boundary", "DECLINE_POLITELY"),
+        ],
+        "observation" => [
+            ("acknowledge", "ACKNOWLEDGE"),
+            ("continue", "EXPLORE"),
+            ("alternative", "OFFER_ALTERNATIVE"),
+        ],
+        "request" => [
+            ("accept", "ACCEPT"),
+            ("clarify", "CLARIFY"),
+            ("boundary", "DECLINE_POLITELY"),
+        ],
+        "invitation" => [
+            ("accept", "ACCEPT"),
+            ("clarify", "ASK_DETAILS"),
+            ("boundary", "DECLINE_POLITELY"),
+        ],
+        "suggestion" => [
+            ("supportive", "SUPPORT"),
+            ("continue", "EXPLORE"),
+            ("alternative", "SUGGEST_ALTERNATIVE"),
+        ],
+        "greeting" => [
+            ("direct", "RETURN_GREETING"),
+            ("continue", "START_CONVERSATION"),
+            ("warm", "WARM_VARIATION"),
+        ],
+        "thanks" => [
+            ("direct", "ACCEPT_THANKS"),
+            ("warm", "RESPOND_WARMLY"),
+            ("continue", "CONTINUE"),
+        ],
+        "apology" => [
+            ("accept", "ACCEPT_APOLOGY"),
+            ("reassure", "REASSURE"),
+            ("continue", "DISCUSS_FURTHER"),
+        ],
+        "compliment" => [
+            ("accept", "ACCEPT_COMPLIMENT"),
+            ("reciprocal", "RECIPROCATE"),
+            ("modest", "RESPOND_MODESTLY"),
+        ],
+        "emotion" => [
+            ("empathetic", "EMPATHIZE"),
+            ("continue", "EXPLORE"),
+            ("supportive", "OFFER_SUPPORT"),
+        ],
+        "information" => [
+            ("acknowledge", "ACKNOWLEDGE"),
+            ("continue", "ASK_FOLLOW_UP"),
+            ("related", "ADD_RELATED_POINT"),
+        ],
+        _ => return None,
+    })
+}
+
+fn required_json_string<'a>(value: &'a serde_json::Value, name: &str) -> Result<&'a str, String> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .ok_or_else(|| format!("SpeakAI output requires a non-empty `{name}`"))
+}
+
+fn extract_json_object(output: &str) -> Result<&str, String> {
+    let response = output
+        .split_once("; response=")
+        .map(|(_, response)| response)
+        .unwrap_or(output)
+        .trim();
+    let start = response
+        .find('{')
+        .ok_or_else(|| "SpeakAI output did not contain a JSON object".to_string())?;
+    let end = response
+        .rfind('}')
+        .filter(|end| *end >= start)
+        .ok_or_else(|| "SpeakAI output contained an incomplete JSON object".to_string())?;
+    Ok(&response[start..=end])
+}
+
+fn validate_and_normalize_speakai_output(output: &str) -> Result<String, String> {
+    let raw = extract_json_object(output)?;
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| format!("SpeakAI output was malformed JSON: {error}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "SpeakAI output must be a JSON object".to_string())?;
+    let speech_act = required_json_string(&value, "speechAct")?.to_ascii_lowercase();
+    let topic = required_json_string(&value, "topic")?;
+    let summary = required_json_string(&value, "summary")?;
+    let expected = speakai_reply_contract(&speech_act)
+        .ok_or_else(|| format!("SpeakAI output used unsupported speechAct `{speech_act}`"))?;
+    let replies = object
+        .get("replies")
+        .and_then(serde_json::Value::as_array)
+        .filter(|replies| replies.len() == 3)
+        .ok_or_else(|| "SpeakAI output requires exactly three replies".to_string())?;
+
+    let mut normalized_replies = Vec::with_capacity(3);
+    for (index, (reply, (strategy, purpose))) in replies.iter().zip(expected).enumerate() {
+        let text = required_json_string(reply, "text")
+            .map_err(|error| format!("reply {}: {error}", index + 1))?;
+        let meaning = required_json_string(reply, "meaning")
+            .map_err(|error| format!("reply {}: {error}", index + 1))?;
+        normalized_replies.push(serde_json::json!({
+            "strategy": strategy,
+            "purpose": purpose,
+            "text": text,
+            "meaning": meaning,
+        }));
+    }
+
+    let mut normalized = serde_json::Map::new();
+    normalized.insert(
+        "speechAct".to_string(),
+        serde_json::Value::String(speech_act.clone()),
+    );
+    if speech_act == "question" {
+        let question_type = object
+            .get("questionType")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .filter(|value| {
+                matches!(
+                    value.as_str(),
+                    "factual"
+                        | "personal"
+                        | "opinion"
+                        | "clarification"
+                        | "preference"
+                        | "hypothetical"
+                        | "other"
+                )
+            })
+            .unwrap_or_else(|| "other".to_string());
+        normalized.insert(
+            "questionType".to_string(),
+            serde_json::Value::String(question_type),
+        );
+    }
+    normalized.insert(
+        "topic".to_string(),
+        serde_json::Value::String(topic.to_string()),
+    );
+    normalized.insert(
+        "summary".to_string(),
+        serde_json::Value::String(summary.to_string()),
+    );
+    normalized.insert(
+        "replies".to_string(),
+        serde_json::Value::Array(normalized_replies),
+    );
+    serde_json::to_string(&serde_json::Value::Object(normalized))
+        .map_err(|error| format!("SpeakAI output normalization failed: {error}"))
+}
+
+fn speakai_retry_system_prompt(base: &str, attempt: u32, last_error: Option<&str>) -> String {
+    if attempt == 0 {
+        return base.to_string();
+    }
+    format!(
+        "{base}\n\nYour previous SpeakAI response failed validation: {}. Return only one complete JSON object matching the required schema. Do not use Markdown fences or commentary.",
+        last_error.unwrap_or("invalid structured output")
+    )
+}
+
+fn normalize_generated_output(
+    request: &WorkerLaunchRequest,
+    generated: &str,
+) -> Result<String, String> {
+    if is_speakai_request(request) {
+        validate_and_normalize_speakai_output(generated)
+    } else {
+        Ok(generated.to_string())
+    }
 }
 
 fn sanitize_model_name(name: &str) -> String {
@@ -364,6 +627,93 @@ fn cached_model_file_from_manifest(
                 .join(file_name)
         })
         .filter(|path| path.is_file())
+}
+
+fn model_has_reliable_structured_output(record: &CachedModelRecord) -> bool {
+    if record.supports_structured_output
+        || record
+            .specialties
+            .iter()
+            .any(|specialty| matches!(specialty.as_str(), "speakai" | "structured_output"))
+    {
+        return true;
+    }
+
+    let name = record.name.to_ascii_lowercase();
+    name.contains("qwen") || name.contains("phi-4") || name.contains("gemma")
+}
+
+fn preferred_speakai_model_name(
+    model_dir: &Path,
+    requested: Option<&str>,
+    speakai: bool,
+) -> Option<String> {
+    if let Some(requested) = requested.map(str::trim).filter(|name| !name.is_empty()) {
+        return Some(requested.to_string());
+    }
+    if !speakai {
+        return active_model_name_from_cache(model_dir);
+    }
+
+    let manifest_dir = model_dir.join(".opengpu");
+    let mut records = fs::read_dir(manifest_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            if !entry.file_type().ok()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+            {
+                return None;
+            }
+            let raw = fs::read_to_string(entry.path()).ok()?;
+            let record = serde_json::from_str::<CachedModelRecord>(&raw).ok()?;
+            let usable = record
+                .compatibility
+                .as_deref()
+                .is_none_or(|compatibility| compatibility != "rejected")
+                && (record
+                    .source_path
+                    .as_deref()
+                    .map(Path::new)
+                    .is_some_and(Path::is_file)
+                    || cached_model_file_from_manifest(model_dir, &record).is_some());
+            usable.then_some(record)
+        })
+        .collect::<Vec<_>>();
+
+    records.sort_by(|left, right| {
+        let score = |record: &CachedModelRecord| {
+            let speakai_specialty = record
+                .specialties
+                .iter()
+                .any(|specialty| specialty == "speakai") as u8;
+            (
+                speakai_specialty,
+                model_has_reliable_structured_output(record) as u8,
+                record.supports_structured_output as u8,
+                record.active as u8,
+                record.estimated_vram_mb.unwrap_or(0),
+            )
+        };
+        score(right)
+            .cmp(&score(left))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    records
+        .into_iter()
+        .find(model_has_reliable_structured_output)
+        .or_else(|| {
+            fs::read_dir(model_dir.join(".opengpu"))
+                .ok()?
+                .flatten()
+                .filter_map(|entry| {
+                    let raw = fs::read_to_string(entry.path()).ok()?;
+                    serde_json::from_str::<CachedModelRecord>(&raw).ok()
+                })
+                .find(|record| record.active)
+        })
+        .map(|record| record.name)
 }
 
 pub fn active_model_capability(
@@ -1334,6 +1684,7 @@ fn run_llama_command(
     temperature: f32,
     top_p: f32,
     seed: u64,
+    grammar: Option<&str>,
 ) -> Result<(String, String, RuntimeMetrics), String> {
     if backend == Backend::Vllm {
         return Err(
@@ -1379,6 +1730,9 @@ fn run_llama_command(
         .arg(top_p.to_string())
         .arg("--seed")
         .arg(seed.to_string());
+    if let Some(grammar) = grammar {
+        command.arg("--grammar").arg(grammar);
+    }
 
     let output = command
         .output()
@@ -1414,6 +1768,7 @@ fn run_llama_server_completion(
     temperature: f32,
     top_p: f32,
     seed: u64,
+    structured: bool,
 ) -> Result<(String, String, RuntimeMetrics), String> {
     let mut messages = Vec::new();
     if !system_prompt.is_empty() {
@@ -1426,13 +1781,16 @@ fn run_llama_server_completion(
         "role": "user",
         "content": user_prompt,
     }));
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
         "seed": seed,
     });
+    if structured {
+        payload["response_format"] = speakai_response_format();
+    }
     let response = ureq::post(&format!("{url}/v1/chat/completions"))
         .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
         .send_json(payload)
@@ -1468,6 +1826,7 @@ fn run_vllm_completion(
     temperature: f32,
     top_p: f32,
     seed: u64,
+    structured: bool,
 ) -> Result<String, String> {
     let mut messages = Vec::new();
     if !system_prompt.is_empty() {
@@ -1480,7 +1839,7 @@ fn run_vllm_completion(
         "role": "user",
         "content": user_prompt,
     }));
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
@@ -1488,6 +1847,9 @@ fn run_vllm_completion(
         "top_p": top_p,
         "seed": seed,
     });
+    if structured {
+        payload["response_format"] = speakai_response_format();
+    }
     let response = ureq::post(&format!("{url}/v1/chat/completions"))
         .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
         .send_json(payload)
@@ -1516,6 +1878,51 @@ fn run_vllm_completion(
     }
 
     Err(empty_completion_error(&value))
+}
+
+fn structured_output_option_unsupported(error: &str) -> bool {
+    ["status code 400", "status code 404", "status code 422"]
+        .iter()
+        .any(|status| error.contains(status))
+}
+
+fn run_openai_compatible_completion(
+    url: &str,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    seed: u64,
+    structured: bool,
+) -> Result<String, String> {
+    match run_vllm_completion(
+        url,
+        model,
+        system_prompt,
+        user_prompt,
+        max_tokens,
+        temperature,
+        top_p,
+        seed,
+        structured,
+    ) {
+        Err(error) if structured && structured_output_option_unsupported(&error) => {
+            run_vllm_completion(
+                url,
+                model,
+                system_prompt,
+                user_prompt,
+                max_tokens,
+                temperature,
+                top_p,
+                seed,
+                false,
+            )
+        }
+        result => result,
+    }
 }
 
 /// Explains an empty `content` instead of reporting a missing field.
@@ -2143,90 +2550,162 @@ fn run_llama_request(
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
                 .join(".opengpu/models")
         });
-    let model_name = request
-        .model
-        .clone()
-        .or_else(|| active_model_name_from_cache(&model_dir))
+    let speakai = is_speakai_request(request);
+    let model_name = preferred_speakai_model_name(&model_dir, request.model.as_deref(), speakai)
         .unwrap_or_else(|| "active".to_string());
 
-    let system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
-    let prompt = if system_prompt.is_empty() {
-        request.prompt.clone()
-    } else {
-        format!("System:\n{system_prompt}\n\nUser:\n{}", request.prompt)
-    };
+    let base_system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
     let temperature = request.temperature.unwrap_or(0.2).max(0.0);
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
     let seed = request.seed.unwrap_or(42);
+    let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
 
     if backend == Backend::M {
-        if let Ok((generated, runtime_mode, metrics)) =
-            run_mlx_command(&model_name, &prompt, max_tokens, temperature)
-        {
-            let runtime_metrics = metrics.to_output_fragment().unwrap_or_default();
-            return Ok(WorkerLaunchResponse {
-                job_id: request.job_id.clone(),
-                worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
-                status: "completed".to_string(),
-                output: format!(
-                    "mlx-lm mode={runtime_mode}; model={model_name}; max_tokens={max_tokens}; temperature={temperature}{runtime_metrics}; response={generated}",
-                ),
-                error: None,
-                backend,
-                node_id: request.node_id.clone(),
-                model: Some(model_name),
-                runtime_mode: Some(runtime_mode),
-            });
+        let mut last_validation_error = None;
+        let mut mlx_started = false;
+        for attempt in 0..attempts {
+            let system_prompt = speakai_retry_system_prompt(
+                base_system_prompt,
+                attempt,
+                last_validation_error.as_deref(),
+            );
+            let prompt = if system_prompt.is_empty() {
+                request.prompt.clone()
+            } else {
+                format!("System:\n{system_prompt}\n\nUser:\n{}", request.prompt)
+            };
+            match run_mlx_command(
+                &model_name,
+                &prompt,
+                max_tokens,
+                if attempt == 0 { temperature } else { 0.0 },
+            ) {
+                Ok((generated, runtime_mode, metrics)) => {
+                    mlx_started = true;
+                    match normalize_generated_output(request, &generated) {
+                        Ok(generated) => {
+                            let runtime_metrics = metrics.to_output_fragment().unwrap_or_default();
+                            let validation = speakai
+                                .then(|| {
+                                    format!(
+                                        "; structured_output=validated; generation_attempts={}",
+                                        attempt + 1
+                                    )
+                                })
+                                .unwrap_or_default();
+                            return Ok(WorkerLaunchResponse {
+                                job_id: request.job_id.clone(),
+                                worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                                status: "completed".to_string(),
+                                output: format!(
+                                    "mlx-lm mode={runtime_mode}; model={model_name}; max_tokens={max_tokens}; temperature={temperature}{runtime_metrics}{validation}; response={generated}",
+                                ),
+                                error: None,
+                                backend,
+                                node_id: request.node_id.clone(),
+                                model: Some(model_name.clone()),
+                                runtime_mode: Some(runtime_mode),
+                            });
+                        }
+                        Err(error) => last_validation_error = Some(error),
+                    }
+                }
+                Err(_) if !mlx_started => break,
+                Err(error) => return Err(error),
+            }
+        }
+        if mlx_started {
+            return Err(format!(
+                "SpeakAI generation failed schema validation after {attempts} attempts: {}",
+                last_validation_error.unwrap_or_else(|| "invalid structured output".to_string())
+            ));
         }
     }
 
-    let model_path = resolve_model_path(&model_dir, request.model.as_deref())
-        .map_err(|error| error.to_string())?;
-
-    let warm_result = configured_llama_server_url()
-        .as_deref()
-        .filter(|url| llama_server_health_ok(url))
-        .map(|url| {
-            run_llama_server_completion(
-                url,
-                system_prompt,
-                &request.prompt,
+    let model_path =
+        resolve_model_path(&model_dir, Some(&model_name)).map_err(|error| error.to_string())?;
+    let mut last_validation_error = None;
+    for attempt in 0..attempts {
+        let system_prompt = speakai_retry_system_prompt(
+            base_system_prompt,
+            attempt,
+            last_validation_error.as_deref(),
+        );
+        let prompt = if system_prompt.is_empty() {
+            request.prompt.clone()
+        } else {
+            format!("System:\n{system_prompt}\n\nUser:\n{}", request.prompt)
+        };
+        let attempt_temperature = if speakai && attempt > 0 {
+            0.0
+        } else {
+            temperature
+        };
+        let attempt_seed = seed.saturating_add(attempt as u64);
+        let warm_result = configured_llama_server_url()
+            .as_deref()
+            .filter(|url| llama_server_health_ok(url))
+            .map(|url| {
+                run_llama_server_completion(
+                    url,
+                    &system_prompt,
+                    &request.prompt,
+                    backend,
+                    max_tokens,
+                    attempt_temperature,
+                    top_p,
+                    attempt_seed,
+                    speakai,
+                )
+            });
+        let (generated, runtime_mode, metrics) = match warm_result {
+            Some(Ok(result)) => result,
+            Some(Err(_)) | None => run_llama_command(
+                &model_path,
+                &prompt,
                 backend,
                 max_tokens,
-                temperature,
+                attempt_temperature,
                 top_p,
-                seed,
-            )
-        });
-    let (generated, runtime_mode, metrics) = match warm_result {
-        Some(Ok(result)) => result,
-        Some(Err(_)) | None => run_llama_command(
-            &model_path,
-            &prompt,
-            backend,
-            max_tokens,
-            temperature,
-            top_p,
-            seed,
-        )?,
-    };
-    let runtime_metrics = metrics.to_output_fragment().unwrap_or_default();
+                attempt_seed,
+                speakai.then_some(SPEAKAI_JSON_GRAMMAR),
+            )?,
+        };
+        match normalize_generated_output(request, &generated) {
+            Ok(generated) => {
+                let runtime_metrics = metrics.to_output_fragment().unwrap_or_default();
+                let validation = speakai
+                    .then(|| {
+                        format!(
+                            "; structured_output=validated; generation_attempts={}",
+                            attempt + 1
+                        )
+                    })
+                    .unwrap_or_default();
+                return Ok(WorkerLaunchResponse {
+                    job_id: request.job_id.clone(),
+                    worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                    status: "completed".to_string(),
+                    output: format!(
+                        "llama.cpp mode={runtime_mode}; model={model_name}; path={}; max_tokens={max_tokens}; temperature={attempt_temperature}; top_p={top_p}; seed={attempt_seed}{runtime_metrics}{validation}; response={generated}",
+                        model_path.display(),
+                    ),
+                    error: None,
+                    backend,
+                    node_id: request.node_id.clone(),
+                    model: Some(model_name.clone()),
+                    runtime_mode: Some(runtime_mode),
+                });
+            }
+            Err(error) => last_validation_error = Some(error),
+        }
+    }
 
-    Ok(WorkerLaunchResponse {
-        job_id: request.job_id.clone(),
-        worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
-        status: "completed".to_string(),
-        output: format!(
-            "llama.cpp mode={runtime_mode}; model={model_name}; path={}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}{runtime_metrics}; response={generated}",
-            model_path.display(),
-        ),
-        error: None,
-        backend,
-        node_id: request.node_id.clone(),
-        model: Some(model_name),
-        runtime_mode: Some(runtime_mode),
-    })
+    Err(format!(
+        "SpeakAI generation failed schema validation after {attempts} attempts: {}",
+        last_validation_error.unwrap_or_else(|| "invalid structured output".to_string())
+    ))
 }
 
 fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchResponse, String> {
@@ -2248,30 +2727,64 @@ fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespons
     let temperature = request.temperature.unwrap_or(0.2).max(0.0);
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
     let seed = request.seed.unwrap_or(42);
-    let generated = run_vllm_completion(
-        &url,
-        model,
-        request.system_prompt.as_deref().unwrap_or("").trim(),
-        &request.prompt,
-        max_tokens,
-        temperature,
-        top_p,
-        seed,
-    )?;
-
-    Ok(WorkerLaunchResponse {
-        job_id: request.job_id.clone(),
-        worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
-        status: "completed".to_string(),
-        output: format!(
-            "vLLM mode=persistent-warm; model={model}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}; response={generated}"
-        ),
-        error: None,
-        backend: Backend::Vllm,
-        node_id: request.node_id.clone(),
-        model: Some(model.to_string()),
-        runtime_mode: Some("vllm".to_string()),
-    })
+    let speakai = is_speakai_request(request);
+    let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
+    let base_system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
+    let mut last_validation_error = None;
+    for attempt in 0..attempts {
+        let system_prompt = speakai_retry_system_prompt(
+            base_system_prompt,
+            attempt,
+            last_validation_error.as_deref(),
+        );
+        let attempt_temperature = if speakai && attempt > 0 {
+            0.0
+        } else {
+            temperature
+        };
+        let attempt_seed = seed.saturating_add(attempt as u64);
+        let generated = run_openai_compatible_completion(
+            &url,
+            model,
+            &system_prompt,
+            &request.prompt,
+            max_tokens,
+            attempt_temperature,
+            top_p,
+            attempt_seed,
+            speakai,
+        )?;
+        match normalize_generated_output(request, &generated) {
+            Ok(generated) => {
+                let validation = speakai
+                    .then(|| {
+                        format!(
+                            "; structured_output=validated; generation_attempts={}",
+                            attempt + 1
+                        )
+                    })
+                    .unwrap_or_default();
+                return Ok(WorkerLaunchResponse {
+                    job_id: request.job_id.clone(),
+                    worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                    status: "completed".to_string(),
+                    output: format!(
+                        "vLLM mode=persistent-warm; model={model}; max_tokens={max_tokens}; temperature={attempt_temperature}; top_p={top_p}; seed={attempt_seed}{validation}; response={generated}"
+                    ),
+                    error: None,
+                    backend: Backend::Vllm,
+                    node_id: request.node_id.clone(),
+                    model: Some(model.to_string()),
+                    runtime_mode: Some("vllm".to_string()),
+                });
+            }
+            Err(error) => last_validation_error = Some(error),
+        }
+    }
+    Err(format!(
+        "SpeakAI generation failed schema validation after {attempts} attempts: {}",
+        last_validation_error.unwrap_or_else(|| "invalid structured output".to_string())
+    ))
 }
 
 /// Runs a job against the contributed cluster's OpenAI-compatible endpoint.
@@ -2305,42 +2818,89 @@ fn run_contributed_cluster_request(
             ));
         }
     }
+    let speakai = is_speakai_request(request);
     let model = request
         .model
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            speakai.then(|| {
+                cluster
+                    .models
+                    .iter()
+                    .find(|name| {
+                        let name = name.to_ascii_lowercase();
+                        name.contains("qwen") || name.contains("phi-4") || name.contains("gemma")
+                    })
+                    .map(String::as_str)
+                    .unwrap_or(&advertised)
+            })
+        })
         .unwrap_or(&advertised);
 
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
     let temperature = request.temperature.unwrap_or(0.2).max(0.0);
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
     let seed = request.seed.unwrap_or(42);
-    let generated = run_vllm_completion(
-        cluster.base_url.trim_end_matches('/'),
-        model,
-        request.system_prompt.as_deref().unwrap_or("").trim(),
-        &request.prompt,
-        max_tokens,
-        temperature,
-        top_p,
-        seed,
-    )?;
-
-    Ok(WorkerLaunchResponse {
-        job_id: request.job_id.clone(),
-        worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
-        status: "completed".to_string(),
-        output: format!(
-            "contributed-cluster kind={}; endpoint={}; model={model}; max_tokens={max_tokens}; temperature={temperature}; top_p={top_p}; seed={seed}; response={generated}",
-            cluster.kind, cluster.base_url
-        ),
-        error: None,
-        backend: resolved_backend(request.backend),
-        node_id: request.node_id.clone(),
-        model: Some(model.to_string()),
-        runtime_mode: Some("contributed-cluster".to_string()),
-    })
+    let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
+    let base_system_prompt = request.system_prompt.as_deref().unwrap_or("").trim();
+    let mut last_validation_error = None;
+    for attempt in 0..attempts {
+        let system_prompt = speakai_retry_system_prompt(
+            base_system_prompt,
+            attempt,
+            last_validation_error.as_deref(),
+        );
+        let attempt_temperature = if speakai && attempt > 0 {
+            0.0
+        } else {
+            temperature
+        };
+        let attempt_seed = seed.saturating_add(attempt as u64);
+        let generated = run_openai_compatible_completion(
+            cluster.base_url.trim_end_matches('/'),
+            model,
+            &system_prompt,
+            &request.prompt,
+            max_tokens,
+            attempt_temperature,
+            top_p,
+            attempt_seed,
+            speakai,
+        )?;
+        match normalize_generated_output(request, &generated) {
+            Ok(generated) => {
+                let validation = speakai
+                    .then(|| {
+                        format!(
+                            "; structured_output=validated; generation_attempts={}",
+                            attempt + 1
+                        )
+                    })
+                    .unwrap_or_default();
+                return Ok(WorkerLaunchResponse {
+                    job_id: request.job_id.clone(),
+                    worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+                    status: "completed".to_string(),
+                    output: format!(
+                        "contributed-cluster kind={}; endpoint={}; model={model}; max_tokens={max_tokens}; temperature={attempt_temperature}; top_p={top_p}; seed={attempt_seed}{validation}; response={generated}",
+                        cluster.kind, cluster.base_url
+                    ),
+                    error: None,
+                    backend: resolved_backend(request.backend),
+                    node_id: request.node_id.clone(),
+                    model: Some(model.to_string()),
+                    runtime_mode: Some("contributed-cluster".to_string()),
+                });
+            }
+            Err(error) => last_validation_error = Some(error),
+        }
+    }
+    Err(format!(
+        "SpeakAI generation failed schema validation after {attempts} attempts: {}",
+        last_validation_error.unwrap_or_else(|| "invalid structured output".to_string())
+    ))
 }
 
 fn execute_request(request: &WorkerLaunchRequest) -> WorkerLaunchResponse {
@@ -2836,6 +3396,226 @@ mod tests {
         });
 
         format!("http://{addr}")
+    }
+
+    fn start_mock_speakai_server(completions: Vec<&'static str>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind SpeakAI mock server");
+        let addr = listener.local_addr().expect("SpeakAI mock server addr");
+        std::thread::spawn(move || {
+            let mut completion_index = 0_usize;
+            let expected_requests = completions.len() * 2;
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("SpeakAI mock accept");
+                let mut request_bytes = Vec::new();
+                let mut header_end = None;
+                let mut content_length = 0_usize;
+                loop {
+                    let mut buffer = [0_u8; 2048];
+                    let size = stream.read(&mut buffer).expect("SpeakAI mock read");
+                    if size == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buffer[..size]);
+                    if header_end.is_none() {
+                        header_end = request_bytes
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|index| index + 4);
+                        if let Some(end) = header_end {
+                            let headers = String::from_utf8_lossy(&request_bytes[..end]);
+                            content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                        }
+                    }
+                    if header_end.is_some_and(|end| request_bytes.len() >= end + content_length) {
+                        break;
+                    }
+                }
+
+                let request = String::from_utf8_lossy(&request_bytes);
+                let body = if request.starts_with("GET /health") {
+                    "{}".to_string()
+                } else {
+                    assert!(request.starts_with("POST /v1/chat/completions"));
+                    assert!(request.contains("\"response_format\""));
+                    assert!(request.contains("\"type\":\"json_schema\""));
+                    let completion = completions[completion_index];
+                    completion_index += 1;
+                    serde_json::json!({
+                        "choices": [{
+                            "message": { "role": "assistant", "content": completion }
+                        }]
+                    })
+                    .to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("SpeakAI mock write");
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn speakai_request(model: Option<&str>) -> WorkerLaunchRequest {
+        WorkerLaunchRequest {
+            job_id: "speakai-job".to_string(),
+            node_id: "node-1".to_string(),
+            backend: Backend::M,
+            prompt: "Heute ist das Wetter schön.".to_string(),
+            model: model.map(str::to_string),
+            system_prompt: Some(
+                "You are SpeakAI, a conversation-learning response generator.".to_string(),
+            ),
+            max_tokens: Some(512),
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            seed: Some(42),
+        }
+    }
+
+    #[test]
+    fn normalizes_speakai_required_fields_and_reply_contract() {
+        let output = r#"```json
+        {"speechAct":"OBSERVATION","questionType":"other","topic":" weather ","summary":" nice day ","extra":"drop me","replies":[
+          {"strategy":"wrong","purpose":"wrong","text":"Stimmt!","meaning":"That's true!"},
+          {"strategy":"wrong","purpose":"wrong","text":"Magst du Sonne?","meaning":"Do you like sunshine?"},
+          {"strategy":"wrong","purpose":"wrong","text":"Morgen regnet es vielleicht.","meaning":"It may rain tomorrow."}
+        ]}
+        ```"#;
+
+        let normalized = validate_and_normalize_speakai_output(output).expect("valid SpeakAI");
+        let value: serde_json::Value = serde_json::from_str(&normalized).expect("normalized JSON");
+        assert_eq!(value["speechAct"], "observation");
+        assert_eq!(value["topic"], "weather");
+        assert_eq!(value["replies"][0]["strategy"], "acknowledge");
+        assert_eq!(value["replies"][0]["purpose"], "ACKNOWLEDGE");
+        assert!(value.get("questionType").is_none());
+        assert!(value.get("extra").is_none());
+    }
+
+    #[test]
+    fn rejects_malformed_or_incomplete_speakai_output() {
+        assert!(validate_and_normalize_speakai_output("{not json}").is_err());
+        assert!(validate_and_normalize_speakai_output(
+            r#"{"speechAct":"greeting","topic":"hello","summary":"greeting","replies":[]}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn speakai_retries_invalid_json_and_completes_only_after_validation() {
+        with_temp_runtime_home(|home| {
+            let model_dir = home.join("models");
+            let model_cache = model_dir.join("qwen");
+            fs::create_dir_all(&model_cache).expect("model dir");
+            fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
+            write_trusted_paths(
+                home,
+                TrustedRuntimePaths {
+                    llama_cli: Some(TrustedExecutable {
+                        path: home.join("missing-llama-cli").display().to_string(),
+                        sha256: None,
+                    }),
+                    llama_server: None,
+                    nvidia_smi: None,
+                },
+            );
+            let previous_model_dir = env::var_os("OPENGPU_MODEL_DIR");
+            env::set_var("OPENGPU_MODEL_DIR", &model_dir);
+            let valid = r#"{"speechAct":"greeting","topic":"hello","summary":"A greeting","replies":[{"strategy":"bad","purpose":"bad","text":"Hallo!","meaning":"Hello!"},{"strategy":"bad","purpose":"bad","text":"Wie geht es dir?","meaning":"How are you?"},{"strategy":"bad","purpose":"bad","text":"Schön, dich zu sehen.","meaning":"Nice to see you."}]}"#;
+            env::set_var(
+                "OPENGPU_LLAMA_SERVER_URL",
+                start_mock_speakai_server(vec!["{broken", valid]),
+            );
+
+            let response = execute_without_cluster(&speakai_request(Some("qwen")));
+
+            match previous_model_dir {
+                Some(value) => env::set_var("OPENGPU_MODEL_DIR", value),
+                None => env::remove_var("OPENGPU_MODEL_DIR"),
+            }
+            assert_eq!(response.status, "completed");
+            assert!(response.output.contains("structured_output=validated"));
+            assert!(response.output.contains("generation_attempts=2"));
+            assert!(response.output.contains("\"strategy\":\"direct\""));
+            assert!(!response.output.contains("\"strategy\":\"bad\""));
+        });
+    }
+
+    #[test]
+    fn speakai_never_completes_after_all_internal_attempts_fail() {
+        with_temp_runtime_home(|home| {
+            let model_dir = home.join("models");
+            let model_cache = model_dir.join("qwen");
+            fs::create_dir_all(&model_cache).expect("model dir");
+            fs::write(model_cache.join("model.gguf"), b"model").expect("model file");
+            let previous_model_dir = env::var_os("OPENGPU_MODEL_DIR");
+            env::set_var("OPENGPU_MODEL_DIR", &model_dir);
+            env::set_var(
+                "OPENGPU_LLAMA_SERVER_URL",
+                start_mock_speakai_server(vec!["{broken", "not json", "{}"]),
+            );
+
+            let response = execute_without_cluster(&speakai_request(Some("qwen")));
+
+            match previous_model_dir {
+                Some(value) => env::set_var("OPENGPU_MODEL_DIR", value),
+                None => env::remove_var("OPENGPU_MODEL_DIR"),
+            }
+            assert_eq!(response.status, "failed");
+            assert!(response.output.is_empty());
+            assert!(response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("after 3 attempts")));
+        });
+    }
+
+    #[test]
+    fn speakai_prefers_an_installed_structured_output_model() {
+        let model_dir = env::temp_dir().join(format!(
+            "speakai-model-preference-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let manifest_dir = model_dir.join(".opengpu");
+        fs::create_dir_all(&manifest_dir).expect("manifest dir");
+        for (name, active, structured) in [
+            ("HuggingFaceTB/SmolLM2-135M-Instruct", true, false),
+            ("Qwen/Qwen2.5-3B-Instruct", false, true),
+        ] {
+            let cache = model_dir.join(sanitize_model_name(name));
+            fs::create_dir_all(&cache).expect("cache dir");
+            fs::write(cache.join("model.gguf"), b"model").expect("model");
+            fs::write(
+                manifest_dir.join(format!("{}.json", sanitize_model_name(name))),
+                serde_json::json!({
+                    "name": name,
+                    "active": active,
+                    "file_name": "model.gguf",
+                    "supports_structured_output": structured,
+                    "specialties": if structured { vec!["speakai"] } else { Vec::<&str>::new() }
+                })
+                .to_string(),
+            )
+            .expect("manifest");
+        }
+
+        assert_eq!(
+            preferred_speakai_model_name(&model_dir, None, true).as_deref(),
+            Some("Qwen/Qwen2.5-3B-Instruct")
+        );
+        let _ = fs::remove_dir_all(model_dir);
     }
 
     #[test]

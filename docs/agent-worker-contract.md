@@ -140,3 +140,31 @@ Heartbeats also carry `worker_health.capabilities`, which is the first-class sch
 - `skill_tags`: normalized matching tags such as `backend:cuda` and `runtime:cuda`
 
 The scheduler should treat the top-level `capabilities.ready_for_jobs` as the eligibility gate, then use `worker_health.capabilities.roles`, budgets, and tags to select the right node group for a job.
+
+## SpeakAI structured completion gate
+
+The node worker recognizes SpeakAI jobs from the canonical SpeakAI system-prompt
+prefix. These jobs use a stricter completion pipeline than ordinary chat:
+
+- OpenAI-compatible llama-server, vLLM, and contributed-cluster requests include a
+  strict `json_schema` response format. Direct llama.cpp CLI execution uses an
+  equivalent JSON grammar. Runtimes without grammar support still pass through the
+  same validator.
+- The worker parses and validates the generated object before reporting a completed
+  job. Malformed JSON, missing required content, unsupported speech acts, and reply
+  counts other than three are never returned as completed Chat output.
+- Validation failures receive at most two internal retries (three total attempts).
+  Retry prompts include the validation reason, use a deterministic zero temperature,
+  and increment the request seed.
+- Successful output is serialized as one compact JSON object. Field whitespace and
+  speech-act casing are normalized; unknown fields are removed; non-question
+  `questionType` values are removed; missing/unsupported question types normalize to
+  `other`; and reply `strategy`/`purpose` values are derived from the canonical
+  speech-act contract. Reply `text` and English `meaning` must remain non-empty.
+- When a client did not request a model explicitly, SpeakAI prefers an installed model
+  advertising `speakai`/`structured_output` capability. Reviewed Qwen, Phi-4, and
+  Gemma manifests are treated as structured-output-capable fallbacks. Explicit model
+  requests are never silently replaced.
+
+The control-plane validator and retry remain defense in depth. Production promotion
+or deployment is outside this worker contract and requires separate approval.
