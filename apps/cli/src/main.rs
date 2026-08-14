@@ -3921,7 +3921,10 @@ fn prefetch_mlx_catalog_model(config: &Config, model: &str) -> Result<(), String
 }
 
 fn vllm_runtime_config_value(key: &str) -> Option<String> {
-    let path = config_dir().join("runtimes").join("vllm").join("runtime.conf");
+    let path = config_dir()
+        .join("runtimes")
+        .join("vllm")
+        .join("runtime.conf");
     let contents = std::fs::read_to_string(path).ok()?;
     contents.lines().find_map(|line| {
         let (candidate, value) = line.split_once('=')?;
@@ -3946,7 +3949,9 @@ fn prefetch_vllm_catalog_model(config: &Config, model: &str) -> Result<(), Strin
         return Err("vLLM model downloads are supported only on Linux".to_string());
     }
     if !is_hugging_face_model_id(model) {
-        return Err(format!("model `{model}` is not a Hugging Face repository ID"));
+        return Err(format!(
+            "model `{model}` is not a Hugging Face repository ID"
+        ));
     }
 
     let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
@@ -3992,9 +3997,7 @@ fn prefetch_vllm_catalog_model(config: &Config, model: &str) -> Result<(), Strin
     if env::var_os("HF_TOKEN").is_some() {
         command.args(["-e", "HF_TOKEN"]);
     }
-    command
-        .arg(image)
-        .args(["python3", "-c", script, model]);
+    command.arg(image).args(["python3", "-c", script, model]);
     run_streaming_command(command, "prefetch vLLM model")?;
     println!("modelPrefetch: ready");
     Ok(())
@@ -5619,6 +5622,229 @@ fn run_install(
     }
 }
 
+/// What a re-probe found about the cluster this node already contributes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ContributedClusterCheck {
+    /// No cluster is recorded, so there is nothing to verify.
+    NotContributed,
+    /// Still answering with the model this node advertises.
+    Unchanged,
+    /// Answering, but the advertised model is gone. Carries what it serves now.
+    ModelChanged {
+        recorded: String,
+        detected: Box<DetectedCluster>,
+    },
+    /// The endpoint did not answer at all.
+    Unreachable { base_url: String },
+}
+
+/// Re-probes the recorded cluster so `opengpu start` never begins with a node
+/// pointed at a model that is no longer there.
+///
+/// Pure given the probe result, so the decision can be tested without a socket.
+fn classify_contributed_cluster(
+    recorded: Option<&ContributedCluster>,
+    probe: Option<DetectedCluster>,
+) -> ContributedClusterCheck {
+    let Some(recorded) = recorded else {
+        return ContributedClusterCheck::NotContributed;
+    };
+    let Some(detected) = probe else {
+        return ContributedClusterCheck::Unreachable {
+            base_url: recorded.base_url.clone(),
+        };
+    };
+
+    let advertised = recorded
+        .model
+        .clone()
+        .or_else(|| recorded.models.first().cloned())
+        .unwrap_or_default();
+    if detected.models.iter().any(|model| model.name == advertised) {
+        return ContributedClusterCheck::Unchanged;
+    }
+
+    ContributedClusterCheck::ModelChanged {
+        recorded: advertised,
+        detected: Box::new(detected),
+    }
+}
+
+/// Verifies the recorded cluster and, when something changed, says so and asks
+/// what to do. Returns false when the node should not start contributing.
+fn verify_contributed_cluster(config: &mut Config) -> bool {
+    let Some(recorded) = config.contributed_cluster.clone() else {
+        return true;
+    };
+
+    let probe = cluster::probe_cluster(&recorded.base_url);
+    let check = classify_contributed_cluster(Some(&recorded), probe);
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+
+    match check {
+        ContributedClusterCheck::NotContributed | ContributedClusterCheck::Unchanged => {
+            // The served context can move without the model changing, so keep
+            // the advertised value honest rather than trusting the snapshot.
+            if let Some(detected) = cluster::probe_cluster(&recorded.base_url) {
+                refresh_contributed_cluster_context(config, &detected);
+            }
+            true
+        }
+        ContributedClusterCheck::ModelChanged {
+            recorded: was,
+            detected,
+        } => {
+            let now = detected.primary_model().unwrap_or("nothing").to_string();
+            println!(
+                "clusterChanged: {} no longer serves `{was}`",
+                recorded.base_url
+            );
+            println!("clusterNowServing: {} ({})", now, detected.kind.label());
+            if !interactive {
+                println!(
+                    "clusterHint: run `opengpu cluster use {}` to serve `{now}`, or `opengpu cluster forget` to stop",
+                    recorded.base_url
+                );
+                return false;
+            }
+            prompt_contributed_cluster_change(config, &detected, &was)
+        }
+        ContributedClusterCheck::Unreachable { base_url } => {
+            println!("clusterUnreachable: {base_url} is not answering");
+            if !interactive {
+                println!(
+                    "clusterHint: start it again, or run `opengpu cluster forget` to stop contributing it"
+                );
+                return false;
+            }
+            prompt_contributed_cluster_unreachable(config, &base_url)
+        }
+    }
+}
+
+fn refresh_contributed_cluster_context(config: &mut Config, detected: &DetectedCluster) {
+    let Some(cluster) = config.contributed_cluster.as_mut() else {
+        return;
+    };
+    let served = detected.served_context_tokens.or_else(|| {
+        detected
+            .models
+            .iter()
+            .find(|model| Some(model.name.as_str()) == cluster.model.as_deref())
+            .and_then(|model| model.context_tokens)
+    });
+    if served.is_some() && served != cluster.model_context_tokens {
+        println!(
+            "clusterContext: served window is now {} tokens",
+            served.unwrap_or_default()
+        );
+        cluster.model_context_tokens = served;
+    }
+}
+
+/// The cluster answered but serves something else now.
+fn prompt_contributed_cluster_change(
+    config: &mut Config,
+    detected: &DetectedCluster,
+    was: &str,
+) -> bool {
+    let now = detected.primary_model().unwrap_or("nothing").to_string();
+    let header = vec![
+        format!("The contributed cluster changed at {}", detected.base_url),
+        format!("  recorded: {was}"),
+        format!("  serving:  {} ({})", now, detected.kind.label()),
+        "-----------------------------------------".to_string(),
+    ];
+    let options = vec![
+        (
+            format!("Yes, serve {now}"),
+            "update this node to the model the cluster runs now".to_string(),
+        ),
+        (
+            "No, stop contributing this cluster".to_string(),
+            "forget it and pick a MundusX model instead".to_string(),
+        ),
+        (
+            "No, leave it as it is".to_string(),
+            "start anyway; jobs for the old model will be refused".to_string(),
+        ),
+    ];
+
+    match select_menu_option(&header, &options, "Use ↑/↓ or Tab/Shift+Tab and Enter", 0) {
+        Some(0) => {
+            contribute_detected_cluster(config, detected);
+            true
+        }
+        Some(1) => {
+            config.contributed_cluster = None;
+            config.cluster_prompt_declined = false;
+            println!("clusterForgotten: {}", detected.base_url);
+            true
+        }
+        // Enter on "leave it", or Esc, changes nothing.
+        _ => true,
+    }
+}
+
+/// The cluster did not answer at all.
+fn prompt_contributed_cluster_unreachable(config: &mut Config, base_url: &str) -> bool {
+    let others: Vec<DetectedCluster> = cluster::detect_running_clusters()
+        .into_iter()
+        .filter(|entry| entry.base_url != base_url && entry.is_servable())
+        .collect();
+    let ranked = cluster::servable_clusters_by_size(&others);
+
+    let header = vec![
+        format!("The contributed cluster at {base_url} is not answering."),
+        "-----------------------------------------".to_string(),
+    ];
+    let mut options = vec![(
+        "Keep it and start anyway".to_string(),
+        "the node stays unready until the cluster returns".to_string(),
+    )];
+    if !ranked.is_empty() {
+        options.push((
+            format!("Pick a different cluster ({} running)", ranked.len()),
+            "contribute one of the other endpoints instead".to_string(),
+        ));
+    }
+    options.push((
+        "Stop contributing it".to_string(),
+        "forget it and pick a MundusX model instead".to_string(),
+    ));
+
+    let pick_index = if ranked.is_empty() { usize::MAX } else { 1 };
+    let forget_index = options.len() - 1;
+
+    match select_menu_option(&header, &options, "Use ↑/↓ or Tab/Shift+Tab and Enter", 0) {
+        Some(index) if index == pick_index => match prompt_cluster_pick(&ranked) {
+            ClusterPickOutcome::Picked(chosen) => {
+                contribute_detected_cluster(config, ranked[chosen]);
+                true
+            }
+            ClusterPickOutcome::Declined => {
+                config.contributed_cluster = None;
+                config.cluster_prompt_declined = true;
+                println!("clusterForgotten: {base_url}");
+                true
+            }
+            ClusterPickOutcome::Skipped => true,
+        },
+        Some(index) if index == forget_index => {
+            config.contributed_cluster = None;
+            config.cluster_prompt_declined = false;
+            println!("clusterForgotten: {base_url}");
+            println!("clusterHint: `opengpu start` will now ask for a MundusX model");
+            true
+        }
+        // "Keep it and start anyway", or Esc.
+        _ => {
+            println!("clusterKept: {base_url}; the node will stay unready until it answers");
+            true
+        }
+    }
+}
+
 fn run_start_or_connect(
     mode: AgentLaunchMode,
     cluster_choice: Option<bool>,
@@ -5658,6 +5884,13 @@ fn run_start_or_connect(
             }
         }
     }
+    // A recorded cluster can disappear or swap models between runs, so check it
+    // before this node advertises anything about it.
+    if !verify_contributed_cluster(&mut config) {
+        let _ = save_config(&config);
+        std::process::exit(1);
+    }
+
     maybe_contribute_running_cluster(
         &mut config,
         cluster_choice,
@@ -6478,17 +6711,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_graph_node_name, build_job_submission_payload, cluster, cluster_choice_flag,
-        contributed_cluster_from, control_plane_endpoint, cuda_doctor_payload, doctor_payload,
-        effective_active_model, graph_progress_counts, handles_terminal_key,
-        is_hugging_face_model_id, job_degradation_message, job_is_terminal, job_status_path,
-        job_wait_progress_signature, local_readiness, logs_payload, normalize_control_plane_url,
-        parse_worker_output, remote_job_output, resolve_install_control_plane_url,
-        runtime_metrics_from_output, runtime_metrics_from_payload,
-        should_prefetch_vllm_catalog_model, should_prompt_model_selection,
-        start_preflight_blockers, terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands,
-        Commands, ContributedCluster, ExecutionMode, JobsCommands, PowerState,
-        PUBLIC_CONTROL_PLANE_URL,
+        active_graph_node_name, build_job_submission_payload, classify_contributed_cluster,
+        cluster, cluster_choice_flag, contributed_cluster_from, control_plane_endpoint,
+        cuda_doctor_payload, doctor_payload, effective_active_model, graph_progress_counts,
+        handles_terminal_key, is_hugging_face_model_id, job_degradation_message, job_is_terminal,
+        job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
+        normalize_control_plane_url, parse_worker_output, remote_job_output,
+        resolve_install_control_plane_url, runtime_metrics_from_output,
+        runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
+        should_prompt_model_selection, start_preflight_blockers, terminal_line_endings,
+        vllm_doctor_payload, Cli, ClusterCommands, Commands, ContributedCluster,
+        ContributedClusterCheck, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -6793,6 +7026,89 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    fn recorded_cluster(model: &str) -> ContributedCluster {
+        ContributedCluster {
+            kind: "llama.cpp".to_string(),
+            base_url: "http://127.0.0.1:8000".to_string(),
+            models: vec![model.to_string()],
+            model: Some(model.to_string()),
+            model_params: None,
+            model_bytes: None,
+            model_capabilities: Vec::new(),
+            model_context_tokens: Some(1536),
+            adopted_at: None,
+        }
+    }
+
+    fn probed(models: &[&str]) -> cluster::DetectedCluster {
+        cluster::DetectedCluster {
+            kind: cluster::ClusterKind::Vllm,
+            base_url: "http://127.0.0.1:8000".to_string(),
+            models: models
+                .iter()
+                .map(|name| cluster::ModelInfo::new(*name, None, None))
+                .collect(),
+            served_context_tokens: None,
+        }
+    }
+
+    #[test]
+    fn a_cluster_still_serving_its_model_needs_no_prompt() {
+        let recorded = recorded_cluster("UD-IQ2_M");
+
+        assert_eq!(
+            classify_contributed_cluster(Some(&recorded), Some(probed(&["UD-IQ2_M"]))),
+            ContributedClusterCheck::Unchanged
+        );
+    }
+
+    #[test]
+    fn a_swapped_model_is_detected_so_start_can_ask() {
+        // The endpoint answers, but it runs something else now.
+        let recorded = recorded_cluster("UD-IQ2_M");
+        let probe = probed(&["Qwen/Qwen3-Coder-Next-FP8"]);
+
+        match classify_contributed_cluster(Some(&recorded), Some(probe)) {
+            ContributedClusterCheck::ModelChanged { recorded, detected } => {
+                assert_eq!(recorded, "UD-IQ2_M");
+                assert_eq!(detected.primary_model(), Some("Qwen/Qwen3-Coder-Next-FP8"));
+            }
+            other => panic!("expected a model change, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_silent_endpoint_is_reported_as_unreachable() {
+        let recorded = recorded_cluster("UD-IQ2_M");
+
+        assert_eq!(
+            classify_contributed_cluster(Some(&recorded), None),
+            ContributedClusterCheck::Unreachable {
+                base_url: "http://127.0.0.1:8000".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_node_with_no_contributed_cluster_is_left_alone() {
+        assert_eq!(
+            classify_contributed_cluster(None, None),
+            ContributedClusterCheck::NotContributed
+        );
+    }
+
+    #[test]
+    fn a_cluster_serving_several_models_keeps_the_recorded_one() {
+        // The advertised model is still there alongside others: no change.
+        let recorded = recorded_cluster("hermes3:8b");
+        let probe = probed(&["hermes3:70b", "hermes3:8b"]);
+
+        assert_eq!(
+            classify_contributed_cluster(Some(&recorded), Some(probe)),
+            ContributedClusterCheck::Unchanged
+        );
     }
 
     #[test]
