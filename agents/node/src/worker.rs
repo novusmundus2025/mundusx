@@ -967,6 +967,13 @@ fn configured_llama_server_url() -> Option<String> {
         .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
 }
 
+fn configured_mlx_server_url() -> Option<String> {
+    env::var("OPENGPU_MLX_SERVER_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+}
+
 fn vllm_runtime_config_path() -> PathBuf {
     opengpu_home_dir()
         .join("runtimes")
@@ -1012,6 +1019,14 @@ fn llama_server_health_ok(url: &str) -> bool {
         .timeout(Duration::from_secs(2))
         .call()
         .map(|response| response.status() < 500)
+        .unwrap_or(false)
+}
+
+fn mlx_server_health_ok(url: &str) -> bool {
+    ureq::get(&format!("{url}/v1/models"))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .map(|response| response.status() < 400)
         .unwrap_or(false)
 }
 
@@ -1426,6 +1441,90 @@ pub fn start_persistent_runtime(
     }
     if backend == Backend::Vllm {
         return start_vllm_runtime(model_dir, model_name);
+    }
+    if backend == Backend::M {
+        let Some(model_name) = model_name.map(str::trim).filter(|name| !name.is_empty()) else {
+            return Ok(None);
+        };
+        if let Ok(python) = probe_mlx_available() {
+            let port = env::var("OPENGPU_MLX_SERVER_PORT")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|port| *port > 0)
+                .unwrap_or(8790);
+            let url = format!("http://127.0.0.1:{port}");
+            if mlx_server_health_ok(&url) {
+                env::set_var("OPENGPU_MLX_SERVER_URL", &url);
+                return Ok(None);
+            }
+
+            let log_path = opengpu_home_dir()
+                .join("runtimes")
+                .join("mlx")
+                .join("server.log");
+            if let Some(parent) = log_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("failed to create MLX runtime directory: {error}"))?;
+            }
+            let log = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map_err(|error| format!("failed to open MLX runtime log: {error}"))?;
+            let stdout = log
+                .try_clone()
+                .map_err(|error| format!("failed to clone MLX runtime log handle: {error}"))?;
+            let mut child = Command::new(python)
+                .args([
+                    "-m",
+                    "mlx_lm.server",
+                    "--model",
+                    model_name,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    &port.to_string(),
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(log))
+                .spawn()
+                .map_err(|error| format!("failed to launch persistent MLX runtime: {error}"))?;
+            let timeout_seconds = env::var("OPENGPU_MLX_START_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|seconds| *seconds > 0)
+                .unwrap_or(300);
+            let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+            while Instant::now() < deadline {
+                if let Some(status) = child
+                    .try_wait()
+                    .map_err(|error| format!("failed to poll persistent MLX runtime: {error}"))?
+                {
+                    return Err(format!(
+                        "persistent MLX runtime exited during startup with {}; see {}",
+                        status.code().unwrap_or(-1),
+                        log_path.display()
+                    ));
+                }
+                if mlx_server_health_ok(&url) {
+                    return Ok(Some(PersistentRuntimeHandle::new(
+                        child,
+                        url,
+                        "OPENGPU_MLX_SERVER_URL",
+                        None,
+                    )));
+                }
+                thread::sleep(Duration::from_millis(500));
+            }
+
+            kill_process_tree(child.id());
+            let _ = child.wait();
+            return Err(format!(
+                "persistent MLX runtime did not become healthy within {timeout_seconds}s; see {}",
+                log_path.display()
+            ));
+        }
     }
 
     let Some(model_path) = resolve_model_path(model_dir, model_name).ok() else {
@@ -1881,10 +1980,10 @@ fn run_vllm_completion(
     let response = ureq::post(&format!("{url}/v1/chat/completions"))
         .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
         .send_json(payload)
-        .map_err(|error| format!("vLLM completion failed: {error}"))?;
+        .map_err(|error| format!("OpenAI-compatible completion failed: {error}"))?;
     let value = response
         .into_json::<serde_json::Value>()
-        .map_err(|error| format!("vLLM returned invalid json: {error}"))?;
+        .map_err(|error| format!("OpenAI-compatible runtime returned invalid json: {error}"))?;
     let finish_reason = value
         .pointer("/choices/0/finish_reason")
         .and_then(|value| value.as_str())
@@ -2186,18 +2285,33 @@ pub fn probe_worker_health(
     let mut llama_cli_available = false;
     let mut llama_server_available = false;
     let mut mlx_available = false;
-    let persistent_runtime_url = configured_llama_server_url();
-    let persistent_runtime_warm = persistent_runtime_url
+    let mlx_runtime_url = (backend == Backend::M)
+        .then(configured_mlx_server_url)
+        .flatten();
+    let llama_runtime_url = configured_llama_server_url();
+    let persistent_runtime_url = if backend == Backend::M {
+        mlx_runtime_url
+            .clone()
+            .or_else(|| llama_runtime_url.clone())
+    } else {
+        llama_runtime_url.clone()
+    };
+    let persistent_mlx_warm = mlx_runtime_url
+        .as_deref()
+        .map(mlx_server_health_ok)
+        .unwrap_or(false);
+    let persistent_llama_warm = llama_runtime_url
         .as_deref()
         .map(llama_server_health_ok)
         .unwrap_or(false);
+    let persistent_runtime_warm = persistent_mlx_warm || persistent_llama_warm;
     let mut blas_device_available = false;
     let power_state = probe_power_state();
     let cuda = probe_cuda_diagnostics();
     let vllm_url = configured_vllm_url();
     let vllm_ready = vllm_url.as_deref().map(vllm_health_ok).unwrap_or(false);
 
-    if backend != Backend::Vllm {
+    if !matches!(backend, Backend::Vllm | Backend::M) {
         match resolve_model_path(model_dir, model_name) {
             Ok(path) => model_path = Some(path.display().to_string()),
             Err(error) => notes.push(format!("model cache missing: {error}")),
@@ -2252,20 +2366,36 @@ pub fn probe_worker_health(
             }
             Err(error) => notes.push(format!("MLX runtime unavailable: {error}")),
         }
-    }
-    match probe_llama_server_executable() {
-        Ok(_) => {
-            llama_server_available = true;
-            if persistent_runtime_warm {
-                notes.push("persistent llama-server runtime is warm".to_string());
+        if let Some(url) = mlx_runtime_url.as_deref() {
+            if persistent_mlx_warm {
+                notes.push(format!("persistent MLX runtime is warm at {url}"));
             } else {
-                notes.push(
-                    "persistent llama-server runtime is available but not currently warm"
-                        .to_string(),
-                );
+                notes.push(format!(
+                    "persistent MLX runtime is configured but unhealthy at {url}"
+                ));
             }
+        } else if mlx_available {
+            notes.push("persistent MLX runtime is available but not currently warm".to_string());
         }
-        Err(error) => notes.push(format!("persistent runtime unavailable: {error}")),
+        if persistent_llama_warm {
+            notes.push("persistent llama-server fallback runtime is warm".to_string());
+        }
+    }
+    if backend != Backend::M || (!mlx_available && !persistent_mlx_warm) || persistent_llama_warm {
+        match probe_llama_server_executable() {
+            Ok(_) => {
+                llama_server_available = true;
+                if persistent_llama_warm {
+                    notes.push("persistent llama-server runtime is warm".to_string());
+                } else {
+                    notes.push(
+                        "persistent llama-server runtime is available but not currently warm"
+                            .to_string(),
+                    );
+                }
+            }
+            Err(error) => notes.push(format!("persistent runtime unavailable: {error}")),
+        }
     }
 
     if backend == Backend::Cuda {
@@ -2287,8 +2417,8 @@ pub fn probe_worker_health(
         model_path.is_some() && llama_cli_available
     } else if backend == Backend::Vllm {
         cfg!(target_os = "linux") && model_name.is_some() && vllm_ready
-    } else if backend == Backend::M && mlx_available {
-        model_name.is_some() || model_path.is_some()
+    } else if backend == Backend::M {
+        model_name.is_some() && (mlx_available || persistent_runtime_warm)
     } else if backend == Backend::Auto {
         model_path.is_some() && local_runtime_available
     } else {
@@ -2301,7 +2431,7 @@ pub fn probe_worker_health(
         Backend::Cuda => "cuda",
         Backend::Vulkan => "vulkan",
         Backend::Vllm => "vllm",
-        Backend::M if mlx_available => "mlx",
+        Backend::M if mlx_available || persistent_mlx_warm => "mlx",
         _ => "blas",
     };
     let runtime_mode = runtime_mode.to_string();
@@ -2336,12 +2466,26 @@ pub fn probe_worker_health(
         persistent_runtime_url,
         runtime_kind,
         runtime_preference: if backend == Backend::M {
-            Some(if mlx_available { "mlx" } else { "llama-metal" }.to_string())
+            Some(
+                if mlx_available || persistent_mlx_warm {
+                    "mlx"
+                } else {
+                    "llama-metal"
+                }
+                .to_string(),
+            )
         } else {
             None
         },
         fallback_runtime: if backend == Backend::M {
-            Some(if mlx_available { "llama-metal" } else { "mlx" }.to_string())
+            Some(
+                if mlx_available || persistent_mlx_warm {
+                    "llama-metal"
+                } else {
+                    "mlx"
+                }
+                .to_string(),
+            )
         } else {
             None
         },
@@ -2603,12 +2747,38 @@ fn run_llama_request(
             } else {
                 format!("System:\n{system_prompt}\n\nUser:\n{}", request.prompt)
             };
-            match run_mlx_command(
-                &model_name,
-                &prompt,
-                max_tokens,
-                if attempt == 0 { temperature } else { 0.0 },
-            ) {
+            let attempt_temperature = if attempt == 0 { temperature } else { 0.0 };
+            let attempt_seed = seed.saturating_add(attempt as u64);
+            let warm_result = configured_mlx_server_url()
+                .as_deref()
+                .filter(|url| mlx_server_health_ok(url))
+                .map(|url| {
+                    run_openai_compatible_completion(
+                        url,
+                        &model_name,
+                        &system_prompt,
+                        &request.prompt,
+                        max_tokens,
+                        attempt_temperature,
+                        top_p,
+                        attempt_seed,
+                        speakai,
+                    )
+                    .map(|generated| {
+                        (
+                            generated,
+                            "persistent-warm-mlx".to_string(),
+                            RuntimeMetrics::default(),
+                        )
+                    })
+                });
+            let generated = match warm_result {
+                Some(Ok(result)) => Ok(result),
+                Some(Err(_)) | None => {
+                    run_mlx_command(&model_name, &prompt, max_tokens, attempt_temperature)
+                }
+            };
+            match generated {
                 Ok((generated, runtime_mode, metrics)) => {
                     mlx_started = true;
                     match normalize_generated_output(request, &generated) {
@@ -3314,6 +3484,7 @@ mod tests {
         let previous_home = env::var_os("OPENGPU_HOME");
         let previous_paths = env::var_os("OPENGPU_TRUSTED_RUNTIME_PATHS");
         let previous_server_url = env::var_os("OPENGPU_LLAMA_SERVER_URL");
+        let previous_mlx_url = env::var_os("OPENGPU_MLX_SERVER_URL");
         let previous_vllm_url = env::var_os("OPENGPU_VLLM_URL");
         env::set_var("OPENGPU_HOME", &temp_dir);
         env::set_var(
@@ -3321,6 +3492,7 @@ mod tests {
             temp_dir.join("trusted-runtime-paths.json"),
         );
         env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+        env::remove_var("OPENGPU_MLX_SERVER_URL");
         env::remove_var("OPENGPU_VLLM_URL");
 
         test(&temp_dir);
@@ -3336,6 +3508,10 @@ mod tests {
         match previous_server_url {
             Some(value) => env::set_var("OPENGPU_LLAMA_SERVER_URL", value),
             None => env::remove_var("OPENGPU_LLAMA_SERVER_URL"),
+        }
+        match previous_mlx_url {
+            Some(value) => env::set_var("OPENGPU_MLX_SERVER_URL", value),
+            None => env::remove_var("OPENGPU_MLX_SERVER_URL"),
         }
         match previous_vllm_url {
             Some(value) => env::set_var("OPENGPU_VLLM_URL", value),
@@ -3395,7 +3571,9 @@ mod tests {
                     }
                 }
                 let request = String::from_utf8_lossy(&request_bytes);
-                let body = if request.starts_with("GET /health") {
+                let body = if request.starts_with("GET /health")
+                    || request.starts_with("GET /v1/models")
+                {
                     "{}".to_string()
                 } else {
                     assert!(
@@ -3472,7 +3650,9 @@ mod tests {
                 }
 
                 let request = String::from_utf8_lossy(&request_bytes);
-                let body = if request.starts_with("GET /health") {
+                let body = if request.starts_with("GET /health")
+                    || request.starts_with("GET /v1/models")
+                {
                     "{}".to_string()
                 } else {
                     assert!(request.starts_with("POST /v1/chat/completions"));
@@ -3579,17 +3759,23 @@ mod tests {
             env::set_var("OPENGPU_MODEL_DIR", &model_dir);
             let valid = r#"{"speechAct":"greeting","topic":"hello","summary":"A greeting","replies":[{"strategy":"bad","purpose":"bad","text":"Hallo!","meaning":"Hello!"},{"strategy":"bad","purpose":"bad","text":"Wie geht es dir?","meaning":"How are you?"},{"strategy":"bad","purpose":"bad","text":"Schön, dich zu sehen.","meaning":"Nice to see you."}]}"#;
             env::set_var(
-                "OPENGPU_LLAMA_SERVER_URL",
+                "OPENGPU_MLX_SERVER_URL",
                 start_mock_speakai_server(vec!["{broken", valid]),
             );
 
-            let response = execute_without_cluster(&speakai_request(Some("qwen")));
+            let response = execute_without_cluster(&speakai_request(Some(
+                "mlx-community/Qwen2.5-3B-Instruct-4bit",
+            )));
 
             match previous_model_dir {
                 Some(value) => env::set_var("OPENGPU_MODEL_DIR", value),
                 None => env::remove_var("OPENGPU_MODEL_DIR"),
             }
             assert_eq!(response.status, "completed");
+            assert_eq!(
+                response.runtime_mode.as_deref(),
+                Some("persistent-warm-mlx")
+            );
             assert!(response.output.contains("structured_output=validated"));
             assert!(response.output.contains("generation_attempts=2"));
             assert!(response.output.contains("\"strategy\":\"direct\""));
@@ -4244,7 +4430,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_persistent_runtime_advertises_local_support_without_llama_cli() {
+    fn warm_llama_fallback_advertises_m_node_support_without_llama_cli() {
         with_temp_runtime_home(|home| {
             let model_dir = home.join("models");
             let model_cache = model_dir.join("qwen");
@@ -4274,6 +4460,63 @@ mod tests {
             assert!(health.persistent_runtime_warm);
             assert_eq!(health.runtime_kind, "persistent-warm");
             assert_eq!(health.supported_runtime_modes, vec!["local".to_string()]);
+        });
+    }
+
+    #[test]
+    fn warm_mlx_runtime_advertises_m_node_support() {
+        with_temp_runtime_home(|home| {
+            let url = start_mock_llama_server("ready", 1);
+            env::set_var("OPENGPU_MLX_SERVER_URL", &url);
+
+            let health = probe_worker_health(
+                &home.join("models"),
+                Some("mlx-community/Qwen2.5-3B-Instruct-4bit"),
+                Backend::M,
+                None,
+            );
+
+            assert!(health.healthy);
+            assert!(health.persistent_runtime_warm);
+            assert_eq!(health.persistent_runtime_url.as_deref(), Some(url.as_str()));
+            assert_eq!(health.runtime_kind, "persistent-warm");
+            assert_eq!(health.runtime_mode, "mlx");
+            assert_eq!(health.runtime_preference.as_deref(), Some("mlx"));
+            assert_eq!(health.supported_runtime_modes, vec!["local".to_string()]);
+            assert!(health
+                .notes
+                .iter()
+                .any(|note| note.contains("persistent MLX runtime is warm")));
+        });
+    }
+
+    #[test]
+    fn m_worker_prefers_warm_mlx_server_without_spawning_batch_runtime() {
+        with_temp_runtime_home(|_| {
+            let url = start_mock_llama_server("hello from warm mlx", 2);
+            env::set_var("OPENGPU_MLX_SERVER_URL", url);
+
+            let response = execute_without_cluster(&WorkerLaunchRequest {
+                job_id: "job-mlx".to_string(),
+                node_id: "node-m".to_string(),
+                backend: Backend::M,
+                prompt: "hello".to_string(),
+                model: Some("mlx-community/Qwen2.5-3B-Instruct-4bit".to_string()),
+                mode: None,
+                system_prompt: Some("Answer directly.".to_string()),
+                max_tokens: Some(16),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                seed: Some(42),
+            });
+
+            assert_eq!(response.status, "completed");
+            assert_eq!(
+                response.runtime_mode.as_deref(),
+                Some("persistent-warm-mlx")
+            );
+            assert!(response.output.contains("response=hello from warm mlx"));
+            assert!(response.error.is_none());
         });
     }
 
