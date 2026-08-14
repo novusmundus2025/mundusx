@@ -1480,24 +1480,16 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    should_agent_run(config) && !uses_mlx_runtime(config)
+    should_agent_run(config)
 }
 
 fn should_agent_run(config: &AgentConfig) -> bool {
     config.connected && !config.paused
 }
 
-fn uses_mlx_runtime(config: &AgentConfig) -> bool {
-    resolved_backend(config) == Backend::M
-        && config
-            .runtime_preference
-            .as_deref()
-            .map(|runtime| runtime.eq_ignore_ascii_case("mlx"))
-            .unwrap_or(false)
-}
-
 fn clear_runtime_environment() {
     std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
+    std::env::remove_var("OPENGPU_MLX_SERVER_URL");
     std::env::remove_var("OPENGPU_VLLM_URL");
 }
 
@@ -2100,12 +2092,10 @@ mod tests {
 
         config.backend_preference = Backend::M;
         config.runtime_preference = Some("mlx".to_string());
-        assert!(uses_mlx_runtime(&config));
         assert!(should_agent_run(&config));
-        assert!(!should_keep_runtime_warm(&config));
+        assert!(should_keep_runtime_warm(&config));
 
         config.runtime_preference = Some("llama-metal".to_string());
-        assert!(!uses_mlx_runtime(&config));
         assert!(should_keep_runtime_warm(&config));
     }
 
