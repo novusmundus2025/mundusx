@@ -323,6 +323,9 @@ fn build_capabilities(
                 estimated_vram_mb: None,
                 compatibility: None,
                 compatibility_reason: None,
+                active: true,
+                warm: true,
+                ..contracts::ModelCapability::default()
             }),
         None => worker::active_model_capability(
             &config.effective_model_dir(),
@@ -341,6 +344,8 @@ fn build_capabilities(
                     estimated_vram_mb: None,
                     compatibility: None,
                     compatibility_reason: None,
+                    active: true,
+                    ..contracts::ModelCapability::default()
                 })
         }),
     };
@@ -373,7 +378,7 @@ fn build_capabilities(
     }
 
     NodeCapabilityAdvertisement {
-        schema_version: 2,
+        schema_version: 4,
         backend,
         contribution_percent: config.contribution_percent,
         physical_memory_mb: Some(physical_memory_mb),
@@ -395,15 +400,112 @@ fn build_capabilities(
     }
 }
 
-fn default_context_tokens_for_model(model: Option<&contracts::ModelCapability>) -> Option<u32> {
-    let name = model?.name.to_ascii_lowercase();
+fn default_context_tokens_for_model(model: &contracts::ModelCapability) -> u32 {
+    let name = model.name.to_ascii_lowercase();
     if name.contains("32b") || name.contains("14b") || name.contains("coder") {
-        Some(16_384)
+        16_384
     } else if name.contains("7b") || name.contains("8b") || name.contains("3b") {
-        Some(8_192)
+        8_192
     } else {
-        Some(4_096)
+        4_096
     }
+}
+
+fn model_capacity_class(model: &contracts::ModelCapability, node_capacity_class: &str) -> String {
+    let name = model.name.to_ascii_lowercase();
+    let inferred = if name.contains("70b") || name.contains("72b") || name.contains("405b") {
+        "synthesis"
+    } else if name.contains("30b") || name.contains("32b") || name.contains("34b") {
+        "heavy"
+    } else if name.contains("13b") || name.contains("14b") {
+        "performance"
+    } else if name.contains("7b") || name.contains("8b") {
+        "standard"
+    } else if name.contains("3b")
+        || name.contains("1b")
+        || name.contains("0.5b")
+        || name.contains("tiny")
+        || name.contains("mini")
+    {
+        "micro"
+    } else {
+        node_capacity_class
+    };
+    if capacity_rank(inferred) > capacity_rank(node_capacity_class) {
+        node_capacity_class.to_string()
+    } else {
+        inferred.to_string()
+    }
+}
+
+fn enrich_model_capability(
+    mut model: contracts::ModelCapability,
+    node_capacity_class: &str,
+    cluster_capabilities: &[String],
+    cluster_context_tokens: Option<u32>,
+) -> contracts::ModelCapability {
+    let name = model.name.to_ascii_lowercase();
+    model.capacity_class = model_capacity_class(&model, node_capacity_class);
+    model.context_tokens = cluster_context_tokens
+        .or(model.context_tokens)
+        .or(Some(default_context_tokens_for_model(&model)));
+    model.max_output_tokens = model.max_output_tokens.or_else(|| {
+        Some(match model.capacity_class.as_str() {
+            "synthesis" | "server" => 16_384,
+            "heavy" => 8_192,
+            "performance" => 4_096,
+            _ => 2_048,
+        })
+    });
+
+    let declared = |needle: &str| {
+        cluster_capabilities
+            .iter()
+            .chain(model.specialties.iter())
+            .any(|value| value.to_ascii_lowercase().contains(needle))
+    };
+    let rank = capacity_rank(&model.capacity_class);
+    let coding = name.contains("code") || name.contains("coder") || declared("code");
+    let mut tasks = vec!["chat".to_string(), "math".to_string()];
+    let mut roles = vec![NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis];
+    if rank >= capacity_rank("standard") {
+        tasks.push("reasoning".to_string());
+    }
+    if !name.contains("embed") || coding {
+        tasks.push("small_coding".to_string());
+        roles.push(NodeRole::Coding);
+    }
+    if rank >= capacity_rank("performance") {
+        tasks.extend(["medium_coding".to_string(), "research".to_string()]);
+        roles.push(NodeRole::Reducer);
+    }
+    if rank >= capacity_rank("heavy") {
+        tasks.extend(["large_coding".to_string(), "synthesizer".to_string()]);
+        roles.push(NodeRole::Synthesizer);
+    }
+    if declared("tool") {
+        tasks.push("tool_use".to_string());
+        roles.push(NodeRole::ToolUse);
+    }
+    if declared("vision") {
+        tasks.push("vision".to_string());
+        roles.push(NodeRole::Vision);
+    }
+    if declared("embed") || name.contains("embed") {
+        tasks.push("embedding".to_string());
+        roles.push(NodeRole::Embedding);
+    }
+    if model.supports_structured_output || declared("structured") || declared("json") {
+        tasks.push("structured_output".to_string());
+        model.supports_structured_output = true;
+    }
+    tasks.sort();
+    tasks.dedup();
+    roles.sort_by_key(|role| role.as_str());
+    roles.dedup();
+    model.task_capabilities = tasks;
+    model.roles = roles;
+    model
 }
 
 fn node_roles_for(
@@ -464,19 +566,61 @@ fn build_scheduler_capabilities(
 ) -> NodeCapabilityProfile {
     let backend = resolved_backend(config);
     let model = capabilities.active_model.clone();
-    let context_tokens = config
-        .contributed_cluster
-        .as_ref()
-        .and_then(|cluster| cluster.model_context_tokens)
-        .or_else(|| default_context_tokens_for_model(model.as_ref()));
-    let models = model.clone().into_iter().collect::<Vec<_>>();
+    let cluster = config.contributed_cluster.as_ref();
+    let cluster_capabilities = cluster
+        .map(|entry| entry.model_capabilities.as_slice())
+        .unwrap_or_default();
+    let mut models = if let Some(cluster) = cluster {
+        let mut names = cluster.models.clone();
+        if let Some(name) = cluster.model.clone() {
+            names.push(name);
+        }
+        names.sort();
+        names.dedup();
+        names
+            .into_iter()
+            .map(|name| contracts::ModelCapability {
+                active: cluster.model.as_deref() == Some(name.as_str()),
+                warm: health.persistent_runtime_warm
+                    && cluster.model.as_deref() == Some(name.as_str()),
+                name,
+                size_bytes: cluster.model_bytes,
+                ..contracts::ModelCapability::default()
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let usable_vram = capabilities.usable_vram_mb.map(u64::from);
+        let mut installed = worker::available_model_capabilities(&config.effective_model_dir())
+            .into_iter()
+            .filter(|entry| {
+                usable_vram.is_none_or(|budget| {
+                    entry
+                        .estimated_vram_mb
+                        .is_none_or(|required| required <= budget)
+                })
+            })
+            .collect::<Vec<_>>();
+        if installed.is_empty() {
+            installed.extend(model.clone());
+        }
+        installed
+    };
+    for entry in &mut models {
+        entry.warm |= entry.active && health.persistent_runtime_warm;
+        *entry = enrich_model_capability(
+            entry.clone(),
+            &capabilities.capacity_class,
+            cluster_capabilities,
+            cluster.and_then(|entry| entry.model_context_tokens),
+        );
+    }
+    let context_tokens = models.iter().filter_map(|entry| entry.context_tokens).max();
     let available_vram_mb = capabilities
         .usable_vram_mb
         .or(capabilities.physical_vram_mb)
         .or(health.cuda_memory_mb);
     let total_vram_mb = capabilities.physical_vram_mb.or(health.cuda_memory_mb);
     let current_load_percent = Some(100_u8.saturating_sub(available_gpu_percent.min(100) as u8));
-    let cluster = config.contributed_cluster.as_ref();
     // A contributed cluster node has no local active model, so the name-derived
     // flags must come from the model the cluster advertises.
     let active_model_name = model
@@ -500,7 +644,19 @@ fn build_scheduler_capabilities(
             .iter()
             .any(|value| value.contains(needle))
     };
-    let roles = node_roles_for(backend, health, capabilities, available_memory_mb);
+    let mut roles = if capabilities.ready_for_jobs {
+        models
+            .iter()
+            .flat_map(|entry| entry.roles.iter().copied())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    if roles.is_empty() && capabilities.ready_for_jobs {
+        roles = node_roles_for(backend, health, capabilities, available_memory_mb);
+    }
+    roles.sort_by_key(|role| role.as_str());
+    roles.dedup();
     let supports_tools = advertises("tool");
     let mut supported_tools = capabilities.supported_tools.clone();
     if supports_tools {
@@ -2327,7 +2483,7 @@ mod tests {
             Some("tiny-cuda")
         );
         assert!(capability.ready_for_jobs);
-        assert_eq!(capability.schema_version, 2);
+        assert_eq!(capability.schema_version, 4);
         assert!(capability.physical_memory_mb.is_some());
         assert!(capability.usable_memory_mb.is_some());
         assert!(capability.available_memory_mb.is_some());
@@ -2379,7 +2535,7 @@ mod tests {
         assert!(scheduler_capability
             .roles
             .contains(&NodeRole::ChunkAnalysis));
-        assert!(scheduler_capability.roles.contains(&NodeRole::Reducer));
+        assert!(!scheduler_capability.roles.contains(&NodeRole::Reducer));
         assert!(scheduler_capability.roles.contains(&NodeRole::Batch));
         assert_eq!(
             scheduler_capability.skill_tags,
@@ -2389,7 +2545,7 @@ mod tests {
     }
 
     #[test]
-    fn sixteen_gb_cuda_node_advertises_synthesis_role() {
+    fn sixteen_gb_cuda_node_does_not_overstate_a_small_models_roles() {
         let mut config = test_config();
         let temp = std::env::temp_dir().join(format!(
             "opengpu-synthesis-capability-test-{}",
@@ -2405,9 +2561,51 @@ mod tests {
         let scheduler_capability =
             build_scheduler_capabilities(&config, &health, &capability, 32_768, 100);
 
-        assert!(scheduler_capability.roles.contains(&NodeRole::Synthesizer));
-        assert!(scheduler_capability.roles.contains(&NodeRole::Reducer));
+        assert!(!scheduler_capability.roles.contains(&NodeRole::Synthesizer));
+        assert!(!scheduler_capability.roles.contains(&NodeRole::Reducer));
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn contributed_cluster_advertises_each_model_with_cumulative_capabilities() {
+        let mut config = cluster_config("qwen2.5:3b", Some(70_000_000_000), None);
+        if let Some(cluster) = config.contributed_cluster.as_mut() {
+            cluster.models = vec!["qwen2.5:3b".to_string(), "qwen2.5:70b".to_string()];
+            cluster.model = Some("qwen2.5:3b".to_string());
+            cluster.model_capabilities = vec!["tools".to_string()];
+        }
+        let health = cluster_health("qwen2.5:3b");
+        let capability = build_capabilities(&config, &health, true);
+
+        let profile = build_scheduler_capabilities(&config, &health, &capability, 8_192, 100);
+
+        assert_eq!(profile.models.len(), 2);
+        let small = profile
+            .models
+            .iter()
+            .find(|model| model.name == "qwen2.5:3b")
+            .unwrap();
+        let large = profile
+            .models
+            .iter()
+            .find(|model| model.name == "qwen2.5:70b")
+            .unwrap();
+        assert!(small.active);
+        assert!(small.warm);
+        assert!(small
+            .task_capabilities
+            .contains(&"small_coding".to_string()));
+        assert!(!small
+            .task_capabilities
+            .contains(&"large_coding".to_string()));
+        assert!(large
+            .task_capabilities
+            .contains(&"small_coding".to_string()));
+        assert!(large
+            .task_capabilities
+            .contains(&"large_coding".to_string()));
+        assert!(large.task_capabilities.contains(&"synthesizer".to_string()));
+        assert!(profile.roles.contains(&NodeRole::Synthesizer));
     }
 
     #[test]

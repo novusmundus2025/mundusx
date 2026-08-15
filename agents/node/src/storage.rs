@@ -306,7 +306,7 @@ mod tests {
                 notes: Vec::new(),
             },
             capabilities: NodeCapabilityAdvertisement {
-                schema_version: 2,
+                schema_version: 4,
                 backend: Backend::Auto,
                 contribution_percent: 20,
                 physical_memory_mb: Some(16_384),
@@ -328,6 +328,7 @@ mod tests {
                     estimated_vram_mb: None,
                     compatibility: Some("accepted".to_string()),
                     compatibility_reason: None,
+                    ..ModelCapability::default()
                 }),
                 ready_for_jobs: true,
                 readiness_reason: None,
