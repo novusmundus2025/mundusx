@@ -131,15 +131,15 @@ Registration and heartbeat payloads also carry a top-level `capabilities` object
 
 Heartbeats also carry `worker_health.capabilities`, which is the first-class scheduler profile used to group and rank nodes after readiness is known. It includes:
 
-- `models`: the active model metadata the node can serve now
-- `max_context_tokens`: conservative context budget inferred from the active model
+- `models`: every model the node can serve under the current contribution cap. Schema v4 records each model's `active`, `warm`, context/output limits, capacity class, roles, and task capabilities.
+- `max_context_tokens`: the largest conservative context budget across the servable inventory
 - `total_vram_mb` and `available_vram_mb`: physical and contribution-capped GPU budget when known
 - `max_parallel_jobs`: worker concurrency budget
 - `current_load_percent`: current load derived from available GPU percentage
 - `roles`: scheduler roles such as `chat`, `coding`, `batch`, `reducer`, `vision`, `embedding`, or `tool_use`
 - `skill_tags`: normalized matching tags such as `backend:cuda` and `runtime:cuda`
 
-The scheduler should treat the top-level `capabilities.ready_for_jobs` as the eligibility gate, then use `worker_health.capabilities.roles`, budgets, and tags to select the right node group for a job.
+The scheduler should treat the top-level `capabilities.ready_for_jobs` as the eligibility gate, then choose a node and a specific model together. Small eligible models receive a best-fit preference for small work; larger models retain cumulative capabilities and remain eligible when smaller capacity is busy or unavailable. A claimed job carries the selected model name, so the worker executes the model the scheduler evaluated. Legacy agents without a schema-v4 model inventory continue through the node-wide compatibility path.
 
 ## SpeakAI structured completion gate
 

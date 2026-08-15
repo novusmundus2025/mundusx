@@ -261,7 +261,7 @@ fn default_parallel_slots() -> u8 {
     1
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelCapability {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,6 +278,26 @@ pub struct ModelCapability {
     pub compatibility: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compatibility_reason: Option<String>,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
+    pub warm: bool,
+    #[serde(default)]
+    pub context_tokens: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub capacity_class: String,
+    #[serde(default)]
+    pub roles: Vec<NodeRole>,
+    #[serde(default)]
+    pub task_capabilities: Vec<String>,
+    #[serde(default)]
+    pub languages: Vec<String>,
+    #[serde(default)]
+    pub specialties: Vec<String>,
+    #[serde(default)]
+    pub supports_structured_output: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -351,7 +371,7 @@ pub struct NodeCapabilityProfile {
 impl Default for NodeCapabilityProfile {
     fn default() -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 4,
             models: Vec::new(),
             physical_memory_mb: None,
             usable_memory_mb: None,
@@ -409,7 +429,7 @@ pub struct NodeCapabilityAdvertisement {
 }
 
 fn default_capability_schema_version() -> u32 {
-    2
+    4
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

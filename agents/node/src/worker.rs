@@ -178,6 +178,8 @@ struct CachedModelRecord {
     #[serde(default)]
     specialties: Vec<String>,
     #[serde(default)]
+    languages: Vec<String>,
+    #[serde(default)]
     supports_structured_output: bool,
 }
 
@@ -748,22 +750,68 @@ pub fn active_model_capability(
     model_dir: &Path,
     model_name: Option<&str>,
 ) -> Option<ModelCapability> {
+    let entries = fs::read_dir(model_dir.join(".opengpu")).ok()?;
+    let mut fallback = None;
+    for entry in entries.flatten() {
+        let record = fs::read_to_string(entry.path())
+            .ok()
+            .and_then(|raw| serde_json::from_str::<CachedModelRecord>(&raw).ok())?;
+        let capability = ModelCapability {
+            name: record.name.clone(),
+            path: record.source_path.clone().or_else(|| {
+                cached_model_file_from_manifest(model_dir, &record)
+                    .map(|path| path.display().to_string())
+            }),
+            format: record.format.clone(),
+            quantization: record.quantization.clone(),
+            size_bytes: record.size_bytes,
+            estimated_vram_mb: record.estimated_vram_mb,
+            compatibility: record.compatibility.clone(),
+            compatibility_reason: record.compatibility_reason.clone(),
+            active: record.active,
+            languages: record.languages.clone(),
+            specialties: record.specialties.clone(),
+            supports_structured_output: record.supports_structured_output,
+            ..ModelCapability::default()
+        };
+        if model_name
+            .map(|name| record.name == name)
+            .unwrap_or(record.active)
+        {
+            return Some(capability);
+        }
+        if record.active {
+            fallback = Some(capability);
+        }
+    }
+    fallback
+}
+
+pub fn available_model_capabilities(model_dir: &Path) -> Vec<ModelCapability> {
     let manifest_dir = model_dir.join(".opengpu");
-    let entries = fs::read_dir(manifest_dir).ok()?;
-    let mut active_fallback = None;
+    let Some(entries) = fs::read_dir(manifest_dir).ok() else {
+        return Vec::new();
+    };
+    let mut capabilities = Vec::new();
 
     for entry in entries.flatten() {
-        if entry.file_type().ok()?.is_file()
+        if entry.file_type().is_ok_and(|kind| kind.is_file())
             && entry.path().extension().and_then(|value| value.to_str()) == Some("json")
         {
-            let raw = fs::read_to_string(entry.path()).ok()?;
-            let record = serde_json::from_str::<CachedModelRecord>(&raw).ok()?;
+            let Some(record) = fs::read_to_string(entry.path())
+                .ok()
+                .and_then(|raw| serde_json::from_str::<CachedModelRecord>(&raw).ok())
+            else {
+                continue;
+            };
             let resolved_path = record.source_path.clone().or_else(|| {
                 cached_model_file_from_manifest(model_dir, &record)
                     .map(|path| path.display().to_string())
             });
-
-            let capability = ModelCapability {
+            if resolved_path.is_none() || record.compatibility.as_deref() == Some("rejected") {
+                continue;
+            }
+            capabilities.push(ModelCapability {
                 name: record.name.clone(),
                 path: resolved_path,
                 format: record.format.clone(),
@@ -772,22 +820,17 @@ pub fn active_model_capability(
                 estimated_vram_mb: record.estimated_vram_mb,
                 compatibility: record.compatibility.clone(),
                 compatibility_reason: record.compatibility_reason.clone(),
-            };
-
-            if model_name
-                .map(|name| record.name == name)
-                .unwrap_or(record.active)
-            {
-                return Some(capability);
-            }
-
-            if record.active {
-                active_fallback = Some(capability);
-            }
+                active: record.active,
+                warm: false,
+                languages: record.languages.clone(),
+                specialties: record.specialties.clone(),
+                supports_structured_output: record.supports_structured_output,
+                ..ModelCapability::default()
+            });
         }
     }
-
-    active_fallback
+    capabilities.sort_by(|left, right| left.name.cmp(&right.name));
+    capabilities
 }
 
 fn collect_gguf_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
