@@ -139,7 +139,7 @@ Heartbeats also carry `worker_health.capabilities`, which is the first-class sch
 - `roles`: scheduler roles such as `chat`, `coding`, `batch`, `reducer`, `vision`, `embedding`, or `tool_use`
 - `skill_tags`: normalized matching tags such as `backend:cuda` and `runtime:cuda`
 
-The scheduler should treat the top-level `capabilities.ready_for_jobs` as the eligibility gate, then choose a node and a specific model together. Small eligible models receive a best-fit preference for small work; larger models retain cumulative capabilities and remain eligible when smaller capacity is busy or unavailable. A claimed job carries the selected model name, so the worker executes the model the scheduler evaluated. Legacy agents without a schema-v4 model inventory continue through the node-wide compatibility path.
+The scheduler should treat the top-level `capabilities.ready_for_jobs` as the eligibility gate, then choose a node and a specific model together. It first filters for eligibility and current availability, then ranks the remaining choices by task appropriateness, quality, latency, load, reliability, and resource fit. Model size is one fit signal, not an automatic preference for the smallest model. A claimed job carries the selected model name, so the worker executes the model the scheduler evaluated. Legacy agents without a schema-v4 model inventory continue through the node-wide compatibility path.
 
 ## SpeakAI structured completion gate
 
