@@ -301,6 +301,7 @@ mod tests {
                 runtime_mode: "native".to_string(),
                 parallel_slots: 1,
                 supported_runtime_modes: vec!["local".to_string()],
+                streaming_supported: false,
                 capabilities: NodeCapabilityProfile::default(),
                 checked_at: updated_at.to_string(),
                 notes: Vec::new(),

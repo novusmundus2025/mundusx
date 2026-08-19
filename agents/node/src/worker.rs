@@ -5,16 +5,52 @@ use crate::contracts::{
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use std::cell::RefCell;
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+const STREAM_DELTA_PREFIX: &str = "MUNDUSX_STREAM_DELTA:";
+const STREAM_TAIL_HOLD_CHARS: usize = 32;
+
+thread_local! {
+    static STREAM_DELTA_SENDER: RefCell<Option<mpsc::Sender<String>>> = const { RefCell::new(None) };
+}
+
+fn with_stream_delta_sender<T>(
+    sender: Option<mpsc::Sender<String>>,
+    action: impl FnOnce() -> T,
+) -> T {
+    STREAM_DELTA_SENDER.with(|slot| {
+        let previous = slot.replace(sender);
+        let result = action();
+        slot.replace(previous);
+        result
+    })
+}
+
+fn live_delta_enabled() -> bool {
+    STREAM_DELTA_SENDER.with(|slot| slot.borrow().is_some())
+}
+
+fn emit_stream_delta(delta: &str) {
+    if delta.is_empty() {
+        return;
+    }
+    STREAM_DELTA_SENDER.with(|slot| {
+        if let Some(sender) = slot.borrow().as_ref() {
+            let _ = sender.send(delta.to_string());
+        }
+    });
+}
 
 #[derive(Debug, Default, Clone, Serialize)]
 struct RuntimeMetrics {
@@ -90,6 +126,8 @@ pub struct WorkerCli {
     pub backend: Backend,
     #[arg(long)]
     pub json: bool,
+    #[arg(long)]
+    pub stream: bool,
 }
 
 fn emit_json<T: Serialize>(value: &T) -> Result<(), String> {
@@ -2017,6 +2055,11 @@ fn run_vllm_completion(
         "top_p": top_p,
         "seed": seed,
     });
+    let live_stream = live_delta_enabled() && !structured;
+    if live_stream {
+        payload["stream"] = serde_json::Value::Bool(true);
+        payload["stream_options"] = serde_json::json!({"include_usage": true});
+    }
     if structured {
         payload["response_format"] = speakai_response_format();
     }
@@ -2024,6 +2067,9 @@ fn run_vllm_completion(
         .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
         .send_json(payload)
         .map_err(|error| format!("OpenAI-compatible completion failed: {error}"))?;
+    if live_stream {
+        return parse_openai_stream(BufReader::new(response.into_reader()));
+    }
     let value = response
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("OpenAI-compatible runtime returned invalid json: {error}"))?;
@@ -2048,6 +2094,95 @@ fn run_vllm_completion(
     }
 
     Err(empty_completion_error(&value))
+}
+
+fn char_prefix_bytes(value: &str, chars: usize) -> usize {
+    value
+        .char_indices()
+        .nth(chars)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
+}
+
+fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
+    let mut raw_content = String::new();
+    let mut emitted_chars = 0usize;
+    let mut finish_reason = String::new();
+    let mut saw_done = false;
+    let mut last_emit = Instant::now();
+
+    for line in reader.lines() {
+        let line =
+            line.map_err(|error| format!("OpenAI-compatible stream read failed: {error}"))?;
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim_start();
+        if data == "[DONE]" {
+            saw_done = true;
+            break;
+        }
+        if data.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(data)
+            .map_err(|error| format!("OpenAI-compatible stream returned invalid json: {error}"))?;
+        if let Some(message) = value
+            .pointer("/error/message")
+            .and_then(serde_json::Value::as_str)
+        {
+            return Err(format!("runtime returned an error: {message}"));
+        }
+        if let Some(reason) = value
+            .pointer("/choices/0/finish_reason")
+            .and_then(serde_json::Value::as_str)
+        {
+            finish_reason = reason.to_string();
+        }
+        if let Some(delta) = value
+            .pointer("/choices/0/delta/content")
+            .and_then(serde_json::Value::as_str)
+        {
+            raw_content.push_str(delta);
+            let normalized = raw_content.trim_start();
+            let safe_chars = normalized
+                .chars()
+                .count()
+                .saturating_sub(STREAM_TAIL_HOLD_CHARS);
+            let pending_chars = safe_chars.saturating_sub(emitted_chars);
+            if pending_chars > 0
+                && (last_emit.elapsed() >= Duration::from_millis(30) || pending_chars >= 128)
+            {
+                let start = char_prefix_bytes(normalized, emitted_chars);
+                let end = char_prefix_bytes(normalized, safe_chars);
+                emit_stream_delta(&normalized[start..end]);
+                emitted_chars = safe_chars;
+                last_emit = Instant::now();
+            }
+        }
+    }
+
+    let content = raw_content.trim();
+    if content.is_empty() {
+        return Err("OpenAI-compatible stream did not include content".to_string());
+    }
+    if !saw_done && finish_reason.is_empty() {
+        return Err("OpenAI-compatible stream ended before a terminal event".to_string());
+    }
+    let safe_chars = content
+        .chars()
+        .count()
+        .saturating_sub(STREAM_TAIL_HOLD_CHARS);
+    if safe_chars > emitted_chars {
+        let start = char_prefix_bytes(content, emitted_chars);
+        let end = char_prefix_bytes(content, safe_chars);
+        emit_stream_delta(&content[start..end]);
+    }
+    if finish_reason == "length" {
+        Ok(format!("[truncated: hit the generation limit] {content}"))
+    } else {
+        Ok(content.to_string())
+    }
 }
 
 fn structured_output_option_unsupported(error: &str) -> bool {
@@ -2545,6 +2680,7 @@ pub fn probe_worker_health(
         runtime_mode,
         parallel_slots: 1,
         supported_runtime_modes,
+        streaming_supported: backend == Backend::Vllm && vllm_ready,
         capabilities: Default::default(),
         checked_at: now_unix_seconds(),
         notes,
@@ -2622,6 +2758,11 @@ fn contributed_cluster_health(
         } else {
             Vec::new()
         },
+        streaming_supported: healthy
+            && matches!(
+                cluster.kind.trim().to_ascii_lowercase().as_str(),
+                "vllm" | "openai"
+            ),
         capabilities: Default::default(),
         checked_at: now_unix_seconds(),
         notes,
@@ -3227,10 +3368,12 @@ fn execute_request_with_cluster(
 }
 
 pub fn worker_main(cli: WorkerCli) {
+    let live_stream = cli.stream;
     let request = WorkerLaunchRequest {
         job_id: cli.job_id,
         node_id: cli.node_id,
         backend: cli.backend,
+        stream: live_stream,
         prompt: cli.prompt,
         model: cli.model,
         mode: cli.mode,
@@ -3241,7 +3384,22 @@ pub fn worker_main(cli: WorkerCli) {
         seed: cli.seed,
     };
 
-    let response = execute_request(&request);
+    let response = if live_stream {
+        let (delta_tx, delta_rx) = mpsc::channel::<String>();
+        let printer = thread::spawn(move || {
+            let stderr = io::stderr();
+            let mut stderr = stderr.lock();
+            while let Ok(delta) = delta_rx.recv() {
+                let _ = writeln!(stderr, "{STREAM_DELTA_PREFIX}{}", hex::encode(delta));
+                let _ = stderr.flush();
+            }
+        });
+        let response = with_stream_delta_sender(Some(delta_tx), || execute_request(&request));
+        let _ = printer.join();
+        response
+    } else {
+        execute_request(&request)
+    };
 
     if cli.json {
         if let Err(error) = emit_json(&response) {
@@ -3300,14 +3458,17 @@ fn worker_executable() -> Result<PathBuf, String> {
     ))
 }
 
-pub fn launch_worker(
+pub fn launch_worker_with_stream(
     request: &WorkerLaunchRequest,
     model_dir: &Path,
+    delta_sender: Option<mpsc::Sender<String>>,
 ) -> Result<WorkerLaunchResponse, String> {
     // A contributed cluster is served over HTTP, so there is nothing to isolate
     // in a subprocess and no reason to depend on re-execing this binary.
     if let Some(cluster) = contributed_cluster() {
-        return Ok(execute_request_with_cluster(request, Some(&cluster)));
+        return Ok(with_stream_delta_sender(delta_sender, || {
+            execute_request_with_cluster(request, Some(&cluster))
+        }));
     }
 
     let mut command = Command::new(worker_executable()?);
@@ -3344,6 +3505,9 @@ pub fn launch_worker(
     if let Some(seed) = request.seed {
         command.arg("--seed").arg(seed.to_string());
     }
+    if request.stream {
+        command.arg("--stream");
+    }
 
     let mut child = command
         .arg("--json")
@@ -3361,9 +3525,31 @@ pub fn launch_worker(
         buf
     });
     let stderr_reader = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
-        buf
+        let mut diagnostics = Vec::new();
+        let mut reader = BufReader::new(&mut stderr_pipe);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&line);
+                    if let Some(encoded) = text.trim().strip_prefix(STREAM_DELTA_PREFIX) {
+                        if let Ok(bytes) = hex::decode(encoded) {
+                            if let Ok(delta) = String::from_utf8(bytes) {
+                                if let Some(sender) = delta_sender.as_ref() {
+                                    let _ = sender.send(delta);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    diagnostics.extend_from_slice(&line);
+                }
+                Err(_) => break,
+            }
+        }
+        diagnostics
     });
 
     let deadline = Instant::now() + worker_timeout();
@@ -3407,6 +3593,13 @@ pub fn launch_worker(
 
     let stdout = String::from_utf8(stdout).map_err(|error| error.to_string())?;
     serde_json::from_str(stdout.trim()).map_err(|error| error.to_string())
+}
+
+pub fn launch_worker(
+    request: &WorkerLaunchRequest,
+    model_dir: &Path,
+) -> Result<WorkerLaunchResponse, String> {
+    launch_worker_with_stream(request, model_dir, None)
 }
 
 fn worker_timeout() -> Duration {
@@ -3455,9 +3648,39 @@ mod tests {
     }
 
     use super::*;
+    use std::io::Cursor;
     use std::io::Write;
     use std::net::TcpListener;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn parses_openai_sse_and_relays_safe_progressive_prefix() {
+        let content =
+            "Streaming sends several useful pieces while retaining a small validation tail.";
+        let first = &content[..24];
+        let second = &content[24..52];
+        let third = &content[52..];
+        let body = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":\"\"}},\"finish_reason\":null}}]}}\n\n\
+             data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null}}]}}\n\n\
+             data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null}}]}}\n\n\
+             data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":\"stop\"}}]}}\n\n\
+             data: [DONE]\n\n",
+            serde_json::to_string(first).unwrap(),
+            serde_json::to_string(second).unwrap(),
+            serde_json::to_string(third).unwrap(),
+        );
+        let (sender, receiver) = mpsc::channel();
+        let parsed = with_stream_delta_sender(Some(sender), || {
+            parse_openai_stream(Cursor::new(body)).expect("stream parses")
+        });
+        let relayed = receiver.try_iter().collect::<String>();
+
+        assert_eq!(parsed, content);
+        assert!(!relayed.is_empty());
+        assert!(content.starts_with(&relayed));
+        assert!(content.chars().count() - relayed.chars().count() >= STREAM_TAIL_HOLD_CHARS);
+    }
 
     #[test]
     fn context_size_covers_prompt_and_generation_budget() {
@@ -3727,6 +3950,7 @@ mod tests {
             job_id: "speakai-job".to_string(),
             node_id: "node-1".to_string(),
             backend: Backend::M,
+            stream: false,
             prompt: "Heute ist das Wetter schön.".to_string(),
             model: model.map(str::to_string),
             mode: Some("speakai".to_string()),
@@ -4181,6 +4405,7 @@ mod tests {
             job_id: "job-vulkan".to_string(),
             node_id: "node-1".to_string(),
             backend: Backend::Vulkan,
+            stream: false,
             prompt: "hello".to_string(),
             model: None,
             mode: None,
@@ -4224,6 +4449,7 @@ mod tests {
                 job_id: "job-1".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Cuda,
+                stream: false,
                 prompt: "hello".to_string(),
                 model: Some("qwen".to_string()),
                 mode: None,
@@ -4309,6 +4535,7 @@ mod tests {
                 job_id: "job-vllm".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Vllm,
+                stream: false,
                 prompt: "hello".to_string(),
                 model: Some("qwen".to_string()),
                 mode: None,
@@ -4368,6 +4595,7 @@ mod tests {
                 top_p: None,
                 seed: None,
                 backend: Backend::Cuda,
+                stream: false,
             },
             Some(&cluster),
         );
@@ -4446,6 +4674,7 @@ mod tests {
                 job_id: "job-vllm".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Vllm,
+                stream: false,
                 prompt: "hello".to_string(),
                 model: Some("Qwen/Qwen3-8B".to_string()),
                 mode: None,
@@ -4543,6 +4772,7 @@ mod tests {
                 job_id: "job-mlx".to_string(),
                 node_id: "node-m".to_string(),
                 backend: Backend::M,
+                stream: false,
                 prompt: "hello".to_string(),
                 model: Some("mlx-community/Qwen2.5-3B-Instruct-4bit".to_string()),
                 mode: None,
@@ -4590,6 +4820,7 @@ mod tests {
                 job_id: "job-1".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::M,
+                stream: false,
                 prompt: "hello".to_string(),
                 model: Some("qwen".to_string()),
                 mode: None,

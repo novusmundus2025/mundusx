@@ -83,6 +83,8 @@ Example response:
 
 When the request includes `"stream": true`, `POST /v1/chat/completions` should reply with `Content-Type: text/event-stream`.
 
+The integrated gateway uses OpenAI-compatible `chat.completion.chunk` data frames and terminates with `data: [DONE]`. Eligible ordinary text jobs can receive live worker deltas; structured/tool work and unsupported runtimes remain validated-buffered. Both modes preserve one request, one job, and one final credit settlement.
+
 The stream should stay line-oriented and predictable for thin SDK clients:
 
 - emit a queue-acceptance event first so the client receives `job_id` and `request_id`

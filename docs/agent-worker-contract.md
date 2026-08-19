@@ -86,9 +86,10 @@ The current prototype adds one small control-plane queue:
 3. The agent asks `GET /v1/jobs/next?node_id=...` for work.
 4. If a queued job matches the node backend, the control plane marks it `assigned`.
 5. The agent sends a busy heartbeat and launches the worker locally.
-6. The worker result is posted back to `POST /v1/jobs/complete` with output, error, duration, model/runtime, backend, worker ID, and node ID metadata.
-7. The control plane marks the job `completed` or `failed`.
-8. The agent sends a ready or paused heartbeat after completion so the control plane can keep scheduling decisions current.
+6. For a live-stream-enabled job, the agent posts signed, monotonically sequenced text deltas to `POST /v1/jobs/delta`. Deltas are transient delivery messages, not jobs, durable events, or credit entries.
+7. The authoritative worker result is posted once to `POST /v1/jobs/complete` with output, error, duration, model/runtime, backend, worker ID, and node ID metadata.
+8. The control plane marks the job `completed` or `failed` and settles completion-based credits once.
+9. The agent sends a ready or paused heartbeat after completion so the control plane can keep scheduling decisions current.
 
 If the worker subprocess fails before returning a normal result, the agent still posts a failed completion for the claimed job. That failure includes the node ID, selected backend, model when known, runtime mode when known, duration, and actionable error text so the control plane can expose the failed lifecycle cleanly.
 

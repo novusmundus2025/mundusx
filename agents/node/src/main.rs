@@ -7,8 +7,9 @@ mod worker;
 use clap::{Parser, Subcommand};
 use contracts::{
     AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    NodeAdmissionStatus, NodeCapabilityAdvertisement, NodeCapabilityProfile, NodeRole,
-    WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
+    JobStreamAck, JobStreamDelta, NodeAdmissionStatus, NodeCapabilityAdvertisement,
+    NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerPolicyReport,
 };
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
@@ -1014,6 +1015,7 @@ fn build_worker_launch_request(
         job_id,
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
+        stream: false,
         prompt,
         model: resolve_job_model(config, model),
         mode,
@@ -1150,6 +1152,7 @@ fn launch_worker_process(
     config: &AgentConfig,
     request: WorkerLaunchRequest,
     json: bool,
+    delta_sender: Option<mpsc::Sender<String>>,
 ) -> Result<contracts::WorkerLaunchResponse, String> {
     let model_dir = config.effective_model_dir();
     let (_, policy) = worker_readiness(config);
@@ -1159,7 +1162,7 @@ fn launch_worker_process(
             .unwrap_or_else(|| "worker policy denied launch".to_string()));
     }
 
-    match worker::launch_worker(&request, &model_dir) {
+    match worker::launch_worker_with_stream(&request, &model_dir, delta_sender) {
         Ok(response) => {
             if json {
                 emit_json_line(&response);
@@ -1417,6 +1420,42 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
     }
 }
 
+fn relay_job_deltas(
+    config: AgentConfig,
+    identity: DeviceIdentity,
+    job_id: String,
+    assignment_id: String,
+    deltas: mpsc::Receiver<String>,
+) {
+    let mut sequence = 1u64;
+    while let Ok(delta) = deltas.recv() {
+        let payload = JobStreamDelta {
+            job_id: job_id.clone(),
+            node_id: config.device_id.clone(),
+            assignment_id: assignment_id.clone(),
+            sequence,
+            delta,
+        };
+        match signed_post_json_body::<_, JobStreamAck>(
+            &config.control_plane_url,
+            "/v1/jobs/delta",
+            &config.device_id,
+            &identity,
+            &payload,
+        ) {
+            Ok(ack) if ack.accepted || ack.duplicate => sequence += 1,
+            Ok(_) => {
+                eprintln!("controlPlaneStream: delta {sequence} was not accepted; using final completion fallback");
+                break;
+            }
+            Err(error) => {
+                eprintln!("controlPlaneStream: {error}; using final completion fallback");
+                break;
+            }
+        }
+    }
+}
+
 fn build_completion_from_worker_response(
     response: WorkerLaunchResponse,
     duration_ms: u64,
@@ -1501,6 +1540,7 @@ fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRe
         job_id: job.job_id.clone(),
         node_id: config.device_id.clone(),
         backend: job.backend.unwrap_or_else(|| resolved_backend(&config)),
+        stream: job.stream,
         prompt: job.prompt.clone(),
         model: resolve_job_model(&config, job.model.clone()),
         mode: job.mode.clone(),
@@ -1510,8 +1550,35 @@ fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRe
         top_p: job.top_p,
         seed: job.seed,
     };
+    let (delta_sender, relay_handle) = if job.stream {
+        if let Some(assignment_id) = job.assigned_at.clone() {
+            let (sender, receiver) = mpsc::channel();
+            let relay_config = config.clone();
+            let relay_identity = identity.clone();
+            let relay_job_id = job.job_id.clone();
+            let handle = thread::spawn(move || {
+                relay_job_deltas(
+                    relay_config,
+                    relay_identity,
+                    relay_job_id,
+                    assignment_id,
+                    receiver,
+                )
+            });
+            (Some(sender), Some(handle))
+        } else {
+            eprintln!("controlPlaneStream: assigned job has no assignment timestamp; using final completion fallback");
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
     let started_at = Instant::now();
-    match launch_worker_process(&config, request, json) {
+    let worker_result = launch_worker_process(&config, request, json, delta_sender);
+    if let Some(handle) = relay_handle {
+        let _ = handle.join();
+    }
+    match worker_result {
         Ok(response) => {
             let completion = build_completion_from_worker_response(
                 response,
@@ -1926,7 +1993,7 @@ fn main() {
                 top_p,
                 seed,
             );
-            let _ = launch_worker_process(&config, request, json);
+            let _ = launch_worker_process(&config, request, json, None);
         }
         Commands::Health { json } => {
             let config = load_config_or_exit();
@@ -2289,6 +2356,7 @@ mod tests {
             runtime_mode: backend.as_str().to_string(),
             parallel_slots: 1,
             supported_runtime_modes: vec!["local".to_string()],
+            streaming_supported: false,
             capabilities: NodeCapabilityProfile::default(),
             checked_at: "1".to_string(),
             notes: Vec::new(),
@@ -2320,6 +2388,7 @@ mod tests {
             request_id: "request-1".to_string(),
             prompt: "summarize".to_string(),
             preferred_backend: Backend::Cuda,
+            stream: false,
             model: Some("tiny-cuda".to_string()),
             mode: None,
             system_prompt: None,

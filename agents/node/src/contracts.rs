@@ -141,6 +141,8 @@ pub struct JobRecord {
     pub request_id: String,
     pub prompt: String,
     pub preferred_backend: Backend,
+    #[serde(default)]
+    pub stream: bool,
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -183,10 +185,29 @@ pub struct JobCompletion {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JobStreamDelta {
+    pub job_id: String,
+    pub node_id: String,
+    pub assignment_id: String,
+    pub sequence: u64,
+    pub delta: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JobStreamAck {
+    pub job_id: String,
+    pub sequence: u64,
+    pub accepted: bool,
+    pub duplicate: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLaunchRequest {
     pub job_id: String,
     pub node_id: String,
     pub backend: Backend,
+    #[serde(default)]
+    pub stream: bool,
     pub prompt: String,
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,6 +272,8 @@ pub struct WorkerHealthReport {
     pub parallel_slots: u8,
     #[serde(default)]
     pub supported_runtime_modes: Vec<String>,
+    #[serde(default)]
+    pub streaming_supported: bool,
     #[serde(default)]
     pub capabilities: NodeCapabilityProfile,
     pub checked_at: String,
