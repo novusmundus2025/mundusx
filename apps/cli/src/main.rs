@@ -5037,6 +5037,7 @@ fn contributed_cluster_from(
     ContributedCluster {
         kind: cluster.kind.as_str().to_string(),
         base_url: cluster.base_url.clone(),
+        capacity_class: "server".to_string(),
         models: cluster.model_names(),
         model: model.or_else(|| cluster.primary_model().map(str::to_string)),
         model_params: advertised.and_then(|entry| entry.params),
@@ -7032,6 +7033,7 @@ mod tests {
         ContributedCluster {
             kind: "llama.cpp".to_string(),
             base_url: "http://127.0.0.1:8000".to_string(),
+            capacity_class: "server".to_string(),
             models: vec![model.to_string()],
             model: Some(model.to_string()),
             model_params: None,
@@ -7118,6 +7120,7 @@ mod tests {
         config.contributed_cluster = Some(ContributedCluster {
             kind: "llama.cpp".to_string(),
             base_url: "http://127.0.0.1:8000".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["UD-IQ2_M".to_string()],
             model: Some("UD-IQ2_M".to_string()),
             model_params: Some(753_864_139_008),
@@ -7137,6 +7140,7 @@ mod tests {
         config.contributed_cluster = Some(ContributedCluster {
             kind: "llama.cpp".to_string(),
             base_url: "http://127.0.0.1:8000".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["UD-IQ2_M".to_string()],
             model: Some("UD-IQ2_M".to_string()),
             model_params: None,
@@ -7174,6 +7178,7 @@ mod tests {
         config.contributed_cluster = Some(ContributedCluster {
             kind: "ollama".to_string(),
             base_url: "http://127.0.0.1:11434".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["hermes3:70b".to_string()],
             model: Some("hermes3:70b".to_string()),
             model_params: None,
@@ -7201,6 +7206,7 @@ mod tests {
         config.contributed_cluster = Some(ContributedCluster {
             kind: "ollama".to_string(),
             base_url: "http://127.0.0.1:11434".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["llama3.1:8b".to_string(), "mistral:7b".to_string()],
             model: None,
             model_params: None,
@@ -7222,6 +7228,7 @@ mod tests {
         config.contributed_cluster = Some(ContributedCluster {
             kind: "lm-studio".to_string(),
             base_url: "http://127.0.0.1:1234".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["a".to_string(), "b".to_string()],
             model: Some("b".to_string()),
             model_params: None,
@@ -7242,6 +7249,7 @@ mod tests {
         config.contributed_cluster = Some(ContributedCluster {
             kind: "vllm".to_string(),
             base_url: "http://127.0.0.1:8000".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["qwen2.5-7b".to_string()],
             model: None,
             model_params: None,
@@ -7271,6 +7279,7 @@ mod tests {
 
         assert_eq!(contributed.kind, "ollama");
         assert_eq!(contributed.base_url, "http://127.0.0.1:11434");
+        assert_eq!(contributed.capacity_class, "server");
         assert_eq!(contributed.model.as_deref(), Some("llama3.1:8b"));
         assert!(contributed.adopted_at.is_some());
     }
@@ -7281,6 +7290,7 @@ mod tests {
         config.contributed_cluster = Some(ContributedCluster {
             kind: "ollama".to_string(),
             base_url: "http://127.0.0.1:11434".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["llama3.1:8b".to_string()],
             model: Some("llama3.1:8b".to_string()),
             model_params: Some(8_000_000_000),

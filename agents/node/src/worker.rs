@@ -4573,6 +4573,7 @@ mod tests {
         let cluster = crate::storage::ContributedCluster {
             kind: "llama.cpp".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
+            capacity_class: "server".to_string(),
             models: vec!["m".to_string()],
             model: Some("m".to_string()),
             model_params: None,

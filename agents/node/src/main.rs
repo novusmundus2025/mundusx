@@ -217,47 +217,6 @@ fn cap_applied_memory_mb(physical_memory_mb: u32, contribution_percent: u8) -> u
         / 100
 }
 
-/// Capacity class for a contributed cluster, derived from the advertised model
-/// rather than from host memory. Host memory says nothing useful here: the
-/// cluster manages its own allocation, and on unified-memory machines the
-/// available-memory reading collapses once a large model is resident.
-///
-/// Returns `None` when the runtime reported no size signal, leaving the caller
-/// to fall back to the memory ladder.
-fn cluster_capacity_class(
-    model_params: Option<u64>,
-    model_bytes: Option<u64>,
-) -> Option<&'static str> {
-    if let Some(params) = model_params.filter(|value| *value > 0) {
-        return Some(if params >= 70_000_000_000 {
-            "synthesis"
-        } else if params >= 30_000_000_000 {
-            "heavy"
-        } else if params >= 13_000_000_000 {
-            "performance"
-        } else if params >= 7_000_000_000 {
-            "standard"
-        } else {
-            "micro"
-        });
-    }
-
-    const GB: u64 = 1024 * 1024 * 1024;
-    model_bytes.filter(|value| *value > 0).map(|bytes| {
-        if bytes >= 40 * GB {
-            "synthesis"
-        } else if bytes >= 20 * GB {
-            "heavy"
-        } else if bytes >= 8 * GB {
-            "performance"
-        } else if bytes >= 4 * GB {
-            "standard"
-        } else {
-            "micro"
-        }
-    })
-}
-
 /// Ordinal for the capacity ladder, so role thresholds can be expressed as
 /// "this class or above". Unknown names rank lowest.
 fn capacity_rank(class: &str) -> u8 {
@@ -390,9 +349,17 @@ fn build_capabilities(
         runtime_mode: health.runtime_mode.clone(),
         parallel_slots: health.parallel_slots,
         capacity_class: cluster
-            .and_then(|cluster| cluster_capacity_class(cluster.model_params, cluster.model_bytes))
-            .unwrap_or_else(|| classify_capacity(backend, usable_memory_mb, usable_vram_mb))
-            .to_string(),
+            .map(|cluster| {
+                let configured = cluster.capacity_class.trim().to_ascii_lowercase();
+                if capacity_rank(&configured) == 0 {
+                    "server".to_string()
+                } else {
+                    configured
+                }
+            })
+            .unwrap_or_else(|| {
+                classify_capacity(backend, usable_memory_mb, usable_vram_mb).to_string()
+            }),
         supported_roles: Vec::new(),
         supported_tools: Vec::new(),
         active_model,
@@ -586,6 +553,10 @@ fn build_scheduler_capabilities(
                     && cluster.model.as_deref() == Some(name.as_str()),
                 name,
                 size_bytes: cluster.model_bytes,
+                // Detection APIs often omit an output limit. Keep that hard
+                // per-model gate conservative even though the endpoint itself
+                // is advertised at the maximum cluster tier.
+                max_output_tokens: Some(2_048),
                 ..contracts::ModelCapability::default()
             })
             .collect::<Vec<_>>()
@@ -2063,6 +2034,7 @@ mod tests {
         config.contributed_cluster = Some(crate::storage::ContributedCluster {
             kind: "vllm".to_string(),
             base_url: "http://127.0.0.1:8000".to_string(),
+            capacity_class: "server".to_string(),
             models: vec![model.to_string()],
             model: Some(model.to_string()),
             model_params: params,
@@ -2072,52 +2044,6 @@ mod tests {
             adopted_at: Some("1".to_string()),
         });
         config
-    }
-
-    #[test]
-    fn cluster_capacity_class_scales_with_parameter_count() {
-        assert_eq!(
-            cluster_capacity_class(Some(753_864_139_008), None),
-            Some("synthesis")
-        );
-        assert_eq!(
-            cluster_capacity_class(Some(70_000_000_000), None),
-            Some("synthesis")
-        );
-        assert_eq!(
-            cluster_capacity_class(Some(32_000_000_000), None),
-            Some("heavy")
-        );
-        assert_eq!(
-            cluster_capacity_class(Some(14_000_000_000), None),
-            Some("performance")
-        );
-        assert_eq!(
-            cluster_capacity_class(Some(8_000_000_000), None),
-            Some("standard")
-        );
-        assert_eq!(
-            cluster_capacity_class(Some(1_500_000_000), None),
-            Some("micro")
-        );
-    }
-
-    #[test]
-    fn cluster_capacity_class_falls_back_to_on_disk_size() {
-        const GB: u64 = 1024 * 1024 * 1024;
-        assert_eq!(
-            cluster_capacity_class(None, Some(45 * GB)),
-            Some("synthesis")
-        );
-        assert_eq!(cluster_capacity_class(None, Some(22 * GB)), Some("heavy"));
-        assert_eq!(cluster_capacity_class(None, Some(5 * GB)), Some("standard"));
-    }
-
-    #[test]
-    fn cluster_capacity_class_defers_when_no_size_was_reported() {
-        // Nothing to derive from, so the caller keeps the memory ladder.
-        assert_eq!(cluster_capacity_class(None, None), None);
-        assert_eq!(cluster_capacity_class(Some(0), Some(0)), None);
     }
 
     #[test]
@@ -2144,11 +2070,11 @@ mod tests {
     }
 
     #[test]
-    fn a_contributed_cluster_is_classified_by_its_model_not_host_memory() {
+    fn a_contributed_cluster_uses_its_persisted_server_capacity() {
         let config = cluster_config("UD-IQ2_M", Some(753_864_139_008), None);
         let capabilities = build_capabilities(&config, &cluster_health("UD-IQ2_M"), true);
 
-        assert_eq!(capabilities.capacity_class, "synthesis");
+        assert_eq!(capabilities.capacity_class, "server");
     }
 
     #[test]
@@ -2249,25 +2175,23 @@ mod tests {
 
         let roles = node_roles_for(resolved_backend(&config), &health, &capabilities, 5_400);
 
-        assert_eq!(capabilities.capacity_class, "synthesis");
+        assert_eq!(capabilities.capacity_class, "server");
         assert!(roles.contains(&NodeRole::Synthesizer));
         assert!(roles.contains(&NodeRole::Reducer));
         assert!(roles.contains(&NodeRole::Coding));
     }
 
     #[test]
-    fn a_small_contributed_cluster_does_not_claim_heavy_roles() {
+    fn every_contributed_cluster_claims_server_roles() {
         let config = cluster_config("hermes3:8b", Some(8_000_000_000), None);
         let health = cluster_health("hermes3:8b");
         let capabilities = build_capabilities(&config, &health, true);
 
-        // Backend on this host would grant Coding regardless; the point is that
-        // an 8B cluster must not advertise Reducer or Synthesizer.
         let roles = node_roles_for(Backend::Auto, &health, &capabilities, 4_096);
 
-        assert_eq!(capabilities.capacity_class, "standard");
-        assert!(!roles.contains(&NodeRole::Synthesizer));
-        assert!(!roles.contains(&NodeRole::Reducer));
+        assert_eq!(capabilities.capacity_class, "server");
+        assert!(roles.contains(&NodeRole::Synthesizer));
+        assert!(roles.contains(&NodeRole::Reducer));
         assert!(roles.contains(&NodeRole::Chat));
     }
 
