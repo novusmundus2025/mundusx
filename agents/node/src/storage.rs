@@ -13,6 +13,10 @@ const HEARTBEAT_LOG_TTL_SECONDS: i64 = 30 * 60;
 pub struct ContributedCluster {
     pub kind: String,
     pub base_url: String,
+    /// Scheduler capacity represented by this contributed endpoint. Legacy
+    /// adopted-cluster records default to the maximum cluster tier.
+    #[serde(default = "default_cluster_capacity_class")]
+    pub capacity_class: String,
     #[serde(default)]
     pub models: Vec<String>,
     #[serde(default)]
@@ -32,6 +36,10 @@ pub struct ContributedCluster {
     pub model_context_tokens: Option<u32>,
     #[serde(default)]
     pub adopted_at: Option<String>,
+}
+
+fn default_cluster_capacity_class() -> String {
+    "server".to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
