@@ -5050,6 +5050,9 @@ fn contributed_cluster_from(
         model_context_tokens: cluster
             .served_context_tokens
             .or_else(|| advertised.and_then(|entry| entry.context_tokens)),
+        memory_utilization: cluster.memory_utilization,
+        max_concurrency: cluster.max_concurrency,
+        supports_tool_calls: cluster.supports_tool_calls,
         adopted_at: Some(now_unix_seconds()),
     }
 }
@@ -5624,7 +5627,7 @@ fn run_install(
 }
 
 /// What a re-probe found about the cluster this node already contributes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 enum ContributedClusterCheck {
     /// No cluster is recorded, so there is nothing to verify.
     NotContributed,
@@ -7040,6 +7043,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: Some(1536),
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         }
     }
@@ -7053,6 +7059,9 @@ mod tests {
                 .map(|name| cluster::ModelInfo::new(*name, None, None))
                 .collect(),
             served_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
         }
     }
 
@@ -7127,6 +7136,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         });
 
@@ -7147,6 +7159,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         });
 
@@ -7185,6 +7200,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         });
 
@@ -7213,6 +7231,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         });
 
@@ -7235,6 +7256,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         });
 
@@ -7256,6 +7280,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         });
 
@@ -7273,6 +7300,9 @@ mod tests {
                 None,
             )],
             served_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
         };
 
         let contributed = contributed_cluster_from(&detected, None);
@@ -7297,6 +7327,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: vec!["tools".to_string()],
             model_context_tokens: Some(131_072),
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: Some("1".to_string()),
         });
         config.cluster_prompt_declined = false;

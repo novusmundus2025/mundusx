@@ -9,7 +9,7 @@ const HEARTBEAT_LOG_TTL_SECONDS: i64 = 30 * 60;
 
 /// Mirror of the CLI's `ContributedCluster` so rewriting `config.json` from the
 /// agent never drops the contributor's adopted-cluster decision.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContributedCluster {
     pub kind: String,
     pub base_url: String,
@@ -34,6 +34,17 @@ pub struct ContributedCluster {
     /// Trained context length the runtime reports for the model.
     #[serde(default)]
     pub model_context_tokens: Option<u32>,
+    /// Share of machine memory the runtime reports taking, e.g. vLLM's
+    /// `gpu_memory_utilization`. Used as the basis for usable memory, because
+    /// it is the portion of the machine the cluster genuinely occupies.
+    #[serde(default)]
+    pub memory_utilization: Option<f32>,
+    /// Concurrent full-context sequences the runtime says it can hold.
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
+    /// True when the runtime has a tool-call parser loaded.
+    #[serde(default)]
+    pub supports_tool_calls: bool,
     #[serde(default)]
     pub adopted_at: Option<String>,
 }

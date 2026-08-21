@@ -175,10 +175,11 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
         resolved_backend(config),
         config.contributed_cluster.as_ref(),
     );
-    health.parallel_slots = if config.contributed_cluster.is_some() {
-        // The cluster does its own batching and queueing, and we cannot see how
-        // it is configured, so advertise one slot rather than over-promising.
-        1
+    health.parallel_slots = if let Some(cluster) = config.contributed_cluster.as_ref() {
+        // The runtime publishes how many concurrent sequences it can hold, so
+        // use that instead of the old hardcoded 1. Fall back to one slot only
+        // when it reports nothing.
+        contributed_cluster_slots(cluster)
     } else {
         worker::recommended_parallel_slots(
             resolved_backend(config),
@@ -208,6 +209,37 @@ fn cap_applied_vram_mb(physical_vram_mb: Option<u32>, contribution_percent: u8) 
             .saturating_add(99)
             / 100
     })
+}
+
+/// Ceiling on slots advertised for a contributed cluster. The runtime may
+/// report capacity for dozens of sequences, but flooding a shared endpoint
+/// degrades every request, so keep the advertised figure modest.
+const MAX_CONTRIBUTED_CLUSTER_SLOTS: u32 = 16;
+
+/// Concurrent jobs to advertise for a contributed cluster.
+fn contributed_cluster_slots(cluster: &crate::storage::ContributedCluster) -> u8 {
+    let reported = cluster.max_concurrency.unwrap_or(1).max(1);
+    reported
+        .min(MAX_CONTRIBUTED_CLUSTER_SLOTS)
+        .min(u8::MAX as u32) as u8
+}
+
+/// Usable memory for a node serving a contributed cluster.
+///
+/// Available memory is the wrong basis: it is low precisely *because* the
+/// cluster has loaded a large model, so a busy 121 GB machine classified itself
+/// as `micro`. The runtime reports the share of the machine it took
+/// (`gpu_memory_utilization`), and that share is what this node contributes.
+fn contributed_cluster_usable_memory_mb(
+    physical_memory_mb: u32,
+    cluster: &crate::storage::ContributedCluster,
+) -> u32 {
+    const DEFAULT_UTILIZATION: f32 = 0.85;
+    let utilization = cluster
+        .memory_utilization
+        .filter(|value| *value > 0.0 && *value <= 1.0)
+        .unwrap_or(DEFAULT_UTILIZATION);
+    ((physical_memory_mb as f32) * utilization) as u32
 }
 
 fn cap_applied_memory_mb(physical_memory_mb: u32, contribution_percent: u8) -> u32 {
@@ -260,8 +292,13 @@ fn build_capabilities(
     let backend = resolved_backend(config);
     let physical_memory_mb = detect_memory_mb();
     let available_memory_mb = detect_available_memory_mb();
-    let usable_memory_mb = cap_applied_memory_mb(physical_memory_mb, config.contribution_percent)
-        .min(available_memory_mb);
+    let usable_memory_mb = match config.contributed_cluster.as_ref() {
+        // A contributed cluster is sized from the machine and the share the
+        // runtime took, not from whatever memory happens to be free right now.
+        Some(cluster) => contributed_cluster_usable_memory_mb(physical_memory_mb, cluster),
+        None => cap_applied_memory_mb(physical_memory_mb, config.contribution_percent)
+            .min(available_memory_mb),
+    };
     let cluster = config.contributed_cluster.as_ref();
     // A contributed cluster owns its own memory, so the contribution cap does not
     // translate into a VRAM budget for it.
@@ -629,7 +666,12 @@ fn build_scheduler_capabilities(
     }
     roles.sort_by_key(|role| role.as_str());
     roles.dedup();
-    let supports_tools = advertises("tool");
+    // Two signals: capabilities the listing advertises, and — for vLLM, which
+    // publishes no capability array — a loaded tool-call parser.
+    let supports_tools = advertises("tool")
+        || cluster
+            .map(|cluster| cluster.supports_tool_calls)
+            .unwrap_or(false);
     let mut supported_tools = capabilities.supported_tools.clone();
     if supports_tools {
         supported_tools.push("tool_use".to_string());
@@ -2041,6 +2083,9 @@ mod tests {
             model_bytes: bytes,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: Some("1".to_string()),
         });
         config
@@ -2155,6 +2200,82 @@ mod tests {
         let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
 
         assert!(profile.supports_embeddings);
+    }
+
+    #[test]
+    fn usable_memory_comes_from_the_machine_not_from_free_memory() {
+        // The bug this fixes: a 121.6 GB node serving a 75 GB model had only
+        // ~6.9 GB free, so min(cap, available) classified it as `micro`.
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        cluster.memory_utilization = Some(0.85);
+
+        let usable = contributed_cluster_usable_memory_mb(124_545, &cluster);
+
+        assert_eq!(usable, 105_863); // 124_545 x 0.85
+        assert_eq!(classify_capacity(Backend::Cuda, usable, None), "synthesis");
+    }
+
+    #[test]
+    fn usable_memory_falls_back_to_eighty_five_percent() {
+        let cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        assert_eq!(cluster.memory_utilization, None);
+
+        // No reported share, so assume the conventional 0.85.
+        assert_eq!(
+            contributed_cluster_usable_memory_mb(100_000, &cluster),
+            85_000
+        );
+    }
+
+    #[test]
+    fn a_nonsense_utilization_share_is_ignored() {
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        for bad in [0.0, -0.5, 1.5] {
+            cluster.memory_utilization = Some(bad);
+            assert_eq!(
+                contributed_cluster_usable_memory_mb(100_000, &cluster),
+                85_000
+            );
+        }
+    }
+
+    #[test]
+    fn slots_come_from_the_runtime_and_stay_bounded() {
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+
+        // Nothing reported: one slot, as before.
+        assert_eq!(contributed_cluster_slots(&cluster), 1);
+
+        cluster.max_concurrency = Some(8);
+        assert_eq!(contributed_cluster_slots(&cluster), 8);
+
+        // 71.98 reported, but flooding a shared endpoint helps nobody.
+        cluster.max_concurrency = Some(71);
+        assert_eq!(contributed_cluster_slots(&cluster), 16);
+    }
+
+    #[test]
+    fn a_loaded_tool_parser_makes_the_node_tool_capable() {
+        let mut config = cluster_config("qwen3-coder", Some(80_000_000_000), None);
+        if let Some(cluster) = config.contributed_cluster.as_mut() {
+            // vLLM publishes no capability array; the parser metric is the signal.
+            cluster.model_capabilities = Vec::new();
+            cluster.supports_tool_calls = true;
+        }
+        let health = cluster_health("qwen3-coder");
+        let capabilities = build_capabilities(&config, &health, true);
+        let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
+
+        assert!(profile.supports_tools);
+        assert!(profile.supported_tools.contains(&"tool_use".to_string()));
     }
 
     #[test]

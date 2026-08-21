@@ -4580,6 +4580,9 @@ mod tests {
             model_bytes: None,
             model_capabilities: Vec::new(),
             model_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
             adopted_at: None,
         };
 
