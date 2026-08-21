@@ -173,7 +173,7 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 /// A local inference endpoint that answered a model-listing probe.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DetectedCluster {
     pub kind: ClusterKind,
     pub base_url: String,
@@ -183,6 +183,15 @@ pub struct DetectedCluster {
     /// server started with `-c 256` serves 256 tokens no matter what the GGUF
     /// was trained at — so it is what the node must advertise.
     pub served_context_tokens: Option<u32>,
+    /// Fraction of machine memory the runtime was given, as it reports it
+    /// (vLLM `gpu_memory_utilization`). This is the share of the machine the
+    /// cluster actually occupies, so it is the honest basis for usable memory.
+    pub memory_utilization: Option<f32>,
+    /// Concurrent full-context sequences the runtime says it can hold
+    /// (vLLM `kv_cache_max_concurrency`).
+    pub max_concurrency: Option<u32>,
+    /// True when the runtime has a tool-call parser loaded.
+    pub supports_tool_calls: bool,
 }
 
 impl DetectedCluster {
@@ -354,18 +363,27 @@ fn http_get_json(url: &str) -> Option<serde_json::Value> {
         .and_then(|response| response.into_json().ok())
 }
 
+fn http_get_text(url: &str) -> Option<String> {
+    ureq::get(url)
+        .timeout(PROBE_TIMEOUT)
+        .call()
+        .ok()
+        .filter(|response| response.status() < 400)
+        .and_then(|response| response.into_string().ok())
+}
+
 /// Probe every candidate endpoint and return the ones that answered.
 pub fn detect_running_clusters() -> Vec<DetectedCluster> {
     if detection_disabled() {
         return Vec::new();
     }
-    detect_with(configured_base_urls(), http_get_json)
+    detect_with_text(configured_base_urls(), http_get_json, http_get_text)
 }
 
 /// Probe a single endpoint the contributor named explicitly.
 pub fn probe_cluster(base_url: &str) -> Option<DetectedCluster> {
     let base_url = normalize_base_url(base_url)?;
-    detect_with(vec![base_url], http_get_json)
+    detect_with_text(vec![base_url], http_get_json, http_get_text)
         .into_iter()
         .next()
 }
@@ -375,6 +393,20 @@ pub fn probe_cluster(base_url: &str) -> Option<DetectedCluster> {
 pub fn detect_with<F>(base_urls: Vec<String>, fetch: F) -> Vec<DetectedCluster>
 where
     F: Fn(&str) -> Option<serde_json::Value>,
+{
+    detect_with_text(base_urls, fetch, |_| None)
+}
+
+/// Detection core with separate JSON and plain-text fetchers, so the
+/// Prometheus `/metrics` body can be read without pretending it is JSON.
+pub fn detect_with_text<F, G>(
+    base_urls: Vec<String>,
+    fetch: F,
+    fetch_text: G,
+) -> Vec<DetectedCluster>
+where
+    F: Fn(&str) -> Option<serde_json::Value>,
+    G: Fn(&str) -> Option<String>,
 {
     let mut found: Vec<DetectedCluster> = Vec::new();
 
@@ -397,12 +429,20 @@ where
             };
             let served_context_tokens = fetch(&format!("{base_url}/props"))
                 .as_ref()
-                .and_then(parse_served_context);
+                .and_then(parse_served_context)
+                .or_else(|| parse_listing_context(&body));
+            let capacity = fetch_text(&format!("{base_url}/metrics"))
+                .as_deref()
+                .map(parse_server_capacity)
+                .unwrap_or_default();
             found.push(DetectedCluster {
                 kind: identify_kind(&body, &base_url),
                 base_url: base_url.clone(),
                 models: parse_models(&body),
                 served_context_tokens,
+                memory_utilization: capacity.memory_utilization,
+                max_concurrency: capacity.max_concurrency,
+                supports_tool_calls: capacity.supports_tool_calls,
             });
             break;
         }
@@ -555,6 +595,24 @@ pub fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
     models
 }
 
+/// Reads the served context window from an OpenAI-style model listing.
+///
+/// vLLM publishes it as `max_model_len` on the model entry, where llama.cpp
+/// uses `/props`. Either way it is the window the endpoint will actually honour.
+pub fn parse_listing_context(body: &serde_json::Value) -> Option<u32> {
+    body.get("data")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("max_model_len")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .max()
+        .filter(|value| *value > 0)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
 /// Reads the context window a llama.cpp-style server is actually serving from
 /// its `/props` endpoint.
 pub fn parse_served_context(body: &serde_json::Value) -> Option<u32> {
@@ -564,6 +622,47 @@ pub fn parse_served_context(body: &serde_json::Value) -> Option<u32> {
         .and_then(serde_json::Value::as_u64)
         .filter(|value| *value > 0)
         .and_then(|value| u32::try_from(value).ok())
+}
+
+/// Server-reported capacity, read from a Prometheus `/metrics` body.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ServerCapacity {
+    pub memory_utilization: Option<f32>,
+    pub max_concurrency: Option<u32>,
+    pub kv_cache_tokens: Option<u64>,
+    pub supports_tool_calls: bool,
+}
+
+fn metrics_label(body: &str, label: &str) -> Option<String> {
+    // Labels appear as `name="value"` inside `metric{...}` lines.
+    let needle = format!("{label}=\"");
+    let start = body.find(&needle)? + needle.len();
+    let rest = &body[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Reads capacity from a vLLM-style `/metrics` body.
+///
+/// `vllm:cache_config_info` carries the engine's resolved configuration as
+/// labels, which is the only place the runtime publishes what share of the
+/// machine it took and how many sequences it can hold.
+pub fn parse_server_capacity(body: &str) -> ServerCapacity {
+    ServerCapacity {
+        memory_utilization: metrics_label(body, "gpu_memory_utilization")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| *value > 0.0 && *value <= 1.0),
+        max_concurrency: metrics_label(body, "kv_cache_max_concurrency")
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| *value >= 1.0)
+            .map(|value| value as u32),
+        kv_cache_tokens: metrics_label(body, "kv_cache_size_tokens")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0),
+        // The parser metric only exists when a tool-call parser is loaded, so
+        // its presence is the runtime telling us tool calling is configured.
+        supports_tool_calls: body.contains("tool_call_parser_invocations"),
+    }
 }
 
 /// Identifies the runtime from its own model listing rather than from the port
@@ -661,6 +760,9 @@ mod tests {
             base_url: base_url.to_string(),
             models,
             served_context_tokens: None,
+            memory_utilization: None,
+            max_concurrency: None,
+            supports_tool_calls: false,
         }
     }
 
@@ -846,6 +948,81 @@ mod tests {
     }
 
     #[test]
+    fn reads_server_capacity_from_a_vllm_metrics_body() {
+        // Real shape: the engine publishes its resolved config as labels.
+        let body = concat!(
+            "# HELP vllm:cache_config_info Cache config\n",
+            "vllm:cache_config_info{cache_dtype=\"fp8\",engine=\"0\",",
+            "gpu_memory_utilization=\"0.85\",kv_cache_max_concurrency=\"71.98449612403101\",",
+            "kv_cache_size_tokens=\"9435151\",num_gpu_blocks=\"9286\"} 1.0\n",
+            "vllm:tool_call_parser_invocations_total{model_name=\"qwen3-coder\"} 0.0\n",
+        );
+
+        let cap = parse_server_capacity(body);
+
+        assert_eq!(cap.memory_utilization, Some(0.85));
+        assert_eq!(cap.max_concurrency, Some(71));
+        assert_eq!(cap.kv_cache_tokens, Some(9_435_151));
+        // The parser metric only exists when a tool-call parser is loaded.
+        assert!(cap.supports_tool_calls);
+    }
+
+    #[test]
+    fn a_runtime_without_a_tool_parser_does_not_claim_tools() {
+        let body = "vllm:cache_config_info{gpu_memory_utilization=\"0.90\"} 1.0\n";
+
+        let cap = parse_server_capacity(body);
+
+        assert_eq!(cap.memory_utilization, Some(0.90));
+        assert!(!cap.supports_tool_calls);
+        assert_eq!(cap.max_concurrency, None);
+    }
+
+    #[test]
+    fn nonsense_capacity_values_are_ignored() {
+        let body = concat!(
+            "vllm:cache_config_info{gpu_memory_utilization=\"0\",",
+            "kv_cache_max_concurrency=\"0.4\",kv_cache_size_tokens=\"0\"} 1.0\n",
+        );
+
+        let cap = parse_server_capacity(body);
+
+        assert_eq!(cap.memory_utilization, None); // 0 is not a share
+        assert_eq!(cap.max_concurrency, None); // below one sequence
+        assert_eq!(cap.kv_cache_tokens, None);
+    }
+
+    #[test]
+    fn detection_records_server_capacity_alongside_the_listing() {
+        let clusters = detect_with_text(
+            vec!["http://127.0.0.1:8000".to_string()],
+            fetcher(vec![(
+                "http://127.0.0.1:8000/v1/models",
+                json!({"data": [{"id": "qwen3-coder", "owned_by": "vllm"}]}),
+            )]),
+            |url| {
+                if url.ends_with("/metrics") {
+                    Some(
+                        concat!(
+                            "vllm:cache_config_info{gpu_memory_utilization=\"0.85\",",
+                            "kv_cache_max_concurrency=\"71.9\"} 1.0\n",
+                            "vllm:tool_call_parser_invocations_total{} 0.0\n",
+                        )
+                        .to_string(),
+                    )
+                } else {
+                    None
+                }
+            },
+        );
+
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].memory_utilization, Some(0.85));
+        assert_eq!(clusters[0].max_concurrency, Some(71));
+        assert!(clusters[0].supports_tool_calls);
+    }
+
+    #[test]
     fn reads_the_context_window_the_server_actually_serves() {
         // A llama.cpp server started with `-c 256` serves 256 tokens even when
         // the GGUF was trained at 1M, so /props is the authority.
@@ -855,6 +1032,38 @@ mod tests {
         assert_eq!(parse_served_context(&json!({"n_ctx": 8192})), Some(8192));
         assert_eq!(parse_served_context(&json!({"n_ctx": 0})), None);
         assert_eq!(parse_served_context(&json!({})), None);
+    }
+
+    #[test]
+    fn reads_the_served_window_from_a_vllm_listing() {
+        // vLLM reports the served window on the model entry, not via /props.
+        let body =
+            json!({"data": [{"id": "qwen3-coder", "owned_by": "vllm", "max_model_len": 131072}]});
+
+        assert_eq!(parse_listing_context(&body), Some(131_072));
+        assert_eq!(parse_listing_context(&json!({"data": [{"id": "m"}]})), None);
+    }
+
+    #[test]
+    fn props_wins_over_the_listing_when_both_are_present() {
+        // llama.cpp can be started with a smaller -c than the model allows, and
+        // /props is what it will actually honour.
+        let clusters = detect_with_text(
+            vec!["http://127.0.0.1:8000".to_string()],
+            fetcher(vec![
+                (
+                    "http://127.0.0.1:8000/v1/models",
+                    json!({"data": [{"id": "m", "owned_by": "llamacpp", "max_model_len": 131072}]}),
+                ),
+                (
+                    "http://127.0.0.1:8000/props",
+                    json!({"default_generation_settings": {"n_ctx": 4096}}),
+                ),
+            ]),
+            |_| None,
+        );
+
+        assert_eq!(clusters[0].served_context_tokens, Some(4096));
     }
 
     #[test]
