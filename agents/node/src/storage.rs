@@ -84,6 +84,10 @@ pub struct AgentConfig {
     pub contributed_cluster: Option<ContributedCluster>,
     #[serde(default)]
     pub cluster_prompt_declined: bool,
+    /// Concurrent jobs this node will accept from the control plane, set by the
+    /// contributor. Wins over any figure derived from memory or runtime limits.
+    #[serde(default)]
+    pub max_jobs: Option<u32>,
 }
 
 impl Default for AgentConfig {
@@ -106,6 +110,7 @@ impl Default for AgentConfig {
             fallback_runtime: None,
             contributed_cluster: None,
             cluster_prompt_declined: false,
+            max_jobs: None,
         }
     }
 }

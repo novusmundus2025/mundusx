@@ -83,6 +83,13 @@ pub struct Config {
     /// Remembers a "no" so install/start stop asking on every run.
     #[serde(default)]
     pub cluster_prompt_declined: bool,
+    /// Concurrent jobs this node will accept from the control plane.
+    ///
+    /// Set by the contributor. Runtime ceilings describe what a machine *could*
+    /// hold; this is what its owner agreed to give away, so it wins over any
+    /// derived figure and applies whether or not a cluster is contributed.
+    #[serde(default)]
+    pub max_jobs: Option<u32>,
 }
 
 impl Default for Config {
@@ -106,6 +113,7 @@ impl Default for Config {
             fallback_runtime: None,
             contributed_cluster: None,
             cluster_prompt_declined: false,
+            max_jobs: None,
         }
     }
 }

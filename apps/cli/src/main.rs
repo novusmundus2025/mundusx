@@ -100,6 +100,9 @@ enum Commands {
         /// Probe this cluster endpoint instead of the well-known local ports
         #[arg(long)]
         cluster_url: Option<String>,
+        /// Concurrent jobs to accept on a contributed cluster (skips the prompt)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=64))]
+        max_jobs: Option<u32>,
     },
     /// Start the MundusX network
     Start {
@@ -118,6 +121,9 @@ enum Commands {
         /// Probe this cluster endpoint instead of the well-known local ports
         #[arg(long)]
         cluster_url: Option<String>,
+        /// Concurrent jobs to accept on a contributed cluster (skips the prompt)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=64))]
+        max_jobs: Option<u32>,
     },
     /// Join the MundusX network (boots local state on first use)
     Connect,
@@ -301,6 +307,9 @@ enum ClusterCommands {
         /// Model this node should advertise from the cluster
         #[arg(long)]
         model: Option<String>,
+        /// Concurrent jobs to accept on this cluster
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=64))]
+        max_jobs: Option<u32>,
     },
     /// Stop contributing the recorded cluster and allow the prompt again
     Forget,
@@ -5023,6 +5032,93 @@ fn cluster_choice_flag(contribute: bool, no_contribute: bool) -> Option<bool> {
     }
 }
 
+/// Asks how many concurrent jobs this node should accept from the control
+/// plane.
+///
+/// Derived figures — a runtime's reported ceiling, or the memory ladder for a
+/// MundusX-managed runtime — describe what a machine *could* hold, not what its
+/// owner wants to give away. `None` means "leave it derived", which is the
+/// right answer for most contributors and so is offered first.
+fn prompt_max_jobs(context: &str, default_choice: Option<u32>) -> Option<u32> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return None;
+    }
+
+    let header = vec![
+        "How many jobs may MundusX run at once on this node?".to_string(),
+        format!("  {context}"),
+        "  jobs beyond the limit wait rather than slowing the ones already running".to_string(),
+        "-------------------------------------------------------------------------".to_string(),
+    ];
+
+    const CHOICES: [u32; 5] = [1, 2, 4, 8, 16];
+    let mut options = vec![(
+        "Automatic".to_string(),
+        "let MundusX size this from the machine and runtime".to_string(),
+    )];
+    options.extend(CHOICES.iter().map(|jobs| {
+        (
+            format!("{jobs} job{}", if *jobs == 1 { "" } else { "s" }),
+            match jobs {
+                1 => "one at a time; the machine stays mostly yours".to_string(),
+                16 => "heavy; most of a busy machine".to_string(),
+                _ => String::new(),
+            },
+        )
+    }));
+    options.push(("custom".to_string(), "type an exact number".to_string()));
+
+    let selected = default_choice
+        .and_then(|jobs| CHOICES.iter().position(|choice| *choice == jobs))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+
+    match select_menu_option(
+        &header,
+        &options,
+        "Use ↑/↓ or Tab/Shift+Tab and Enter",
+        selected,
+    ) {
+        // "Automatic", or Esc: leave it derived.
+        Some(0) | None => None,
+        Some(index) if index <= CHOICES.len() => Some(CHOICES[index - 1]),
+        Some(_) => read_custom_max_jobs(),
+    }
+}
+
+/// Context line for the job-limit prompt, naming what the runtime reports.
+fn cluster_capacity_context(cluster: &DetectedCluster) -> String {
+    match cluster.max_concurrency {
+        Some(reported) => format!(
+            "the cluster at {} reports room for about {reported} concurrent requests",
+            cluster.base_url
+        ),
+        None => format!(
+            "the cluster at {} does not report its concurrency",
+            cluster.base_url
+        ),
+    }
+}
+
+fn read_custom_max_jobs() -> Option<u32> {
+    loop {
+        print!("Concurrent jobs (1-64, blank to keep the default): ");
+        let _ = io::stdout().flush();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            return None;
+        }
+        let value = input.trim();
+        if value.is_empty() {
+            return None;
+        }
+        match value.parse::<u32>() {
+            Ok(parsed) if (1..=64).contains(&parsed) => return Some(parsed),
+            _ => eprintln!("enter a whole number from 1 through 64"),
+        }
+    }
+}
+
 fn contributed_cluster_from(
     cluster: &DetectedCluster,
     model: Option<String>,
@@ -5101,8 +5197,15 @@ fn detect_clusters_for_setup(cluster_url: Option<&str>) -> Vec<DetectedCluster> 
 }
 
 /// Records a cluster as contributed and prints the confirmation panel.
-fn contribute_detected_cluster(config: &mut Config, cluster: &DetectedCluster) {
+fn contribute_detected_cluster(
+    config: &mut Config,
+    cluster: &DetectedCluster,
+    max_jobs: Option<u32>,
+) {
     let contributed = contributed_cluster_from(cluster, None);
+    if let Some(jobs) = max_jobs.filter(|value| *value > 0) {
+        config.max_jobs = Some(jobs);
+    }
     print_cluster_adopted_panel(&contributed);
     config.contributed_cluster = Some(contributed);
     config.cluster_prompt_declined = false;
@@ -5120,6 +5223,8 @@ fn maybe_contribute_running_cluster(
     // True when the caller already offered the cluster list itself, so this
     // function must not open a second picker.
     suppress_prompt: bool,
+    // Set by `--max-jobs`, which answers the prompt without asking.
+    forced_max_jobs: Option<u32>,
 ) -> bool {
     let explicit_probe = cluster_url.is_some();
     if pre_detected.is_none() && cluster::detection_disabled() && !explicit_probe {
@@ -5173,7 +5278,10 @@ fn maybe_contribute_running_cluster(
             let ranked = cluster::servable_clusters_by_size(clusters);
             match prompt_cluster_pick(&ranked) {
                 ClusterPickOutcome::Picked(index) => {
-                    contribute_detected_cluster(config, ranked[index]);
+                    let chosen = ranked[index];
+                    let jobs = forced_max_jobs
+                        .or_else(|| prompt_max_jobs(&cluster_capacity_context(chosen), None));
+                    contribute_detected_cluster(config, chosen, jobs);
                     return true;
                 }
                 ClusterPickOutcome::Declined => false,
@@ -5199,7 +5307,9 @@ fn maybe_contribute_running_cluster(
         return false;
     }
 
-    contribute_detected_cluster(config, &cluster);
+    let jobs =
+        forced_max_jobs.or_else(|| prompt_max_jobs(&cluster_capacity_context(&cluster), None));
+    contribute_detected_cluster(config, &cluster, jobs);
     true
 }
 
@@ -5265,7 +5375,7 @@ fn run_cluster_scan(cluster_url: Option<&str>, json: bool) {
     theme::note("listed biggest model first; run `opengpu cluster use <url>` to contribute one");
 }
 
-fn run_cluster_use(url: &str, model: Option<String>) {
+fn run_cluster_use(url: &str, model: Option<String>, max_jobs: Option<u32>) {
     let Some(base_url) = cluster::normalize_base_url(url) else {
         eprintln!("clusterError: `{url}` must be a full http:// or https:// URL");
         std::process::exit(2);
@@ -5297,6 +5407,9 @@ fn run_cluster_use(url: &str, model: Option<String>) {
 
     let mut config = current_config_or_default();
     let contributed = contributed_cluster_from(&detected, model);
+    if let Some(jobs) = max_jobs.filter(|value| *value > 0) {
+        config.max_jobs = Some(jobs);
+    }
     print_cluster_adopted_panel(&contributed);
     config.contributed_cluster = Some(contributed);
     config.cluster_prompt_declined = false;
@@ -5456,6 +5569,7 @@ fn run_install(
     cap_percent: Option<u8>,
     cluster_choice: Option<bool>,
     cluster_url: Option<String>,
+    max_jobs: Option<u32>,
 ) {
     let profile = detect_machine_profile();
     let mut config = if config_exists() {
@@ -5471,6 +5585,12 @@ fn run_install(
     };
     config.backend_preference = profile.backend;
     let detected = resolved_backend(&config);
+
+    // The contributor's job limit is a property of the node, not of whichever
+    // runtime it ends up serving, so record it before anything is detected.
+    if let Some(jobs) = max_jobs.filter(|value| *value > 0) {
+        config.max_jobs = Some(jobs);
+    }
 
     // Probe up front so the cluster step after the cap has results ready.
     let detected_clusters = detect_clusters_for_setup(cluster_url.as_deref());
@@ -5510,7 +5630,10 @@ fn run_install(
                 PromptOutcome::Cancelled => break None,
                 PromptOutcome::UseCluster => match prompt_cluster_pick(&ranked_clusters) {
                     ClusterPickOutcome::Picked(index) => {
-                        contribute_detected_cluster(&mut config, ranked_clusters[index]);
+                        let chosen = ranked_clusters[index];
+                        let jobs = max_jobs
+                            .or_else(|| prompt_max_jobs(&cluster_capacity_context(chosen), None));
+                        contribute_detected_cluster(&mut config, chosen, jobs);
                         contributed_from_menu = true;
                         // A contributed cluster is not gated by the cap, but the
                         // node still needs one saved to pass local policy.
@@ -5541,6 +5664,7 @@ fn run_install(
             Some(&detected_clusters),
             // Interactive installs ask through the contribution level menu.
             !interactive,
+            max_jobs,
         );
 
     if should_prompt_model_selection(&config) {
@@ -5551,6 +5675,18 @@ fn run_install(
 
     if !contributing_cluster {
         configure_macos_runtime(&mut config);
+
+        // A contributor running a MundusX-managed runtime gets the same say
+        // over concurrency as one contributing a cluster.
+        if config.max_jobs.is_none() && interactive {
+            let context = format!(
+                "MundusX runs the model here, sized from this machine's memory and a {}% cap",
+                config.contribution_percent
+            );
+            if let Some(jobs) = prompt_max_jobs(&context, None) {
+                config.max_jobs = Some(jobs);
+            }
+        }
     }
 
     match save_config(&config) {
@@ -5765,6 +5901,8 @@ fn prompt_contributed_cluster_change(
     detected: &DetectedCluster,
     was: &str,
 ) -> bool {
+    // Switching models does not change how much of the node is on offer.
+    let existing_max_jobs = config.max_jobs;
     let now = detected.primary_model().unwrap_or("nothing").to_string();
     let header = vec![
         format!("The contributed cluster changed at {}", detected.base_url),
@@ -5789,7 +5927,7 @@ fn prompt_contributed_cluster_change(
 
     match select_menu_option(&header, &options, "Use ↑/↓ or Tab/Shift+Tab and Enter", 0) {
         Some(0) => {
-            contribute_detected_cluster(config, detected);
+            contribute_detected_cluster(config, detected, existing_max_jobs);
             true
         }
         Some(1) => {
@@ -5805,6 +5943,7 @@ fn prompt_contributed_cluster_change(
 
 /// The cluster did not answer at all.
 fn prompt_contributed_cluster_unreachable(config: &mut Config, base_url: &str) -> bool {
+    let existing_max_jobs = config.max_jobs;
     let others: Vec<DetectedCluster> = cluster::detect_running_clusters()
         .into_iter()
         .filter(|entry| entry.base_url != base_url && entry.is_servable())
@@ -5836,7 +5975,7 @@ fn prompt_contributed_cluster_unreachable(config: &mut Config, base_url: &str) -
     match select_menu_option(&header, &options, "Use ↑/↓ or Tab/Shift+Tab and Enter", 0) {
         Some(index) if index == pick_index => match prompt_cluster_pick(&ranked) {
             ClusterPickOutcome::Picked(chosen) => {
-                contribute_detected_cluster(config, ranked[chosen]);
+                contribute_detected_cluster(config, ranked[chosen], existing_max_jobs);
                 true
             }
             ClusterPickOutcome::Declined => {
@@ -5866,6 +6005,7 @@ fn run_start_or_connect(
     mode: AgentLaunchMode,
     cluster_choice: Option<bool>,
     cluster_url: Option<String>,
+    max_jobs: Option<u32>,
 ) {
     // auto-init on first run
     if !config_exists() {
@@ -5901,6 +6041,10 @@ fn run_start_or_connect(
             }
         }
     }
+    if let Some(jobs) = max_jobs.filter(|value| *value > 0) {
+        config.max_jobs = Some(jobs);
+    }
+
     // A recorded cluster can disappear or swap models between runs, so check it
     // before this node advertises anything about it.
     if !verify_contributed_cluster(&mut config) {
@@ -5914,6 +6058,7 @@ fn run_start_or_connect(
         cluster_url.as_deref(),
         None,
         false,
+        max_jobs,
     );
 
     if should_prompt_model_selection(&config) {
@@ -5986,6 +6131,7 @@ fn main() {
             contribute_cluster,
             no_contribute_cluster,
             cluster_url,
+            max_jobs,
         } => run_install(
             public,
             private,
@@ -5993,6 +6139,7 @@ fn main() {
             cap_percent,
             cluster_choice_flag(contribute_cluster, no_contribute_cluster),
             cluster_url,
+            max_jobs,
         ),
         Commands::Start {
             background,
@@ -6000,6 +6147,7 @@ fn main() {
             contribute_cluster,
             no_contribute_cluster,
             cluster_url,
+            max_jobs,
         } => {
             let mode = if background {
                 AgentLaunchMode::Background
@@ -6012,9 +6160,10 @@ fn main() {
                 mode,
                 cluster_choice_flag(contribute_cluster, no_contribute_cluster),
                 cluster_url,
+                max_jobs,
             )
         }
-        Commands::Connect => run_start_or_connect(AgentLaunchMode::Background, None, None),
+        Commands::Connect => run_start_or_connect(AgentLaunchMode::Background, None, None, None),
         Commands::Pause => {
             if !config_exists() {
                 eprintln!("not connected");
@@ -6041,7 +6190,7 @@ fn main() {
                 }
             }
         }
-        Commands::Resume => run_start_or_connect(AgentLaunchMode::Background, None, None),
+        Commands::Resume => run_start_or_connect(AgentLaunchMode::Background, None, None, None),
         Commands::Login { token } => {
             let mut config = current_config_or_default();
             let token = match token {
@@ -6526,7 +6675,11 @@ fn main() {
         },
         Commands::Cluster { command } => match command {
             ClusterCommands::Scan { url, json } => run_cluster_scan(url.as_deref(), json),
-            ClusterCommands::Use { url, model } => run_cluster_use(&url, model),
+            ClusterCommands::Use {
+                url,
+                model,
+                max_jobs,
+            } => run_cluster_use(&url, model, max_jobs),
             ClusterCommands::Forget => run_cluster_forget(),
         },
         Commands::Update => {
@@ -6729,16 +6882,17 @@ fn main() {
 mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, classify_contributed_cluster,
-        cluster, cluster_choice_flag, contributed_cluster_from, control_plane_endpoint,
-        cuda_doctor_payload, doctor_payload, effective_active_model, graph_progress_counts,
-        handles_terminal_key, is_hugging_face_model_id, job_degradation_message, job_is_terminal,
-        job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
-        normalize_control_plane_url, parse_worker_output, refresh_contributed_cluster_context,
-        remote_job_output, resolve_install_control_plane_url, runtime_metrics_from_output,
-        runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
-        should_prompt_model_selection, start_preflight_blockers, terminal_line_endings,
-        vllm_doctor_payload, Cli, ClusterCommands, Commands, ContributedCluster,
-        ContributedClusterCheck, ExecutionMode, JobsCommands, PowerState, PUBLIC_CONTROL_PLANE_URL,
+        cluster, cluster_choice_flag, contribute_detected_cluster, contributed_cluster_from,
+        control_plane_endpoint, cuda_doctor_payload, doctor_payload, effective_active_model,
+        graph_progress_counts, handles_terminal_key, is_hugging_face_model_id,
+        job_degradation_message, job_is_terminal, job_status_path, job_wait_progress_signature,
+        local_readiness, logs_payload, normalize_control_plane_url, parse_worker_output,
+        refresh_contributed_cluster_context, remote_job_output, resolve_install_control_plane_url,
+        runtime_metrics_from_output, runtime_metrics_from_payload,
+        should_prefetch_vllm_catalog_model, should_prompt_model_selection,
+        start_preflight_blockers, terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands,
+        Commands, ContributedCluster, ContributedClusterCheck, ExecutionMode, JobsCommands,
+        PowerState, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -7003,6 +7157,84 @@ mod tests {
     }
 
     #[test]
+    fn max_jobs_flag_parses_on_every_contribution_path() {
+        let install = Cli::try_parse_from([
+            "opengpu",
+            "install",
+            "--public",
+            "--contribute-cluster",
+            "--max-jobs",
+            "8",
+        ])
+        .expect("install parses --max-jobs");
+        match install.command {
+            Commands::Install { max_jobs, .. } => assert_eq!(max_jobs, Some(8)),
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let start = Cli::try_parse_from(["opengpu", "start", "--max-jobs", "4"])
+            .expect("start parses --max-jobs");
+        match start.command {
+            Commands::Start { max_jobs, .. } => assert_eq!(max_jobs, Some(4)),
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let use_cluster = Cli::try_parse_from([
+            "opengpu",
+            "cluster",
+            "use",
+            "http://127.0.0.1:8000",
+            "--max-jobs",
+            "16",
+        ])
+        .expect("cluster use parses --max-jobs");
+        match use_cluster.command {
+            Commands::Cluster {
+                command: ClusterCommands::Use { max_jobs, .. },
+            } => assert_eq!(max_jobs, Some(16)),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_jobs_outside_the_supported_range_is_rejected() {
+        // Zero would disable the node silently; very large values would let one
+        // flag undo every concurrency limit.
+        assert!(Cli::try_parse_from(["opengpu", "install", "--max-jobs", "0"]).is_err());
+        assert!(Cli::try_parse_from(["opengpu", "install", "--max-jobs", "65"]).is_err());
+        assert!(Cli::try_parse_from(["opengpu", "install", "--max-jobs", "1"]).is_ok());
+        assert!(Cli::try_parse_from(["opengpu", "install", "--max-jobs", "64"]).is_ok());
+    }
+
+    #[test]
+    fn the_node_keeps_the_chosen_job_limit_over_runtime_ceilings() {
+        let detected = cluster::DetectedCluster {
+            kind: cluster::ClusterKind::Vllm,
+            base_url: "http://127.0.0.1:8000".to_string(),
+            models: vec![cluster::ModelInfo::new("qwen3-coder", None, None)],
+            served_context_tokens: Some(131_072),
+            memory_utilization: Some(0.85),
+            max_concurrency: Some(71),
+            max_num_seqs: None,
+            supports_tool_calls: true,
+        };
+
+        let mut config = Config::default();
+        contribute_detected_cluster(&mut config, &detected, Some(8));
+
+        // The runtime says 71; the contributor said 8, and that is a property
+        // of the node rather than of the cluster record.
+        assert_eq!(config.max_jobs, Some(8));
+        assert_eq!(
+            config
+                .contributed_cluster
+                .as_ref()
+                .and_then(|cluster| cluster.max_concurrency),
+            Some(71)
+        );
+    }
+
+    #[test]
     fn cluster_commands_parse() {
         let scan = Cli::try_parse_from(["opengpu", "cluster", "scan", "--json"])
             .expect("cluster scan should parse");
@@ -7036,7 +7268,7 @@ mod tests {
         .expect("cluster use parses");
         match use_cluster.command {
             Commands::Cluster {
-                command: ClusterCommands::Use { url, model },
+                command: ClusterCommands::Use { url, model, .. },
             } => {
                 assert_eq!(url, "http://127.0.0.1:1234");
                 assert_eq!(model.as_deref(), Some("qwen2.5-7b"));
