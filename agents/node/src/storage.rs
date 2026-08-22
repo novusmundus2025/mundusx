@@ -45,6 +45,9 @@ pub struct ContributedCluster {
     /// Configured scheduler ceiling (vLLM `max_num_seqs`), when reported.
     #[serde(default)]
     pub max_num_seqs: Option<u32>,
+    /// Total KV-cache capacity reported by the runtime metrics endpoint.
+    #[serde(default)]
+    pub kv_cache_tokens: Option<u64>,
     /// True when the runtime has a tool-call parser loaded.
     #[serde(default)]
     pub supports_tool_calls: bool,

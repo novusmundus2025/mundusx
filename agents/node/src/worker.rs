@@ -4583,6 +4583,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         };

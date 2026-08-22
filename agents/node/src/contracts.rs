@@ -309,6 +309,11 @@ pub struct ModelCapability {
     pub context_tokens: Option<u32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    /// How output admission is calculated. `context_window` means the runtime
+    /// has no independent output ceiling: input, output, and safety overhead
+    /// must fit inside the served context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_capacity_mode: Option<String>,
     #[serde(default)]
     pub capacity_class: String,
     #[serde(default)]
@@ -370,6 +375,10 @@ pub struct NodeCapabilityProfile {
     #[serde(default)]
     pub max_context_tokens: Option<u32>,
     #[serde(default)]
+    pub max_num_seqs: Option<u32>,
+    #[serde(default)]
+    pub kv_cache_size_tokens: Option<u64>,
+    #[serde(default)]
     pub total_vram_mb: Option<u32>,
     #[serde(default)]
     pub available_vram_mb: Option<u32>,
@@ -401,6 +410,8 @@ impl Default for NodeCapabilityProfile {
             available_memory_mb: None,
             capacity_class: String::new(),
             max_context_tokens: None,
+            max_num_seqs: None,
+            kv_cache_size_tokens: None,
             total_vram_mb: None,
             available_vram_mb: None,
             supports_vision: false,

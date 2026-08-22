@@ -5149,6 +5149,7 @@ fn contributed_cluster_from(
         memory_utilization: cluster.memory_utilization,
         max_concurrency: cluster.max_concurrency,
         max_num_seqs: cluster.max_num_seqs,
+        kv_cache_tokens: cluster.kv_cache_tokens,
         supports_tool_calls: cluster.supports_tool_calls,
         adopted_at: Some(now_unix_seconds()),
     }
@@ -5889,6 +5890,9 @@ fn refresh_contributed_cluster_context(config: &mut Config, detected: &DetectedC
     }
     if let Some(max_concurrency) = detected.max_concurrency {
         cluster.max_concurrency = Some(max_concurrency);
+    }
+    if let Some(kv_cache_tokens) = detected.kv_cache_tokens {
+        cluster.kv_cache_tokens = Some(kv_cache_tokens);
     }
     if let Some(memory_utilization) = detected.memory_utilization {
         cluster.memory_utilization = Some(memory_utilization);
@@ -7216,6 +7220,7 @@ mod tests {
             memory_utilization: Some(0.85),
             max_concurrency: Some(71),
             max_num_seqs: None,
+            kv_cache_tokens: Some(9_435_151),
             supports_tool_calls: true,
         };
 
@@ -7231,6 +7236,13 @@ mod tests {
                 .as_ref()
                 .and_then(|cluster| cluster.max_concurrency),
             Some(71)
+        );
+        assert_eq!(
+            config
+                .contributed_cluster
+                .as_ref()
+                .and_then(|cluster| cluster.kv_cache_tokens),
+            Some(9_435_151)
         );
     }
 
@@ -7291,6 +7303,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         }
@@ -7308,6 +7321,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
         }
     }
@@ -7403,6 +7417,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7427,6 +7442,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7469,6 +7485,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7501,6 +7518,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7527,6 +7545,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7537,6 +7556,12 @@ mod tests {
     #[test]
     fn contributing_a_cluster_skips_the_mundusx_model_selector() {
         let mut config = Config::default();
+        config.model_dir = Some(
+            std::env::temp_dir()
+                .join(format!("opengpu-empty-models-{}", uuid::Uuid::new_v4()))
+                .display()
+                .to_string(),
+        );
         assert!(should_prompt_model_selection(&config));
 
         config.contributed_cluster = Some(ContributedCluster {
@@ -7552,6 +7577,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7573,6 +7599,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
         };
 
@@ -7601,6 +7628,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: Some("1".to_string()),
         });
