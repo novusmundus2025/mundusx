@@ -137,6 +137,11 @@ For an adopted vLLM cluster, advertised slots use the runtime's configured
 CLI reads only that numeric limit from local `/server_info` and refreshes it
 when the cluster is re-verified; it does not persist the diagnostic response.
 
+The contributed model's advertised output budget is derived from its capacity
+tier (up to 16,384 tokens for server/synthesis nodes) and never exceeds the
+context window reported by the serving runtime. It is not forced to the
+2,048-token fallback used for small or unknown local models.
+
 ## Local Development URL
 
 For the current prototype, point the agent at:
