@@ -463,12 +463,17 @@ fn enrich_model_capability(
         .or(model.context_tokens)
         .or(Some(default_context_tokens_for_model(&model)));
     model.max_output_tokens = model.max_output_tokens.or_else(|| {
-        Some(match model.capacity_class.as_str() {
+        let capacity_limit = match model.capacity_class.as_str() {
             "synthesis" | "server" => 16_384,
             "heavy" => 8_192,
             "performance" => 4_096,
             _ => 2_048,
-        })
+        };
+        Some(
+            model
+                .context_tokens
+                .map_or(capacity_limit, |context| capacity_limit.min(context)),
+        )
     });
 
     let declared = |needle: &str| {
@@ -598,10 +603,11 @@ fn build_scheduler_capabilities(
                     && cluster.model.as_deref() == Some(name.as_str()),
                 name,
                 size_bytes: cluster.model_bytes,
-                // Detection APIs often omit an output limit. Keep that hard
-                // per-model gate conservative even though the endpoint itself
-                // is advertised at the maximum cluster tier.
-                max_output_tokens: Some(2_048),
+                // Detection APIs normally report the served context rather
+                // than a separate output ceiling. Leave this unset so model
+                // enrichment derives it from the cluster's capacity tier and
+                // bounds it by that served context.
+                max_output_tokens: None,
                 ..contracts::ModelCapability::default()
             })
             .collect::<Vec<_>>()
@@ -2248,7 +2254,23 @@ mod tests {
         assert!(!profile.supports_embeddings);
         // The reported context length beats the name-based heuristic.
         assert_eq!(profile.max_context_tokens, Some(131_072));
+        assert_eq!(profile.models[0].max_output_tokens, Some(16_384));
         assert!(profile.supported_tools.contains(&"tool_use".to_string()));
+    }
+
+    #[test]
+    fn contributed_cluster_output_limit_never_exceeds_its_served_context() {
+        let mut config = cluster_config("qwen3-coder", Some(30_000_000_000), None);
+        if let Some(cluster) = config.contributed_cluster.as_mut() {
+            cluster.model_context_tokens = Some(4_096);
+        }
+
+        let health = cluster_health("qwen3-coder");
+        let capabilities = build_capabilities(&config, &health, true);
+        let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
+
+        assert_eq!(profile.models[0].context_tokens, Some(4_096));
+        assert_eq!(profile.models[0].max_output_tokens, Some(4_096));
     }
 
     #[test]
