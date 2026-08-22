@@ -175,7 +175,12 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
         resolved_backend(config),
         config.contributed_cluster.as_ref(),
     );
-    health.parallel_slots = if let Some(cluster) = config.contributed_cluster.as_ref() {
+    // The contributor's own limit governs every runtime. Derived figures —
+    // memory ladders for a managed runtime, reported ceilings for a contributed
+    // cluster — only apply when the contributor has not said otherwise.
+    health.parallel_slots = if let Some(max_jobs) = config.max_jobs.filter(|value| *value > 0) {
+        max_jobs.min(u8::MAX as u32) as u8
+    } else if let Some(cluster) = config.contributed_cluster.as_ref() {
         // The runtime publishes how many concurrent sequences it can hold, so
         // use that instead of the old hardcoded 1. Fall back to one slot only
         // when it reports nothing.
@@ -2123,6 +2128,7 @@ mod tests {
             fallback_runtime: None,
             contributed_cluster: None,
             cluster_prompt_declined: false,
+            max_jobs: None,
         }
     }
 
@@ -2319,6 +2325,59 @@ mod tests {
     }
 
     #[test]
+    fn the_contributors_limit_wins_over_runtime_ceilings() {
+        // The runtime can hold far more than the contributor wants to give.
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        cluster.max_concurrency = Some(71);
+        cluster.max_num_seqs = Some(32);
+        let mut config = cluster_config("qwen3-coder", None, None);
+        config.contributed_cluster = Some(cluster);
+        config.max_jobs = Some(8);
+
+        assert_eq!(worker_readiness(&config).0.parallel_slots, 8);
+    }
+
+    #[test]
+    fn a_contributors_limit_of_one_is_respected() {
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        cluster.max_concurrency = Some(71);
+        let mut config = cluster_config("qwen3-coder", None, None);
+        config.contributed_cluster = Some(cluster);
+        config.max_jobs = Some(1);
+
+        assert_eq!(worker_readiness(&config).0.parallel_slots, 1);
+    }
+
+    #[test]
+    fn without_a_contributor_limit_the_runtime_ceilings_still_apply() {
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        cluster.max_concurrency = Some(71);
+
+        // Falls back to the unverified cap rather than donating everything.
+        assert_eq!(contributed_cluster_slots(&cluster), 16);
+    }
+
+    #[test]
+    fn a_zero_contributor_limit_is_ignored_rather_than_disabling_the_node() {
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        cluster.max_concurrency = Some(71);
+        let mut config = cluster_config("qwen3-coder", None, None);
+        config.contributed_cluster = Some(cluster);
+        // Zero would silently disable the node, so it is ignored.
+        config.max_jobs = Some(0);
+
+        assert_eq!(worker_readiness(&config).0.parallel_slots, 16);
+    }
+
+    #[test]
     fn slots_come_from_the_runtime_and_stay_bounded() {
         let mut cluster = cluster_config("qwen3-coder", None, None)
             .contributed_cluster
@@ -2356,6 +2415,17 @@ mod tests {
 
         assert!(profile.supports_tools);
         assert!(profile.supported_tools.contains(&"tool_use".to_string()));
+    }
+
+    #[test]
+    fn a_node_without_a_cluster_also_honours_the_contributors_limit() {
+        // The memory ladder caps a managed runtime at 4 slots; a contributor
+        // donating a large machine can say otherwise.
+        let mut config = test_config();
+        config.contributed_cluster = None;
+        config.max_jobs = Some(6);
+
+        assert_eq!(worker_readiness(&config).0.parallel_slots, 6);
     }
 
     #[test]
