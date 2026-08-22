@@ -211,17 +211,20 @@ fn cap_applied_vram_mb(physical_vram_mb: Option<u32>, contribution_percent: u8) 
     })
 }
 
-/// Ceiling on slots advertised for a contributed cluster. The runtime may
-/// report capacity for dozens of sequences, but flooding a shared endpoint
-/// degrades every request, so keep the advertised figure modest.
-const MAX_CONTRIBUTED_CLUSTER_SLOTS: u32 = 16;
+/// Safety ceiling used only when the runtime reports theoretical KV capacity
+/// but does not expose its configured `max_num_seqs` scheduler limit.
+const MAX_UNVERIFIED_CLUSTER_SLOTS: u32 = 16;
 
 /// Concurrent jobs to advertise for a contributed cluster.
 fn contributed_cluster_slots(cluster: &crate::storage::ContributedCluster) -> u8 {
-    let reported = cluster.max_concurrency.unwrap_or(1).max(1);
-    reported
-        .min(MAX_CONTRIBUTED_CLUSTER_SLOTS)
-        .min(u8::MAX as u32) as u8
+    let reported = match cluster.max_num_seqs {
+        Some(configured) => configured.min(cluster.max_concurrency.unwrap_or(configured)),
+        None => cluster
+            .max_concurrency
+            .unwrap_or(1)
+            .min(MAX_UNVERIFIED_CLUSTER_SLOTS),
+    };
+    reported.max(1).min(u8::MAX as u32) as u8
 }
 
 /// Usable memory for a node serving a contributed cluster.
@@ -2154,6 +2157,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: Some("1".to_string()),
         });
@@ -2326,9 +2330,16 @@ mod tests {
         cluster.max_concurrency = Some(8);
         assert_eq!(contributed_cluster_slots(&cluster), 8);
 
-        // 71.98 reported, but flooding a shared endpoint helps nobody.
+        // Without a scheduler limit, theoretical KV capacity stays safety-bounded.
         cluster.max_concurrency = Some(71);
         assert_eq!(contributed_cluster_slots(&cluster), 16);
+
+        // Once max_num_seqs is known, it is the runtime's authoritative
+        // scheduler ceiling, still bounded by the available KV cache.
+        cluster.max_num_seqs = Some(32);
+        assert_eq!(contributed_cluster_slots(&cluster), 32);
+        cluster.max_concurrency = Some(25);
+        assert_eq!(contributed_cluster_slots(&cluster), 25);
     }
 
     #[test]

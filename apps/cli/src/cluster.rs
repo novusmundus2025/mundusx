@@ -190,6 +190,9 @@ pub struct DetectedCluster {
     /// Concurrent full-context sequences the runtime says it can hold
     /// (vLLM `kv_cache_max_concurrency`).
     pub max_concurrency: Option<u32>,
+    /// Configured scheduler ceiling (vLLM `max_num_seqs`). This is distinct
+    /// from the theoretical KV-cache capacity above.
+    pub max_num_seqs: Option<u32>,
     /// True when the runtime has a tool-call parser loaded.
     pub supports_tool_calls: bool,
 }
@@ -435,6 +438,10 @@ where
                 .as_deref()
                 .map(parse_server_capacity)
                 .unwrap_or_default();
+            let max_num_seqs = fetch(&format!("{base_url}/server_info?config_format=json"))
+                .or_else(|| fetch(&format!("{base_url}/server_info")))
+                .as_ref()
+                .and_then(parse_max_num_seqs);
             found.push(DetectedCluster {
                 kind: identify_kind(&body, &base_url),
                 base_url: base_url.clone(),
@@ -442,6 +449,7 @@ where
                 served_context_tokens,
                 memory_utilization: capacity.memory_utilization,
                 max_concurrency: capacity.max_concurrency,
+                max_num_seqs,
                 supports_tool_calls: capacity.supports_tool_calls,
             });
             break;
@@ -665,6 +673,43 @@ pub fn parse_server_capacity(body: &str) -> ServerCapacity {
     }
 }
 
+/// Reads vLLM's configured scheduler ceiling from `/server_info` without
+/// retaining the rest of the diagnostic response. Newer servers return a
+/// nested JSON config; older versions place the config in a debug string.
+pub fn parse_max_num_seqs(body: &serde_json::Value) -> Option<u32> {
+    fn visit(value: &serde_json::Value) -> Option<u32> {
+        match value {
+            serde_json::Value::Object(entries) => {
+                if let Some(limit) = entries
+                    .get("max_num_seqs")
+                    .and_then(serde_json::Value::as_u64)
+                    .filter(|limit| *limit > 0)
+                    .and_then(|limit| u32::try_from(limit).ok())
+                {
+                    return Some(limit);
+                }
+                entries.values().find_map(visit)
+            }
+            serde_json::Value::Array(entries) => entries.iter().find_map(visit),
+            serde_json::Value::String(raw) => parse_named_positive_u32(raw, "max_num_seqs"),
+            _ => None,
+        }
+    }
+
+    visit(body)
+}
+
+fn parse_named_positive_u32(raw: &str, name: &str) -> Option<u32> {
+    let start = raw.find(name)? + name.len();
+    let separator = raw[start..].find(|character| matches!(character, ':' | '='))? + start + 1;
+    let value = raw[separator..].trim_start();
+    if value.starts_with('-') {
+        return None;
+    }
+    let digits: String = value.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<u32>().ok().filter(|value| *value > 0)
+}
+
 /// Identifies the runtime from its own model listing rather than from the port
 /// it happens to occupy. A llama.cpp server on `8000` is llama.cpp, not vLLM.
 pub fn identify_kind(body: &serde_json::Value, base_url: &str) -> ClusterKind {
@@ -762,6 +807,7 @@ mod tests {
             served_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
         }
     }
@@ -996,10 +1042,16 @@ mod tests {
     fn detection_records_server_capacity_alongside_the_listing() {
         let clusters = detect_with_text(
             vec!["http://127.0.0.1:8000".to_string()],
-            fetcher(vec![(
-                "http://127.0.0.1:8000/v1/models",
-                json!({"data": [{"id": "qwen3-coder", "owned_by": "vllm"}]}),
-            )]),
+            fetcher(vec![
+                (
+                    "http://127.0.0.1:8000/v1/models",
+                    json!({"data": [{"id": "qwen3-coder", "owned_by": "vllm"}]}),
+                ),
+                (
+                    "http://127.0.0.1:8000/server_info?config_format=json",
+                    json!({"vllm_config": {"scheduler_config": {"max_num_seqs": 32}}}),
+                ),
+            ]),
             |url| {
                 if url.ends_with("/metrics") {
                     Some(
@@ -1019,7 +1071,25 @@ mod tests {
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].memory_utilization, Some(0.85));
         assert_eq!(clusters[0].max_concurrency, Some(71));
+        assert_eq!(clusters[0].max_num_seqs, Some(32));
         assert!(clusters[0].supports_tool_calls);
+    }
+
+    #[test]
+    fn reads_max_num_seqs_from_structured_and_legacy_server_info() {
+        assert_eq!(
+            parse_max_num_seqs(&json!({
+                "vllm_config": {"scheduler_config": {"max_num_seqs": 32}}
+            })),
+            Some(32)
+        );
+        assert_eq!(
+            parse_max_num_seqs(&json!({
+                "vllm_config": "SchedulerConfig(max_num_seqs=20, max_num_batched_tokens=8192)"
+            })),
+            Some(20)
+        );
+        assert_eq!(parse_max_num_seqs(&json!({"max_num_seqs": 0})), None);
     }
 
     #[test]

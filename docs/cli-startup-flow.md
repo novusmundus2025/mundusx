@@ -166,7 +166,7 @@ A contributed cluster changes what the node reports to the control plane:
 | `runtime_mode` | `contributed-cluster` |
 | `capacity_class` | derived from the advertised model: `>=70B` synthesis, `>=30B` heavy, `>=13B` performance, `>=7B` standard, else micro; on-disk size is used when the parameter count is unknown, and the host-memory ladder when neither is reported |
 | `usable_vram_mb` | absent - the cluster owns its own memory, so the contribution cap produces no VRAM budget |
-| `parallel_slots` | `1` - the cluster does its own batching and its configuration is not visible |
+| `parallel_slots` | the lower of vLLM's configured `max_num_seqs` and its full-context KV-cache concurrency; if `/server_info` is unavailable, KV capacity is safety-capped at 16; non-reporting runtimes fall back to 1 |
 | `roles` | `reducer` at heavy-or-above and `synthesizer` at synthesis-or-above, from that capacity class |
 
 Roles matter because the control plane gates `reducer` and `synthesizer`

@@ -5052,6 +5052,7 @@ fn contributed_cluster_from(
             .or_else(|| advertised.and_then(|entry| entry.context_tokens)),
         memory_utilization: cluster.memory_utilization,
         max_concurrency: cluster.max_concurrency,
+        max_num_seqs: cluster.max_num_seqs,
         supports_tool_calls: cluster.supports_tool_calls,
         adopted_at: Some(now_unix_seconds()),
     }
@@ -5743,6 +5744,18 @@ fn refresh_contributed_cluster_context(config: &mut Config, detected: &DetectedC
             served.unwrap_or_default()
         );
         cluster.model_context_tokens = served;
+    }
+    if let Some(max_num_seqs) = detected.max_num_seqs {
+        if cluster.max_num_seqs != Some(max_num_seqs) {
+            println!("clusterConcurrency: max_num_seqs is now {max_num_seqs}");
+            cluster.max_num_seqs = Some(max_num_seqs);
+        }
+    }
+    if let Some(max_concurrency) = detected.max_concurrency {
+        cluster.max_concurrency = Some(max_concurrency);
+    }
+    if let Some(memory_utilization) = detected.memory_utilization {
+        cluster.memory_utilization = Some(memory_utilization);
     }
 }
 
@@ -6720,8 +6733,8 @@ mod tests {
         cuda_doctor_payload, doctor_payload, effective_active_model, graph_progress_counts,
         handles_terminal_key, is_hugging_face_model_id, job_degradation_message, job_is_terminal,
         job_status_path, job_wait_progress_signature, local_readiness, logs_payload,
-        normalize_control_plane_url, parse_worker_output, remote_job_output,
-        resolve_install_control_plane_url, runtime_metrics_from_output,
+        normalize_control_plane_url, parse_worker_output, refresh_contributed_cluster_context,
+        remote_job_output, resolve_install_control_plane_url, runtime_metrics_from_output,
         runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
         should_prompt_model_selection, start_preflight_blockers, terminal_line_endings,
         vllm_doctor_payload, Cli, ClusterCommands, Commands, ContributedCluster,
@@ -7045,6 +7058,7 @@ mod tests {
             model_context_tokens: Some(1536),
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         }
@@ -7061,6 +7075,7 @@ mod tests {
             served_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
         }
     }
@@ -7073,6 +7088,23 @@ mod tests {
             classify_contributed_cluster(Some(&recorded), Some(probed(&["UD-IQ2_M"]))),
             ContributedClusterCheck::Unchanged
         );
+    }
+
+    #[test]
+    fn reverify_refreshes_an_adopted_clusters_runtime_capacity() {
+        let mut config = Config::default();
+        config.contributed_cluster = Some(recorded_cluster("qwen3-coder"));
+        let mut detected = probed(&["qwen3-coder"]);
+        detected.max_num_seqs = Some(32);
+        detected.max_concurrency = Some(25);
+        detected.memory_utilization = Some(0.85);
+
+        refresh_contributed_cluster_context(&mut config, &detected);
+
+        let cluster = config.contributed_cluster.as_ref().expect("cluster");
+        assert_eq!(cluster.max_num_seqs, Some(32));
+        assert_eq!(cluster.max_concurrency, Some(25));
+        assert_eq!(cluster.memory_utilization, Some(0.85));
     }
 
     #[test]
@@ -7138,6 +7170,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7161,6 +7194,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7202,6 +7236,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7233,6 +7268,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7258,6 +7294,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7282,6 +7319,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         });
@@ -7302,6 +7340,7 @@ mod tests {
             served_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
         };
 
@@ -7329,6 +7368,7 @@ mod tests {
             model_context_tokens: Some(131_072),
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: Some("1".to_string()),
         });

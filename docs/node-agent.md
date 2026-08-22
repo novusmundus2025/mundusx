@@ -132,6 +132,11 @@ When connected and policy-allowed, the run loop keeps heartbeats flowing while i
 8. Include output, error, duration, model/runtime, backend, worker ID, and node ID in each completion report.
 9. Write and send the next ready or paused heartbeat after no active or newly claimable work remains.
 
+For an adopted vLLM cluster, advertised slots use the runtime's configured
+`max_num_seqs`, bounded by the KV cache's full-context sequence capacity. The
+CLI reads only that numeric limit from local `/server_info` and refreshes it
+when the cluster is re-verified; it does not persist the diagnostic response.
+
 ## Local Development URL
 
 For the current prototype, point the agent at:

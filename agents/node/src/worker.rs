@@ -4582,6 +4582,7 @@ mod tests {
             model_context_tokens: None,
             memory_utilization: None,
             max_concurrency: None,
+            max_num_seqs: None,
             supports_tool_calls: false,
             adopted_at: None,
         };
