@@ -193,6 +193,8 @@ pub struct DetectedCluster {
     /// Configured scheduler ceiling (vLLM `max_num_seqs`). This is distinct
     /// from the theoretical KV-cache capacity above.
     pub max_num_seqs: Option<u32>,
+    /// Total token capacity of the runtime KV cache, when exported.
+    pub kv_cache_tokens: Option<u64>,
     /// True when the runtime has a tool-call parser loaded.
     pub supports_tool_calls: bool,
 }
@@ -450,6 +452,7 @@ where
                 memory_utilization: capacity.memory_utilization,
                 max_concurrency: capacity.max_concurrency,
                 max_num_seqs,
+                kv_cache_tokens: capacity.kv_cache_tokens,
                 supports_tool_calls: capacity.supports_tool_calls,
             });
             break;
@@ -808,6 +811,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
         }
     }

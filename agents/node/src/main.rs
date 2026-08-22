@@ -462,19 +462,23 @@ fn enrich_model_capability(
     model.context_tokens = cluster_context_tokens
         .or(model.context_tokens)
         .or(Some(default_context_tokens_for_model(&model)));
-    model.max_output_tokens = model.max_output_tokens.or_else(|| {
-        let capacity_limit = match model.capacity_class.as_str() {
-            "synthesis" | "server" => 16_384,
-            "heavy" => 8_192,
-            "performance" => 4_096,
-            _ => 2_048,
-        };
-        Some(
-            model
-                .context_tokens
-                .map_or(capacity_limit, |context| capacity_limit.min(context)),
-        )
-    });
+    if model.output_capacity_mode.as_deref() == Some("context_window") {
+        model.max_output_tokens = None;
+    } else {
+        model.max_output_tokens = model.max_output_tokens.or_else(|| {
+            let capacity_limit = match model.capacity_class.as_str() {
+                "synthesis" | "server" => 16_384,
+                "heavy" => 8_192,
+                "performance" => 4_096,
+                _ => 2_048,
+            };
+            Some(
+                model
+                    .context_tokens
+                    .map_or(capacity_limit, |context| capacity_limit.min(context)),
+            )
+        });
+    }
 
     let declared = |needle: &str| {
         cluster_capabilities
@@ -603,11 +607,11 @@ fn build_scheduler_capabilities(
                     && cluster.model.as_deref() == Some(name.as_str()),
                 name,
                 size_bytes: cluster.model_bytes,
-                // Detection APIs normally report the served context rather
-                // than a separate output ceiling. Leave this unset so model
-                // enrichment derives it from the cluster's capacity tier and
-                // bounds it by that served context.
+                // Contributed runtimes generally share one context budget
+                // between prompt and completion. Advertise that contract
+                // explicitly instead of inventing a fixed output ceiling.
                 max_output_tokens: None,
+                output_capacity_mode: Some("context_window".to_string()),
                 ..contracts::ModelCapability::default()
             })
             .collect::<Vec<_>>()
@@ -704,6 +708,8 @@ fn build_scheduler_capabilities(
         available_memory_mb: capabilities.available_memory_mb,
         capacity_class: capabilities.capacity_class.clone(),
         max_context_tokens: context_tokens,
+        max_num_seqs: cluster.and_then(|entry| entry.max_num_seqs),
+        kv_cache_size_tokens: cluster.and_then(|entry| entry.kv_cache_tokens),
         total_vram_mb,
         available_vram_mb,
         supports_vision: advertises("vision"),
@@ -2170,6 +2176,7 @@ mod tests {
             memory_utilization: None,
             max_concurrency: None,
             max_num_seqs: None,
+            kv_cache_tokens: None,
             supports_tool_calls: false,
             adopted_at: Some("1".to_string()),
         });
@@ -2254,15 +2261,21 @@ mod tests {
         assert!(!profile.supports_embeddings);
         // The reported context length beats the name-based heuristic.
         assert_eq!(profile.max_context_tokens, Some(131_072));
-        assert_eq!(profile.models[0].max_output_tokens, Some(16_384));
+        assert_eq!(profile.models[0].max_output_tokens, None);
+        assert_eq!(
+            profile.models[0].output_capacity_mode.as_deref(),
+            Some("context_window")
+        );
         assert!(profile.supported_tools.contains(&"tool_use".to_string()));
     }
 
     #[test]
-    fn contributed_cluster_output_limit_never_exceeds_its_served_context() {
+    fn contributed_cluster_advertises_context_bound_output_and_raw_capacity() {
         let mut config = cluster_config("qwen3-coder", Some(30_000_000_000), None);
         if let Some(cluster) = config.contributed_cluster.as_mut() {
             cluster.model_context_tokens = Some(4_096);
+            cluster.max_num_seqs = Some(32);
+            cluster.kv_cache_tokens = Some(9_435_151);
         }
 
         let health = cluster_health("qwen3-coder");
@@ -2270,7 +2283,13 @@ mod tests {
         let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
 
         assert_eq!(profile.models[0].context_tokens, Some(4_096));
-        assert_eq!(profile.models[0].max_output_tokens, Some(4_096));
+        assert_eq!(profile.models[0].max_output_tokens, None);
+        assert_eq!(
+            profile.models[0].output_capacity_mode.as_deref(),
+            Some("context_window")
+        );
+        assert_eq!(profile.max_num_seqs, Some(32));
+        assert_eq!(profile.kv_cache_size_tokens, Some(9_435_151));
     }
 
     #[test]
