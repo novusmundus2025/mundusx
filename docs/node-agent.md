@@ -37,7 +37,7 @@ The prototype agent:
 - sends registration and heartbeat updates to the control plane as signed device requests
 - includes the machine hostname in the signed contributor identity
 - polls the control plane for queued jobs
-- claims one queued job at a time for the local node
+- continuously refills advertised parallel slots while existing jobs are running
 - launches the local worker as a subprocess when requested
 - sends a busy heartbeat before worker launch and a ready heartbeat after completion
 - posts the worker result back to the control plane with output, error, duration, model/runtime, backend, worker ID, and node ID metadata
@@ -126,10 +126,11 @@ When connected and policy-allowed, the run loop keeps heartbeats flowing while i
 2. Poll `GET /v1/jobs/next?node_id=...`.
 3. If no compatible job is available, keep heartbeating.
 4. If a job is claimed, write and send a busy heartbeat.
-5. Launch the local worker with the claimed job profile.
-6. Post `completed` or `failed` to `POST /v1/jobs/complete`.
-7. Include output, error, duration, model/runtime, backend, worker ID, and node ID in the completion report.
-8. Write and send the next ready or paused heartbeat.
+5. Fill the node's advertised parallel slots and launch each claimed job with its worker profile.
+6. While any job is running, poll for newly arrived work and immediately refill each free slot.
+7. Post `completed` or `failed` to `POST /v1/jobs/complete` for every worker.
+8. Include output, error, duration, model/runtime, backend, worker ID, and node ID in each completion report.
+9. Write and send the next ready or paused heartbeat after no active or newly claimable work remains.
 
 ## Local Development URL
 

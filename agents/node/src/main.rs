@@ -1611,7 +1611,35 @@ fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRe
     }
 }
 
-fn process_pending_jobs(config: &AgentConfig, json: bool, verbose: bool) {
+fn spawn_claimed_job(
+    config: &AgentConfig,
+    identity: &DeviceIdentity,
+    job: JobRecord,
+    json: bool,
+) -> thread::JoinHandle<()> {
+    let config = config.clone();
+    let identity = identity.clone();
+    thread::spawn(move || execute_claimed_job(config, identity, job, json))
+}
+
+fn reap_finished_jobs(handles: &mut Vec<thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < handles.len() {
+        if handles[index].is_finished() {
+            let handle = handles.swap_remove(index);
+            let _ = handle.join();
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn process_pending_jobs(
+    config: &AgentConfig,
+    json: bool,
+    verbose: bool,
+    continuously_refill_slots: bool,
+) {
     let identity = load_identity_or_exit();
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
@@ -1656,16 +1684,38 @@ fn process_pending_jobs(config: &AgentConfig, json: bool, verbose: bool) {
 
     let (stop_busy_heartbeat, busy_heartbeat_handle) =
         start_busy_heartbeat_supervisor(config.clone(), identity.clone(), Duration::from_secs(5));
-    let handles = jobs
+    let mut handles = jobs
         .into_iter()
-        .map(|job| {
-            let config = config.clone();
-            let identity = identity.clone();
-            thread::spawn(move || execute_claimed_job(config, identity, job, json))
-        })
+        .map(|job| spawn_claimed_job(config, &identity, job, json))
         .collect::<Vec<_>>();
-    for handle in handles {
-        let _ = handle.join();
+
+    if continuously_refill_slots {
+        while !handles.is_empty() {
+            thread::sleep(Duration::from_secs(1));
+            reap_finished_jobs(&mut handles);
+
+            let refill_config = match load_agent_config() {
+                Ok(Some(latest)) if should_agent_run(&latest) => Some(latest),
+                Ok(_) => None,
+                Err(error) => {
+                    eprintln!("jobPoll: refill paused ({error})");
+                    None
+                }
+            };
+            if let Some(refill_config) = refill_config {
+                while handles.len() < usize::from(parallel_slots) {
+                    let Some(job) = claim_next_job(&refill_config, &identity) else {
+                        break;
+                    };
+                    println!("jobPoll: claimed {}", job.job_id);
+                    handles.push(spawn_claimed_job(&refill_config, &identity, job, json));
+                }
+            }
+        }
+    } else {
+        for handle in handles {
+            let _ = handle.join();
+        }
     }
     stop_busy_heartbeat_supervisor(stop_busy_heartbeat, busy_heartbeat_handle);
 
@@ -1814,7 +1864,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         eprintln_error_field("persistentRuntime", "stopped");
         std::process::exit(2);
     }
-    process_pending_jobs(&config, json, verbose);
+    process_pending_jobs(&config, json, verbose, !once);
 
     println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
@@ -1870,7 +1920,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         if verbose {
             println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
         }
-        process_pending_jobs(&latest_config, json, verbose);
+        process_pending_jobs(&latest_config, json, verbose, true);
         let _ = io::stdout().flush();
     }
 }
@@ -2022,6 +2072,25 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn reaps_finished_jobs_without_waiting_for_active_workers() {
+        let completed = thread::spawn(|| {});
+        while !completed.is_finished() {
+            thread::yield_now();
+        }
+        let (release_tx, release_rx) = mpsc::channel();
+        let active = thread::spawn(move || {
+            release_rx.recv().expect("release active worker");
+        });
+        let mut handles = vec![completed, active];
+
+        reap_finished_jobs(&mut handles);
+
+        assert_eq!(handles.len(), 1);
+        release_tx.send(()).expect("release worker");
+        handles.pop().unwrap().join().unwrap();
+    }
 
     #[test]
     fn detects_unknown_node_control_plane_errors() {
