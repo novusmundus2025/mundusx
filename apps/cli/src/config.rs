@@ -39,6 +39,9 @@ pub struct ContributedCluster {
     /// Concurrent full-context sequences the runtime says it can hold.
     #[serde(default)]
     pub max_concurrency: Option<u32>,
+    /// Configured scheduler ceiling (vLLM `max_num_seqs`), when reported.
+    #[serde(default)]
+    pub max_num_seqs: Option<u32>,
     /// True when the runtime has a tool-call parser loaded.
     #[serde(default)]
     pub supports_tool_calls: bool,
