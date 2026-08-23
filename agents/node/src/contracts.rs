@@ -182,6 +182,30 @@ pub struct JobCompletion {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<CodeVerificationEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CodeVerificationCheck {
+    pub check_id: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CodeVerificationEvidence {
+    pub verifier: String,
+    pub language: String,
+    pub status: String,
+    pub execution_verified: bool,
+    pub compiler_passed: bool,
+    pub runtime_passed: bool,
+    pub semantic_passed: bool,
+    pub duration_ms: u64,
+    pub checks: Vec<CodeVerificationCheck>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

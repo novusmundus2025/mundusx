@@ -2,6 +2,7 @@ mod contracts;
 mod http;
 mod identity;
 mod storage;
+mod verifier;
 mod worker;
 
 use clap::{Parser, Subcommand};
@@ -891,6 +892,9 @@ fn supported_tools_for(capabilities: &NodeCapabilityProfile) -> Vec<String> {
     if capabilities.roles.contains(&NodeRole::Coding) {
         tools.push("repository".to_string());
     }
+    if verifier::podman_java_verifier_available() {
+        tools.push("sandbox_java".to_string());
+    }
     tools.sort();
     tools.dedup();
     tools
@@ -1492,6 +1496,7 @@ fn relay_job_deltas(
 fn build_completion_from_worker_response(
     response: WorkerLaunchResponse,
     duration_ms: u64,
+    verification: Option<contracts::CodeVerificationEvidence>,
 ) -> JobCompletion {
     let is_completed = response.status == "completed";
     JobCompletion {
@@ -1519,6 +1524,7 @@ fn build_completion_from_worker_response(
         duration_ms: Some(duration_ms),
         model: response.model,
         runtime_mode: response.runtime_mode,
+        verification,
     }
 }
 
@@ -1539,6 +1545,7 @@ fn build_worker_error_completion(
         duration_ms: Some(duration_ms),
         model: job.model.clone().or_else(|| config.active_model.clone()),
         runtime_mode: Some(resolved_backend(config).as_str().to_string()),
+        verification: None,
     }
 }
 
@@ -1613,9 +1620,15 @@ fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRe
     }
     match worker_result {
         Ok(response) => {
+            let verification = if response.status == "completed" {
+                verifier::verify_generated_java(&job.prompt, &response.output)
+            } else {
+                None
+            };
             let completion = build_completion_from_worker_response(
                 response,
                 started_at.elapsed().as_millis() as u64,
+                verification,
             );
             complete_job(&config, &identity, &completion);
         }
@@ -2690,7 +2703,7 @@ mod tests {
             runtime_mode: Some("cuda".to_string()),
         };
 
-        let completion = build_completion_from_worker_response(response, 42);
+        let completion = build_completion_from_worker_response(response, 42, None);
 
         assert_eq!(completion.status, contracts::JobStatus::Completed);
         assert_eq!(completion.output.as_deref(), Some("answer"));
@@ -2714,7 +2727,7 @@ mod tests {
             runtime_mode: Some("cuda".to_string()),
         };
 
-        let completion = build_completion_from_worker_response(response, 7);
+        let completion = build_completion_from_worker_response(response, 7, None);
 
         assert_eq!(completion.status, contracts::JobStatus::Failed);
         assert_eq!(completion.output, None);
@@ -2739,6 +2752,7 @@ mod tests {
             duration_ms: Some(9),
             model: Some("tiny-cuda".to_string()),
             runtime_mode: Some("cuda".to_string()),
+            verification: None,
         };
 
         assert_eq!(
