@@ -132,28 +132,6 @@ When connected and policy-allowed, the run loop keeps heartbeats flowing while i
 8. Include output, error, duration, model/runtime, backend, worker ID, and node ID in each completion report.
 9. Write and send the next ready or paused heartbeat after no active or newly claimable work remains.
 
-## UAT Rootless Code Verification
-
-Linux contributors can opt into isolated Java verification after model generation. Compilation and execution happen on the contributor CPU, never in the control plane and never on the model GPU. The completion request carries the verification result inside the existing device-signed body.
-
-The verifier is fail-closed. It is advertised as `sandbox_java` only when all of these are true:
-
-- `OPENGPU_CODE_VERIFIER=podman` is set.
-- Podman reports that it is running rootless.
-- The configured Java image is already present locally; verification uses its immutable image ID and `--pull=never`.
-
-Prepare a UAT contributor as its normal unprivileged service account:
-
-```bash
-podman pull docker.io/library/eclipse-temurin:21-jdk
-podman info --format json
-export OPENGPU_CODE_VERIFIER=podman
-export OPENGPU_JAVA_VERIFIER_IMAGE=docker.io/library/eclipse-temurin:21-jdk
-opengpu-agent run
-```
-
-The sandbox disables networking, uses a read-only root filesystem, drops all capabilities, enables `no-new-privileges`, bounds CPU, memory, PIDs and time, and mounts only a fresh temporary workspace. There is deliberately no direct host-execution or Docker-socket fallback. If the probe fails, jobs continue normally but their semantic status remains unverified.
-
 For an adopted vLLM cluster, advertised slots use the runtime's configured
 `max_num_seqs`, bounded by the KV cache's full-context sequence capacity. The
 CLI reads only that numeric limit from local `/server_info` and refreshes it
