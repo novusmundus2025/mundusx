@@ -226,7 +226,7 @@ const SPEAKAI_MAX_ATTEMPTS: u32 = 3;
 const SPEAKAI_SYSTEM_PROMPT: &str = r#"You are SpeakAI, a conversation-learning response generator.
 Analyze the user's utterance and return only one complete JSON object. Do not use Markdown or commentary.
 Use speechAct: opinion, question, observation, request, invitation, suggestion, greeting, thanks, apology, compliment, emotion, or information.
-Always include non-empty English topic and summary strings and exactly three replies. Each reply must contain strategy, purpose, text, and meaning. Reply text must use the utterance language; meaning must be a natural English translation.
+Always include a non-empty English topic and exactly three replies. summary must be only a direct, natural English translation of the user's utterance, never an explanation such as "The speaker asks...". Each reply must contain strategy, purpose, text, and meaning. Reply text must use the utterance language; meaning must be a natural English translation.
 For questions only, include questionType: factual, personal, opinion, clarification, preference, hypothetical, or other.
 Use these strategy/purpose pairs in order:
 opinion: supportive/AGREE, continue/EXPLORE, alternative/DISAGREE_POLITELY
@@ -418,6 +418,20 @@ fn validate_and_normalize_speakai_output(output: &str) -> Result<String, String>
     let speech_act = required_json_string(&value, "speechAct")?.to_ascii_lowercase();
     let topic = required_json_string(&value, "topic")?;
     let summary = required_json_string(&value, "summary")?;
+    let lower_summary = summary.to_ascii_lowercase();
+    if [
+        "the speaker ",
+        "the user ",
+        "the person ",
+        "the utterance ",
+    ]
+    .iter()
+    .any(|prefix| lower_summary.starts_with(prefix))
+    {
+        return Err(
+            "SpeakAI summary must directly translate the utterance, not explain it".to_string(),
+        );
+    }
     let expected = speakai_reply_contract(&speech_act)
         .ok_or_else(|| format!("SpeakAI output used unsupported speechAct `{speech_act}`"))?;
     let replies = object
@@ -3963,6 +3977,14 @@ mod tests {
     }
 
     #[test]
+    fn speakai_prompt_requires_a_direct_utterance_translation() {
+        assert!(SPEAKAI_SYSTEM_PROMPT.contains(
+            "summary must be only a direct, natural English translation"
+        ));
+        assert!(SPEAKAI_SYSTEM_PROMPT.contains("never an explanation"));
+    }
+
+    #[test]
     fn normalizes_speakai_required_fields_and_reply_contract() {
         let output = r#"```json
         {"speechAct":"OBSERVATION","questionType":"other","topic":" weather ","summary":" nice day ","extra":"drop me","replies":[
@@ -3989,6 +4011,15 @@ mod tests {
             r#"{"speechAct":"greeting","topic":"hello","summary":"greeting","replies":[]}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn rejects_an_explanatory_summary_instead_of_a_direct_translation() {
+        let output = r#"{"speechAct":"question","questionType":"other","topic":"Wellbeing","summary":"The speaker asks how the listener is.","replies":[{"strategy":"direct","purpose":"ANSWER","text":"Mir geht es gut.","meaning":"I am well."},{"strategy":"continue","purpose":"ANSWER_AND_EXPLORE","text":"Mir geht es gut, und Ihnen?","meaning":"I am well, and you?"},{"strategy":"boundary","purpose":"DECLINE_POLITELY","text":"Darüber möchte ich nicht sprechen.","meaning":"I do not want to talk about that."}]}"#;
+
+        let error = validate_and_normalize_speakai_output(output)
+            .expect_err("explanatory summary must be retried");
+        assert!(error.contains("directly translate"));
     }
 
     #[test]
