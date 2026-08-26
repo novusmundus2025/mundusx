@@ -120,6 +120,8 @@ struct LocalInferenceRequest {
     top_p: Option<f32>,
     #[serde(default)]
     seed: Option<u64>,
+    #[serde(default)]
+    force_local: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +197,96 @@ fn read_json<T: for<'de> Deserialize<'de>>(request: &mut Request) -> Result<T, S
         return Err("local request body is too large".to_string());
     }
     serde_json::from_str(&body).map_err(|error| error.to_string())
+}
+
+fn parameter_count_from_model_name(model: &str) -> Option<u64> {
+    let lower = model.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'b' || index == 0 {
+            continue;
+        }
+        let mut start = index;
+        while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+            start -= 1;
+        }
+        if start == index {
+            continue;
+        }
+        let billions = lower[start..index].parse::<f64>().ok()?;
+        if (0.1..=1000.0).contains(&billions) {
+            return Some((billions * 1_000_000_000.0) as u64);
+        }
+    }
+    None
+}
+
+fn active_model_parameter_count(config: &AgentConfig, model: Option<&str>) -> Option<u64> {
+    let cluster_params = config.contributed_cluster.as_ref().and_then(|cluster| {
+        let same_model = match (model, cluster.model.as_deref()) {
+            (Some(requested), Some(active)) => requested.eq_ignore_ascii_case(active),
+            _ => true,
+        };
+        same_model.then_some(cluster.model_params).flatten()
+    });
+    cluster_params.or_else(|| model.and_then(parameter_count_from_model_name))
+}
+
+fn local_suitability_error(
+    config: &AgentConfig,
+    model: Option<&str>,
+    prompt: &str,
+    max_tokens: Option<u32>,
+) -> Option<String> {
+    let parameters = active_model_parameter_count(config, model)?;
+    let lower = prompt.to_ascii_lowercase();
+    let substantial_code = [
+        "complete code",
+        "complete program",
+        "entire program",
+        "full program",
+        "production-ready",
+        "implement ",
+        "debug ",
+        "crud api",
+        "architecture",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    let deep_reasoning = [
+        "deep dive",
+        "comprehensive",
+        "detailed analysis",
+        "step by step reasoning",
+        "prove that",
+        "research",
+        "synthesize",
+        "compare and recommend",
+        "multi-step",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    let long_context = prompt.chars().count() > 4_000;
+    let large_output = max_tokens.unwrap_or_default() > 1_024;
+
+    if parameters <= 4_000_000_000
+        && (substantial_code || deep_reasoning || long_context || large_output)
+    {
+        let reason = if substantial_code {
+            "substantial code generation"
+        } else if deep_reasoning {
+            "complex reasoning or synthesis"
+        } else if long_context {
+            "long-context processing"
+        } else {
+            "a large output budget"
+        };
+        let model = model.unwrap_or("the active local model");
+        return Some(format!(
+            "local model `{model}` is a small model and the request requires {reason}; use the control-plane planner"
+        ));
+    }
+    None
 }
 
 fn start_lease_renewal(
@@ -282,6 +374,20 @@ fn handle_local_inference(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("local-{}", uuid::Uuid::new_v4().simple()));
     let model = payload.model.or(active_model);
+    if !payload.force_local {
+        if let Some(error) = local_suitability_error(
+            config,
+            model.as_deref(),
+            &payload.prompt,
+            payload.max_tokens,
+        ) {
+            let _ = request.respond(json_response(
+                409,
+                serde_json::json!({ "error": error, "fallback": "network" }),
+            ));
+            return;
+        }
+    }
     let lease = match signed_post_json_body::<_, LocalSlotLeaseResponse>(
         &config.control_plane_url,
         "/v1/local-leases",
@@ -463,7 +569,8 @@ pub fn start(
 
 #[cfg(test)]
 mod tests {
-    use super::{enabled, SlotPool};
+    use super::{enabled, local_suitability_error, parameter_count_from_model_name, SlotPool};
+    use crate::storage::AgentConfig;
 
     #[test]
     fn slot_pool_never_oversubscribes() {
@@ -488,5 +595,38 @@ mod tests {
             Some(value) => std::env::set_var("OPENGPU_LOCAL_FIRST_ENABLED", value),
             None => std::env::remove_var("OPENGPU_LOCAL_FIRST_ENABLED"),
         }
+    }
+
+    #[test]
+    fn parses_parameter_count_from_common_model_names() {
+        assert_eq!(
+            parameter_count_from_model_name("Qwen/Qwen2.5-3B-Instruct"),
+            Some(3_000_000_000)
+        );
+        assert_eq!(
+            parameter_count_from_model_name("llama-3.2-1.5b"),
+            Some(1_500_000_000)
+        );
+    }
+
+    #[test]
+    fn small_models_accept_light_work_but_defer_complex_work() {
+        let mut config = AgentConfig::default();
+        config.active_model = Some("Qwen/Qwen2.5-3B-Instruct".to_string());
+        assert!(local_suitability_error(
+            &config,
+            config.active_model.as_deref(),
+            "Translate this sentence to English",
+            Some(256),
+        )
+        .is_none());
+        let error = local_suitability_error(
+            &config,
+            config.active_model.as_deref(),
+            "Create a complete production-ready CRUD API with tests and architecture",
+            Some(2_048),
+        )
+        .expect("small model should defer complex work");
+        assert!(error.contains("control-plane planner"));
     }
 }

@@ -1067,6 +1067,7 @@ fn run_inference_via_local_agent(
     backend: Backend,
     max_tokens: u32,
     timeout_secs: u64,
+    force_local: bool,
 ) -> Result<InferenceResult, String> {
     let token = local_agent_token()?;
     let request_id = format!("local-{}", uuid::Uuid::new_v4().simple());
@@ -1076,6 +1077,7 @@ fn run_inference_via_local_agent(
         "model": model,
         "backend": backend.as_str(),
         "max_tokens": max_tokens,
+        "force_local": force_local,
     });
     let response = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(timeout_secs.max(1)))
@@ -1131,6 +1133,7 @@ fn run_inference(
             backend,
             max_tokens,
             timeout_secs,
+            routing == RequestRoutingMode::LocalOnly,
         ))
     } else if routing != RequestRoutingMode::NetworkOnly {
         Some(Err(
