@@ -42,6 +42,13 @@ impl ExecutionMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RequestRoutingMode {
+    LocalFirst,
+    LocalOnly,
+    NetworkOnly,
+}
+
 use cluster::{ClusterPromptDecision, DetectedCluster};
 use config::{
     config_dir, config_exists, load_config, resolved_config_path, save_config, Config,
@@ -212,7 +219,7 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
-    /// Run an inference request through the control-plane scheduler
+    /// Run an inference request locally first, with control-plane fallback
     Run {
         /// The prompt to send
         #[arg(long, short = 'p')]
@@ -232,6 +239,9 @@ enum Commands {
         /// Control whether the control plane may decompose work
         #[arg(long, value_enum)]
         execution_mode: Option<ExecutionMode>,
+        /// Choose local-first, local-only, or network-only routing
+        #[arg(long, value_enum, default_value_t = RequestRoutingMode::LocalFirst)]
+        routing: RequestRoutingMode,
         /// Maximum seconds to wait for the control-plane job
         #[arg(long, default_value_t = 300)]
         timeout: u64,
@@ -1000,6 +1010,155 @@ struct InferenceResult {
     error: Option<String>,
     runtime_metrics: Option<RuntimeMetrics>,
     job_payload: serde_json::Value,
+    routing: String,
+    local_fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalAgentInferenceResponse {
+    request_id: String,
+    routing: String,
+    node_id: String,
+    model: Option<String>,
+    output: String,
+    status: String,
+    error: Option<String>,
+}
+
+fn local_agent_url(path: &str) -> String {
+    let base = std::env::var("OPENGPU_LOCAL_AGENT_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| {
+            value.starts_with("http://127.0.0.1:") || value.starts_with("http://[::1]:")
+        })
+        .unwrap_or_else(|| "http://127.0.0.1:11435".to_string());
+    format!("{base}{path}")
+}
+
+fn local_agent_token() -> Result<String, String> {
+    let path = config_dir().join("local-agent-token");
+    let token = std::fs::read_to_string(&path)
+        .map_err(|_| "local node agent is not running or has not created its token".to_string())?;
+    let token = token.trim();
+    if token.len() < 32 {
+        return Err("local node agent token is invalid".to_string());
+    }
+    Ok(token.to_string())
+}
+
+fn local_agent_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(_, response) => {
+            let body = response.into_string().unwrap_or_default();
+            serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| value["error"].as_str().map(str::to_string))
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "local node agent rejected the request".to_string())
+        }
+        ureq::Error::Transport(error) => format!("local node agent is unavailable: {error}"),
+    }
+}
+
+fn run_inference_via_local_agent(
+    prompt: &str,
+    model: Option<&str>,
+    backend: Backend,
+    max_tokens: u32,
+    timeout_secs: u64,
+) -> Result<InferenceResult, String> {
+    let token = local_agent_token()?;
+    let request_id = format!("local-{}", uuid::Uuid::new_v4().simple());
+    let payload = serde_json::json!({
+        "request_id": request_id,
+        "prompt": prompt,
+        "model": model,
+        "backend": backend.as_str(),
+        "max_tokens": max_tokens,
+    });
+    let response = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(timeout_secs.max(1)))
+        .build()
+        .post(&local_agent_url("/local/v1/chat/completions"))
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Content-Type", "application/json")
+        .send_json(payload)
+        .map_err(local_agent_error)?;
+    let response: LocalAgentInferenceResponse = response
+        .into_json()
+        .map_err(|error| format!("invalid local node response: {error}"))?;
+    let job_payload = serde_json::json!({
+        "request_id": response.request_id,
+        "assigned_node_id": response.node_id,
+        "status": response.status,
+        "model": response.model,
+        "routing": response.routing,
+        "output": response.output,
+        "error": response.error,
+    });
+    Ok(InferenceResult {
+        output: response.output,
+        node_label: format!("local/{}", response.node_id),
+        model_name: response.model,
+        job_id: None,
+        status: Some(response.status),
+        error: response.error,
+        runtime_metrics: None,
+        job_payload,
+        routing: "local".to_string(),
+        local_fallback_reason: None,
+    })
+}
+
+fn run_inference(
+    config: &Config,
+    prompt: &str,
+    model: Option<&str>,
+    backend: Backend,
+    max_tokens: u32,
+    max_tokens_source: &str,
+    execution_mode: ExecutionMode,
+    routing: RequestRoutingMode,
+    timeout_secs: u64,
+    interval_secs: u64,
+) -> Result<InferenceResult, String> {
+    let local_eligible = execution_mode == ExecutionMode::Single;
+    let local_result = if routing != RequestRoutingMode::NetworkOnly && local_eligible {
+        Some(run_inference_via_local_agent(
+            prompt,
+            model,
+            backend,
+            max_tokens,
+            timeout_secs,
+        ))
+    } else if routing != RequestRoutingMode::NetworkOnly {
+        Some(Err(
+            "decomposed execution requires the control plane".to_string()
+        ))
+    } else {
+        None
+    };
+    if let Some(Ok(result)) = local_result {
+        return Ok(result);
+    }
+    let fallback_reason = local_result.and_then(Result::err);
+    if routing == RequestRoutingMode::LocalOnly {
+        return Err(fallback_reason.unwrap_or_else(|| "local execution is unavailable".to_string()));
+    }
+    let mut result = run_inference_via_control_plane(
+        config,
+        prompt,
+        model,
+        backend,
+        max_tokens,
+        max_tokens_source,
+        execution_mode,
+        timeout_secs,
+        interval_secs,
+    )?;
+    result.local_fallback_reason = fallback_reason;
+    Ok(result)
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -1074,6 +1233,8 @@ fn run_inference_via_control_plane(
                     .map(|value| value.to_string()),
                 runtime_metrics,
                 job_payload: completed,
+                routing: "network".to_string(),
+                local_fallback_reason: None,
             })
         }
         Err(error) => Err(format!("network routing failed: {error}")),
@@ -6702,6 +6863,7 @@ fn main() {
             max_tokens,
             decompose,
             execution_mode,
+            routing,
             timeout,
             interval,
             json,
@@ -6712,7 +6874,7 @@ fn main() {
             let max_tokens_source = max_tokens_source(max_tokens);
             let max_tokens = effective_max_tokens(&prompt, max_tokens);
             let execution_mode = effective_execution_mode(decompose, execution_mode);
-            match run_inference_via_control_plane(
+            match run_inference(
                 &config,
                 &prompt,
                 requested_model,
@@ -6720,6 +6882,7 @@ fn main() {
                 max_tokens,
                 max_tokens_source,
                 execution_mode,
+                routing,
                 timeout,
                 interval,
             ) {
@@ -6735,6 +6898,8 @@ fn main() {
                             "status": result.status,
                             "error": result.error,
                             "runtime_metrics": result.runtime_metrics,
+                            "routing": result.routing,
+                            "local_fallback_reason": result.local_fallback_reason,
                         });
                         if let Err(error) = print_json(&output) {
                             eprintln!("{error}");
@@ -6743,6 +6908,10 @@ fn main() {
                     } else {
                         theme::section("Run result");
                         theme::field("assignedNode", &result.node_label);
+                        theme::field("routing", &result.routing);
+                        if let Some(reason) = &result.local_fallback_reason {
+                            theme::field("localFallbackReason", reason);
+                        }
                         if let Some(model_name) = &result.model_name {
                             theme::field("model", model_name);
                         }
@@ -6896,7 +7065,7 @@ mod tests {
         should_prefetch_vllm_catalog_model, should_prompt_model_selection,
         start_preflight_blockers, terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands,
         Commands, ContributedCluster, ContributedClusterCheck, ExecutionMode, JobsCommands,
-        PowerState, PUBLIC_CONTROL_PLANE_URL,
+        PowerState, RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -8013,6 +8182,36 @@ mod tests {
             }
             _ => panic!("expected run command"),
         }
+    }
+
+    #[test]
+    fn run_command_defaults_to_local_first_and_accepts_routing_override() {
+        let default_cli =
+            Cli::try_parse_from(["opengpu", "run", "--prompt", "hello"]).expect("run should parse");
+        assert!(matches!(
+            default_cli.command,
+            Commands::Run {
+                routing: RequestRoutingMode::LocalFirst,
+                ..
+            }
+        ));
+
+        let local_only = Cli::try_parse_from([
+            "opengpu",
+            "run",
+            "--prompt",
+            "hello",
+            "--routing",
+            "local-only",
+        ])
+        .expect("local-only should parse");
+        assert!(matches!(
+            local_only.command,
+            Commands::Run {
+                routing: RequestRoutingMode::LocalOnly,
+                ..
+            }
+        ));
     }
 
     #[test]

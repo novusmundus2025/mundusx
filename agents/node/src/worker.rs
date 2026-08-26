@@ -4024,7 +4024,7 @@ mod tests {
 
     #[test]
     fn normalizes_conflicting_greeting_purposes_to_the_owned_contract() {
-        let output = r#"{"speechAct":"greeting","topic":"Greeting","summary":"The speaker greets the listener.","replies":[{"strategy":"friendly","purpose":"GREET","text":"Hallo, guten Tag!","meaning":"Hello, good day!"},{"strategy":"question","purpose":"ASK_WELLBEING","text":"Wie geht es Ihnen?","meaning":"How are you?"},{"strategy":"polite","purpose":"WELCOME","text":"Schön, Sie zu sehen.","meaning":"Nice to see you."}]}"#;
+        let output = r#"{"speechAct":"greeting","topic":"Greeting","summary":"Hello","replies":[{"strategy":"friendly","purpose":"GREET","text":"Hallo, guten Tag!","meaning":"Hello, good day!"},{"strategy":"question","purpose":"ASK_WELLBEING","text":"Wie geht es Ihnen?","meaning":"How are you?"},{"strategy":"polite","purpose":"WELCOME","text":"Schön, Sie zu sehen.","meaning":"Nice to see you."}]}"#;
 
         let normalized = validate_and_normalize_speakai_output(output).expect("valid greeting");
         let value: serde_json::Value = serde_json::from_str(&normalized).expect("normalized JSON");
@@ -4033,6 +4033,7 @@ mod tests {
         assert_eq!(value["replies"][1]["purpose"], "START_CONVERSATION");
         assert_eq!(value["replies"][2]["purpose"], "WARM_VARIATION");
         assert_eq!(value["replies"][0]["text"], "Hallo, guten Tag!");
+        assert_eq!(value["summary"], "Hello");
     }
 
     #[test]

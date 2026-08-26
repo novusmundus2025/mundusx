@@ -123,6 +123,62 @@ pub struct Heartbeat {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalSlotLeaseRequest {
+    pub request_id: String,
+    #[serde(default = "default_local_slot_count")]
+    pub slots: u8,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_local_lease_ttl_seconds")]
+    pub ttl_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalSlotLeaseRenewRequest {
+    pub lease_id: String,
+    #[serde(default = "default_local_lease_ttl_seconds")]
+    pub ttl_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalSlotLeaseReleaseRequest {
+    pub lease_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalSlotLeaseRecord {
+    pub lease_id: String,
+    pub node_id: String,
+    pub request_id: String,
+    pub slots: u8,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalSlotLeaseResponse {
+    pub granted: bool,
+    #[serde(default)]
+    pub lease: Option<LocalSlotLeaseRecord>,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub active_local_slots: usize,
+    pub active_network_slots: usize,
+    pub total_slots: usize,
+    pub available_slots: usize,
+}
+
+fn default_local_slot_count() -> u8 {
+    1
+}
+
+fn default_local_lease_ttl_seconds() -> u64 {
+    30
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobRequest {
     pub request_id: String,
     pub prompt: String,
