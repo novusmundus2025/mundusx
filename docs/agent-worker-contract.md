@@ -105,6 +105,8 @@ Before executing local work, the agent reserves a signed, short-lived control-pl
 
 The loopback bearer token is stored at `~/.opengpu/local-agent-token`. Setting `OPENGPU_LOCAL_FIRST_ENABLED=false` disables the loopback service for rollback; the CLI then follows its selected fallback policy.
 
+If the control plane is unreachable because of a transport failure, the authenticated loopback API continues in `local-offline` mode. Offline mode uses the same local slot pool and local model checks but cannot award credits. Because no network alternative exists, suitability does not block offline execution. The agent periodically retries the signed lease while the worker runs; after connectivity returns it synchronizes the active local occupancy before accepting conflicting network work. HTTP lease denials, authentication failures, invalid configuration, and capacity conflicts never enable offline mode.
+
 ## Output Path
 
 1. Client sends a request to the control plane.
