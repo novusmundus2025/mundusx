@@ -186,6 +186,22 @@ fn json_response(status: u16, value: serde_json::Value) -> Response<std::io::Cur
         .with_header(content_type)
 }
 
+fn local_route_response(
+    status: u16,
+    code: &'static str,
+    message: impl Into<String>,
+    network_fallback: bool,
+) -> Response<std::io::Cursor<Vec<u8>>> {
+    json_response(
+        status,
+        serde_json::json!({
+            "code": code,
+            "error": message.into(),
+            "fallback": if network_fallback { "network" } else { "none" },
+        }),
+    )
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(request: &mut Request) -> Result<T, String> {
     let mut body = String::new();
     request
@@ -374,14 +390,21 @@ fn handle_local_inference(
     let payload = match read_json::<LocalInferenceRequest>(&mut request) {
         Ok(payload) => payload,
         Err(error) => {
-            let _ = request.respond(json_response(400, serde_json::json!({ "error": error })));
+            let _ = request.respond(local_route_response(
+                400,
+                "INVALID_LOCAL_REQUEST",
+                error,
+                false,
+            ));
             return;
         }
     };
     if payload.prompt.trim().is_empty() {
-        let _ = request.respond(json_response(
+        let _ = request.respond(local_route_response(
             400,
-            serde_json::json!({ "error": "prompt is required" }),
+            "INVALID_LOCAL_REQUEST",
+            "prompt is required",
+            false,
         ));
         return;
     }
@@ -391,9 +414,11 @@ fn handle_local_inference(
             .as_deref()
             .is_some_and(|active| !active.eq_ignore_ascii_case(requested))
         {
-            let _ = request.respond(json_response(
+            let _ = request.respond(local_route_response(
                 409,
-                serde_json::json!({ "error": "requested model is not active locally", "fallback": "network" }),
+                "LOCAL_MODEL_NOT_ACTIVE",
+                "requested model is not active locally",
+                true,
             ));
             return;
         }
@@ -402,16 +427,20 @@ fn handle_local_inference(
         .backend
         .is_some_and(|requested| requested != Backend::Auto && requested != backend)
     {
-        let _ = request.respond(json_response(
+        let _ = request.respond(local_route_response(
             409,
-            serde_json::json!({ "error": "requested backend is not active locally", "fallback": "network" }),
+            "LOCAL_BACKEND_NOT_ACTIVE",
+            "requested backend is not active locally",
+            true,
         ));
         return;
     }
     let Some(_permit) = slots.try_acquire() else {
-        let _ = request.respond(json_response(
+        let _ = request.respond(local_route_response(
             409,
-            serde_json::json!({ "error": "local capacity is unavailable", "fallback": "network" }),
+            "LOCAL_CAPACITY_UNAVAILABLE",
+            "local capacity is unavailable",
+            true,
         ));
         return;
     };
@@ -435,9 +464,13 @@ fn handle_local_inference(
     ) {
         Ok(response) if response.granted => (response.lease, false),
         Ok(response) => {
-            let _ = request.respond(json_response(
+            let _ = request.respond(local_route_response(
                 409,
-                serde_json::json!({ "error": response.error.unwrap_or_else(|| "local lease denied".to_string()), "fallback": "network" }),
+                "LOCAL_LEASE_DENIED",
+                response
+                    .error
+                    .unwrap_or_else(|| "local lease denied".to_string()),
+                true,
             ));
             return;
         }
@@ -446,17 +479,21 @@ fn handle_local_inference(
             (None, true)
         }
         Err(error) => {
-            let _ = request.respond(json_response(
+            let _ = request.respond(local_route_response(
                 503,
-                serde_json::json!({ "error": format!("control-plane lease rejected: {error}"), "fallback": "network" }),
+                "LOCAL_LEASE_UNAVAILABLE",
+                format!("control-plane lease rejected: {error}"),
+                true,
             ));
             return;
         }
     };
     if !offline && lease.is_none() {
-        let _ = request.respond(json_response(
+        let _ = request.respond(local_route_response(
             503,
-            serde_json::json!({ "error": "control plane returned no lease" }),
+            "LOCAL_LEASE_UNAVAILABLE",
+            "control plane returned no lease",
+            true,
         ));
         return;
     }
@@ -478,9 +515,11 @@ fn handle_local_inference(
                     },
                 );
             }
-            let _ = request.respond(json_response(
+            let _ = request.respond(local_route_response(
                 409,
-                serde_json::json!({ "error": error, "fallback": "network" }),
+                "LOCAL_MODEL_UNSUITABLE",
+                error,
+                true,
             ));
             return;
         }
@@ -530,9 +569,11 @@ fn handle_local_inference(
             ));
         }
         Err(error) => {
-            let _ = request.respond(json_response(
+            let _ = request.respond(local_route_response(
                 502,
-                serde_json::json!({ "error": error, "fallback": "network" }),
+                "LOCAL_RUNTIME_FAILURE",
+                error,
+                true,
             ));
         }
     }
