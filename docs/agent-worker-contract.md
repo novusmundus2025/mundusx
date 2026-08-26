@@ -93,6 +93,16 @@ The current prototype adds one small control-plane queue:
 
 If the worker subprocess fails before returning a normal result, the agent still posts a failed completion for the claimed job. That failure includes the node ID, selected backend, model when known, runtime mode when known, duration, and actionable error text so the control plane can expose the failed lifecycle cleanly.
 
+## Local-first contributor requests
+
+The node agent is the single admission authority for both contributor-local work and control-plane work on that machine. It owns one shared slot pool, exposes an authenticated loopback API at `127.0.0.1:11435`, and never binds the API to a non-loopback address.
+
+`opengpu run` defaults to `--routing local-first`: it asks the local agent first when the execution mode is `single`, then falls back to the normal control-plane queue if the local model, backend, slot, token, or agent is unavailable. `--routing local-only` forbids fallback, and `--routing network-only` skips the local attempt. Decomposed work remains control-plane routed.
+
+Before executing local work, the agent reserves a signed, short-lived control-plane lease containing only node, request, model, slot count, and expiry metadata. The prompt and output never enter the lease. The lease is renewed during execution and released afterward. The scheduler counts unexpired local leases together with network assignments, so local use immediately reduces contributed availability and cannot produce contributor credits.
+
+The loopback bearer token is stored at `~/.opengpu/local-agent-token`. Setting `OPENGPU_LOCAL_FIRST_ENABLED=false` disables the loopback service for rollback; the CLI then follows its selected fallback policy.
+
 ## Output Path
 
 1. Client sends a request to the control plane.

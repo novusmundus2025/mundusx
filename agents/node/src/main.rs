@@ -1,6 +1,7 @@
 mod contracts;
 mod http;
 mod identity;
+mod local_api;
 mod storage;
 mod worker;
 
@@ -16,7 +17,7 @@ use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 use std::fs;
 use std::io::{self, Write};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use storage::{
@@ -1568,7 +1569,13 @@ fn stop_busy_heartbeat_supervisor(stop_tx: mpsc::Sender<()>, handle: thread::Joi
     let _ = handle.join();
 }
 
-fn execute_claimed_job(config: AgentConfig, identity: DeviceIdentity, job: JobRecord, json: bool) {
+fn execute_claimed_job(
+    config: AgentConfig,
+    identity: DeviceIdentity,
+    job: JobRecord,
+    json: bool,
+    _permit: local_api::SlotPermit,
+) {
     let request = WorkerLaunchRequest {
         job_id: job.job_id.clone(),
         node_id: config.device_id.clone(),
@@ -1636,10 +1643,11 @@ fn spawn_claimed_job(
     identity: &DeviceIdentity,
     job: JobRecord,
     json: bool,
+    permit: local_api::SlotPermit,
 ) -> thread::JoinHandle<()> {
     let config = config.clone();
     let identity = identity.clone();
-    thread::spawn(move || execute_claimed_job(config, identity, job, json))
+    thread::spawn(move || execute_claimed_job(config, identity, job, json, permit))
 }
 
 fn reap_finished_jobs(handles: &mut Vec<thread::JoinHandle<()>>) {
@@ -1659,6 +1667,7 @@ fn process_pending_jobs(
     json: bool,
     verbose: bool,
     continuously_refill_slots: bool,
+    slot_pool: Arc<local_api::SlotPool>,
 ) {
     let identity = load_identity_or_exit();
     let (_, policy) = worker_readiness(config);
@@ -1679,35 +1688,31 @@ fn process_pending_jobs(
     if verbose {
         println!("jobPoll: checking control plane");
     }
-    let Some(first_job) = claim_next_job(config, &identity) else {
+    let mut handles = Vec::new();
+    while handles.len() < slot_pool.capacity() {
+        let Some(permit) = slot_pool.try_acquire() else {
+            break;
+        };
+        let Some(job) = claim_next_job(config, &identity) else {
+            drop(permit);
+            break;
+        };
+        println!("jobPoll: claimed {}", job.job_id);
+        handles.push(spawn_claimed_job(config, &identity, job, json, permit));
+    }
+    if handles.is_empty() {
         if verbose {
             println!("jobPoll: none");
         }
         return;
-    };
-
-    println!("jobPoll: claimed {}", first_job.job_id);
+    }
 
     let busy_heartbeat = build_heartbeat_with_state(config, AgentState::Busy);
     let _ = save_agent_state(&busy_heartbeat);
     let _ = save_heartbeat(&busy_heartbeat);
     send_heartbeat(config, &identity, &busy_heartbeat, verbose);
-    let parallel_slots = worker_readiness(config).0.parallel_slots.max(1);
-    let mut jobs = vec![first_job];
-    for _ in 1..parallel_slots {
-        let Some(job) = claim_next_job(config, &identity) else {
-            break;
-        };
-        println!("jobPoll: claimed {}", job.job_id);
-        jobs.push(job);
-    }
-
     let (stop_busy_heartbeat, busy_heartbeat_handle) =
         start_busy_heartbeat_supervisor(config.clone(), identity.clone(), Duration::from_secs(5));
-    let mut handles = jobs
-        .into_iter()
-        .map(|job| spawn_claimed_job(config, &identity, job, json))
-        .collect::<Vec<_>>();
 
     if continuously_refill_slots {
         while !handles.is_empty() {
@@ -1723,12 +1728,22 @@ fn process_pending_jobs(
                 }
             };
             if let Some(refill_config) = refill_config {
-                while handles.len() < usize::from(parallel_slots) {
+                while handles.len() < slot_pool.capacity() {
+                    let Some(permit) = slot_pool.try_acquire() else {
+                        break;
+                    };
                     let Some(job) = claim_next_job(&refill_config, &identity) else {
+                        drop(permit);
                         break;
                     };
                     println!("jobPoll: claimed {}", job.job_id);
-                    handles.push(spawn_claimed_job(&refill_config, &identity, job, json));
+                    handles.push(spawn_claimed_job(
+                        &refill_config,
+                        &identity,
+                        job,
+                        json,
+                        permit,
+                    ));
                 }
             }
         }
@@ -1822,6 +1837,23 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     if let Some(runtime) = persistent_runtime.as_ref() {
         std::env::set_var(runtime.environment_variable(), runtime.url());
     }
+    let slot_pool = local_api::SlotPool::new(usize::from(runtime_parallel_slots.max(1)));
+    let _local_api = if json || !local_api::enabled() {
+        None
+    } else {
+        match local_api::start(
+            config.clone(),
+            identity.clone(),
+            resolved_backend(&config),
+            slot_pool.clone(),
+        ) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                eprintln!("localApi: unavailable ({error})");
+                None
+            }
+        }
+    };
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
     let state = resolved_state(&config);
@@ -1884,7 +1916,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         eprintln_error_field("persistentRuntime", "stopped");
         std::process::exit(2);
     }
-    process_pending_jobs(&config, json, verbose, !once);
+    process_pending_jobs(&config, json, verbose, !once, slot_pool.clone());
 
     println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
@@ -1940,7 +1972,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         if verbose {
             println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
         }
-        process_pending_jobs(&latest_config, json, verbose, true);
+        process_pending_jobs(&latest_config, json, verbose, true, slot_pool.clone());
         let _ = io::stdout().flush();
     }
 }

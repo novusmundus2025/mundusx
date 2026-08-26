@@ -151,6 +151,10 @@ pub fn heartbeat_log_path() -> PathBuf {
     config_dir().join("heartbeat.jsonl")
 }
 
+pub fn local_api_token_path() -> PathBuf {
+    config_dir().join("local-agent-token")
+}
+
 pub fn identity_path() -> PathBuf {
     config_dir().join("identity.json")
 }
