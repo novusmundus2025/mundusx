@@ -1108,7 +1108,7 @@ fn run_inference_via_local_agent(
         error: response.error,
         runtime_metrics: None,
         job_payload,
-        routing: "local".to_string(),
+        routing: response.routing,
         local_fallback_reason: None,
     })
 }
