@@ -1011,6 +1011,7 @@ struct InferenceResult {
     runtime_metrics: Option<RuntimeMetrics>,
     job_payload: serde_json::Value,
     routing: String,
+    local_fallback_code: Option<String>,
     local_fallback_reason: Option<String>,
 }
 
@@ -1023,6 +1024,27 @@ struct LocalAgentInferenceResponse {
     output: String,
     status: String,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalAttemptFailure {
+    code: String,
+    message: String,
+    network_fallback: bool,
+}
+
+impl LocalAttemptFailure {
+    fn new(code: impl Into<String>, message: impl Into<String>, network_fallback: bool) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            network_fallback,
+        }
+    }
+
+    fn user_message(&self) -> String {
+        format!("{}: {}", self.code, self.message)
+    }
 }
 
 fn local_agent_url(path: &str) -> String {
@@ -1047,18 +1069,51 @@ fn local_agent_token() -> Result<String, String> {
     Ok(token.to_string())
 }
 
-fn local_agent_error(error: ureq::Error) -> String {
+fn local_agent_error(error: ureq::Error) -> LocalAttemptFailure {
     match error {
-        ureq::Error::Status(_, response) => {
+        ureq::Error::Status(status, response) => {
             let body = response.into_string().unwrap_or_default();
-            serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|value| value["error"].as_str().map(str::to_string))
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "local node agent rejected the request".to_string())
+            local_agent_failure_from_body(status, &body)
         }
-        ureq::Error::Transport(error) => format!("local node agent is unavailable: {error}"),
+        ureq::Error::Transport(error) => LocalAttemptFailure::new(
+            "LOCAL_AGENT_UNAVAILABLE",
+            format!("local node agent is unavailable: {error}"),
+            true,
+        ),
     }
+}
+
+fn local_agent_failure_from_body(status: u16, body: &str) -> LocalAttemptFailure {
+    let value = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
+    let code = value["code"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("LOCAL_AGENT_REJECTED");
+    let message = value["error"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("local node agent rejected the request");
+    let network_fallback = match value["fallback"].as_str() {
+        Some("network") => true,
+        Some(_) => false,
+        None => status != 400,
+    };
+    LocalAttemptFailure::new(code, message, network_fallback)
+}
+
+fn no_execution_route_error(local: &LocalAttemptFailure, network: &str) -> String {
+    format!(
+        "no permitted execution route remains; local [{}]: {}; network: {}",
+        local.code, local.message, network
+    )
+}
+
+fn should_try_local(routing: RequestRoutingMode, execution_mode: ExecutionMode) -> bool {
+    routing != RequestRoutingMode::NetworkOnly && execution_mode == ExecutionMode::Single
+}
+
+fn may_fallback_to_network(routing: RequestRoutingMode, failure: &LocalAttemptFailure) -> bool {
+    routing == RequestRoutingMode::LocalFirst && failure.network_fallback
 }
 
 fn run_inference_via_local_agent(
@@ -1068,8 +1123,9 @@ fn run_inference_via_local_agent(
     max_tokens: u32,
     timeout_secs: u64,
     force_local: bool,
-) -> Result<InferenceResult, String> {
-    let token = local_agent_token()?;
+) -> Result<InferenceResult, LocalAttemptFailure> {
+    let token = local_agent_token()
+        .map_err(|message| LocalAttemptFailure::new("LOCAL_AGENT_UNAVAILABLE", message, true))?;
     let request_id = format!("local-{}", uuid::Uuid::new_v4().simple());
     let payload = serde_json::json!({
         "request_id": request_id,
@@ -1087,9 +1143,13 @@ fn run_inference_via_local_agent(
         .set("Content-Type", "application/json")
         .send_json(payload)
         .map_err(local_agent_error)?;
-    let response: LocalAgentInferenceResponse = response
-        .into_json()
-        .map_err(|error| format!("invalid local node response: {error}"))?;
+    let response: LocalAgentInferenceResponse = response.into_json().map_err(|error| {
+        LocalAttemptFailure::new(
+            "LOCAL_RESPONSE_INVALID",
+            format!("invalid local node response: {error}"),
+            true,
+        )
+    })?;
     let job_payload = serde_json::json!({
         "request_id": response.request_id,
         "assigned_node_id": response.node_id,
@@ -1109,6 +1169,7 @@ fn run_inference_via_local_agent(
         runtime_metrics: None,
         job_payload,
         routing: response.routing,
+        local_fallback_code: None,
         local_fallback_reason: None,
     })
 }
@@ -1125,8 +1186,8 @@ fn run_inference(
     timeout_secs: u64,
     interval_secs: u64,
 ) -> Result<InferenceResult, String> {
-    let local_eligible = execution_mode == ExecutionMode::Single;
-    let local_result = if routing != RequestRoutingMode::NetworkOnly && local_eligible {
+    let local_eligible = should_try_local(routing, execution_mode);
+    let local_result = if local_eligible {
         Some(run_inference_via_local_agent(
             prompt,
             model,
@@ -1136,20 +1197,31 @@ fn run_inference(
             routing == RequestRoutingMode::LocalOnly,
         ))
     } else if routing != RequestRoutingMode::NetworkOnly {
-        Some(Err(
-            "decomposed execution requires the control plane".to_string()
-        ))
+        Some(Err(LocalAttemptFailure::new(
+            "LOCAL_MODE_UNSUPPORTED",
+            "decomposed execution requires the control plane",
+            true,
+        )))
     } else {
         None
     };
     if let Some(Ok(result)) = local_result {
         return Ok(result);
     }
-    let fallback_reason = local_result.and_then(Result::err);
+    let fallback = local_result.and_then(Result::err);
     if routing == RequestRoutingMode::LocalOnly {
-        return Err(fallback_reason.unwrap_or_else(|| "local execution is unavailable".to_string()));
+        return Err(fallback.map_or_else(
+            || "LOCAL_EXECUTION_UNAVAILABLE: local execution is unavailable".to_string(),
+            |failure| failure.user_message(),
+        ));
     }
-    let mut result = run_inference_via_control_plane(
+    if fallback
+        .as_ref()
+        .is_some_and(|failure| !may_fallback_to_network(routing, failure))
+    {
+        return Err(fallback.expect("checked local failure").user_message());
+    }
+    let network_result = run_inference_via_control_plane(
         config,
         prompt,
         model,
@@ -1159,8 +1231,18 @@ fn run_inference(
         execution_mode,
         timeout_secs,
         interval_secs,
-    )?;
-    result.local_fallback_reason = fallback_reason;
+    );
+    let mut result = match network_result {
+        Ok(result) => result,
+        Err(network_error) => {
+            return Err(match fallback.as_ref() {
+                Some(local) => no_execution_route_error(local, &network_error),
+                None => network_error,
+            });
+        }
+    };
+    result.local_fallback_code = fallback.as_ref().map(|failure| failure.code.clone());
+    result.local_fallback_reason = fallback.map(|failure| failure.message);
     Ok(result)
 }
 
@@ -1237,6 +1319,7 @@ fn run_inference_via_control_plane(
                 runtime_metrics,
                 job_payload: completed,
                 routing: "network".to_string(),
+                local_fallback_code: None,
                 local_fallback_reason: None,
             })
         }
@@ -6902,6 +6985,7 @@ fn main() {
                             "error": result.error,
                             "runtime_metrics": result.runtime_metrics,
                             "routing": result.routing,
+                            "local_fallback_code": result.local_fallback_code,
                             "local_fallback_reason": result.local_fallback_reason,
                         });
                         if let Err(error) = print_json(&output) {
@@ -6912,9 +6996,6 @@ fn main() {
                         theme::section("Run result");
                         theme::field("assignedNode", &result.node_label);
                         theme::field("routing", &result.routing);
-                        if let Some(reason) = &result.local_fallback_reason {
-                            theme::field("localFallbackReason", reason);
-                        }
                         if let Some(model_name) = &result.model_name {
                             theme::field("model", model_name);
                         }
@@ -7062,13 +7143,14 @@ mod tests {
         control_plane_endpoint, cuda_doctor_payload, doctor_payload, effective_active_model,
         graph_progress_counts, handles_terminal_key, is_hugging_face_model_id,
         job_degradation_message, job_is_terminal, job_status_path, job_wait_progress_signature,
-        local_readiness, logs_payload, normalize_control_plane_url, parse_worker_output,
+        local_agent_failure_from_body, local_readiness, logs_payload, may_fallback_to_network,
+        no_execution_route_error, normalize_control_plane_url, parse_worker_output,
         refresh_contributed_cluster_context, remote_job_output, resolve_install_control_plane_url,
         runtime_metrics_from_output, runtime_metrics_from_payload,
-        should_prefetch_vllm_catalog_model, should_prompt_model_selection,
+        should_prefetch_vllm_catalog_model, should_prompt_model_selection, should_try_local,
         start_preflight_blockers, terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands,
         Commands, ContributedCluster, ContributedClusterCheck, ExecutionMode, JobsCommands,
-        PowerState, RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
+        LocalAttemptFailure, PowerState, RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::model::ModelRecord;
@@ -8215,6 +8297,85 @@ mod tests {
                 ..
             }
         ));
+
+        let network_only = Cli::try_parse_from([
+            "opengpu",
+            "run",
+            "--prompt",
+            "hello",
+            "--routing",
+            "network-only",
+        ])
+        .expect("network-only should parse");
+        assert!(matches!(
+            network_only.command,
+            Commands::Run {
+                routing: RequestRoutingMode::NetworkOnly,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn routing_policy_tries_only_permitted_execution_paths() {
+        assert!(should_try_local(
+            RequestRoutingMode::LocalFirst,
+            ExecutionMode::Single
+        ));
+        assert!(should_try_local(
+            RequestRoutingMode::LocalOnly,
+            ExecutionMode::Single
+        ));
+        assert!(!should_try_local(
+            RequestRoutingMode::NetworkOnly,
+            ExecutionMode::Single
+        ));
+        assert!(!should_try_local(
+            RequestRoutingMode::LocalFirst,
+            ExecutionMode::Decompose
+        ));
+
+        let routable = LocalAttemptFailure::new("LOCAL_CAPACITY_UNAVAILABLE", "busy", true);
+        assert!(may_fallback_to_network(
+            RequestRoutingMode::LocalFirst,
+            &routable
+        ));
+        assert!(!may_fallback_to_network(
+            RequestRoutingMode::LocalOnly,
+            &routable
+        ));
+    }
+
+    #[test]
+    fn local_agent_failures_preserve_machine_readable_routing_codes() {
+        let routable = local_agent_failure_from_body(
+            409,
+            r#"{"code":"LOCAL_MODEL_UNSUITABLE","error":"model too small","fallback":"network"}"#,
+        );
+        assert_eq!(routable.code, "LOCAL_MODEL_UNSUITABLE");
+        assert_eq!(routable.message, "model too small");
+        assert!(routable.network_fallback);
+
+        let invalid = local_agent_failure_from_body(
+            400,
+            r#"{"code":"INVALID_LOCAL_REQUEST","error":"prompt is required","fallback":"none"}"#,
+        );
+        assert!(!invalid.network_fallback);
+
+        let explicitly_terminal = local_agent_failure_from_body(
+            409,
+            r#"{"code":"LOCAL_POLICY_BLOCKED","error":"blocked","fallback":"none"}"#,
+        );
+        assert!(!explicitly_terminal.network_fallback);
+    }
+
+    #[test]
+    fn terminal_route_error_reports_both_exhausted_paths() {
+        let local = LocalAttemptFailure::new("LOCAL_RUNTIME_FAILURE", "worker exited", true);
+        let error = no_execution_route_error(&local, "control plane unreachable");
+        assert!(error.contains("LOCAL_RUNTIME_FAILURE"));
+        assert!(error.contains("worker exited"));
+        assert!(error.contains("control plane unreachable"));
     }
 
     #[test]
