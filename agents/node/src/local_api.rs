@@ -313,20 +313,25 @@ fn start_lease_manager(
     config: AgentConfig,
     identity: DeviceIdentity,
     request: LocalSlotLeaseRequest,
-    initial_lease: Option<LocalSlotLeaseRecord>,
+    control_plane_offline: Arc<AtomicBool>,
 ) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
     let (stop_tx, stop_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let mut lease = initial_lease;
+        let mut lease: Option<LocalSlotLeaseRecord> = None;
+        let mut report_immediately = true;
         loop {
-            let retry_seconds = if lease.is_some() {
-                LOCAL_LEASE_RENEW_SECONDS
+            if report_immediately {
+                report_immediately = false;
             } else {
-                5
-            };
-            match stop_rx.recv_timeout(Duration::from_secs(retry_seconds)) {
-                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                let retry_seconds = if lease.is_some() {
+                    LOCAL_LEASE_RENEW_SECONDS
+                } else {
+                    5
+                };
+                match stop_rx.recv_timeout(Duration::from_secs(retry_seconds)) {
+                    Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
             }
             if let Some(current) = lease.as_ref() {
                 let payload = LocalSlotLeaseRenewRequest {
@@ -341,9 +346,12 @@ fn start_lease_manager(
                     &payload,
                 ) {
                     Ok(response) => {
+                        control_plane_offline.store(false, Ordering::Release);
                         lease = response.lease.or(lease);
                     }
                     Err(error) => {
+                        control_plane_offline
+                            .store(control_plane_is_unreachable(&error), Ordering::Release);
                         eprintln!("localLeaseRenewal: {error}");
                         lease = None;
                     }
@@ -357,11 +365,24 @@ fn start_lease_manager(
                     &request,
                 ) {
                     Ok(response) if response.granted => {
+                        control_plane_offline.store(false, Ordering::Release);
                         lease = response.lease;
-                        eprintln!("localLeaseRecovery: local occupancy synchronized");
+                        eprintln!("localOccupancy: synchronized");
                     }
-                    Ok(_) => {}
-                    Err(error) => eprintln!("localLeaseRecovery: {error}"),
+                    Ok(response) => {
+                        control_plane_offline.store(false, Ordering::Release);
+                        eprintln!(
+                            "localOccupancy: reporting declined: {}",
+                            response
+                                .error
+                                .unwrap_or_else(|| "lease was not granted".to_string())
+                        );
+                    }
+                    Err(error) => {
+                        control_plane_offline
+                            .store(control_plane_is_unreachable(&error), Ordering::Release);
+                        eprintln!("localOccupancy: reporting unavailable: {error}");
+                    }
                 }
             }
         }
@@ -449,72 +470,13 @@ fn handle_local_inference(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("local-{}", uuid::Uuid::new_v4().simple()));
     let model = payload.model.or(active_model);
-    let lease_request = LocalSlotLeaseRequest {
-        request_id: request_id.clone(),
-        slots: 1,
-        model: model.clone(),
-        ttl_seconds: LOCAL_LEASE_TTL_SECONDS,
-    };
-    let (lease, offline) = match signed_post_json_body::<_, LocalSlotLeaseResponse>(
-        &config.control_plane_url,
-        "/v1/local-leases",
-        &config.device_id,
-        identity,
-        &lease_request,
-    ) {
-        Ok(response) if response.granted => (response.lease, false),
-        Ok(response) => {
-            let _ = request.respond(local_route_response(
-                409,
-                "LOCAL_LEASE_DENIED",
-                response
-                    .error
-                    .unwrap_or_else(|| "local lease denied".to_string()),
-                true,
-            ));
-            return;
-        }
-        Err(error) if control_plane_is_unreachable(&error) => {
-            eprintln!("localOfflineMode: {error}");
-            (None, true)
-        }
-        Err(error) => {
-            let _ = request.respond(local_route_response(
-                503,
-                "LOCAL_LEASE_UNAVAILABLE",
-                format!("control-plane lease rejected: {error}"),
-                true,
-            ));
-            return;
-        }
-    };
-    if !offline && lease.is_none() {
-        let _ = request.respond(local_route_response(
-            503,
-            "LOCAL_LEASE_UNAVAILABLE",
-            "control plane returned no lease",
-            true,
-        ));
-        return;
-    }
-    if !payload.force_local && !offline {
+    if !payload.force_local {
         if let Some(error) = local_suitability_error(
             config,
             model.as_deref(),
             &payload.prompt,
             payload.max_tokens,
         ) {
-            if let Some(lease) = lease {
-                let _ = signed_post_json_body::<_, LocalSlotLeaseResponse>(
-                    &config.control_plane_url,
-                    "/v1/local-leases/release",
-                    &config.device_id,
-                    identity,
-                    &LocalSlotLeaseReleaseRequest {
-                        lease_id: lease.lease_id,
-                    },
-                );
-            }
             let _ = request.respond(local_route_response(
                 409,
                 "LOCAL_MODEL_UNSUITABLE",
@@ -524,8 +486,18 @@ fn handle_local_inference(
             return;
         }
     }
-    let (lease_stop, lease_handle) =
-        start_lease_manager(config.clone(), identity.clone(), lease_request, lease);
+    let control_plane_offline = Arc::new(AtomicBool::new(false));
+    let (occupancy_stop, _occupancy_handle) = start_lease_manager(
+        config.clone(),
+        identity.clone(),
+        LocalSlotLeaseRequest {
+            request_id: request_id.clone(),
+            slots: 1,
+            model: model.clone(),
+            ttl_seconds: LOCAL_LEASE_TTL_SECONDS,
+        },
+        control_plane_offline.clone(),
+    );
     let worker_request = WorkerLaunchRequest {
         job_id: request_id.clone(),
         node_id: config.device_id.clone(),
@@ -541,15 +513,23 @@ fn handle_local_inference(
         seed: payload.seed,
     };
     let result = worker::launch_worker(&worker_request, &config.effective_model_dir());
-    let _ = lease_stop.send(());
-    let _ = lease_handle.join();
+    let _ = occupancy_stop.send(());
+    let offline = control_plane_offline.load(Ordering::Acquire);
     match result {
         Ok(response) => {
-            let status = if response.status == "completed" {
-                200
-            } else {
-                502
-            };
+            if response.status != "completed" {
+                let message = response
+                    .error
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "local worker did not complete successfully".to_string());
+                let _ = request.respond(local_route_response(
+                    502,
+                    "LOCAL_RUNTIME_FAILURE",
+                    message,
+                    true,
+                ));
+                return;
+            }
             let body = LocalInferenceResponse {
                 request_id,
                 routing: if offline {
@@ -564,7 +544,7 @@ fn handle_local_inference(
                 error: response.error,
             };
             let _ = request.respond(json_response(
-                status,
+                200,
                 serde_json::to_value(body).expect("local response"),
             ));
         }

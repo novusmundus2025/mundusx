@@ -1116,6 +1116,22 @@ fn may_fallback_to_network(routing: RequestRoutingMode, failure: &LocalAttemptFa
     routing == RequestRoutingMode::LocalFirst && failure.network_fallback
 }
 
+fn network_route_is_unreachable(error: &str) -> bool {
+    error.starts_with("network routing failed: request failed:")
+        || (error.starts_with("remote job ")
+            && error.contains(" did not complete: request failed:"))
+}
+
+fn should_retry_local_offline(
+    routing: RequestRoutingMode,
+    failure: &LocalAttemptFailure,
+    network_error: &str,
+) -> bool {
+    routing == RequestRoutingMode::LocalFirst
+        && failure.code == "LOCAL_MODEL_UNSUITABLE"
+        && network_route_is_unreachable(network_error)
+}
+
 fn run_inference_via_local_agent(
     prompt: &str,
     model: Option<&str>,
@@ -1235,6 +1251,33 @@ fn run_inference(
     let mut result = match network_result {
         Ok(result) => result,
         Err(network_error) => {
+            if let Some(local) = fallback.as_ref() {
+                if should_retry_local_offline(routing, local, &network_error) {
+                    match run_inference_via_local_agent(
+                        prompt,
+                        model,
+                        backend,
+                        max_tokens,
+                        timeout_secs,
+                        true,
+                    ) {
+                        Ok(mut result) => {
+                            result.routing = "local-offline".to_string();
+                            result.local_fallback_code = Some(local.code.clone());
+                            result.local_fallback_reason = Some(local.message.clone());
+                            return Ok(result);
+                        }
+                        Err(retry_error) => {
+                            return Err(format!(
+                                "{}; offline local retry [{}]: {}",
+                                no_execution_route_error(local, &network_error),
+                                retry_error.code,
+                                retry_error.message
+                            ));
+                        }
+                    }
+                }
+            }
             return Err(match fallback.as_ref() {
                 Some(local) => no_execution_route_error(local, &network_error),
                 None => network_error,
@@ -7144,10 +7187,11 @@ mod tests {
         graph_progress_counts, handles_terminal_key, is_hugging_face_model_id,
         job_degradation_message, job_is_terminal, job_status_path, job_wait_progress_signature,
         local_agent_failure_from_body, local_readiness, logs_payload, may_fallback_to_network,
-        no_execution_route_error, normalize_control_plane_url, parse_worker_output,
-        refresh_contributed_cluster_context, remote_job_output, resolve_install_control_plane_url,
-        runtime_metrics_from_output, runtime_metrics_from_payload,
-        should_prefetch_vllm_catalog_model, should_prompt_model_selection, should_try_local,
+        network_route_is_unreachable, no_execution_route_error, normalize_control_plane_url,
+        parse_worker_output, refresh_contributed_cluster_context, remote_job_output,
+        resolve_install_control_plane_url, runtime_metrics_from_output,
+        runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
+        should_prompt_model_selection, should_retry_local_offline, should_try_local,
         start_preflight_blockers, terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands,
         Commands, ContributedCluster, ContributedClusterCheck, ExecutionMode, JobsCommands,
         LocalAttemptFailure, PowerState, RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
@@ -8376,6 +8420,44 @@ mod tests {
         assert!(error.contains("LOCAL_RUNTIME_FAILURE"));
         assert!(error.contains("worker exited"));
         assert!(error.contains("control plane unreachable"));
+    }
+
+    #[test]
+    fn offline_retry_is_bounded_to_unsuitable_local_models_and_transport_failure() {
+        let unsuitable =
+            LocalAttemptFailure::new("LOCAL_MODEL_UNSUITABLE", "model too small", true);
+        assert!(network_route_is_unreachable(
+            "network routing failed: request failed: connection refused"
+        ));
+        assert!(network_route_is_unreachable(
+            "remote job job-1 did not complete: request failed: timed out"
+        ));
+        assert!(!network_route_is_unreachable(
+            "network routing failed: HTTP 500: request failed: provider rejected payload"
+        ));
+        assert!(should_retry_local_offline(
+            RequestRoutingMode::LocalFirst,
+            &unsuitable,
+            "network routing failed: request failed: connection refused"
+        ));
+        assert!(!should_retry_local_offline(
+            RequestRoutingMode::LocalOnly,
+            &unsuitable,
+            "network routing failed: request failed: connection refused"
+        ));
+        assert!(!should_retry_local_offline(
+            RequestRoutingMode::LocalFirst,
+            &unsuitable,
+            "remote job failed: model unavailable"
+        ));
+
+        let runtime_failure =
+            LocalAttemptFailure::new("LOCAL_RUNTIME_FAILURE", "worker exited", true);
+        assert!(!should_retry_local_offline(
+            RequestRoutingMode::LocalFirst,
+            &runtime_failure,
+            "network routing failed: request failed: connection refused"
+        ));
     }
 
     #[test]
