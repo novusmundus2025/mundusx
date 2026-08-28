@@ -924,6 +924,7 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
         identity_trust_path: identity::trust_path(),
         backend: resolved_backend(config),
         contribution_percent: config.contribution_percent,
+        capability_fabric_version: "1.0".to_string(),
         capabilities,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
     }
@@ -2174,6 +2175,28 @@ mod tests {
             cluster_prompt_declined: false,
             max_jobs: None,
         }
+    }
+
+    #[test]
+    fn registration_advertises_capability_fabric_v1() {
+        let identity = DeviceIdentity {
+            public_key_hex: "0011".to_string(),
+            private_key_hex: String::new(),
+            fingerprint: "fingerprint".to_string(),
+            keychain_label_hex: None,
+            encrypted_private_key_hex: String::new(),
+            nonce_hex: String::new(),
+        };
+
+        let registration = build_registration(&test_config(), &identity);
+
+        assert_eq!(registration.capability_fabric_version, "1.0");
+        assert_eq!(registration.backend, registration.capabilities.backend);
+        assert_eq!(
+            registration.contribution_percent,
+            registration.capabilities.contribution_percent
+        );
+        assert!(registration.capabilities.schema_version > 0);
     }
 
     /// Health as `contributed_cluster_health` reports it: endpoint reachable, no
