@@ -98,6 +98,9 @@ pub struct AgentRegistration {
     pub identity_trust_path: String,
     pub backend: Backend,
     pub contribution_percent: u8,
+    /// Control-plane-owned scheduler contract version. This is intentionally
+    /// independent from the internal capability profile schema version.
+    pub capability_fabric_version: String,
     pub capabilities: NodeCapabilityAdvertisement,
     pub agent_version: String,
 }
