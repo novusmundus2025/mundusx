@@ -27,7 +27,9 @@ jobs:
       - name: Test CLI
         run: cargo test --manifest-path apps/cli/Cargo.toml
       - name: Test node agent
-        run: cargo test --manifest-path agents/node/Cargo.toml
+        run: cargo test --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent
+      - name: Test Harness runner
+        run: cargo test --manifest-path agents/node/Cargo.toml --features harness-runner --bin mundusx-harness-runner
       - name: Install release test dependency
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Verify release workflow surface

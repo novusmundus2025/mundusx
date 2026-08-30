@@ -51,7 +51,7 @@ jobs:
       - name: Build CLI and node agent
         run: |
           cargo build --release --manifest-path apps/cli/Cargo.toml --target "${TARGET}"
-          cargo build --release --manifest-path agents/node/Cargo.toml --target "${TARGET}"
+          cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target "${TARGET}"
 
       - name: Prepare binaries and checksums
         run: |

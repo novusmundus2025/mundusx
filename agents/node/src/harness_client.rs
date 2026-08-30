@@ -1,6 +1,6 @@
-//! Signed control-plane client and concrete node runner for Coding Harness v1.
+//! Signed control-plane client for the user-owned Coding Harness v1 runner.
 
-use crate::contracts::{Backend, HarnessCapabilityAdvertisement, WorkerLaunchRequest};
+use crate::config::RunnerConfig;
 use crate::harness::{HarnessError, WorkspaceLimits, WorkspaceManager};
 use crate::harness_executor::{execute_harness_assignment, HarnessAssignment, JsonHarnessModel};
 use crate::harness_loop::{
@@ -11,12 +11,52 @@ use crate::harness_tools::{
 };
 use crate::http::{signed_runner_get_json, signed_runner_post_json_body};
 use crate::identity::DeviceIdentity;
-use crate::storage::AgentConfig;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HarnessCapabilityAdvertisement {
+    pub execution_modes: Vec<String>,
+    pub supported_operations: Vec<String>,
+    pub sandbox_runtime: Option<String>,
+    pub network_default_disabled: bool,
+    pub max_workspace_mb: u32,
+}
+
+#[derive(Serialize)]
+struct ChatCompletionRequest<'a> {
+    model: &'a str,
+    stream: bool,
+    messages: Vec<ChatMessage<'a>>,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    mode: &'static str,
+}
+
+#[derive(Serialize)]
+struct ChatMessage<'a> {
+    role: &'static str,
+    content: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: ChatResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatResponseMessage {
+    content: String,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct HarnessTaskContract {
@@ -87,22 +127,79 @@ struct TransitionRequest<'a> {
     code: Option<&'a str>,
 }
 
+pub fn capabilities(config: &RunnerConfig) -> Result<HarnessCapabilityAdvertisement, String> {
+    let workspace_root = required_absolute(&config.workspace_root, "workspace root")?;
+    let git = required_absolute(&config.git_executable, "Git executable")?;
+    if config.repositories.is_empty()
+        || config.tenant_ids.is_empty()
+        || config.validation_profiles.is_empty()
+        || !workspace_root.is_absolute()
+        || !git.is_absolute()
+        || config
+            .validation_profiles
+            .values()
+            .any(|profile| !PathBuf::from(&profile.executable).is_absolute())
+    {
+        return Err(
+            "HARNESS_RUNNER_SCOPE_REQUIRED: repositories, tenants, and absolute validation configuration are required"
+                .to_string(),
+        );
+    }
+    let sandbox_runtime = config
+        .sandbox_runtime
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|runtime| runtime.is_absolute())
+        .filter(|_| {
+            config
+                .sandbox_image_digest
+                .as_deref()
+                .is_some_and(|image| image.contains("@sha256:"))
+        })
+        .and_then(|runtime| {
+            std::process::Command::new(&runtime)
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|_| runtime)
+        });
+    let mut execution_modes = vec!["hybrid".to_string()];
+    if sandbox_runtime.is_some() {
+        execution_modes.insert(0, "sandbox".to_string());
+    }
+    Ok(HarnessCapabilityAdvertisement {
+        execution_modes,
+        supported_operations: vec![
+            "repository.status".to_string(),
+            "repository.diff".to_string(),
+            "file.read".to_string(),
+            "file.search".to_string(),
+            "patch.apply".to_string(),
+            "validation.run".to_string(),
+            "artifact.publish".to_string(),
+        ],
+        sandbox_runtime: sandbox_runtime.map(|runtime| runtime.display().to_string()),
+        network_default_disabled: true,
+        max_workspace_mb: config.max_workspace_mb.max(1),
+    })
+}
+
 pub fn register_runner(
-    config: &AgentConfig,
+    config: &RunnerConfig,
     identity: &DeviceIdentity,
     capabilities: &HarnessCapabilityAdvertisement,
     usable_memory_mb: u32,
     trusted_identity: bool,
 ) -> Result<(), String> {
     let runner_id = required_runner_id(config)?;
-    let owner_user_id = config
-        .harness_runner_owner_user_id
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            "HARNESS_RUNNER_OWNER_REQUIRED: local runner must be paired to one user".to_string()
-        })?;
-    if config.harness_runner_tenant_ids.is_empty() || config.harness_repositories.is_empty() {
+    let owner_user_id = config.owner_user_id.trim();
+    if owner_user_id.is_empty() {
+        return Err(
+            "HARNESS_RUNNER_OWNER_REQUIRED: local runner must be paired to one user".to_string(),
+        );
+    }
+    if config.tenant_ids.is_empty() || config.repositories.is_empty() {
         return Err(
             "HARNESS_RUNNER_SCOPE_REQUIRED: tenant and repository scopes are required".to_string(),
         );
@@ -112,15 +209,15 @@ pub fn register_runner(
         device_id: config.device_id.clone(),
         public_key_hex: identity.public_key_hex.clone(),
         kind: "local_user",
-        owner_user_id: owner_user_id.clone(),
-        tenant_ids: config.harness_runner_tenant_ids.clone(),
-        repository_source_ids: config.harness_repositories.keys().cloned().collect(),
+        owner_user_id: owner_user_id.to_string(),
+        tenant_ids: config.tenant_ids.clone(),
+        repository_source_ids: config.repositories.keys().cloned().collect(),
         execution_modes: capabilities.execution_modes.clone(),
         supported_operations: capabilities.supported_operations.clone(),
         network_default_disabled: capabilities.network_default_disabled,
         max_workspace_mb: capabilities.max_workspace_mb,
         usable_memory_mb: usable_memory_mb.max(1),
-        parallel_slots: config.harness_runner_slots.clamp(1, 64),
+        parallel_slots: config.parallel_slots.clamp(1, 64),
         trusted_identity,
         ready: true,
     };
@@ -134,21 +231,17 @@ pub fn register_runner(
     Ok(())
 }
 
-fn required_runner_id(config: &AgentConfig) -> Result<&str, String> {
-    config
-        .harness_runner_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
+fn required_runner_id(config: &RunnerConfig) -> Result<&str, String> {
+    (!config.runner_id.trim().is_empty())
+        .then_some(config.runner_id.as_str())
         .ok_or_else(|| "HARNESS_RUNNER_UNAVAILABLE: local runner is not configured".to_string())
 }
 
 pub fn claim_next(
-    config: &AgentConfig,
+    config: &RunnerConfig,
     identity: &DeviceIdentity,
 ) -> Result<Option<(HarnessTaskContract, HarnessAttemptContract)>, String> {
-    let Some(runner_id) = config.harness_runner_id.as_deref() else {
-        return Ok(None);
-    };
+    let runner_id = required_runner_id(config)?;
     let path = format!("/internal/harness/runners/attempts/next?runner_id={runner_id}");
     let response = signed_runner_get_json::<HarnessClaimResponse>(
         &config.control_plane_url,
@@ -164,14 +257,12 @@ pub fn claim_next(
 }
 
 pub fn execute_claim(
-    config: &AgentConfig,
+    config: &RunnerConfig,
     identity: &DeviceIdentity,
     task: HarnessTaskContract,
     mut attempt: HarnessAttemptContract,
 ) -> Result<(), String> {
-    if config.harness_runner_id.as_deref() != Some(&attempt.runner_id)
-        || attempt.task_id != task.task_id
-    {
+    if config.runner_id != attempt.runner_id || attempt.task_id != task.task_id {
         return Err("HARNESS_AUTH_REQUIRED: assignment owner mismatch".to_string());
     }
     if task.state == "cancelling" || task.state == "cancelled" {
@@ -186,12 +277,12 @@ pub fn execute_claim(
         return Err("HARNESS_CANCELLED: assignment was cancelled before execution".to_string());
     }
     let source = config
-        .harness_repositories
+        .repositories
         .get(&task.repository_source_id)
         .map(PathBuf::from)
         .ok_or_else(|| "HARNESS_REPOSITORY_SOURCE_DENIED: unknown source id".to_string())?;
-    let workspace_root = required_absolute(&config.harness_workspace_root, "workspace root")?;
-    let git = required_absolute(&config.harness_git_executable, "Git executable")?;
+    let workspace_root = required_absolute(&config.workspace_root, "workspace root")?;
+    let git = required_absolute(&config.git_executable, "Git executable")?;
     let manager = WorkspaceManager::new(workspace_root, git).map_err(display_harness)?;
     let (runner, profiles) = validation_config(config, &task.execution_mode)?;
 
@@ -216,28 +307,40 @@ pub fn execute_claim(
     let objective = task.objective.clone();
     let mut model = JsonHarnessModel::new(
         |system_prompt: &str, prompt: &str| {
-            let request = WorkerLaunchRequest {
-                job_id: format!("harness-{}", attempt.attempt_id),
-                node_id: config.device_id.clone(),
-                backend: resolved_backend(config.backend_preference),
+            let request = ChatCompletionRequest {
+                model: &config.inference_model,
                 stream: false,
-                prompt: prompt.to_string(),
-                model: config.active_model.clone(),
-                mode: Some("harness".to_string()),
-                system_prompt: Some(system_prompt.to_string()),
-                max_tokens: Some(4096),
-                temperature: Some(0.1),
-                top_p: Some(0.9),
-                seed: None,
+                messages: vec![
+                    ChatMessage {
+                        role: "system",
+                        content: system_prompt,
+                    },
+                    ChatMessage {
+                        role: "user",
+                        content: prompt,
+                    },
+                ],
+                max_tokens: 4_096,
+                temperature: 0.1,
+                top_p: 0.9,
+                mode: "single",
             };
-            let response = crate::worker::launch_worker(&request, &config.effective_model_dir())?;
-            if response.status == "completed" {
-                Ok(response.output)
-            } else {
-                Err(response
-                    .error
-                    .unwrap_or_else(|| "model worker failed".to_string()))
-            }
+            let response: ChatCompletionResponse = signed_runner_post_json_body(
+                &config.control_plane_url,
+                "/v1/chat/completions",
+                &config.runner_id,
+                identity,
+                &request,
+            )?;
+            response
+                .choices
+                .into_iter()
+                .next()
+                .map(|choice| choice.message.content)
+                .filter(|content| !content.trim().is_empty())
+                .ok_or_else(|| {
+                    "HARNESS_MODEL_RESPONSE_INVALID: empty inference response".to_string()
+                })
         },
         objective,
     );
@@ -330,7 +433,7 @@ pub fn execute_claim(
 }
 
 struct ControlPlaneObserver<'a> {
-    config: &'a AgentConfig,
+    config: &'a RunnerConfig,
     identity: &'a DeviceIdentity,
     attempt_id: &'a str,
     version: &'a std::sync::Mutex<u64>,
@@ -436,7 +539,7 @@ impl HarnessLoopObserver for ControlPlaneObserver<'_> {
 }
 
 fn transition(
-    config: &AgentConfig,
+    config: &RunnerConfig,
     identity: &DeviceIdentity,
     attempt: &HarnessAttemptContract,
     state: &str,
@@ -462,7 +565,7 @@ fn transition(
 }
 
 fn post_evidence(
-    config: &AgentConfig,
+    config: &RunnerConfig,
     identity: &DeviceIdentity,
     attempt_id: &str,
     action: &str,
@@ -480,14 +583,14 @@ fn post_evidence(
 }
 
 fn validation_config(
-    config: &AgentConfig,
+    config: &RunnerConfig,
     execution_mode: &str,
 ) -> Result<(ValidationRunner, BTreeMap<String, ValidationProfile>), String> {
     let isolation = if execution_mode == "sandbox" {
         ValidationIsolation::DockerSandbox {
-            runtime: required_absolute(&config.harness_sandbox_runtime, "sandbox runtime")?,
+            runtime: required_absolute(&config.sandbox_runtime, "sandbox runtime")?,
             image_digest: config
-                .harness_sandbox_image_digest
+                .sandbox_image_digest
                 .clone()
                 .ok_or_else(|| "HARNESS_POLICY_DENIED: sandbox image digest missing".to_string())?,
         }
@@ -496,7 +599,7 @@ fn validation_config(
     };
     let runner = ValidationRunner::new(isolation).map_err(display_harness)?;
     let profiles = config
-        .harness_validation_profiles
+        .validation_profiles
         .iter()
         .map(|(id, value)| {
             Ok((
@@ -535,10 +638,6 @@ fn required_absolute(value: &Option<String>, label: &str) -> Result<PathBuf, Str
     Ok(path)
 }
 
-fn resolved_backend(value: Backend) -> Backend {
-    value
-}
-
 fn display_harness(error: HarnessError) -> String {
     error.to_string()
 }
@@ -554,7 +653,7 @@ fn control_loop_failure(error: String) -> LoopFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::HarnessValidationProfileConfig;
+    use crate::config::HarnessValidationProfileConfig;
 
     #[test]
     fn harness_configuration_requires_absolute_operator_owned_paths() {
@@ -572,16 +671,16 @@ mod tests {
 
     #[test]
     fn sandbox_requires_digest_pinned_operator_configuration() {
-        let mut config = AgentConfig::default();
-        config.harness_sandbox_runtime = Some(if cfg!(windows) {
+        let mut config = RunnerConfig::default();
+        config.sandbox_runtime = Some(if cfg!(windows) {
             "C:\\Program Files\\Docker\\docker.exe".to_string()
         } else {
             "/usr/bin/docker".to_string()
         });
-        config.harness_sandbox_image_digest = Some("mutable:latest".to_string());
+        config.sandbox_image_digest = Some("mutable:latest".to_string());
         assert!(validation_config(&config, "sandbox").is_err());
 
-        config.harness_sandbox_image_digest = Some(
+        config.sandbox_image_digest = Some(
             "harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         );
@@ -590,8 +689,8 @@ mod tests {
 
     #[test]
     fn validation_profiles_are_built_only_from_node_configuration() {
-        let mut config = AgentConfig::default();
-        config.harness_validation_profiles.insert(
+        let mut config = RunnerConfig::default();
+        config.validation_profiles.insert(
             "rust-default".to_string(),
             HarnessValidationProfileConfig {
                 executable: if cfg!(windows) {
