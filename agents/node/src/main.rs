@@ -413,23 +413,61 @@ fn build_capabilities(
             }),
         supported_roles: Vec::new(),
         supported_tools: Vec::new(),
-        harness: Some(build_harness_capabilities(usable_memory_mb)),
+        harness: build_harness_capabilities(config, usable_memory_mb),
         active_model,
         ready_for_jobs,
         readiness_reason,
     }
 }
 
-fn build_harness_capabilities(usable_memory_mb: u32) -> HarnessCapabilityAdvertisement {
-    let docker_available = std::process::Command::new("docker")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success());
+fn build_harness_capabilities(
+    config: &AgentConfig,
+    usable_memory_mb: u32,
+) -> Option<HarnessCapabilityAdvertisement> {
+    let workspace_root = config
+        .harness_workspace_root
+        .as_ref()
+        .map(std::path::Path::new);
+    let git = config
+        .harness_git_executable
+        .as_ref()
+        .map(std::path::Path::new);
+    let configured = !config.harness_repositories.is_empty()
+        && !config.harness_validation_profiles.is_empty()
+        && workspace_root.is_some_and(std::path::Path::is_absolute)
+        && git.is_some_and(std::path::Path::is_absolute)
+        && config
+            .harness_validation_profiles
+            .values()
+            .all(|profile| std::path::Path::new(&profile.executable).is_absolute());
+    if !configured {
+        return None;
+    }
+    let docker_available = config
+        .harness_sandbox_runtime
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .filter(|runtime| runtime.is_absolute())
+        .filter(|_| {
+            config
+                .harness_sandbox_image_digest
+                .as_deref()
+                .is_some_and(|image| image.contains("@sha256:"))
+        })
+        .and_then(|runtime| {
+            std::process::Command::new(&runtime)
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|_| runtime)
+        });
+    let sandbox_available = docker_available.is_some();
     let mut execution_modes = vec!["hybrid".to_string()];
-    if docker_available {
+    if sandbox_available {
         execution_modes.insert(0, "sandbox".to_string());
     }
-    HarnessCapabilityAdvertisement {
+    Some(HarnessCapabilityAdvertisement {
         execution_modes,
         supported_operations: vec![
             "repository.status".to_string(),
@@ -440,10 +478,10 @@ fn build_harness_capabilities(usable_memory_mb: u32) -> HarnessCapabilityAdverti
             "validation.run".to_string(),
             "artifact.publish".to_string(),
         ],
-        sandbox_runtime: docker_available.then(|| "docker".to_string()),
+        sandbox_runtime: docker_available.map(|runtime| runtime.display().to_string()),
         network_default_disabled: true,
         max_workspace_mb: usable_memory_mb.clamp(1_024, 16_384),
-    }
+    })
 }
 
 fn default_context_tokens_for_model(model: &contracts::ModelCapability) -> u32 {
@@ -2221,7 +2259,7 @@ mod tests {
     }
 
     fn test_config() -> AgentConfig {
-        AgentConfig {
+        let mut config = AgentConfig {
             version: 1,
             device_id: "node-1".to_string(),
             public_key_fingerprint: None,
@@ -2246,7 +2284,53 @@ mod tests {
             harness_validation_profiles: Default::default(),
             harness_sandbox_runtime: None,
             harness_sandbox_image_digest: None,
-        }
+        };
+        config.harness_repositories.insert(
+            "repo-1".to_string(),
+            if cfg!(windows) {
+                "C:\\repos\\fixture"
+            } else {
+                "/repos/fixture"
+            }
+            .to_string(),
+        );
+        config.harness_workspace_root = Some(
+            if cfg!(windows) {
+                "C:\\harness\\work"
+            } else {
+                "/harness/work"
+            }
+            .to_string(),
+        );
+        config.harness_git_executable = Some(
+            if cfg!(windows) {
+                "C:\\Program Files\\Git\\cmd\\git.exe"
+            } else {
+                "/usr/bin/git"
+            }
+            .to_string(),
+        );
+        config.harness_validation_profiles.insert(
+            "rust-default".to_string(),
+            crate::storage::HarnessValidationProfileConfig {
+                executable: if cfg!(windows) {
+                    "C:\\tools\\cargo.exe"
+                } else {
+                    "/usr/bin/cargo"
+                }
+                .to_string(),
+                arguments: vec!["test".to_string()],
+                working_directory: String::new(),
+                environment: Default::default(),
+                network_allowed: false,
+                timeout_ms: 30_000,
+                max_output_bytes: 65_536,
+                max_memory_mb: 1_024,
+                max_cpu_time_ms: 30_000,
+                max_processes: 32,
+            },
+        );
+        config
     }
 
     #[test]
@@ -2279,6 +2363,14 @@ mod tests {
             .supported_operations
             .contains(&"validation.run".to_string()));
         assert!(harness.network_default_disabled);
+    }
+
+    #[test]
+    fn node_does_not_advertise_harness_before_trusted_configuration_exists() {
+        let mut config = test_config();
+        config.harness_repositories.clear();
+        let capabilities = build_capabilities(&config, &test_health(Backend::Cuda), true);
+        assert!(capabilities.harness.is_none());
     }
 
     /// Health as `contributed_cluster_health` reports it: endpoint reachable, no
