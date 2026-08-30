@@ -514,11 +514,23 @@ pub struct NodeCapabilityAdvertisement {
     pub supported_roles: Vec<NodeRole>,
     #[serde(default)]
     pub supported_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessCapabilityAdvertisement>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_model: Option<ModelCapability>,
     pub ready_for_jobs: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readiness_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HarnessCapabilityAdvertisement {
+    pub execution_modes: Vec<String>,
+    pub supported_operations: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_runtime: Option<String>,
+    pub network_default_disabled: bool,
+    pub max_workspace_mb: u32,
 }
 
 fn default_capability_schema_version() -> u32 {
