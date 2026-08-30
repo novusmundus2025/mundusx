@@ -1,13 +1,21 @@
-# Coding Harness v1 node configuration
+# Coding Harness v1 local runner configuration
 
-The node agent advertises Harness capability only after all trusted execution paths are configured.
-Task payloads contain opaque source/profile IDs and can never supply repository URLs, executable
-paths, validation commands, credentials, or sandbox images.
+An inference contributor is not a Harness runner. Contributor registration advertises model
+inference only and never exposes repositories, workspaces, credentials, Git, validation commands,
+or Harness slots. A user may explicitly enable a separate local runner in the same installation;
+its identity, ownership, scopes, heartbeat, and concurrency are registered independently.
+
+If no eligible runner is paired, the control plane returns `HARNESS_RUNNER_UNAVAILABLE`. It never
+falls back to an inference contributor.
 
 Add the following fields to the node's existing `config.json`. Use paths valid on that node:
 
 ```json
 {
+  "harness_runner_id": "runner-my-workstation",
+  "harness_runner_owner_user_id": "<authenticated-user-uuid>",
+  "harness_runner_tenant_ids": ["tenant-personal"],
+  "harness_runner_slots": 1,
   "harness_repositories": {
     "ehda-control-plane": "C:\\trusted-repositories\\control-plane"
   },
@@ -30,6 +38,11 @@ Add the following fields to the node's existing `config.json`. Use paths valid o
 }
 ```
 
+Use a stable, unique runner ID. The runner's device key, kind, and owning user are immutable; pair
+a new ID when ownership changes. Repository source IDs are opaque control-plane identifiers and map
+only to clones the user already controls locally. Start with one runner slot even when the same
+machine also contributes inference, then increase it only after measuring memory and I/O pressure.
+
 For sandbox mode, also configure an absolute runtime path and a digest-pinned image:
 
 ```json
@@ -39,10 +52,11 @@ For sandbox mode, also configure an absolute runtime path and a digest-pinned im
 }
 ```
 
-Without the sandbox fields, a correctly configured trusted node advertises hybrid mode only. The
-agent probes the pinned sandbox runtime before advertising sandbox support. Network access remains
-disabled unless the operator-owned validation profile explicitly enables it.
+Without the sandbox fields, a correctly configured trusted runner registers hybrid mode only. The
+agent probes the pinned sandbox runtime before registering sandbox support. Network access remains
+disabled unless the user-owned validation profile explicitly enables it.
 
-After editing, restart the node agent and inspect its registration/heartbeat capability manifest.
-Do not put secrets in these fields. Harness execution approval remains UAT-only; applying, merging,
-or deploying a returned patch requires separate control-plane approval.
+After editing, restart the agent. Logs should show `harnessRunner: ready` separately from `jobPoll`.
+The contributor capability manifest must continue to show no Harness capability. Do not put secrets
+in these fields. Harness execution approval remains UAT-only; applying, merging, or deploying a
+returned patch requires separate control-plane approval.

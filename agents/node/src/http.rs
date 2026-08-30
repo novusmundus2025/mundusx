@@ -62,7 +62,15 @@ pub fn signed_post_json<T: Serialize>(
     identity: &DeviceIdentity,
     payload: &T,
 ) -> Result<String, String> {
-    signed_request(control_plane_url, "POST", path, node_id, identity, payload)
+    signed_request(
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        payload,
+    )
 }
 
 pub fn signed_get_json<T: DeserializeOwned>(
@@ -75,6 +83,7 @@ pub fn signed_get_json<T: DeserializeOwned>(
         control_plane_url,
         "GET",
         path,
+        "X-MundusX-Node-Id",
         node_id,
         identity,
         &serde_json::json!({}),
@@ -89,7 +98,52 @@ pub fn signed_post_json_body<T: Serialize, R: DeserializeOwned>(
     identity: &DeviceIdentity,
     payload: &T,
 ) -> Result<R, String> {
-    let response = signed_request(control_plane_url, "POST", path, node_id, identity, payload)?;
+    let response = signed_request(
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        payload,
+    )?;
+    parse_json_body(&response)
+}
+
+pub fn signed_runner_get_json<T: DeserializeOwned>(
+    control_plane_url: &str,
+    path: &str,
+    runner_id: &str,
+    identity: &DeviceIdentity,
+) -> Result<T, String> {
+    let response = signed_request(
+        control_plane_url,
+        "GET",
+        path,
+        "X-MundusX-Runner-Id",
+        runner_id,
+        identity,
+        &serde_json::json!({}),
+    )?;
+    parse_json_body(&response)
+}
+
+pub fn signed_runner_post_json_body<T: Serialize, R: DeserializeOwned>(
+    control_plane_url: &str,
+    path: &str,
+    runner_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<R, String> {
+    let response = signed_request(
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Runner-Id",
+        runner_id,
+        identity,
+        payload,
+    )?;
     parse_json_body(&response)
 }
 
@@ -97,7 +151,8 @@ fn signed_request<T: Serialize>(
     control_plane_url: &str,
     method: &str,
     path: &str,
-    node_id: &str,
+    identity_header: &str,
+    identity_id: &str,
     identity: &DeviceIdentity,
     payload: &T,
 ) -> Result<String, String> {
@@ -113,7 +168,7 @@ fn signed_request<T: Serialize>(
         .sign_hex(&message)
         .map_err(|error| error.to_string())?;
     let headers = vec![
-        ("X-MundusX-Node-Id", node_id.to_string()),
+        (identity_header, identity_id.to_string()),
         ("X-MundusX-Public-Key", identity.public_key_hex.clone()),
         ("X-MundusX-Timestamp", timestamp),
         ("X-MundusX-Signature", signature),

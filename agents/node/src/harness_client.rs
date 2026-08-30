@@ -1,6 +1,6 @@
 //! Signed control-plane client and concrete node runner for Coding Harness v1.
 
-use crate::contracts::{Backend, WorkerLaunchRequest};
+use crate::contracts::{Backend, HarnessCapabilityAdvertisement, WorkerLaunchRequest};
 use crate::harness::{HarnessError, WorkspaceLimits, WorkspaceManager};
 use crate::harness_executor::{execute_harness_assignment, HarnessAssignment, JsonHarnessModel};
 use crate::harness_loop::{
@@ -9,7 +9,7 @@ use crate::harness_loop::{
 use crate::harness_tools::{
     NetworkPolicy, ValidationIsolation, ValidationProfile, ValidationRunner,
 };
-use crate::http::{signed_get_json, signed_post_json_body};
+use crate::http::{signed_runner_get_json, signed_runner_post_json_body};
 use crate::identity::DeviceIdentity;
 use crate::storage::AgentConfig;
 use serde::{Deserialize, Serialize};
@@ -48,9 +48,29 @@ pub struct HarnessBudgetsContract {
 pub struct HarnessAttemptContract {
     pub attempt_id: String,
     pub task_id: String,
-    pub node_id: String,
+    #[serde(alias = "node_id")]
+    pub runner_id: String,
     pub state: String,
     pub state_version: u64,
+}
+
+#[derive(Serialize)]
+struct HarnessRunnerRegistrationRequest {
+    runner_id: String,
+    device_id: String,
+    public_key_hex: String,
+    kind: &'static str,
+    owner_user_id: String,
+    tenant_ids: Vec<String>,
+    repository_source_ids: Vec<String>,
+    execution_modes: Vec<String>,
+    supported_operations: Vec<String>,
+    network_default_disabled: bool,
+    max_workspace_mb: u32,
+    usable_memory_mb: u32,
+    parallel_slots: u32,
+    trusted_identity: bool,
+    ready: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -67,21 +87,73 @@ struct TransitionRequest<'a> {
     code: Option<&'a str>,
 }
 
+pub fn register_runner(
+    config: &AgentConfig,
+    identity: &DeviceIdentity,
+    capabilities: &HarnessCapabilityAdvertisement,
+    usable_memory_mb: u32,
+    trusted_identity: bool,
+) -> Result<(), String> {
+    let runner_id = required_runner_id(config)?;
+    let owner_user_id = config
+        .harness_runner_owner_user_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "HARNESS_RUNNER_OWNER_REQUIRED: local runner must be paired to one user".to_string()
+        })?;
+    if config.harness_runner_tenant_ids.is_empty() || config.harness_repositories.is_empty() {
+        return Err(
+            "HARNESS_RUNNER_SCOPE_REQUIRED: tenant and repository scopes are required".to_string(),
+        );
+    }
+    let request = HarnessRunnerRegistrationRequest {
+        runner_id: runner_id.to_string(),
+        device_id: config.device_id.clone(),
+        public_key_hex: identity.public_key_hex.clone(),
+        kind: "local_user",
+        owner_user_id: owner_user_id.clone(),
+        tenant_ids: config.harness_runner_tenant_ids.clone(),
+        repository_source_ids: config.harness_repositories.keys().cloned().collect(),
+        execution_modes: capabilities.execution_modes.clone(),
+        supported_operations: capabilities.supported_operations.clone(),
+        network_default_disabled: capabilities.network_default_disabled,
+        max_workspace_mb: capabilities.max_workspace_mb,
+        usable_memory_mb: usable_memory_mb.max(1),
+        parallel_slots: config.harness_runner_slots.clamp(1, 64),
+        trusted_identity,
+        ready: true,
+    };
+    let _: serde_json::Value = signed_runner_post_json_body(
+        &config.control_plane_url,
+        "/internal/harness/runners/register",
+        runner_id,
+        identity,
+        &request,
+    )?;
+    Ok(())
+}
+
+fn required_runner_id(config: &AgentConfig) -> Result<&str, String> {
+    config
+        .harness_runner_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "HARNESS_RUNNER_UNAVAILABLE: local runner is not configured".to_string())
+}
+
 pub fn claim_next(
     config: &AgentConfig,
     identity: &DeviceIdentity,
 ) -> Result<Option<(HarnessTaskContract, HarnessAttemptContract)>, String> {
-    if config.harness_repositories.is_empty() {
+    let Some(runner_id) = config.harness_runner_id.as_deref() else {
         return Ok(None);
-    }
-    let path = format!(
-        "/internal/harness/node/attempts/next?node_id={}",
-        config.device_id
-    );
-    let response = signed_get_json::<HarnessClaimResponse>(
+    };
+    let path = format!("/internal/harness/runners/attempts/next?runner_id={runner_id}");
+    let response = signed_runner_get_json::<HarnessClaimResponse>(
         &config.control_plane_url,
         &path,
-        &config.device_id,
+        runner_id,
         identity,
     )?;
     match (response.task, response.attempt) {
@@ -97,7 +169,9 @@ pub fn execute_claim(
     task: HarnessTaskContract,
     mut attempt: HarnessAttemptContract,
 ) -> Result<(), String> {
-    if attempt.node_id != config.device_id || attempt.task_id != task.task_id {
+    if config.harness_runner_id.as_deref() != Some(&attempt.runner_id)
+        || attempt.task_id != task.task_id
+    {
         return Err("HARNESS_AUTH_REQUIRED: assignment owner mismatch".to_string());
     }
     if task.state == "cancelling" || task.state == "cancelled" {
@@ -264,14 +338,12 @@ struct ControlPlaneObserver<'a> {
 
 impl HarnessLoopObserver for ControlPlaneObserver<'_> {
     fn model_turn(&mut self, action: &ModelAction) -> Result<(), LoopFailure> {
-        let path = format!(
-            "/internal/harness/node/attempts/next?node_id={}",
-            self.config.device_id
-        );
-        let current = signed_get_json::<HarnessClaimResponse>(
+        let runner_id = required_runner_id(self.config).map_err(control_loop_failure)?;
+        let path = format!("/internal/harness/runners/attempts/next?runner_id={runner_id}");
+        let current = signed_runner_get_json::<HarnessClaimResponse>(
             &self.config.control_plane_url,
             &path,
-            &self.config.device_id,
+            runner_id,
             self.identity,
         )
         .map_err(control_loop_failure)?;
@@ -372,13 +444,13 @@ fn transition(
     code: Option<&str>,
 ) -> Result<HarnessAttemptContract, String> {
     let path = format!(
-        "/internal/harness/node/attempts/{}/transition",
+        "/internal/harness/runners/attempts/{}/transition",
         attempt.attempt_id
     );
-    signed_post_json_body(
+    signed_runner_post_json_body(
         &config.control_plane_url,
         &path,
-        &config.device_id,
+        required_runner_id(config)?,
         identity,
         &TransitionRequest {
             expected_state_version: attempt.state_version,
@@ -396,11 +468,11 @@ fn post_evidence(
     action: &str,
     payload: &serde_json::Value,
 ) -> Result<(), String> {
-    let path = format!("/internal/harness/node/attempts/{attempt_id}/{action}");
-    let _: serde_json::Value = signed_post_json_body(
+    let path = format!("/internal/harness/runners/attempts/{attempt_id}/{action}");
+    let _: serde_json::Value = signed_runner_post_json_body(
         &config.control_plane_url,
         &path,
-        &config.device_id,
+        required_runner_id(config)?,
         identity,
         payload,
     )?;
