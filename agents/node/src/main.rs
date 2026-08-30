@@ -9,10 +9,10 @@ mod worker;
 
 use clap::{Parser, Subcommand};
 use contracts::{
-    AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
-    JobStreamAck, JobStreamDelta, NodeAdmissionStatus, NodeCapabilityAdvertisement,
-    NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
-    WorkerPolicyReport,
+    AgentRegistration, AgentState, Backend, HarnessCapabilityAdvertisement, Heartbeat,
+    JobClaimResponse, JobCompletion, JobRecord, JobStreamAck, JobStreamDelta, NodeAdmissionStatus,
+    NodeCapabilityAdvertisement, NodeCapabilityProfile, NodeRole, WorkerHealthReport,
+    WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
 };
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
@@ -410,9 +410,36 @@ fn build_capabilities(
             }),
         supported_roles: Vec::new(),
         supported_tools: Vec::new(),
+        harness: Some(build_harness_capabilities(usable_memory_mb)),
         active_model,
         ready_for_jobs,
         readiness_reason,
+    }
+}
+
+fn build_harness_capabilities(usable_memory_mb: u32) -> HarnessCapabilityAdvertisement {
+    let docker_available = std::process::Command::new("docker")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    let mut execution_modes = vec!["hybrid".to_string()];
+    if docker_available {
+        execution_modes.insert(0, "sandbox".to_string());
+    }
+    HarnessCapabilityAdvertisement {
+        execution_modes,
+        supported_operations: vec![
+            "repository.status".to_string(),
+            "repository.diff".to_string(),
+            "file.read".to_string(),
+            "file.search".to_string(),
+            "patch.apply".to_string(),
+            "validation.run".to_string(),
+            "artifact.publish".to_string(),
+        ],
+        sandbox_runtime: docker_available.then(|| "docker".to_string()),
+        network_default_disabled: true,
+        max_workspace_mb: usable_memory_mb.clamp(1_024, 16_384),
     }
 }
 
@@ -2199,6 +2226,16 @@ mod tests {
             registration.capabilities.contribution_percent
         );
         assert!(registration.capabilities.schema_version > 0);
+        let harness = registration
+            .capabilities
+            .harness
+            .as_ref()
+            .expect("harness capability advertisement");
+        assert!(harness.execution_modes.contains(&"hybrid".to_string()));
+        assert!(harness
+            .supported_operations
+            .contains(&"validation.run".to_string()));
+        assert!(harness.network_default_disabled);
     }
 
     /// Health as `contributed_cluster_health` reports it: endpoint reachable, no

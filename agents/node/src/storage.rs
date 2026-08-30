@@ -354,6 +354,7 @@ mod tests {
                 capacity_class: "micro".to_string(),
                 supported_roles: vec![],
                 supported_tools: vec![],
+                harness: None,
                 active_model: Some(ModelCapability {
                     name: "llama3.1:8b".to_string(),
                     path: Some("/tmp/models/llama3.1-8b.gguf".to_string()),
