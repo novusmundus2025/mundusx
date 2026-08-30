@@ -413,7 +413,9 @@ fn build_capabilities(
             }),
         supported_roles: Vec::new(),
         supported_tools: Vec::new(),
-        harness: build_harness_capabilities(config, usable_memory_mb),
+        // Inference contributors never advertise repository/workspace authority.
+        // A separately registered Harness runner owns those capabilities.
+        harness: None,
         active_model,
         ready_for_jobs,
         readiness_reason,
@@ -1752,6 +1754,65 @@ fn spawn_claimed_harness(
     })
 }
 
+fn process_pending_harness(config: &AgentConfig, identity: &DeviceIdentity, verbose: bool) {
+    if config.harness_runner_id.is_none() {
+        return;
+    }
+    let usable_memory_mb = detect_available_memory_mb();
+    let Some(capabilities) = build_harness_capabilities(config, usable_memory_mb) else {
+        eprintln!(
+            "harnessRunner: disabled (trusted repository, workspace, Git, and validation configuration required)"
+        );
+        return;
+    };
+    let trusted_identity = identity::trust_path() != "local-encrypted-fallback";
+    if let Err(error) = harness_client::register_runner(
+        config,
+        identity,
+        &capabilities,
+        usable_memory_mb,
+        trusted_identity,
+    ) {
+        eprintln!("harnessRunner: registration failed ({error})");
+        return;
+    }
+    if verbose {
+        println!(
+            "harnessRunner: ready {} ({} slots)",
+            config.harness_runner_id.as_deref().unwrap_or("unknown"),
+            config.harness_runner_slots.clamp(1, 64)
+        );
+    }
+    let runner_pool =
+        local_api::SlotPool::new(config.harness_runner_slots.clamp(1, 64) as usize);
+    let mut handles = Vec::new();
+    while handles.len() < runner_pool.capacity() {
+        let Some(permit) = runner_pool.try_acquire() else {
+            break;
+        };
+        match harness_client::claim_next(config, identity) {
+            Ok(Some((task, attempt))) => {
+                println!("harnessPoll: claimed {}", attempt.attempt_id);
+                handles.push(spawn_claimed_harness(
+                    config, identity, task, attempt, permit,
+                ));
+            }
+            Ok(None) => {
+                drop(permit);
+                break;
+            }
+            Err(error) => {
+                eprintln!("harnessPoll: {error}");
+                drop(permit);
+                break;
+            }
+        }
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
+
 fn process_pending_jobs(
     config: &AgentConfig,
     json: bool,
@@ -1779,21 +1840,6 @@ fn process_pending_jobs(
         println!("jobPoll: checking control plane");
     }
     let mut handles = Vec::new();
-    if let Some(permit) = slot_pool.try_acquire() {
-        match harness_client::claim_next(config, &identity) {
-            Ok(Some((task, attempt))) => {
-                println!("harnessPoll: claimed {}", attempt.attempt_id);
-                handles.push(spawn_claimed_harness(
-                    config, &identity, task, attempt, permit,
-                ));
-            }
-            Ok(None) => drop(permit),
-            Err(error) => {
-                eprintln!("harnessPoll: {error}");
-                drop(permit);
-            }
-        }
-    }
     while handles.len() < slot_pool.capacity() {
         let Some(permit) = slot_pool.try_acquire() else {
             break;
@@ -2013,15 +2059,20 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         &registration.capabilities,
         control_plane_status.as_ref(),
     );
-    if let Some(reason) = control_plane_blocks_jobs(control_plane_status.as_ref()) {
-        drop(persistent_runtime.take());
-        clear_runtime_environment();
+    process_pending_harness(&config, &identity, verbose);
+    let inference_block_reason = control_plane_blocks_jobs(control_plane_status.as_ref());
+    if let Some(reason) = inference_block_reason.as_deref() {
         eprintln_error_field("agentAdmission", "blocked by control plane");
         eprintln_error_field("agentAdmissionReason", reason);
-        eprintln_error_field("persistentRuntime", "stopped");
-        std::process::exit(2);
+        if config.harness_runner_id.is_none() {
+            drop(persistent_runtime.take());
+            clear_runtime_environment();
+            eprintln_error_field("persistentRuntime", "stopped");
+            std::process::exit(2);
+        }
+    } else {
+        process_pending_jobs(&config, json, verbose, !once, slot_pool.clone());
     }
-    process_pending_jobs(&config, json, verbose, !once, slot_pool.clone());
 
     println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
@@ -2073,11 +2124,14 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             eprintln!("failed to save heartbeat: {error}");
             break;
         }
-        send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+        let control_plane_status = send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
         if verbose {
             println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
         }
-        process_pending_jobs(&latest_config, json, verbose, true, slot_pool.clone());
+        process_pending_harness(&latest_config, &identity, verbose);
+        if control_plane_blocks_jobs(control_plane_status.as_ref()).is_none() {
+            process_pending_jobs(&latest_config, json, verbose, true, slot_pool.clone());
+        }
         let _ = io::stdout().flush();
     }
 }
@@ -2278,6 +2332,10 @@ mod tests {
             contributed_cluster: None,
             cluster_prompt_declined: false,
             max_jobs: None,
+            harness_runner_id: Some("runner-user-1".to_string()),
+            harness_runner_owner_user_id: Some("78a1c06a-861c-43b4-b7db-b54a51fc912d".to_string()),
+            harness_runner_tenant_ids: vec!["tenant-1".to_string()],
+            harness_runner_slots: 1,
             harness_repositories: Default::default(),
             harness_workspace_root: None,
             harness_git_executable: None,
@@ -2353,11 +2411,9 @@ mod tests {
             registration.capabilities.contribution_percent
         );
         assert!(registration.capabilities.schema_version > 0);
-        let harness = registration
-            .capabilities
-            .harness
-            .as_ref()
-            .expect("harness capability advertisement");
+        assert!(registration.capabilities.harness.is_none());
+        let harness = build_harness_capabilities(&test_config(), 24_576)
+            .expect("separate harness runner capability advertisement");
         assert!(harness.execution_modes.contains(&"hybrid".to_string()));
         assert!(harness
             .supported_operations
@@ -2366,9 +2422,8 @@ mod tests {
     }
 
     #[test]
-    fn node_does_not_advertise_harness_before_trusted_configuration_exists() {
-        let mut config = test_config();
-        config.harness_repositories.clear();
+    fn inference_node_never_advertises_harness_workspace_authority() {
+        let config = test_config();
         let capabilities = build_capabilities(&config, &test_health(Backend::Cuda), true);
         assert!(capabilities.harness.is_none());
     }
