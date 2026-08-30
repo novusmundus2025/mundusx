@@ -1,5 +1,6 @@
 mod contracts;
 pub mod harness;
+pub mod harness_tools;
 mod http;
 mod identity;
 mod local_api;

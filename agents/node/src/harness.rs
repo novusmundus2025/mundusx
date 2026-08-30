@@ -198,6 +198,57 @@ impl WorkspaceManager {
         remove_workspace_directory(&self.root, &workspace.path)
     }
 
+    pub fn repository_status(
+        &self,
+        workspace: &PreparedWorkspace,
+        max_output_bytes: usize,
+    ) -> Result<String, HarnessError> {
+        self.require_owned_workspace(workspace)?;
+        let output = self.run_git(
+            Some(workspace.path()),
+            &["status", "--porcelain=v1", "--untracked-files=all"],
+        )?;
+        require_git_success(&output, "read repository status")?;
+        bounded_git_stdout(&output, max_output_bytes)
+    }
+
+    pub fn repository_diff(
+        &self,
+        workspace: &PreparedWorkspace,
+        max_output_bytes: usize,
+    ) -> Result<String, HarnessError> {
+        self.require_owned_workspace(workspace)?;
+        let output = self.run_git(
+            Some(workspace.path()),
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+            ],
+        )?;
+        require_git_success(&output, "read repository diff")?;
+        bounded_git_stdout(&output, max_output_bytes)
+    }
+
+    fn require_owned_workspace(&self, workspace: &PreparedWorkspace) -> Result<(), HarnessError> {
+        ensure_direct_child(&self.root, workspace.path())?;
+        let path = fs::canonicalize(workspace.path()).map_err(|error| {
+            HarnessError::new(
+                "HARNESS_PATH_DENIED",
+                format!("workspace could not be resolved: {error}"),
+            )
+        })?;
+        if !path.starts_with(&self.root) || path != workspace.path {
+            return Err(HarnessError::new(
+                "HARNESS_PATH_DENIED",
+                "workspace is not owned by this manager",
+            ));
+        }
+        Ok(())
+    }
+
     fn run_git(
         &self,
         working_directory: Option<&Path>,
@@ -449,6 +500,21 @@ fn require_git_success(output: &Output, action: &str) -> Result<(), HarnessError
         "HARNESS_WORKSPACE_PREPARE_FAILED",
         format!("failed to {action}: {diagnostic}"),
     ))
+}
+
+fn bounded_git_stdout(output: &Output, max_output_bytes: usize) -> Result<String, HarnessError> {
+    if max_output_bytes == 0 || output.stdout.len() > max_output_bytes {
+        return Err(HarnessError::new(
+            "HARNESS_RESOURCE_EXHAUSTED",
+            "repository operation exceeded its output budget",
+        ));
+    }
+    String::from_utf8(output.stdout.clone()).map_err(|_| {
+        HarnessError::new(
+            "HARNESS_ARTIFACT_INVALID",
+            "repository operation returned non-UTF-8 output",
+        )
+    })
 }
 
 fn git_path_text(path: &Path) -> Result<String, HarnessError> {
