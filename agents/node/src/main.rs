@@ -1,5 +1,6 @@
 mod contracts;
 pub mod harness;
+pub mod harness_loop;
 pub mod harness_tools;
 mod http;
 mod identity;
