@@ -1,0 +1,77 @@
+name: Release Harness runner
+
+on:
+  push:
+    tags:
+      - "harness-runner-v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing harness-runner-v* tag to publish
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: mundusx-harness-runner-x86_64-unknown-linux-gnu
+            executable: mundusx-harness-runner
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: mundusx-harness-runner-aarch64-apple-darwin
+            executable: mundusx-harness-runner
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: mundusx-harness-runner-x86_64-pc-windows-msvc.exe
+            executable: mundusx-harness-runner.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build separate user-owned runner
+        run: cargo build --release --manifest-path agents/node/Cargo.toml --features harness-runner --bin mundusx-harness-runner --target ${{ matrix.target }}
+      - name: Package Unix asset and checksum
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/${{ matrix.executable }}" "${{ matrix.asset }}"
+          chmod +x "${{ matrix.asset }}"
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+      - name: Package Windows asset and checksum
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Copy-Item -LiteralPath "target/${{ matrix.target }}/release/${{ matrix.executable }}" -Destination "${{ matrix.asset }}"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "${{ matrix.asset }}").Hash.ToLowerInvariant()
+          "$hash  ${{ matrix.asset }}" | Set-Content -NoNewline -LiteralPath "${{ matrix.asset }}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: MundusX Harness runner ${{ github.event.inputs.release_tag || github.ref_name }}
+          prerelease: true
+          generate_release_notes: true
+          files: release-assets/*
