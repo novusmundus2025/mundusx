@@ -60,6 +60,23 @@ pub trait HarnessTools {
     fn execute(&mut self, request: &ToolRequest) -> Result<ToolResult, LoopFailure>;
 }
 
+pub trait HarnessLoopObserver {
+    fn model_turn(&mut self, _action: &ModelAction) -> Result<(), LoopFailure> {
+        Ok(())
+    }
+
+    fn tool_call(
+        &mut self,
+        _request: &ToolRequest,
+        _result: &ToolResult,
+    ) -> Result<(), LoopFailure> {
+        Ok(())
+    }
+}
+
+struct NoopObserver;
+impl HarnessLoopObserver for NoopObserver {}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LoopOutcome {
     pub status: String,
@@ -92,11 +109,35 @@ pub fn run_bounded_loop<M, T, C>(
     tools: &mut T,
     allowed_operations: &BTreeSet<String>,
     budgets: &LoopBudgets,
+    cancelled: C,
+) -> LoopOutcome
+where
+    M: HarnessModel,
+    T: HarnessTools,
+    C: FnMut() -> bool,
+{
+    run_bounded_loop_observed(
+        model,
+        tools,
+        allowed_operations,
+        budgets,
+        &mut NoopObserver,
+        cancelled,
+    )
+}
+
+pub fn run_bounded_loop_observed<M, T, O, C>(
+    model: &mut M,
+    tools: &mut T,
+    allowed_operations: &BTreeSet<String>,
+    budgets: &LoopBudgets,
+    observer: &mut O,
     mut cancelled: C,
 ) -> LoopOutcome
 where
     M: HarnessModel,
     T: HarnessTools,
+    O: HarnessLoopObserver,
     C: FnMut() -> bool,
 {
     let started = Instant::now();
@@ -136,6 +177,9 @@ where
             Ok(action) => action,
             Err(error) => return terminal(outcome, "failed", error.code),
         };
+        if let Err(error) = observer.model_turn(&action) {
+            return terminal(outcome, "failed", error.code);
+        }
         match action {
             ModelAction::Finish { summary } => {
                 let summary_bytes = summary.len() as u64;
@@ -169,6 +213,9 @@ where
                     Ok(result) => result,
                     Err(error) => return terminal(outcome, "failed", error.code),
                 };
+                if let Err(error) = observer.tool_call(&request, &result) {
+                    return terminal(outcome, "failed", error.code);
+                }
                 if result.tool_call_id != request.tool_call_id
                     || result.operation != request.operation
                     || !is_sha256(&result.progress_sha256)

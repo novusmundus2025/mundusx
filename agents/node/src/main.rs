@@ -1,5 +1,7 @@
 mod contracts;
 pub mod harness;
+pub mod harness_client;
+pub mod harness_executor;
 pub mod harness_loop;
 pub mod harness_tools;
 mod http;
@@ -1693,6 +1695,25 @@ fn reap_finished_jobs(handles: &mut Vec<thread::JoinHandle<()>>) {
     }
 }
 
+fn spawn_claimed_harness(
+    config: &AgentConfig,
+    identity: &DeviceIdentity,
+    task: harness_client::HarnessTaskContract,
+    attempt: harness_client::HarnessAttemptContract,
+    permit: local_api::SlotPermit,
+) -> thread::JoinHandle<()> {
+    let config = config.clone();
+    let identity = identity.clone();
+    thread::spawn(move || {
+        let _permit = permit;
+        let attempt_id = attempt.attempt_id.clone();
+        match harness_client::execute_claim(&config, &identity, task, attempt) {
+            Ok(()) => println!("harnessPoll: completed {attempt_id}"),
+            Err(error) => eprintln!("harnessPoll: {attempt_id}: {error}"),
+        }
+    })
+}
+
 fn process_pending_jobs(
     config: &AgentConfig,
     json: bool,
@@ -1720,6 +1741,21 @@ fn process_pending_jobs(
         println!("jobPoll: checking control plane");
     }
     let mut handles = Vec::new();
+    if let Some(permit) = slot_pool.try_acquire() {
+        match harness_client::claim_next(config, &identity) {
+            Ok(Some((task, attempt))) => {
+                println!("harnessPoll: claimed {}", attempt.attempt_id);
+                handles.push(spawn_claimed_harness(
+                    config, &identity, task, attempt, permit,
+                ));
+            }
+            Ok(None) => drop(permit),
+            Err(error) => {
+                eprintln!("harnessPoll: {error}");
+                drop(permit);
+            }
+        }
+    }
     while handles.len() < slot_pool.capacity() {
         let Some(permit) = slot_pool.try_acquire() else {
             break;
@@ -2204,6 +2240,12 @@ mod tests {
             contributed_cluster: None,
             cluster_prompt_declined: false,
             max_jobs: None,
+            harness_repositories: Default::default(),
+            harness_workspace_root: None,
+            harness_git_executable: None,
+            harness_validation_profiles: Default::default(),
+            harness_sandbox_runtime: None,
+            harness_sandbox_image_digest: None,
         }
     }
 
