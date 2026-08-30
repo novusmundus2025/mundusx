@@ -1,27 +1,59 @@
-# Coding Harness v1 local runner configuration
+# Coding Harness v1 runner configuration
 
-An inference contributor is not a Harness runner. Contributor registration advertises model
-inference only and never exposes repositories, workspaces, credentials, Git, validation commands,
-or Harness slots. A user may explicitly enable a separate local runner in the same installation;
-its identity, ownership, scopes, heartbeat, and concurrency are registered independently.
+The Harness runner is a separate application from the MundusX inference contributor.
 
-If no eligible runner is paired, the control plane returns `HARNESS_RUNNER_UNAVAILABLE`. It never
-falls back to an inference contributor.
+- `opengpu-node-agent` contributes model inference only. It does not compile Harness modules,
+  advertise repository authority, or store repository, workspace, Git, or validation settings.
+- `mundusx-harness-runner` runs only on a user's trusted machine. It owns that user's repository
+  access, temporary workspaces, Git operations, tools, tests, and validation limits.
+- Model turns are requested from EHDA through `/v1/chat/completions`. Contributor nodes can perform
+  inference on bounded prompts, but they never receive filesystem access, repository credentials,
+  or authority to execute tools.
 
-Add the following fields to the node's existing `config.json`. Use paths valid on that node:
+If no eligible user-owned runner is paired, the control plane returns
+`HARNESS_RUNNER_UNAVAILABLE`. It never falls back to an inference contributor.
+
+## Build the runner
+
+The ordinary contributor release deliberately builds only `opengpu-node-agent`. Build the runner
+explicitly on the user's trusted workstation:
+
+```powershell
+cargo build --release --manifest-path agents/node/Cargo.toml --features harness-runner --bin mundusx-harness-runner
+```
+
+Initialize its independent config and signing identity:
+
+```powershell
+.\target\release\mundusx-harness-runner.exe init
+```
+
+The runner uses `MUNDUSX_HARNESS_RUNNER_HOME` when set. Otherwise its files live under
+`~/.mundusx/harness-runner`, separate from the contributor agent's `~/.opengpu` data.
+
+## Configure the user's runner
+
+Edit the generated `config.json`. All executable and repository paths must be absolute and must
+refer to resources controlled by that user:
 
 ```json
 {
-  "harness_runner_id": "runner-my-workstation",
-  "harness_runner_owner_user_id": "<authenticated-user-uuid>",
-  "harness_runner_tenant_ids": ["tenant-personal"],
-  "harness_runner_slots": 1,
-  "harness_repositories": {
+  "version": 1,
+  "runner_id": "runner-my-workstation",
+  "device_id": "runner-device-my-workstation",
+  "owner_user_id": "<authenticated-user-uuid>",
+  "tenant_ids": ["tenant-personal"],
+  "control_plane_url": "https://uat.mundusx.ai",
+  "inference_model": "mundusx-agnostic",
+  "parallel_slots": 1,
+  "usable_memory_mb": 4096,
+  "max_workspace_mb": 4096,
+  "repositories": {
     "ehda-control-plane": "C:\\trusted-repositories\\control-plane"
   },
-  "harness_workspace_root": "C:\\mundusx-harness\\workspaces",
-  "harness_git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
-  "harness_validation_profiles": {
+  "workspace_root": "C:\\mundusx-harness\\workspaces",
+  "git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
+  "validation_profiles": {
     "rust-default": {
       "executable": "C:\\Users\\operator\\.cargo\\bin\\cargo.exe",
       "arguments": ["test", "--workspace"],
@@ -34,29 +66,37 @@ Add the following fields to the node's existing `config.json`. Use paths valid o
       "max_cpu_time_ms": 600000,
       "max_processes": 64
     }
-  }
+  },
+  "sandbox_runtime": null,
+  "sandbox_image_digest": null
 }
 ```
 
-Use a stable, unique runner ID. The runner's device key, kind, and owning user are immutable; pair
-a new ID when ownership changes. Repository source IDs are opaque control-plane identifiers and map
-only to clones the user already controls locally. Start with one runner slot even when the same
-machine also contributes inference, then increase it only after measuring memory and I/O pressure.
+Use a stable, unique runner ID. Runner identity, kind, and owning user are immutable; pair a new ID
+if ownership changes. Repository source IDs are opaque control-plane identifiers mapped only to
+repositories the user already controls. Start with one slot and increase it only after measuring
+memory and I/O pressure.
 
-For sandbox mode, also configure an absolute runtime path and a digest-pinned image:
+For sandbox mode, set an absolute runtime path and a digest-pinned image:
 
 ```json
 {
-  "harness_sandbox_runtime": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
-  "harness_sandbox_image_digest": "registry.example/harness@sha256:<64-hex-digest>"
+  "sandbox_runtime": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+  "sandbox_image_digest": "registry.example/harness@sha256:<64-hex-digest>"
 }
 ```
 
-Without the sandbox fields, a correctly configured trusted runner registers hybrid mode only. The
-agent probes the pinned sandbox runtime before registering sandbox support. Network access remains
-disabled unless the user-owned validation profile explicitly enables it.
+Without these sandbox fields, a correctly configured runner advertises hybrid mode only. Network
+access remains disabled unless the user-owned validation profile explicitly enables it.
 
-After editing, restart the agent. Logs should show `harnessRunner: ready` separately from `jobPoll`.
-The contributor capability manifest must continue to show no Harness capability. Do not put secrets
-in these fields. Harness execution approval remains UAT-only; applying, merging, or deploying a
-returned patch requires separate control-plane approval.
+## Verify and run
+
+```powershell
+.\target\release\mundusx-harness-runner.exe status
+.\target\release\mundusx-harness-runner.exe run --once
+.\target\release\mundusx-harness-runner.exe run
+```
+
+The contributor agent's capability manifest must continue to report no Harness capability. Do not
+put secrets in runner configuration. Harness execution approval remains UAT-only; applying,
+merging, or deploying a returned patch requires separate control-plane approval.

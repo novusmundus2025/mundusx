@@ -41,7 +41,7 @@ assert_contains "$macos_workflow" "TARGET: aarch64-apple-darwin"
 assert_contains "$macos_workflow" "BINARY_NAME: opengpu-aarch64-apple-darwin"
 assert_contains "$macos_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-aarch64-apple-darwin"
 assert_contains "$macos_workflow" "cargo build --release --manifest-path apps/cli/Cargo.toml --target \${{ env.TARGET }}"
-assert_contains "$macos_workflow" "cargo build --release --manifest-path agents/node/Cargo.toml --target \${{ env.TARGET }}"
+assert_contains "$macos_workflow" "cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target \${{ env.TARGET }}"
 assert_contains "$macos_workflow" "tag_name: \${{ env.RELEASE_TAG }}"
 assert_contains "$macos_workflow" "name: MundusX macOS Apple Silicon CLI \${{ env.RELEASE_TAG }}"
 

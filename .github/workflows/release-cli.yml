@@ -64,7 +64,7 @@ jobs:
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ matrix.target }}
 
       - name: Build node agent
-        run: cargo build --release --manifest-path agents/node/Cargo.toml --target ${{ matrix.target }}
+        run: cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target ${{ matrix.target }}
 
       - name: Build Windows tray companion
         if: startsWith(matrix.os, 'windows-')

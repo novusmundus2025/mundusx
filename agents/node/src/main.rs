@@ -1,9 +1,4 @@
 mod contracts;
-pub mod harness;
-pub mod harness_client;
-pub mod harness_executor;
-pub mod harness_loop;
-pub mod harness_tools;
 mod http;
 mod identity;
 mod local_api;
@@ -12,15 +7,14 @@ mod worker;
 
 use clap::{Parser, Subcommand};
 use contracts::{
-    AgentRegistration, AgentState, Backend, HarnessCapabilityAdvertisement, Heartbeat,
-    JobClaimResponse, JobCompletion, JobRecord, JobStreamAck, JobStreamDelta, NodeAdmissionStatus,
-    NodeCapabilityAdvertisement, NodeCapabilityProfile, NodeRole, WorkerHealthReport,
-    WorkerLaunchRequest, WorkerLaunchResponse, WorkerPolicyReport,
+    AgentRegistration, AgentState, Backend, Heartbeat, JobClaimResponse, JobCompletion, JobRecord,
+    JobStreamAck, JobStreamDelta, NodeAdmissionStatus, NodeCapabilityAdvertisement,
+    NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerPolicyReport,
 };
 use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
-use std::fs;
 use std::io::{self, Write};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -420,70 +414,6 @@ fn build_capabilities(
         ready_for_jobs,
         readiness_reason,
     }
-}
-
-fn build_harness_capabilities(
-    config: &AgentConfig,
-    usable_memory_mb: u32,
-) -> Option<HarnessCapabilityAdvertisement> {
-    let workspace_root = config
-        .harness_workspace_root
-        .as_ref()
-        .map(std::path::Path::new);
-    let git = config
-        .harness_git_executable
-        .as_ref()
-        .map(std::path::Path::new);
-    let configured = !config.harness_repositories.is_empty()
-        && !config.harness_validation_profiles.is_empty()
-        && workspace_root.is_some_and(std::path::Path::is_absolute)
-        && git.is_some_and(std::path::Path::is_absolute)
-        && config
-            .harness_validation_profiles
-            .values()
-            .all(|profile| std::path::Path::new(&profile.executable).is_absolute());
-    if !configured {
-        return None;
-    }
-    let docker_available = config
-        .harness_sandbox_runtime
-        .as_ref()
-        .map(std::path::PathBuf::from)
-        .filter(|runtime| runtime.is_absolute())
-        .filter(|_| {
-            config
-                .harness_sandbox_image_digest
-                .as_deref()
-                .is_some_and(|image| image.contains("@sha256:"))
-        })
-        .and_then(|runtime| {
-            std::process::Command::new(&runtime)
-                .arg("--version")
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|_| runtime)
-        });
-    let sandbox_available = docker_available.is_some();
-    let mut execution_modes = vec!["hybrid".to_string()];
-    if sandbox_available {
-        execution_modes.insert(0, "sandbox".to_string());
-    }
-    Some(HarnessCapabilityAdvertisement {
-        execution_modes,
-        supported_operations: vec![
-            "repository.status".to_string(),
-            "repository.diff".to_string(),
-            "file.read".to_string(),
-            "file.search".to_string(),
-            "patch.apply".to_string(),
-            "validation.run".to_string(),
-            "artifact.publish".to_string(),
-        ],
-        sandbox_runtime: docker_available.map(|runtime| runtime.display().to_string()),
-        network_default_disabled: true,
-        max_workspace_mb: usable_memory_mb.clamp(1_024, 16_384),
-    })
 }
 
 fn default_context_tokens_for_model(model: &contracts::ModelCapability) -> u32 {
@@ -1735,84 +1665,6 @@ fn reap_finished_jobs(handles: &mut Vec<thread::JoinHandle<()>>) {
     }
 }
 
-fn spawn_claimed_harness(
-    config: &AgentConfig,
-    identity: &DeviceIdentity,
-    task: harness_client::HarnessTaskContract,
-    attempt: harness_client::HarnessAttemptContract,
-    permit: local_api::SlotPermit,
-) -> thread::JoinHandle<()> {
-    let config = config.clone();
-    let identity = identity.clone();
-    thread::spawn(move || {
-        let _permit = permit;
-        let attempt_id = attempt.attempt_id.clone();
-        match harness_client::execute_claim(&config, &identity, task, attempt) {
-            Ok(()) => println!("harnessPoll: completed {attempt_id}"),
-            Err(error) => eprintln!("harnessPoll: {attempt_id}: {error}"),
-        }
-    })
-}
-
-fn process_pending_harness(config: &AgentConfig, identity: &DeviceIdentity, verbose: bool) {
-    if config.harness_runner_id.is_none() {
-        return;
-    }
-    let usable_memory_mb = detect_available_memory_mb();
-    let Some(capabilities) = build_harness_capabilities(config, usable_memory_mb) else {
-        eprintln!(
-            "harnessRunner: disabled (trusted repository, workspace, Git, and validation configuration required)"
-        );
-        return;
-    };
-    let trusted_identity = identity::trust_path() != "local-encrypted-fallback";
-    if let Err(error) = harness_client::register_runner(
-        config,
-        identity,
-        &capabilities,
-        usable_memory_mb,
-        trusted_identity,
-    ) {
-        eprintln!("harnessRunner: registration failed ({error})");
-        return;
-    }
-    if verbose {
-        println!(
-            "harnessRunner: ready {} ({} slots)",
-            config.harness_runner_id.as_deref().unwrap_or("unknown"),
-            config.harness_runner_slots.clamp(1, 64)
-        );
-    }
-    let runner_pool =
-        local_api::SlotPool::new(config.harness_runner_slots.clamp(1, 64) as usize);
-    let mut handles = Vec::new();
-    while handles.len() < runner_pool.capacity() {
-        let Some(permit) = runner_pool.try_acquire() else {
-            break;
-        };
-        match harness_client::claim_next(config, identity) {
-            Ok(Some((task, attempt))) => {
-                println!("harnessPoll: claimed {}", attempt.attempt_id);
-                handles.push(spawn_claimed_harness(
-                    config, identity, task, attempt, permit,
-                ));
-            }
-            Ok(None) => {
-                drop(permit);
-                break;
-            }
-            Err(error) => {
-                eprintln!("harnessPoll: {error}");
-                drop(permit);
-                break;
-            }
-        }
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
-}
-
 fn process_pending_jobs(
     config: &AgentConfig,
     json: bool,
@@ -2059,17 +1911,14 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         &registration.capabilities,
         control_plane_status.as_ref(),
     );
-    process_pending_harness(&config, &identity, verbose);
     let inference_block_reason = control_plane_blocks_jobs(control_plane_status.as_ref());
     if let Some(reason) = inference_block_reason.as_deref() {
         eprintln_error_field("agentAdmission", "blocked by control plane");
         eprintln_error_field("agentAdmissionReason", reason);
-        if config.harness_runner_id.is_none() {
-            drop(persistent_runtime.take());
-            clear_runtime_environment();
-            eprintln_error_field("persistentRuntime", "stopped");
-            std::process::exit(2);
-        }
+        drop(persistent_runtime.take());
+        clear_runtime_environment();
+        eprintln_error_field("persistentRuntime", "stopped");
+        std::process::exit(2);
     } else {
         process_pending_jobs(&config, json, verbose, !once, slot_pool.clone());
     }
@@ -2128,7 +1977,6 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         if verbose {
             println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
         }
-        process_pending_harness(&latest_config, &identity, verbose);
         if control_plane_blocks_jobs(control_plane_status.as_ref()).is_none() {
             process_pending_jobs(&latest_config, json, verbose, true, slot_pool.clone());
         }
@@ -2313,7 +2161,7 @@ mod tests {
     }
 
     fn test_config() -> AgentConfig {
-        let mut config = AgentConfig {
+        AgentConfig {
             version: 1,
             device_id: "node-1".to_string(),
             public_key_fingerprint: None,
@@ -2332,63 +2180,7 @@ mod tests {
             contributed_cluster: None,
             cluster_prompt_declined: false,
             max_jobs: None,
-            harness_runner_id: Some("runner-user-1".to_string()),
-            harness_runner_owner_user_id: Some("78a1c06a-861c-43b4-b7db-b54a51fc912d".to_string()),
-            harness_runner_tenant_ids: vec!["tenant-1".to_string()],
-            harness_runner_slots: 1,
-            harness_repositories: Default::default(),
-            harness_workspace_root: None,
-            harness_git_executable: None,
-            harness_validation_profiles: Default::default(),
-            harness_sandbox_runtime: None,
-            harness_sandbox_image_digest: None,
-        };
-        config.harness_repositories.insert(
-            "repo-1".to_string(),
-            if cfg!(windows) {
-                "C:\\repos\\fixture"
-            } else {
-                "/repos/fixture"
-            }
-            .to_string(),
-        );
-        config.harness_workspace_root = Some(
-            if cfg!(windows) {
-                "C:\\harness\\work"
-            } else {
-                "/harness/work"
-            }
-            .to_string(),
-        );
-        config.harness_git_executable = Some(
-            if cfg!(windows) {
-                "C:\\Program Files\\Git\\cmd\\git.exe"
-            } else {
-                "/usr/bin/git"
-            }
-            .to_string(),
-        );
-        config.harness_validation_profiles.insert(
-            "rust-default".to_string(),
-            crate::storage::HarnessValidationProfileConfig {
-                executable: if cfg!(windows) {
-                    "C:\\tools\\cargo.exe"
-                } else {
-                    "/usr/bin/cargo"
-                }
-                .to_string(),
-                arguments: vec!["test".to_string()],
-                working_directory: String::new(),
-                environment: Default::default(),
-                network_allowed: false,
-                timeout_ms: 30_000,
-                max_output_bytes: 65_536,
-                max_memory_mb: 1_024,
-                max_cpu_time_ms: 30_000,
-                max_processes: 32,
-            },
-        );
-        config
+        }
     }
 
     #[test]
@@ -2412,13 +2204,6 @@ mod tests {
         );
         assert!(registration.capabilities.schema_version > 0);
         assert!(registration.capabilities.harness.is_none());
-        let harness = build_harness_capabilities(&test_config(), 24_576)
-            .expect("separate harness runner capability advertisement");
-        assert!(harness.execution_modes.contains(&"hybrid".to_string()));
-        assert!(harness
-            .supported_operations
-            .contains(&"validation.run".to_string()));
-        assert!(harness.network_default_disabled);
     }
 
     #[test]

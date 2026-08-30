@@ -43,7 +43,7 @@ jobs:
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ env.TARGET }}
 
       - name: Build node agent
-        run: cargo build --release --manifest-path agents/node/Cargo.toml --target ${{ env.TARGET }}
+        run: cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target ${{ env.TARGET }}
 
       - name: Prepare binaries
         shell: bash
