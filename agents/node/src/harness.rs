@@ -5,6 +5,7 @@
 //! explicitly allowed path prefixes. Command/test execution is owned by the
 //! bounded validation runner rather than this workspace manager.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -13,7 +14,7 @@ use uuid::Uuid;
 
 pub const HARNESS_CONTRACT_VERSION: &str = "1.0";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceLimits {
     pub max_disk_mb: u32,
     pub max_memory_mb: u32,

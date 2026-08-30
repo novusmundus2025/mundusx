@@ -1,6 +1,7 @@
 use crate::contracts::Backend;
 use crate::contracts::Heartbeat;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -91,6 +92,43 @@ pub struct AgentConfig {
     /// contributor. Wins over any figure derived from memory or runtime limits.
     #[serde(default)]
     pub max_jobs: Option<u32>,
+    /// Operator-owned mapping from opaque control-plane source IDs to trusted local clones.
+    #[serde(default)]
+    pub harness_repositories: BTreeMap<String, String>,
+    /// Absolute roots/executables are required; task payloads can never override these.
+    #[serde(default)]
+    pub harness_workspace_root: Option<String>,
+    #[serde(default)]
+    pub harness_git_executable: Option<String>,
+    #[serde(default)]
+    pub harness_validation_profiles: BTreeMap<String, HarnessValidationProfileConfig>,
+    #[serde(default)]
+    pub harness_sandbox_runtime: Option<String>,
+    #[serde(default)]
+    pub harness_sandbox_image_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HarnessValidationProfileConfig {
+    pub executable: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    #[serde(default)]
+    pub working_directory: String,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub network_allowed: bool,
+    pub timeout_ms: u64,
+    pub max_output_bytes: usize,
+    pub max_memory_mb: u32,
+    pub max_cpu_time_ms: u64,
+    #[serde(default = "default_harness_max_processes")]
+    pub max_processes: u32,
+}
+
+fn default_harness_max_processes() -> u32 {
+    64
 }
 
 impl Default for AgentConfig {
@@ -114,6 +152,12 @@ impl Default for AgentConfig {
             contributed_cluster: None,
             cluster_prompt_declined: false,
             max_jobs: None,
+            harness_repositories: BTreeMap::new(),
+            harness_workspace_root: None,
+            harness_git_executable: None,
+            harness_validation_profiles: BTreeMap::new(),
+            harness_sandbox_runtime: None,
+            harness_sandbox_image_digest: None,
         }
     }
 }
