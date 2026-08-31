@@ -106,6 +106,7 @@ struct HarnessRunnerRegistrationRequest {
     pairing_code: Option<String>,
     tenant_ids: Vec<String>,
     repository_source_ids: Vec<String>,
+    local_projects: Vec<String>,
     execution_modes: Vec<String>,
     supported_operations: Vec<String>,
     network_default_disabled: bool,
@@ -234,6 +235,7 @@ pub fn register_runner(
             .cloned()
             .chain(config.repository_source_patterns.iter().cloned())
             .collect(),
+        local_projects: local_project_slugs(config),
         execution_modes: capabilities.execution_modes.clone(),
         supported_operations: capabilities.supported_operations.clone(),
         network_default_disabled: capabilities.network_default_disabled,
@@ -250,6 +252,52 @@ pub fn register_runner(
         identity,
         &request,
     )
+}
+
+fn valid_local_project_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && !value.contains("--")
+}
+
+pub fn local_project_slugs(config: &RunnerConfig) -> Vec<String> {
+    let Some(root) = config.projects_root.as_deref().map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut projects = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+        })
+        .filter_map(|entry| {
+            let slug = entry.file_name().to_str()?.to_string();
+            if !valid_local_project_slug(&slug) {
+                return None;
+            }
+            let metadata_path = entry.path().join(".mundusx/project.json");
+            let metadata = fs::metadata(&metadata_path).ok()?;
+            if !metadata.is_file() || metadata.len() > 65_536 {
+                return None;
+            }
+            let document: serde_json::Value =
+                serde_json::from_slice(&fs::read(metadata_path).ok()?).ok()?;
+            (document.get("name")?.as_str()? == slug).then_some(slug)
+        })
+        .collect::<Vec<_>>();
+    projects.sort();
+    projects.dedup();
+    projects.truncate(100);
+    projects
 }
 
 fn required_runner_id(config: &RunnerConfig) -> Result<&str, String> {
@@ -771,15 +819,9 @@ fn resolve_local_project(
     let owner = parts.next().unwrap_or_default();
     let template = parts.next().unwrap_or_default();
     let slug = parts.next().unwrap_or_default();
-    let valid_slug = !slug.is_empty()
-        && slug.len() <= 80
-        && slug
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && !slug.starts_with('-')
-        && !slug.ends_with('-')
-        && !slug.contains("--");
-    if owner != config.owner_user_id || !matches!(template, "generic" | "java-maven") || !valid_slug
+    if owner != config.owner_user_id
+        || !matches!(template, "generic" | "java-maven")
+        || !valid_local_project_slug(slug)
     {
         return Err(
             "HARNESS_REPOSITORY_SOURCE_DENIED: local project owner, template, or slug is invalid"
@@ -1002,6 +1044,7 @@ mod tests {
         assert!(source.persist_changes);
         assert_eq!(source.revision.len(), 40);
         assert!(source.path.join("pom.xml").is_file());
+        assert_eq!(local_project_slugs(&config), vec!["hello-java"]);
         assert!(resolve_local_project(
             &config,
             "local-project:another-user:generic:hello-java",
@@ -1015,6 +1058,44 @@ mod tests {
         )
         .is_err());
         fs::remove_dir_all(root).expect("cleanup local project fixture");
+    }
+
+    #[test]
+    fn local_project_inventory_ignores_unmanaged_invalid_and_nested_directories() {
+        let mut config = RunnerConfig::default();
+        let root = std::env::temp_dir().join(format!(
+            "mundusx-project-inventory-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        config.projects_root = Some(root.display().to_string());
+        fs::create_dir_all(root.join("alpha/.mundusx")).expect("alpha metadata directory");
+        fs::write(
+            root.join("alpha/.mundusx/project.json"),
+            br#"{"version":1,"name":"alpha"}"#,
+        )
+        .expect("alpha metadata");
+        fs::create_dir_all(root.join("unmanaged")).expect("unmanaged directory");
+        fs::create_dir_all(root.join("Bad Name/.mundusx")).expect("invalid directory");
+        fs::write(
+            root.join("Bad Name/.mundusx/project.json"),
+            br#"{"version":1,"name":"Bad Name"}"#,
+        )
+        .expect("invalid metadata");
+        fs::create_dir_all(root.join("wrong-name/.mundusx")).expect("mismatch directory");
+        fs::write(
+            root.join("wrong-name/.mundusx/project.json"),
+            br#"{"version":1,"name":"another"}"#,
+        )
+        .expect("mismatch metadata");
+        fs::create_dir_all(root.join("alpha/nested/.mundusx")).expect("nested metadata directory");
+        fs::write(
+            root.join("alpha/nested/.mundusx/project.json"),
+            br#"{"version":1,"name":"nested"}"#,
+        )
+        .expect("nested metadata");
+
+        assert_eq!(local_project_slugs(&config), vec!["alpha"]);
+        fs::remove_dir_all(root).expect("cleanup inventory fixture");
     }
 
     #[test]
