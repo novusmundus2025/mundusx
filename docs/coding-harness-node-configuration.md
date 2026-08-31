@@ -6,7 +6,8 @@ and never receives repository credentials, Git access, workspace authority, or v
 ## User setup
 
 1. Install [Git](https://git-scm.com/) and the [GitHub CLI](https://cli.github.com/) on the machine
-   that owns the user's workspace.
+   that owns the user's workspace. For Java projects, also install a JDK and
+   [Apache Maven](https://maven.apache.org/install.html), and ensure `java` and `mvn` are on `PATH`.
 2. Authenticate that machine without copying a token into Chat-U:
 
    ```text
@@ -35,9 +36,15 @@ owner and does not need another code.
 
 ## Repository flow
 
-Chat-U lists only repositories visible to both the signed-in user and the installed MundusX GitHub
-App. When a repository is selected, Chat-U verifies current GitHub permissions, derives bounded
-safe top-level paths, and pins the current default-branch commit.
+For a new project, Chat-U creates the repository under the signed-in user's GitHub identity. Private
+is the default. MundusX does not own the repository, and the client cannot choose a different owner.
+The GitHub App must have repository **Administration: read and write** permission for this operation;
+installing it for all repositories makes the new repository immediately available to the Harness.
+
+For existing projects, Chat-U lists only repositories visible to both the signed-in user and the
+installed MundusX GitHub App. Chat-U verifies current GitHub permissions, assigns bounded project
+paths, and pins the current default-branch commit. MundusX platform repositories have no special
+status and appear only when that user deliberately granted the App access to them.
 
 The paired runner receives an opaque source ID such as `github:12345:owner/repository`. It uses the
 local GitHub CLI session to create a bare, commit-addressed cache under the runner home, then creates
@@ -46,7 +53,9 @@ terminal prompts, submodule execution, external diff, and text conversion for wo
 No GitHub token is sent to model contributors or included in a prompt.
 
 By default, the runner exposes a bounded `repository-default` validation (`git diff --check HEAD`)
-and hybrid execution. Sandbox execution is advertised only when the operator configures an absolute
+and, when Maven is discovered during initial configuration, `java-maven-test` (`mvn --batch-mode
+test`). Maven validation uses trusted hybrid execution because dependency resolution can require
+network access. Sandbox execution is advertised only when the operator configures an absolute
 container runtime and digest-pinned image in the generated `config.json`.
 
 ## Diagnostics

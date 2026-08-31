@@ -58,6 +58,7 @@ impl Default for RunnerConfig {
         let runner_home = config_dir();
         let git_executable = find_executable(&["git.exe", "git"]);
         let github_cli = find_executable(&["gh.exe", "gh"]);
+        let maven_executable = find_executable(&["mvn.cmd", "mvn"]);
         let mut validation_profiles = BTreeMap::new();
         if let Some(git) = git_executable.as_ref() {
             validation_profiles.insert(
@@ -80,8 +81,9 @@ impl Default for RunnerConfig {
                 },
             );
         }
+        add_maven_profile(&mut validation_profiles, maven_executable);
         Self {
-            version: 1,
+            version: 2,
             runner_id: format!("runner-{}", &suffix[..16]),
             device_id: format!("runner-device-{}", &suffix[..16]),
             owner_user_id: String::new(),
@@ -140,6 +142,54 @@ fn find_executable(names: &[&str]) -> Option<String> {
     None
 }
 
+fn maven_validation_profile(maven: String) -> Option<HarnessValidationProfileConfig> {
+    #[cfg(windows)]
+    let (executable, arguments) = {
+        let shell = std::env::var_os("COMSPEC")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_file())
+            .map(|path| path.display().to_string())
+            .or_else(|| find_executable(&["cmd.exe"]))?;
+        (
+            shell,
+            vec![
+                "/D".to_string(),
+                "/C".to_string(),
+                "call".to_string(),
+                maven,
+                "--batch-mode".to_string(),
+                "test".to_string(),
+            ],
+        )
+    };
+    #[cfg(not(windows))]
+    let (executable, arguments) = (maven, vec!["--batch-mode".to_string(), "test".to_string()]);
+    Some(HarnessValidationProfileConfig {
+        executable,
+        arguments,
+        working_directory: String::new(),
+        environment: BTreeMap::new(),
+        network_allowed: true,
+        timeout_ms: 300_000,
+        max_output_bytes: 2_097_152,
+        max_memory_mb: 2_048,
+        max_cpu_time_ms: 300_000,
+        max_processes: 64,
+    })
+}
+
+fn add_maven_profile(
+    profiles: &mut BTreeMap<String, HarnessValidationProfileConfig>,
+    maven: Option<String>,
+) {
+    if profiles.contains_key("java-maven-test") {
+        return;
+    }
+    if let Some(profile) = maven.and_then(maven_validation_profile) {
+        profiles.insert("java-maven-test".to_string(), profile);
+    }
+}
+
 pub fn config_dir() -> PathBuf {
     std::env::var_os("MUNDUSX_HARNESS_RUNNER_HOME")
         .map(PathBuf::from)
@@ -157,9 +207,14 @@ pub fn load_config() -> std::io::Result<Option<RunnerConfig>> {
         return Ok(None);
     }
     let raw = fs::read_to_string(path)?;
-    serde_json::from_str(&raw)
-        .map(Some)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    let mut config: RunnerConfig = serde_json::from_str(&raw)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    add_maven_profile(
+        &mut config.validation_profiles,
+        find_executable(&["mvn.cmd", "mvn"]),
+    );
+    config.version = config.version.max(2);
+    Ok(Some(config))
 }
 
 pub fn save_config(config: &RunnerConfig) -> std::io::Result<PathBuf> {
@@ -175,4 +230,30 @@ fn write_private_json(path: &Path, value: &impl Serialize) -> std::io::Result<()
     let body = serde_json::to_vec_pretty(value)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     fs::write(path, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maven_profile_uses_fixed_test_arguments_and_bounded_resources() {
+        #[cfg(windows)]
+        let maven = r"C:\tools\apache-maven\bin\mvn.cmd".to_string();
+        #[cfg(not(windows))]
+        let maven = "/opt/apache-maven/bin/mvn".to_string();
+        let profile = maven_validation_profile(maven.clone()).expect("platform command available");
+        assert!(profile
+            .arguments
+            .iter()
+            .any(|argument| argument == "--batch-mode"));
+        assert_eq!(profile.arguments.last().map(String::as_str), Some("test"));
+        #[cfg(windows)]
+        assert!(profile.arguments.iter().any(|argument| argument == &maven));
+        #[cfg(not(windows))]
+        assert_eq!(profile.executable, maven);
+        assert!(profile.network_allowed);
+        assert_eq!(profile.timeout_ms, 300_000);
+        assert_eq!(profile.max_output_bytes, 2_097_152);
+    }
 }
