@@ -14,7 +14,9 @@ use crate::identity::DeviceIdentity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
 #[derive(Clone, Debug, Serialize)]
@@ -100,7 +102,8 @@ struct HarnessRunnerRegistrationRequest {
     device_id: String,
     public_key_hex: String,
     kind: &'static str,
-    owner_user_id: String,
+    owner_user_id: Option<String>,
+    pairing_code: Option<String>,
     tenant_ids: Vec<String>,
     repository_source_ids: Vec<String>,
     execution_modes: Vec<String>,
@@ -111,6 +114,14 @@ struct HarnessRunnerRegistrationRequest {
     parallel_slots: u32,
     trusted_identity: bool,
     ready: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct HarnessRunnerRegistrationResponse {
+    pub runner_id: String,
+    pub owner_user_id: Option<String>,
+    pub tenant_ids: Vec<String>,
+    pub repository_source_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -130,7 +141,7 @@ struct TransitionRequest<'a> {
 pub fn capabilities(config: &RunnerConfig) -> Result<HarnessCapabilityAdvertisement, String> {
     let workspace_root = required_absolute(&config.workspace_root, "workspace root")?;
     let git = required_absolute(&config.git_executable, "Git executable")?;
-    if config.repositories.is_empty()
+    if (config.repositories.is_empty() && config.repository_source_patterns.is_empty())
         || config.tenant_ids.is_empty()
         || config.validation_profiles.is_empty()
         || !workspace_root.is_absolute()
@@ -191,15 +202,18 @@ pub fn register_runner(
     capabilities: &HarnessCapabilityAdvertisement,
     usable_memory_mb: u32,
     trusted_identity: bool,
-) -> Result<(), String> {
+    pairing_code: Option<&str>,
+) -> Result<HarnessRunnerRegistrationResponse, String> {
     let runner_id = required_runner_id(config)?;
     let owner_user_id = config.owner_user_id.trim();
-    if owner_user_id.is_empty() {
+    if owner_user_id.is_empty() && pairing_code.is_none() {
         return Err(
             "HARNESS_RUNNER_OWNER_REQUIRED: local runner must be paired to one user".to_string(),
         );
     }
-    if config.tenant_ids.is_empty() || config.repositories.is_empty() {
+    if config.tenant_ids.is_empty()
+        || (config.repositories.is_empty() && config.repository_source_patterns.is_empty())
+    {
         return Err(
             "HARNESS_RUNNER_SCOPE_REQUIRED: tenant and repository scopes are required".to_string(),
         );
@@ -209,9 +223,15 @@ pub fn register_runner(
         device_id: config.device_id.clone(),
         public_key_hex: identity.public_key_hex.clone(),
         kind: "local_user",
-        owner_user_id: owner_user_id.to_string(),
+        owner_user_id: (!owner_user_id.is_empty()).then(|| owner_user_id.to_string()),
+        pairing_code: pairing_code.map(str::to_string),
         tenant_ids: config.tenant_ids.clone(),
-        repository_source_ids: config.repositories.keys().cloned().collect(),
+        repository_source_ids: config
+            .repositories
+            .keys()
+            .cloned()
+            .chain(config.repository_source_patterns.iter().cloned())
+            .collect(),
         execution_modes: capabilities.execution_modes.clone(),
         supported_operations: capabilities.supported_operations.clone(),
         network_default_disabled: capabilities.network_default_disabled,
@@ -221,14 +241,13 @@ pub fn register_runner(
         trusted_identity,
         ready: true,
     };
-    let _: serde_json::Value = signed_runner_post_json_body(
+    signed_runner_post_json_body(
         &config.control_plane_url,
         "/internal/harness/runners/register",
         runner_id,
         identity,
         &request,
-    )?;
-    Ok(())
+    )
 }
 
 fn required_runner_id(config: &RunnerConfig) -> Result<&str, String> {
@@ -276,11 +295,8 @@ pub fn execute_claim(
         )?;
         return Err("HARNESS_CANCELLED: assignment was cancelled before execution".to_string());
     }
-    let source = config
-        .repositories
-        .get(&task.repository_source_id)
-        .map(PathBuf::from)
-        .ok_or_else(|| "HARNESS_REPOSITORY_SOURCE_DENIED: unknown source id".to_string())?;
+    let source =
+        resolve_repository_source(config, &task.repository_source_id, &task.base_revision)?;
     let workspace_root = required_absolute(&config.workspace_root, "workspace root")?;
     let git = required_absolute(&config.git_executable, "Git executable")?;
     let manager = WorkspaceManager::new(workspace_root, git).map_err(display_harness)?;
@@ -638,6 +654,126 @@ fn required_absolute(value: &Option<String>, label: &str) -> Result<PathBuf, Str
     Ok(path)
 }
 
+fn resolve_repository_source(
+    config: &RunnerConfig,
+    repository_source_id: &str,
+    base_revision: &str,
+) -> Result<PathBuf, String> {
+    if let Some(path) = config.repositories.get(repository_source_id) {
+        return Ok(PathBuf::from(path));
+    }
+    if !config
+        .repository_source_patterns
+        .iter()
+        .any(|prefix| prefix.ends_with(':') && repository_source_id.starts_with(prefix))
+    {
+        return Err("HARNESS_REPOSITORY_SOURCE_DENIED: unknown source id".to_string());
+    }
+    let (repository_id, full_name) = parse_github_source(repository_source_id)?;
+    if base_revision.len() != 40 || !base_revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "HARNESS_BASE_REVISION_INVALID: GitHub revision must be a commit SHA".to_string(),
+        );
+    }
+    let github_cli = required_absolute(&config.github_cli, "GitHub CLI")?;
+    let git = required_absolute(&config.git_executable, "Git executable")?;
+    let cache_root = crate::config::config_dir().join("repositories");
+    fs::create_dir_all(&cache_root)
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    let source = cache_root.join(format!(
+        "{}-{}.git",
+        repository_id,
+        base_revision.to_ascii_lowercase()
+    ));
+    if !source.exists() {
+        let partial = cache_root.join(format!(
+            ".{}-{}.partial",
+            repository_id,
+            uuid::Uuid::new_v4().simple()
+        ));
+        let output = Command::new(&github_cli)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["repo", "clone", full_name])
+            .arg(&partial)
+            .args(["--", "--bare", "--filter=blob:none"])
+            .output()
+            .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+        if !output.status.success() {
+            let _ = remove_partial_repository(&cache_root, &partial);
+            return Err(format!(
+                "HARNESS_GITHUB_AUTH_REQUIRED: GitHub CLI could not clone {full_name}: {}",
+                bounded_stderr(&output.stderr)
+            ));
+        }
+        fs::rename(&partial, &source).map_err(|error| {
+            let _ = remove_partial_repository(&cache_root, &partial);
+            format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}")
+        })?;
+    }
+    let object = format!("{}^{{commit}}", base_revision.to_ascii_lowercase());
+    let verified = Command::new(git)
+        .env_clear()
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .args(["--git-dir"])
+        .arg(&source)
+        .args(["cat-file", "-e", &object])
+        .status()
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    if !verified.success() {
+        return Err(
+            "HARNESS_BASE_REVISION_INVALID: authorized repository does not contain the pinned commit"
+                .to_string(),
+        );
+    }
+    Ok(source)
+}
+
+fn parse_github_source(value: &str) -> Result<(&str, &str), String> {
+    let mut parts = value.splitn(3, ':');
+    if parts.next() != Some("github") {
+        return Err(
+            "HARNESS_REPOSITORY_SOURCE_DENIED: unsupported repository provider".to_string(),
+        );
+    }
+    let repository_id = parts.next().unwrap_or_default();
+    let full_name = parts.next().unwrap_or_default();
+    let valid_name = full_name.split('/').count() == 2
+        && full_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'));
+    if repository_id.is_empty()
+        || !repository_id.bytes().all(|byte| byte.is_ascii_digit())
+        || !valid_name
+    {
+        return Err("HARNESS_REPOSITORY_SOURCE_DENIED: malformed GitHub source id".to_string());
+    }
+    Ok((repository_id, full_name))
+}
+
+fn remove_partial_repository(root: &Path, partial: &Path) -> std::io::Result<()> {
+    if partial.parent() != Some(root) || !partial.starts_with(root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "partial repository escaped cache root",
+        ));
+    }
+    if partial.exists() {
+        fs::remove_dir_all(partial)?;
+    }
+    Ok(())
+}
+
+fn bounded_stderr(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(&stderr[..stderr.len().min(2_048)])
+        .trim()
+        .to_string()
+}
+
 fn display_harness(error: HarnessError) -> String {
     error.to_string()
 }
@@ -654,6 +790,17 @@ fn control_loop_failure(error: String) -> LoopFailure {
 mod tests {
     use super::*;
     use crate::config::HarnessValidationProfileConfig;
+
+    #[test]
+    fn github_source_ids_are_strict_and_provider_scoped() {
+        assert_eq!(
+            parse_github_source("github:42:owner/repo").unwrap(),
+            ("42", "owner/repo")
+        );
+        assert!(parse_github_source("github:42:owner/repo/extra").is_err());
+        assert!(parse_github_source("github:not-a-number:owner/repo").is_err());
+        assert!(parse_github_source("gitlab:42:owner/repo").is_err());
+    }
 
     #[test]
     fn harness_configuration_requires_absolute_operator_owned_paths() {

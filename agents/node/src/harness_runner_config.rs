@@ -22,8 +22,11 @@ pub struct RunnerConfig {
     pub max_workspace_mb: u32,
     #[serde(default)]
     pub repositories: BTreeMap<String, String>,
+    #[serde(default = "default_repository_source_patterns")]
+    pub repository_source_patterns: Vec<String>,
     pub workspace_root: Option<String>,
     pub git_executable: Option<String>,
+    pub github_cli: Option<String>,
     #[serde(default)]
     pub validation_profiles: BTreeMap<String, HarnessValidationProfileConfig>,
     pub sandbox_runtime: Option<String>,
@@ -52,21 +55,48 @@ pub struct HarnessValidationProfileConfig {
 impl Default for RunnerConfig {
     fn default() -> Self {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let runner_home = config_dir();
+        let git_executable = find_executable(&["git.exe", "git"]);
+        let github_cli = find_executable(&["gh.exe", "gh"]);
+        let mut validation_profiles = BTreeMap::new();
+        if let Some(git) = git_executable.as_ref() {
+            validation_profiles.insert(
+                "repository-default".to_string(),
+                HarnessValidationProfileConfig {
+                    executable: git.clone(),
+                    arguments: vec![
+                        "diff".to_string(),
+                        "--check".to_string(),
+                        "HEAD".to_string(),
+                    ],
+                    working_directory: String::new(),
+                    environment: BTreeMap::new(),
+                    network_allowed: false,
+                    timeout_ms: 120_000,
+                    max_output_bytes: 1_048_576,
+                    max_memory_mb: 1_024,
+                    max_cpu_time_ms: 120_000,
+                    max_processes: 16,
+                },
+            );
+        }
         Self {
             version: 1,
             runner_id: format!("runner-{}", &suffix[..16]),
             device_id: format!("runner-device-{}", &suffix[..16]),
             owner_user_id: String::new(),
-            tenant_ids: Vec::new(),
+            tenant_ids: vec!["owner:any".to_string()],
             control_plane_url: "https://uat.mundusx.ai".to_string(),
             inference_model: default_inference_model(),
             parallel_slots: default_runner_slots(),
             usable_memory_mb: default_usable_memory_mb(),
             max_workspace_mb: default_max_workspace_mb(),
             repositories: BTreeMap::new(),
-            workspace_root: None,
-            git_executable: None,
-            validation_profiles: BTreeMap::new(),
+            repository_source_patterns: default_repository_source_patterns(),
+            workspace_root: Some(runner_home.join("workspaces").display().to_string()),
+            git_executable,
+            github_cli,
+            validation_profiles,
             sandbox_runtime: None,
             sandbox_image_digest: None,
         }
@@ -91,6 +121,23 @@ fn default_max_workspace_mb() -> u32 {
 
 fn default_harness_max_processes() -> u32 {
     64
+}
+
+fn default_repository_source_patterns() -> Vec<String> {
+    vec!["github:".to_string()]
+}
+
+fn find_executable(names: &[&str]) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        for name in names {
+            let candidate = directory.join(name);
+            if candidate.is_file() && candidate.is_absolute() {
+                return Some(candidate.display().to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn config_dir() -> PathBuf {
