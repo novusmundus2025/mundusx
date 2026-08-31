@@ -233,6 +233,136 @@ impl WorkspaceManager {
         bounded_git_stdout(&output, max_output_bytes)
     }
 
+    pub fn repository_complete_diff(
+        &self,
+        workspace: &PreparedWorkspace,
+        max_output_bytes: usize,
+    ) -> Result<String, HarnessError> {
+        self.require_owned_workspace(workspace)?;
+        require_git_success(
+            &self.run_git(Some(workspace.path()), &["add", "--all"])?,
+            "stage project changes for evidence",
+        )?;
+        let output = self.run_git(
+            Some(workspace.path()),
+            &[
+                "diff",
+                "--cached",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+            ],
+        )?;
+        require_git_success(&output, "read complete repository diff")?;
+        bounded_git_stdout(&output, max_output_bytes)
+    }
+
+    pub fn publish_validated_changes(
+        &self,
+        workspace: &PreparedWorkspace,
+        source_repository: &Path,
+        task_id: &str,
+    ) -> Result<Option<String>, HarnessError> {
+        self.require_owned_workspace(workspace)?;
+        let status = self.repository_status(workspace, 1_048_576)?;
+        if status.trim().is_empty() {
+            return Ok(None);
+        }
+        for line in status.lines() {
+            let value = line.get(3..).unwrap_or_default().trim();
+            if value.contains(" -> ") {
+                return Err(HarnessError::new(
+                    "HARNESS_PATH_DENIED",
+                    "renames must be expressed as an explicit delete and write",
+                ));
+            }
+            let relative = normalize_relative_path(Path::new(value))?;
+            if !workspace
+                .allowed_path_prefixes
+                .iter()
+                .any(|prefix| relative.starts_with(prefix))
+            {
+                return Err(HarnessError::new(
+                    "HARNESS_PATH_DENIED",
+                    format!("changed path is outside the project boundary: {value}"),
+                ));
+            }
+        }
+
+        let source = fs::canonicalize(source_repository).map_err(|error| {
+            HarnessError::new(
+                "HARNESS_PUBLISH_FAILED",
+                format!("local project could not be resolved: {error}"),
+            )
+        })?;
+        if !source.is_dir() || source.starts_with(&self.root) {
+            return Err(HarnessError::new(
+                "HARNESS_PUBLISH_FAILED",
+                "local project must be outside the temporary workspace root",
+            ));
+        }
+        let source_status = self.run_git(Some(&source), &["status", "--porcelain=v1"])?;
+        require_git_success(&source_status, "inspect local project before publish")?;
+        if !source_status.stdout.is_empty() {
+            return Err(HarnessError::new(
+                "HARNESS_PUBLISH_CONFLICT",
+                "local project changed while the harness was running",
+            ));
+        }
+        let source_head = self.run_git(Some(&source), &["rev-parse", "HEAD"])?;
+        require_git_success(&source_head, "read local project revision")?;
+        if String::from_utf8_lossy(&source_head.stdout)
+            .trim()
+            .to_ascii_lowercase()
+            != workspace.base_revision
+        {
+            return Err(HarnessError::new(
+                "HARNESS_PUBLISH_CONFLICT",
+                "local project revision changed while the harness was running",
+            ));
+        }
+
+        require_git_success(
+            &self.run_git(Some(workspace.path()), &["add", "--all"])?,
+            "stage validated project changes",
+        )?;
+        let message = format!("mundusx: apply {task_id}");
+        require_git_success(
+            &self.run_git(
+                Some(workspace.path()),
+                &[
+                    "-c",
+                    "user.name=MundusX Harness",
+                    "-c",
+                    "user.email=harness@localhost",
+                    "commit",
+                    "-m",
+                    &message,
+                ],
+            )?,
+            "commit validated project changes",
+        )?;
+        let revision_output = self.run_git(Some(workspace.path()), &["rev-parse", "HEAD"])?;
+        require_git_success(&revision_output, "read validated project revision")?;
+        let revision = String::from_utf8_lossy(&revision_output.stdout)
+            .trim()
+            .to_ascii_lowercase();
+        let workspace_text = git_path_text(workspace.path())?;
+        require_git_success(
+            &self.run_git(
+                Some(&source),
+                &["fetch", "--no-tags", &workspace_text, &revision],
+            )?,
+            "transfer validated project revision",
+        )?;
+        require_git_success(
+            &self.run_git(Some(&source), &["merge", "--ff-only", &revision])?,
+            "publish validated project revision",
+        )?;
+        Ok(Some(revision))
+    }
+
     fn require_owned_workspace(&self, workspace: &PreparedWorkspace) -> Result<(), HarnessError> {
         ensure_direct_child(&self.root, workspace.path())?;
         let path = fs::canonicalize(workspace.path()).map_err(|error| {
@@ -652,6 +782,34 @@ mod tests {
         manager.cleanup(&second).expect("cleanup second workspace");
         fs::remove_dir_all(repository).expect("cleanup fixture repository");
         fs::remove_dir_all(root).expect("cleanup fixture root");
+    }
+
+    #[test]
+    fn publishes_only_validated_workspace_changes_back_to_local_project() {
+        let git = git_executable();
+        let (repository, revision) = fixture_repository(&git);
+        let root = temporary_directory("publish-root");
+        let manager = WorkspaceManager::new(root.clone(), git.clone()).expect("create manager");
+        let workspace = manager
+            .prepare(request(&repository, &revision, "attempt_publish"))
+            .expect("prepare workspace");
+        fs::write(
+            workspace.path().join("src/lib.rs"),
+            "pub fn answer() -> u8 { 43 }\n",
+        )
+        .expect("edit workspace");
+        let published = manager
+            .publish_validated_changes(&workspace, &repository, "task-local")
+            .expect("publish validated changes")
+            .expect("new revision");
+        assert_ne!(published, revision);
+        assert_eq!(
+            fs::read_to_string(repository.join("src/lib.rs")).expect("read project"),
+            "pub fn answer() -> u8 { 43 }\n"
+        );
+        manager.cleanup(&workspace).expect("cleanup workspace");
+        fs::remove_dir_all(repository).expect("remove repository fixture");
+        fs::remove_dir_all(root).expect("remove workspace fixture");
     }
 
     #[test]

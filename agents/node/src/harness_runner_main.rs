@@ -72,7 +72,7 @@ fn init() {
         load_or_create_identity().unwrap_or_else(fatal_io("create runner identity"));
     println!("runnerConfig: {}", path.display());
     println!("runnerIdentity: {}", identity_path.display());
-    println!("next: authenticate GitHub locally with `gh auth login`, then create a pairing code in Chat-U");
+    println!("next: create a pairing code in Chat-U Projects");
     println!("pair: mundusx-harness-runner pair <one-time-code>");
 }
 
@@ -86,11 +86,6 @@ fn pair(pairing_code: &str) {
         });
     let (identity, _, _) =
         load_or_create_identity().unwrap_or_else(fatal_io("load runner identity"));
-    if !github_authenticated(&config) {
-        eprintln!("failed to pair runner: GitHub CLI is not authenticated");
-        eprintln!("run `gh auth login`, then `gh auth setup-git`, and retry the pairing code");
-        std::process::exit(1);
-    }
     let capabilities =
         harness_client::capabilities(&config).unwrap_or_else(fatal("validate runner"));
     let registration = harness_client::register_runner(
@@ -186,6 +181,7 @@ fn status(json: bool) {
         "tenant_count": config.tenant_ids.len(),
         "repository_source_ids": config.repositories.keys().collect::<Vec<_>>(),
         "repository_source_patterns": config.repository_source_patterns,
+        "projects_root": config.projects_root,
         "parallel_slots": config.parallel_slots.clamp(1, 64),
         "control_plane_url": config.control_plane_url,
         "inference_model": config.inference_model,

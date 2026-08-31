@@ -140,11 +140,13 @@ struct TransitionRequest<'a> {
 
 pub fn capabilities(config: &RunnerConfig) -> Result<HarnessCapabilityAdvertisement, String> {
     let workspace_root = required_absolute(&config.workspace_root, "workspace root")?;
+    let projects_root = required_absolute(&config.projects_root, "local projects root")?;
     let git = required_absolute(&config.git_executable, "Git executable")?;
     if (config.repositories.is_empty() && config.repository_source_patterns.is_empty())
         || config.tenant_ids.is_empty()
         || config.validation_profiles.is_empty()
         || !workspace_root.is_absolute()
+        || !projects_root.is_absolute()
         || !git.is_absolute()
         || config
             .validation_profiles
@@ -366,8 +368,9 @@ pub fn execute_claim(
         attempt_id: attempt.attempt_id.clone(),
         repository_source_id: task.repository_source_id,
         objective: task.objective,
-        source_repository: source,
-        base_revision: task.base_revision.clone(),
+        source_repository: source.path,
+        base_revision: source.revision,
+        persist_to_source: source.persist_changes,
         allowed_path_prefixes: task
             .allowed_path_prefixes
             .into_iter()
@@ -654,13 +657,23 @@ fn required_absolute(value: &Option<String>, label: &str) -> Result<PathBuf, Str
     Ok(path)
 }
 
+struct ResolvedRepositorySource {
+    path: PathBuf,
+    revision: String,
+    persist_changes: bool,
+}
+
 fn resolve_repository_source(
     config: &RunnerConfig,
     repository_source_id: &str,
     base_revision: &str,
-) -> Result<PathBuf, String> {
+) -> Result<ResolvedRepositorySource, String> {
     if let Some(path) = config.repositories.get(repository_source_id) {
-        return Ok(PathBuf::from(path));
+        return Ok(ResolvedRepositorySource {
+            path: PathBuf::from(path),
+            revision: base_revision.to_string(),
+            persist_changes: false,
+        });
     }
     if !config
         .repository_source_patterns
@@ -668,6 +681,9 @@ fn resolve_repository_source(
         .any(|prefix| prefix.ends_with(':') && repository_source_id.starts_with(prefix))
     {
         return Err("HARNESS_REPOSITORY_SOURCE_DENIED: unknown source id".to_string());
+    }
+    if repository_source_id.starts_with("local-project:") {
+        return resolve_local_project(config, repository_source_id, base_revision);
     }
     let (repository_id, full_name) = parse_github_source(repository_source_id)?;
     if base_revision.len() != 40 || !base_revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -730,7 +746,155 @@ fn resolve_repository_source(
                 .to_string(),
         );
     }
-    Ok(source)
+    Ok(ResolvedRepositorySource {
+        path: source,
+        revision: base_revision.to_ascii_lowercase(),
+        persist_changes: false,
+    })
+}
+
+fn resolve_local_project(
+    config: &RunnerConfig,
+    repository_source_id: &str,
+    base_revision: &str,
+) -> Result<ResolvedRepositorySource, String> {
+    if base_revision != "0000000000000000000000000000000000000000" {
+        return Err(
+            "HARNESS_BASE_REVISION_INVALID: local project bootstrap revision is invalid"
+                .to_string(),
+        );
+    }
+    let mut parts = repository_source_id.splitn(4, ':');
+    if parts.next() != Some("local-project") {
+        return Err("HARNESS_REPOSITORY_SOURCE_DENIED: malformed local project source".to_string());
+    }
+    let owner = parts.next().unwrap_or_default();
+    let template = parts.next().unwrap_or_default();
+    let slug = parts.next().unwrap_or_default();
+    let valid_slug = !slug.is_empty()
+        && slug.len() <= 80
+        && slug
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !slug.starts_with('-')
+        && !slug.ends_with('-')
+        && !slug.contains("--");
+    if owner != config.owner_user_id || !matches!(template, "generic" | "java-maven") || !valid_slug
+    {
+        return Err(
+            "HARNESS_REPOSITORY_SOURCE_DENIED: local project owner, template, or slug is invalid"
+                .to_string(),
+        );
+    }
+    let root = required_absolute(&config.projects_root, "local projects root")?;
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    let root = fs::canonicalize(&root)
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    let project = root.join(slug);
+    if project.parent() != Some(root.as_path()) {
+        return Err(
+            "HARNESS_PATH_DENIED: local project must be a direct child of the projects root"
+                .to_string(),
+        );
+    }
+    if !project.exists() {
+        fs::create_dir(&project)
+            .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+        scaffold_local_project(&project, slug, template)?;
+        initialize_local_repository(config, &project)?;
+    }
+    let project = fs::canonicalize(&project)
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    if project.parent() != Some(root.as_path()) || !project.is_dir() {
+        return Err(
+            "HARNESS_PATH_DENIED: local project resolved outside the projects root".to_string(),
+        );
+    }
+    let revision = git_stdout(config, &project, &["rev-parse", "HEAD"])?;
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "HARNESS_BASE_REVISION_INVALID: local project has no valid Git revision".to_string(),
+        );
+    }
+    Ok(ResolvedRepositorySource {
+        path: project,
+        revision: revision.to_ascii_lowercase(),
+        persist_changes: true,
+    })
+}
+
+fn scaffold_local_project(project: &Path, slug: &str, template: &str) -> Result<(), String> {
+    fs::create_dir_all(project.join(".mundusx"))
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    let metadata = serde_json::to_vec_pretty(&serde_json::json!({
+        "version": 1,
+        "name": slug,
+        "template": template
+    }))
+    .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    fs::write(project.join(".mundusx/project.json"), metadata)
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    fs::write(
+        project.join("README.md"),
+        format!("# {slug}\n\nCreated locally by MundusX.\n"),
+    )
+    .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    if template == "java-maven" {
+        fs::create_dir_all(project.join("src/main/java"))
+            .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+        fs::create_dir_all(project.join("src/test/java"))
+            .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+        fs::write(project.join("pom.xml"), "<project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion><groupId>local.mundusx</groupId><artifactId>project</artifactId><version>0.1.0</version><properties><maven.compiler.release>21</maven.compiler.release></properties></project>\n")
+            .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    }
+    Ok(())
+}
+
+fn initialize_local_repository(config: &RunnerConfig, project: &Path) -> Result<(), String> {
+    git_stdout(config, project, &["init"])?;
+    git_stdout(config, project, &["add", "--all"])?;
+    git_stdout(
+        config,
+        project,
+        &[
+            "-c",
+            "user.name=MundusX Harness",
+            "-c",
+            "user.email=harness@localhost",
+            "commit",
+            "-m",
+            "mundusx: initialize local project",
+        ],
+    )?;
+    Ok(())
+}
+
+fn git_stdout(
+    config: &RunnerConfig,
+    directory: &Path,
+    arguments: &[&str],
+) -> Result<String, String> {
+    let git = required_absolute(&config.git_executable, "Git executable")?;
+    let output = Command::new(git)
+        .env_clear()
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(directory)
+        .args(arguments)
+        .output()
+        .map_err(|error| format!("HARNESS_REPOSITORY_PREPARE_FAILED: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "HARNESS_REPOSITORY_PREPARE_FAILED: {}",
+            bounded_stderr(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn parse_github_source(value: &str) -> Result<(&str, &str), String> {
@@ -814,6 +978,43 @@ mod tests {
             required_absolute(&Some(absolute.to_string()), "root").unwrap(),
             PathBuf::from(absolute)
         );
+    }
+
+    #[test]
+    fn local_project_source_is_owner_bound_lowercase_and_git_backed() {
+        let mut config = RunnerConfig::default();
+        let root = std::env::temp_dir().join(format!(
+            "mundusx-local-projects-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        config.projects_root = Some(root.display().to_string());
+        config.owner_user_id = "78a1c06a-861c-43b4-b7db-b54a51fc912d".to_string();
+        let source = resolve_local_project(
+            &config,
+            "local-project:78a1c06a-861c-43b4-b7db-b54a51fc912d:java-maven:hello-java",
+            "0000000000000000000000000000000000000000",
+        )
+        .expect("create local project");
+        assert_eq!(
+            source.path,
+            fs::canonicalize(root.join("hello-java")).expect("canonical project path")
+        );
+        assert!(source.persist_changes);
+        assert_eq!(source.revision.len(), 40);
+        assert!(source.path.join("pom.xml").is_file());
+        assert!(resolve_local_project(
+            &config,
+            "local-project:another-user:generic:hello-java",
+            "0000000000000000000000000000000000000000",
+        )
+        .is_err());
+        assert!(resolve_local_project(
+            &config,
+            "local-project:78a1c06a-861c-43b4-b7db-b54a51fc912d:generic:Hello Java",
+            "0000000000000000000000000000000000000000",
+        )
+        .is_err());
+        fs::remove_dir_all(root).expect("cleanup local project fixture");
     }
 
     #[test]

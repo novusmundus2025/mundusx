@@ -25,6 +25,8 @@ pub struct RunnerConfig {
     #[serde(default = "default_repository_source_patterns")]
     pub repository_source_patterns: Vec<String>,
     pub workspace_root: Option<String>,
+    #[serde(default)]
+    pub projects_root: Option<String>,
     pub git_executable: Option<String>,
     pub github_cli: Option<String>,
     #[serde(default)]
@@ -96,6 +98,7 @@ impl Default for RunnerConfig {
             repositories: BTreeMap::new(),
             repository_source_patterns: default_repository_source_patterns(),
             workspace_root: Some(runner_home.join("workspaces").display().to_string()),
+            projects_root: Some(default_projects_root().display().to_string()),
             git_executable,
             github_cli,
             validation_profiles,
@@ -126,7 +129,15 @@ fn default_harness_max_processes() -> u32 {
 }
 
 fn default_repository_source_patterns() -> Vec<String> {
-    vec!["github:".to_string()]
+    vec!["local-project:".to_string(), "github:".to_string()]
+}
+
+fn default_projects_root() -> PathBuf {
+    dirs::document_dir()
+        .or_else(|| dirs::home_dir().map(|directory| directory.join("documents")))
+        .unwrap_or_else(|| PathBuf::from("documents"))
+        .join("mundusx")
+        .join("projects")
 }
 
 fn find_executable(names: &[&str]) -> Option<String> {
@@ -213,6 +224,18 @@ pub fn load_config() -> std::io::Result<Option<RunnerConfig>> {
         &mut config.validation_profiles,
         find_executable(&["mvn.cmd", "mvn"]),
     );
+    if config.projects_root.is_none() {
+        config.projects_root = Some(default_projects_root().display().to_string());
+    }
+    if !config
+        .repository_source_patterns
+        .iter()
+        .any(|pattern| pattern == "local-project:")
+    {
+        config
+            .repository_source_patterns
+            .insert(0, "local-project:".to_string());
+    }
     config.version = config.version.max(2);
     Ok(Some(config))
 }
@@ -255,5 +278,19 @@ mod tests {
         assert!(profile.network_allowed);
         assert_eq!(profile.timeout_ms, 300_000);
         assert_eq!(profile.max_output_bytes, 2_097_152);
+    }
+
+    #[test]
+    fn defaults_include_local_projects_without_removing_github() {
+        let config = RunnerConfig::default();
+        assert!(config.projects_root.is_some());
+        assert!(config
+            .repository_source_patterns
+            .iter()
+            .any(|pattern| pattern == "local-project:"));
+        assert!(config
+            .repository_source_patterns
+            .iter()
+            .any(|pattern| pattern == "github:"));
     }
 }
