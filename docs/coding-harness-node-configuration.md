@@ -41,6 +41,12 @@ sends only an owner-bound opaque project ID, template, objective, and bounded ca
 paired runner creates the direct child folder, scaffolds the selected template, and initializes a
 local Git history for rollback. Contributor nodes never receive the project files or credentials.
 
+On each signed registration heartbeat, the runner reports at most 100 validated project slugs from
+that direct-child folder. A directory is included only when its lowercase slug matches the name in
+`.mundusx/project.json`; symlinks, nested folders, malformed metadata, and unmanaged directories are
+ignored. The control plane binds this inventory to the runner's authenticated owner so Chat-U can
+offer that user a multi-project picker without exposing local paths or another user's projects.
+
 Each attempt runs in a unique no-hardlink temporary workspace under the private runner home. After
 the bounded validation succeeds, the runner verifies that the source project has not changed,
 commits the validated workspace, fast-forwards the local project, and deletes the temporary
