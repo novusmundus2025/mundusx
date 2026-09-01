@@ -39,6 +39,9 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build separate user-owned runner
         run: cargo build --release --manifest-path agents/node/Cargo.toml --features harness-runner --bin mundusx-harness-runner --target ${{ matrix.target }}
+      - name: Build Windows one-click runner setup
+        if: runner.os == 'Windows'
+        run: cargo build --release --manifest-path apps/windows-installer/Cargo.toml --bin mundusx-harness-setup --target ${{ matrix.target }}
       - name: Package Unix asset and checksum
         if: runner.os != 'Windows'
         shell: bash
@@ -53,21 +56,44 @@ jobs:
           Copy-Item -LiteralPath "target/${{ matrix.target }}/release/${{ matrix.executable }}" -Destination "${{ matrix.asset }}"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "${{ matrix.asset }}").Hash.ToLowerInvariant()
           "$hash  ${{ matrix.asset }}" | Set-Content -NoNewline -LiteralPath "${{ matrix.asset }}.sha256"
+          Copy-Item -LiteralPath "target/${{ matrix.target }}/release/mundusx-harness-setup.exe" -Destination "mundusx-harness-setup-windows-x86_64.exe"
+          $setupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath "mundusx-harness-setup-windows-x86_64.exe").Hash.ToLowerInvariant()
+          "$setupHash  mundusx-harness-setup-windows-x86_64.exe" | Set-Content -NoNewline -LiteralPath "mundusx-harness-setup-windows-x86_64.exe.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
           path: |
             ${{ matrix.asset }}
             ${{ matrix.asset }}.sha256
+            mundusx-harness-setup-windows-x86_64.exe
+            mundusx-harness-setup-windows-x86_64.exe.sha256
 
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
+      - name: Package Unix installer fallback
+        shell: bash
+        run: |
+          cp install-harness-runner.sh release-assets/install-harness-runner.sh
+          chmod +x release-assets/install-harness-runner.sh
+          (cd release-assets && shasum -a 256 install-harness-runner.sh > install-harness-runner.sh.sha256)
+      - name: Prepare signed runner release manifest
+        shell: bash
+        env:
+          OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: ./scripts/release-signing.sh prepare release-assets mundusx-harness-setup-windows-x86_64.exe "${{ github.event.inputs.release_tag || github.ref_name }}" "${{ github.event.inputs.release_tag || github.ref_name }}"
+      - name: Verify signed runner release manifest
+        shell: bash
+        env:
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: ./scripts/release-signing.sh verify release-assets mundusx-harness-setup-windows-x86_64.exe
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}

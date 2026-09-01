@@ -9,6 +9,10 @@ license = "Apache-2.0"
 name = "mundusx-bootstrap"
 path = "src/main.rs"
 
+[[bin]]
+name = "mundusx-harness-setup"
+path = "src/harness_main.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",

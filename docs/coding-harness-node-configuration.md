@@ -8,35 +8,39 @@ and never receives repository credentials, Git access, workspace authority, or v
 1. Install [Git](https://git-scm.com/) on the machine that owns the user's workspace. GitHub CLI is
    optional and is needed only when the user later chooses to publish a project to GitHub. For Java projects, also install a JDK and
    [Apache Maven](https://maven.apache.org/install.html), and ensure `java` and `mvn` are on `PATH`.
-2. Optional: authenticate GitHub on that machine when publication is wanted, without copying a token into Chat-U:
+2. Optional: authenticate GitHub on that machine when publication is wanted, without copying a token into Chat:
 
    ```text
    gh auth login
    gh auth setup-git
    ```
 
-3. Download the `mundusx-harness-runner` asset for the operating system from the dedicated
-   `harness-runner-v*` MundusX release and verify its adjacent SHA-256 file.
-4. In Chat-U, open **Projects**, expand local runner setup, and select **Create pairing code**.
-5. Run the displayed command before its ten-minute expiry:
+3. In Chat, create or select a Project and ask for a local action such as creating files or running tests.
+4. Select **Connect this computer**. On Windows, run the downloaded lightweight setup executable.
+   On macOS or Linux, download `install-harness-runner.sh`, verify its adjacent SHA-256 file, and run it.
+5. Approve the named computer in the browser page that opens. Chat resumes the original request
+   automatically after the signed runner heartbeat arrives.
+
+For headless diagnostics, the same browser-approved flow is available directly:
 
    ```text
-   mundusx-harness-runner pair MX-<one-time-code>
-   mundusx-harness-runner run
+   mundusx-harness-runner bootstrap --chat-url https://chat.mundusx.ai
    ```
 
-`pair` initializes the runner when needed. It creates a separate signing identity, discovers the
+`bootstrap` initializes the runner when needed. It creates a separate signing identity, discovers the
 absolute Git path (and GitHub CLI when installed), creates a private runner home under
-`~/.mundusx/harness-runner`, and binds the runner to the authenticated Chat-U user. The control
-plane obtains the user ID from the one-time pairing record; a runner cannot self-assert an owner.
+`~/.mundusx/harness-runner`, and binds the runner to the authenticated Chat user. It also configures
+per-user startup (Windows Run, a macOS LaunchAgent, or a Linux systemd user service) and starts the
+claim loop. The control plane obtains the user ID from the approved bootstrap record; a runner cannot self-assert an owner.
 
-The pairing secret is stored in PostgreSQL only as a SHA-256 digest, expires after ten minutes,
-and can be consumed only once by one runner signing key. Re-registration uses that bound key and
-owner and does not need another code.
+The bootstrap secret and browser approval token are stored in PostgreSQL only as independent SHA-256
+digests. Both expire after ten minutes. Approval binds the session to the runner public key, and the
+registration secret can be consumed only once by that runner. Re-registration uses the bound key and
+owner and does not need another approval. The legacy `pair` command remains for recovery only.
 
 ## Local-first project flow
 
-Projects start on the user's device under `documents/mundusx/projects/<lowercase-slug>`. Chat-U
+Projects start on the user's device under `documents/mundusx/projects/<lowercase-slug>`. Chat
 sends only an owner-bound opaque project ID, template, objective, and bounded capabilities. The
 paired runner creates the direct child folder, scaffolds the selected template, and initializes a
 local Git history for rollback. Contributor nodes never receive the project files or credentials.
@@ -44,7 +48,7 @@ local Git history for rollback. Contributor nodes never receive the project file
 On each signed registration heartbeat, the runner reports at most 100 validated project slugs from
 that direct-child folder. A directory is included only when its lowercase slug matches the name in
 `.mundusx/project.json`; symlinks, nested folders, malformed metadata, and unmanaged directories are
-ignored. The control plane binds this inventory to the runner's authenticated owner so Chat-U can
+ignored. The control plane binds this inventory to the runner's authenticated owner so Chat can
 offer that user a multi-project picker without exposing local paths or another user's projects.
 
 Each attempt runs in a unique no-hardlink temporary workspace under the private runner home. After
@@ -57,8 +61,8 @@ under the user's authenticated GitHub identity; MundusX does not own it.
 
 ## Existing GitHub repository flow
 
-For existing projects, Chat-U lists only repositories visible to both the signed-in user and the
-installed MundusX GitHub App. Chat-U verifies current GitHub permissions, assigns bounded project
+For existing projects, Chat lists only repositories visible to both the signed-in user and the
+installed MundusX GitHub App. Chat verifies current GitHub permissions, assigns bounded project
 paths, and pins the current default-branch commit. MundusX platform repositories have no special
 status and appear only when that user deliberately granted the App access to them.
 
