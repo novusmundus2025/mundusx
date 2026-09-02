@@ -171,6 +171,14 @@ fi
 download_to() {
   local source="$1"
   local output="$2"
+  local label="$3"
+  local started_at
+  local finished_at
+  local elapsed
+  local bytes
+
+  started_at="$(date +%s)"
+  echo "Downloading ${label}..."
 
   if [ -n "$local_assets" ]; then
     if [ ! -f "$source" ]; then
@@ -178,17 +186,26 @@ download_to() {
       exit 1
     fi
     cp "$source" "$output"
-    return
-  fi
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$source" -o "$output"
+  elif command -v curl >/dev/null 2>&1; then
+    curl \
+      --fail \
+      --location \
+      --retry 3 \
+      --progress-bar \
+      --show-error \
+      "$source" \
+      -o "$output"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$output" "$source"
+    wget --progress=bar:force:noscroll -O "$output" "$source"
   else
     echo "curl or wget is required" >&2
     exit 1
   fi
+
+  finished_at="$(date +%s)"
+  elapsed=$((finished_at - started_at))
+  bytes="$(wc -c <"$output" | tr -d '[:space:]')"
+  echo "Downloaded ${label}: ${bytes} bytes in ${elapsed}s."
 }
 
 verify_checksum() {
@@ -286,12 +303,14 @@ install_vllm_runtime() {
   fi
 
   echo
-  echo "Validating NVIDIA GPU access inside Docker..."
+  echo "[runtime 1/2] Validating NVIDIA GPU access inside Docker..."
+  echo "Docker shows image-layer download progress if the CUDA image is not cached."
   docker run --rm --gpus all \
     nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 \
     nvidia-smi >/dev/null
 
-  echo "Pulling pinned NVIDIA vLLM runtime (${VLLM_IMAGE_TAG})..."
+  echo "[runtime 2/2] Pulling pinned NVIDIA vLLM runtime (${VLLM_IMAGE_TAG})..."
+  echo "Docker reports every layer and shows what remains before completion."
   docker pull "$VLLM_IMAGE"
 
   mkdir -p "$runtime_dir" "${OPENGPU_HOME}/models"
@@ -321,16 +340,16 @@ echo "  install: ${INSTALL_DIR}"
 
 if [ "$runtime_only" -eq 0 ]; then
   echo
-  echo "Fetching ${BIN_NAME}..."
-  download_to "$release_url" "$tmp_bin"
+  echo "[binary 1/2] OpenGPU CLI"
+  download_to "$release_url" "$tmp_bin" "OpenGPU CLI"
 
-  download_to "$checksum_url" "$tmp_checksum"
+  download_to "$checksum_url" "$tmp_checksum" "OpenGPU CLI checksum"
   echo "Verifying checksum..."
   verify_checksum "$tmp_checksum"
 
-  echo "Fetching opengpu-node-agent..."
-  download_to "$agent_url" "$tmp_agent"
-  download_to "$agent_checksum_url" "$tmp_agent_checksum"
+  echo "[binary 2/2] OpenGPU node agent"
+  download_to "$agent_url" "$tmp_agent" "OpenGPU node agent"
+  download_to "$agent_checksum_url" "$tmp_agent_checksum" "OpenGPU node-agent checksum"
   echo "Verifying node agent checksum..."
   verify_checksum "$tmp_agent_checksum"
 
