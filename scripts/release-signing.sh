@@ -109,7 +109,7 @@ create_manifest() {
   mac_pkg_name=""
   mac_pkg_checksum=""
   case "$binary_name" in
-    opengpu-aarch64-apple-darwin) mac_pkg_name="MundusX-Node-aarch64-dev.pkg" ;;
+    opengpu-aarch64-apple-darwin) mac_pkg_name="MundusX-OpenGPU-Apple-Silicon.pkg" ;;
   esac
   if [ -n "$mac_pkg_name" ] && [ -f "$artifact_dir/$mac_pkg_name" ]; then
     mac_pkg_checksum="$(checksum_for_binary "$mac_pkg_name")"

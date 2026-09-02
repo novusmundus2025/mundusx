@@ -35,6 +35,7 @@ jobs:
             executable_name: opengpu
             agent_binary_name: opengpu-node-agent-aarch64-apple-darwin
             agent_executable_name: opengpu-node-agent
+            pkg_name: MundusX-OpenGPU-Apple-Silicon.pkg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary_name: opengpu-x86_64-pc-windows-msvc.exe
@@ -115,6 +116,14 @@ jobs:
             exit 1
           fi
 
+      - name: Build macOS package
+        if: startsWith(matrix.os, 'macos-')
+        shell: bash
+        run: |
+          ./scripts/package-macos-pkg.sh . "${{ matrix.binary_name }}" "${{ matrix.agent_binary_name }}" "${{ matrix.pkg_name }}" "${RELEASE_TAG#cli-v}"
+          shasum -a 256 "${{ matrix.pkg_name }}" > "${{ matrix.pkg_name }}.sha256"
+          shasum -a 256 -c "${{ matrix.pkg_name }}.sha256"
+
       - name: Verify checksum
         shell: bash
         run: |
@@ -146,6 +155,10 @@ jobs:
         run: |
           ./scripts/release-signing.sh prepare . ${{ matrix.binary_name }} ${{ env.RELEASE_TAG }} ${{ env.RELEASE_TAG }}
 
+      - name: Verify every manifest asset
+        shell: bash
+        run: python3 ./scripts/verify-release-manifest-assets.py .
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -161,8 +174,12 @@ jobs:
             ${{ matrix.setup_binary_name }}.sha256
             ${{ matrix.runtime_binary_name }}
             ${{ matrix.runtime_binary_name }}.sha256
+            ${{ matrix.pkg_name }}
+            ${{ matrix.pkg_name }}.sha256
             release-manifest.json
             release-manifest.json.sig
+            install.sh
+            install.ps1
 
   release:
     needs: build

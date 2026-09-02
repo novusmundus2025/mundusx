@@ -4,7 +4,7 @@ set -euo pipefail
 artifact_dir="${1:-}"
 binary_name="${2:-}"
 agent_binary_name="${3:-}"
-pkg_name="${4:-MundusX-Node-aarch64-dev.pkg}"
+pkg_name="${4:-MundusX-OpenGPU-Apple-Silicon.pkg}"
 version="${5:-0.1.0}"
 
 usage() {

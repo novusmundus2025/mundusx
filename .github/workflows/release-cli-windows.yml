@@ -113,6 +113,10 @@ jobs:
           OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
         run: ./scripts/release-signing.sh verify . "${BINARY_NAME}"
 
+      - name: Verify every manifest asset
+        shell: bash
+        run: python ./scripts/verify-release-manifest-assets.py .
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -131,6 +135,7 @@ jobs:
             ${{ env.VULKAN_RUNTIME_BINARY_NAME }}.sha256
             release-manifest.json
             release-manifest.json.sig
+            install.ps1
           tag_name: ${{ env.RELEASE_TAG }}
           name: MundusX Windows x86_64 CLI ${{ env.RELEASE_TAG }}
         env:

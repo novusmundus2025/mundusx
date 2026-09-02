@@ -10,8 +10,8 @@ Cargo, Rust, or browser pairing.
 | --- | --- | --- | --- |
 | ASUS Ascent GX10 / NVIDIA GB10 | Linux shell | `install.sh` | Installs the Linux ARM64 node and pinned NVIDIA vLLM runtime |
 | Linux x86_64 | Linux shell | `install.sh` | Installs the x86_64 node; use an existing supported local model server |
-| Apple Silicon Mac | Terminal | `install.sh` | Installs the Apple Silicon node and prepares the local MLX runtime during setup |
-| Windows x86_64 | PowerShell | `MundusX-Setup.exe` | Installs the Windows node, tray application, and detected CUDA runtime |
+| Apple Silicon Mac | Terminal or Finder | `install.sh` or `.pkg` | Installs the Apple Silicon node; guided setup prepares MLX |
+| Windows x86_64 | PowerShell | `install.ps1` | Installs the Windows node, tray application, and detected GPU runtime |
 
 The public release channel is:
 
@@ -108,6 +108,13 @@ opengpu install
 opengpu start --background
 ```
 
+For a normal macOS package installation, download
+[`MundusX-OpenGPU-Apple-Silicon.pkg`](https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-OpenGPU-Apple-Silicon.pkg)
+and open it in Finder. The shell script and package install the same `opengpu`
+and `opengpu-node-agent` commands. Until MundusX configures Apple Developer ID
+signing and notarization, macOS may require an explicit Open action for the
+package; the checksum remains published beside it.
+
 The installer selects the Apple Silicon binary. The guided setup prepares the
 local MLX runtime and shows model-download progress. Intel Macs are not included
 in the current public channel.
@@ -118,17 +125,17 @@ Do not run the Linux `curl ... | bash` command in PowerShell. In Windows
 PowerShell, `curl` can be an alias for `Invoke-WebRequest`, and Bash scripts are
 not Windows installers.
 
-Download and open the Windows installer:
+Download and run the reviewed PowerShell installer as one command:
 
 ```powershell
-$installer = Join-Path $env:USERPROFILE "Downloads\MundusX-Setup.exe"
-Invoke-WebRequest -Uri "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe" -OutFile $installer
-& $installer
+$script = Join-Path $env:TEMP "mundusx-install.ps1"; Invoke-WebRequest -Uri "https://github.com/mundusx/releases/releases/download/opengpu-prod/install.ps1" -OutFile $script; powershell -NoProfile -ExecutionPolicy Bypass -File $script
 ```
 
 The installer downloads the CLI, node agent, tray application, checksums, and
-the detected Windows GPU runtime. It then opens `opengpu install` so the
-contributor can choose the cap, concurrency, and model.
+the detected Windows GPU runtime with visible progress. When it completes, open
+a new PowerShell window and run `opengpu install` so the contributor can choose
+the cap, concurrency, and model. The transparent script is the recommended
+Windows path until the graphical installer is Authenticode-signed.
 
 After the wizard completes, start contribution from PowerShell:
 
