@@ -81,7 +81,8 @@ try {
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
     -InstallCudaRuntime `
-    -SkipTrayAutoStart 2>&1
+    -SkipTrayAutoStart `
+    -SkipPathUpdate 2>&1
 
   if ($LASTEXITCODE -ne 0) {
     throw "install.ps1 failed with checksum present: $output"
@@ -188,7 +189,8 @@ try {
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
     -InstallCudaRuntime `
-    -SkipTrayAutoStart 2>&1
+    -SkipTrayAutoStart `
+    -SkipPathUpdate 2>&1
   $missingChecksumExitCode = $LASTEXITCODE
   $ErrorActionPreference = $previousErrorActionPreference
 
@@ -205,6 +207,7 @@ try {
     -ReleaseBaseUrl $releaseDir `
     -InstallCudaRuntime `
     -SkipTrayAutoStart `
+    -SkipPathUpdate `
     -AllowUnsignedLocalPreview 2>&1
 
   if ($LASTEXITCODE -ne 0) {
@@ -236,7 +239,8 @@ try {
     -InstallDir $installDir `
     -ReleaseBaseUrl $releaseDir `
     -InstallCudaRuntime `
-    -SkipTrayAutoStart 2>&1
+    -SkipTrayAutoStart `
+    -SkipPathUpdate 2>&1
   $missingManifestExitCode = $LASTEXITCODE
   $ErrorActionPreference = $previousErrorActionPreference
 

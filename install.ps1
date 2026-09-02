@@ -6,6 +6,7 @@ param(
   [switch]$InstallCudaRuntime,
   [switch]$InstallVulkanRuntime,
   [switch]$SkipTrayAutoStart,
+  [switch]$SkipPathUpdate,
   [switch]$Help
 )
 
@@ -45,6 +46,7 @@ Options:
                           By default, the installer detects NVIDIA/CUDA and
                           otherwise installs the Vulkan runtime for Windows.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
+  -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
                           when testing a local release preview.
@@ -461,6 +463,37 @@ function Copy-ReleaseFile {
   Assert-DownloadedReleaseFile -Source $Source -Destination $Destination
 }
 
+function Add-DirectoryToUserPath {
+  param([string]$Directory)
+
+  $normalizedDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd("\")
+  $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  $userEntries = @($userPath -split ";" | Where-Object { $_ } | ForEach-Object { $_.TrimEnd("\") })
+  $alreadyPersisted = [bool]($userEntries | Where-Object {
+    $_.Equals($normalizedDirectory, [System.StringComparison]::OrdinalIgnoreCase)
+  })
+
+  if (-not $alreadyPersisted) {
+    $updatedUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) {
+      $normalizedDirectory
+    } else {
+      $userPath.TrimEnd(";") + ";" + $normalizedDirectory
+    }
+    [Environment]::SetEnvironmentVariable("Path", $updatedUserPath, "User")
+    Write-Output "Added $normalizedDirectory to the persistent user PATH."
+  } else {
+    Write-Output "$normalizedDirectory is already present in the persistent user PATH."
+  }
+
+  $processEntries = @($env:PATH -split ";" | Where-Object { $_ } | ForEach-Object { $_.TrimEnd("\") })
+  $alreadyInProcess = [bool]($processEntries | Where-Object {
+    $_.Equals($normalizedDirectory, [System.StringComparison]::OrdinalIgnoreCase)
+  })
+  if (-not $alreadyInProcess) {
+    $env:PATH = $env:PATH.TrimEnd(";") + ";" + $normalizedDirectory
+  }
+}
+
 function Write-InstallerPhase {
   param(
     [int]$Current,
@@ -729,10 +762,8 @@ if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
   Write-Output "Pinned trusted runtime path in $trustedRuntimePath"
 }
 
-$pathEntries = ($env:PATH -split ";") | ForEach-Object { $_.TrimEnd("\") }
-$normalizedInstallDir = (Resolve-Path -Path $InstallDir).Path.TrimEnd("\")
-if ($pathEntries -notcontains $normalizedInstallDir) {
-  Write-Warning "$InstallDir is not currently on PATH. Add it to PATH or run $finalExe directly."
+if (-not $SkipPathUpdate) {
+  Add-DirectoryToUserPath -Directory $InstallDir
 }
 
 Write-Output "Next: opengpu install"
