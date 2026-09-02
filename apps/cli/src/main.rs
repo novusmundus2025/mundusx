@@ -4956,6 +4956,15 @@ fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool
 }
 
 fn detect_memory_gb() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        // CUDA model selection is constrained by dedicated GPU memory, not
+        // system RAM. Round down so the displayed class never overstates what
+        // the GPU can provide.
+        if let Some(vram_mb) = detect_cuda_vram_mb() {
+            return vram_mb / 1024;
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         // sysctl hw.memsize returns total unified memory in bytes
@@ -4998,7 +5007,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     let gb = detect_memory_gb();
     let selection = selection_for(backend, gb);
     let available_vram_mb = model_vram_budget_mb(config, backend);
-    let options = if backend == Backend::Vllm {
+    let options = if matches!(backend, Backend::Cuda | Backend::Vllm) {
         selectable_catalog_options_for(backend, available_vram_mb)
     } else {
         selectable_options_for(backend, gb, available_vram_mb)
@@ -5031,8 +5040,10 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
         raw_println!(
             "{}",
             theme::muted(format!(
-                "Detected {} with {} GB memory",
-                selection.backend, selection.memory_gb
+                "Detected {} with {} GB {}",
+                selection.backend,
+                selection.memory_gb,
+                if backend == Backend::Cuda { "VRAM" } else { "memory" }
             ))
         );
         if let Some(budget) = available_vram_mb {
