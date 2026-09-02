@@ -7,6 +7,7 @@ param(
   [switch]$InstallVulkanRuntime,
   [switch]$SkipTrayAutoStart,
   [switch]$SkipPathUpdate,
+  [switch]$SkipContributorSetup,
   [switch]$Help
 )
 
@@ -47,13 +48,14 @@ Options:
                           otherwise installs the Vulkan runtime for Windows.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
+  -SkipContributorSetup    Do not open a fresh PowerShell window for `opengpu install`.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
                           when testing a local release preview.
   -Help                    Print this help and exit.
 
-After this bootstrapper installs the binary, run:
-  opengpu install
+After this bootstrapper installs the binary, a fresh PowerShell window opens
+and runs `opengpu install` automatically unless -SkipContributorSetup is set.
 "@ | Write-Output
 }
 
@@ -494,6 +496,35 @@ function Add-DirectoryToUserPath {
   }
 }
 
+function Start-ContributorSetup {
+  param([string]$CliPath)
+
+  if (-not (Test-Path -LiteralPath $CliPath -PathType Leaf)) {
+    throw "installed opengpu was not found at $CliPath"
+  }
+
+  $escapedCliPath = $CliPath.Replace("'", "''")
+  $setupCommand = @"
+& '$escapedCliPath' install
+`$setupExit = `$LASTEXITCODE
+Write-Host ''
+if (`$setupExit -eq 0) {
+  Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.' -ForegroundColor Green
+} else {
+  Write-Host 'Contributor setup failed. Review the error above.' -ForegroundColor Red
+}
+"@
+  $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($setupCommand))
+  Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    "-NoLogo",
+    "-NoProfile",
+    "-NoExit",
+    "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", $encodedCommand
+  )
+  Write-Output "Opened a fresh PowerShell window and started opengpu install."
+}
+
 function Write-InstallerPhase {
   param(
     [int]$Current,
@@ -766,11 +797,20 @@ if (-not $SkipPathUpdate) {
   Add-DirectoryToUserPath -Directory $InstallDir
 }
 
-Write-Output "Next: opengpu install"
+if ($SkipContributorSetup) {
+  Write-Output "Next: opengpu install"
+} else {
+  Write-Output "Next: contributor setup will open in a fresh PowerShell window"
+}
 Write-Output ""
 Write-Output "[6/6 - overall 100%] Installation complete"
 if ($script:installerTranscriptStarted) {
   Stop-Transcript | Out-Null
+  $script:installerTranscriptStarted = $false
+}
+
+if (-not $SkipContributorSetup) {
+  Start-ContributorSetup -CliPath $finalExe
 }
 
 

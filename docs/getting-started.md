@@ -132,10 +132,11 @@ $script = Join-Path $env:TEMP "mundusx-install.ps1"; Invoke-WebRequest -Uri "htt
 ```
 
 The installer downloads the CLI, node agent, tray application, checksums, and
-the detected Windows GPU runtime with visible progress. When it completes, open
-a new PowerShell window and run `opengpu install` so the contributor can choose
-the cap, concurrency, and model. The transparent script is the recommended
-Windows path until the graphical installer is Authenticode-signed.
+the detected Windows GPU runtime with visible progress. When it completes, its
+temporary process exits and a fresh PowerShell window opens with `opengpu install`
+already running so the contributor can choose the cap and model. The transparent
+script is the recommended Windows path until the graphical installer is
+Authenticode-signed.
 
 After the wizard completes, start contribution from PowerShell:
 

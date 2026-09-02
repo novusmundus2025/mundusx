@@ -38,6 +38,7 @@ fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
         "Bypass".to_string(),
         "-File".to_string(),
         script_path.display().to_string(),
+        "-SkipContributorSetup".to_string(),
     ];
     if let Ok(release_base) = std::env::var("MUNDUSX_RELEASE_BASE_URL") {
         let release_base = release_base.trim();
@@ -52,7 +53,7 @@ fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
 fn contributor_setup_command(cli_path: &std::path::Path) -> String {
     let escaped = cli_path.display().to_string().replace('\'', "''");
     format!(
-        "& '{escaped}' install; $setupExit = $LASTEXITCODE; Write-Host ''; if ($setupExit -eq 0) {{ Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.'; Write-Host 'Closing this setup window...'; Start-Sleep -Seconds 2; exit 0 }}; Write-Host 'Contributor setup failed. Review the error above.' -ForegroundColor Red; Write-Host 'Press Enter to close this window.'; Read-Host; exit $setupExit"
+        "& '{escaped}' install; $setupExit = $LASTEXITCODE; Write-Host ''; if ($setupExit -eq 0) {{ Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.' -ForegroundColor Green }} else {{ Write-Host 'Contributor setup failed. Review the error above.' -ForegroundColor Red }}"
     )
 }
 
@@ -101,14 +102,23 @@ fn launch_contributor_setup() -> Result<(), String> {
         ));
     }
 
-    std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &contributor_setup_command(&cli_path),
-        ])
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &contributor_setup_command(&cli_path),
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        command.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    command
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("failed to launch contributor setup: {error}"))
@@ -178,6 +188,8 @@ mod tests {
         assert!(INSTALL_SCRIPT.contains("MundusX Windows installer"));
         assert!(INSTALL_SCRIPT.contains("mundusx-tray"));
         assert!(INSTALL_SCRIPT.contains("runtime selection"));
+        assert!(INSTALL_SCRIPT.contains("Start-ContributorSetup"));
+        assert!(INSTALL_SCRIPT.contains("-NoExit"));
         assert!(INSTALL_SCRIPT.contains("llama-server.exe"));
         assert!(INSTALL_SCRIPT.contains(
             "https://github.com/mundusx/releases/releases/download/opengpu-prod"
@@ -194,6 +206,9 @@ mod tests {
         assert!(arguments
             .windows(2)
             .any(|pair| pair == ["-File", "C:\\Temp\\install.ps1"]));
+        assert!(arguments
+            .iter()
+            .any(|argument| argument == "-SkipContributorSetup"));
     }
 
     #[test]
@@ -204,8 +219,8 @@ mod tests {
         assert!(command.contains("& 'C:\\Users\\tester\\.opengpu\\bin\\opengpu.exe' install"));
         assert!(command.contains("Contributor setup finished"));
         assert!(command.contains("if ($setupExit -eq 0)"));
-        assert!(command.contains("Start-Sleep -Seconds 2; exit 0"));
-        assert!(command.contains("Read-Host; exit $setupExit"));
+        assert!(!command.contains("Start-Sleep"));
+        assert!(!command.contains("Read-Host"));
     }
 
     #[test]
