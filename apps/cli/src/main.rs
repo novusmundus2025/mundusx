@@ -2828,7 +2828,10 @@ fn policy_reason(
     identity_ready: bool,
 ) -> Option<String> {
     if !identity_ready {
-        return Some("secure device identity is unavailable".to_string());
+        return Some(
+            "secure device identity is missing; `opengpu start` creates it automatically"
+                .to_string(),
+        );
     }
 
     if config.contribution_percent == 0 {
@@ -5798,7 +5801,10 @@ fn start_preflight_blockers(
     let mut blockers = Vec::new();
 
     if !identity_ready {
-        blockers.push("secure device identity is unavailable".to_string());
+        blockers.push(
+            "secure device identity is missing; `opengpu start` creates it automatically"
+                .to_string(),
+        );
     }
     if !node_agent_installed {
         blockers.push(format!(
@@ -5869,7 +5875,9 @@ fn print_start_preflight(config: &Config) {
     for blocker in &blockers {
         theme::warn(blocker);
     }
-    theme::note("Fix the items above, then run `opengpu start`");
+    theme::note(
+        "Fix any other items above, then run `opengpu start`; it creates a missing identity automatically",
+    );
 }
 
 fn run_init() -> Config {
@@ -7854,7 +7862,9 @@ mod tests {
         let blockers = start_preflight_blockers(&Config::default(), false, false, None);
 
         assert_eq!(blockers.len(), 4);
-        assert!(blockers.iter().any(|b| b.contains("device identity")));
+        assert!(blockers.iter().any(|b| {
+            b.contains("device identity") && b.contains("creates it automatically")
+        }));
         assert!(blockers.iter().any(|b| b.contains("opengpu-node-agent")));
         assert!(blockers.iter().any(|b| b.contains("contribution cap")));
         assert!(blockers.iter().any(|b| b.contains("no active model")));
