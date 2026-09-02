@@ -4459,6 +4459,20 @@ fn contribution_vram_budget_mb(
     total_vram_mb.map(|total| total.saturating_mul(contribution_percent as u64) / 100)
 }
 
+const SINGLE_JOB_CUDA_BUDGET_MAX_MB: u64 = 8_192;
+
+fn single_job_cuda_budget_mb(
+    backend: Backend,
+    total_vram_mb: Option<u64>,
+    contribution_percent: u8,
+) -> Option<u64> {
+    if backend != Backend::Cuda {
+        return None;
+    }
+    contribution_vram_budget_mb(total_vram_mb, contribution_percent)
+        .filter(|budget| *budget <= SINGLE_JOB_CUDA_BUDGET_MAX_MB)
+}
+
 fn model_vram_budget_mb(config: &Config, backend: Backend) -> Option<u64> {
     match backend {
         Backend::M | Backend::Vulkan | Backend::Vllm => contribution_vram_budget_mb(
@@ -6034,16 +6048,25 @@ fn run_install(
     if !contributing_cluster {
         configure_macos_runtime(&mut config);
 
-        // A contributor running a MundusX-managed runtime gets the same say
-        // over concurrency as one contributing a cluster.
-        if config.max_jobs.is_none() && interactive {
-            let context = format!(
-                "MundusX runs the model here, sized from this machine's memory and a {}% cap",
-                config.contribution_percent
-            );
-            if let Some(jobs) = prompt_max_jobs(&context, None) {
-                config.max_jobs = Some(jobs);
+        // Managed runtimes are capacity-sized automatically. Small CUDA cards
+        // cannot safely host multiple active contexts, so make the single-slot
+        // ceiling explicit and do not ask the contributor to override it.
+        if let Some(budget_mb) = single_job_cuda_budget_mb(
+            detected,
+            profile.cuda_vram_mb,
+            config.contribution_percent,
+        ) {
+            config.max_jobs = Some(1);
+            theme::note(format!(
+                "Job concurrency fixed at 1 for the {budget_mb} MB CUDA contribution budget; additional work waits in the queue"
+            ));
+        } else {
+            if max_jobs.is_none() {
+                config.max_jobs = None;
             }
+            theme::note(
+                "Job concurrency will be sized automatically from the model and available memory",
+            );
         }
     }
 
@@ -6421,6 +6444,22 @@ fn run_start_or_connect(
         false,
         max_jobs,
     );
+
+    if config.contributed_cluster.is_none() {
+        let backend = resolved_backend(&config);
+        if let Some(budget_mb) = single_job_cuda_budget_mb(
+            backend,
+            detect_cuda_vram_mb(),
+            config.contribution_percent,
+        ) {
+            if config.max_jobs != Some(1) {
+                theme::note(format!(
+                    "Job concurrency limited to 1 for the {budget_mb} MB CUDA contribution budget"
+                ));
+            }
+            config.max_jobs = Some(1);
+        }
+    }
 
     if should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
@@ -7254,10 +7293,10 @@ mod tests {
         resolve_install_control_plane_url, runtime_metrics_from_output,
         runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
         should_prompt_model_selection, should_retry_local_offline, should_try_local,
-        start_preflight_blockers, sync_config_identity, terminal_line_endings,
-        vllm_doctor_payload, Cli, ClusterCommands, Commands, ContributedCluster,
-        ContributedClusterCheck, ExecutionMode, JobsCommands, LocalAttemptFailure, PowerState,
-        RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
+        single_job_cuda_budget_mb, start_preflight_blockers, sync_config_identity,
+        terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands, Commands,
+        ContributedCluster, ContributedClusterCheck, ExecutionMode, JobsCommands,
+        LocalAttemptFailure, PowerState, RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
     use crate::identity::DeviceIdentity;
@@ -7426,6 +7465,22 @@ mod tests {
             Some("0123456789abcdef")
         );
         assert_eq!(config.contribution_percent, 80);
+    }
+
+    #[test]
+    fn four_gb_cuda_card_is_fixed_to_one_managed_job() {
+        assert_eq!(
+            single_job_cuda_budget_mb(Backend::Cuda, Some(4_096), 80),
+            Some(3_276)
+        );
+        assert_eq!(
+            single_job_cuda_budget_mb(Backend::Cuda, Some(24_576), 80),
+            None
+        );
+        assert_eq!(
+            single_job_cuda_budget_mb(Backend::M, Some(4_096), 80),
+            None
+        );
     }
 
     #[test]
