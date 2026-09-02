@@ -990,11 +990,14 @@ fn identity_ready() -> bool {
 }
 
 fn config_from_identity(identity: &identity::DeviceIdentity) -> Config {
-    Config {
-        device_id: device_id_for_identity(identity),
-        public_key_fingerprint: Some(identity.fingerprint.clone()),
-        ..Config::default()
-    }
+    let mut config = Config::default();
+    sync_config_identity(&mut config, identity);
+    config
+}
+
+fn sync_config_identity(config: &mut Config, identity: &identity::DeviceIdentity) {
+    config.device_id = device_id_for_identity(identity);
+    config.public_key_fingerprint = Some(identity.fingerprint.clone());
 }
 
 // ---------------------------------------------------------------------------
@@ -5914,17 +5917,22 @@ fn run_install(
         "Private compute. Your limits. The MundusX network.",
     );
     let profile = detect_machine_profile();
+    // A previous or interrupted setup can leave config.json behind without an
+    // identity. Always create/validate secure identity independently, then make
+    // the saved config refer to it.
+    let identity = match ensure_identity() {
+        Ok((identity, _, _)) => identity,
+        Err(error) => {
+            eprintln!("failed to initialize identity: {error}");
+            std::process::exit(1);
+        }
+    };
     let mut config = if config_exists() {
         current_config_or_default()
     } else {
-        match ensure_identity() {
-            Ok((identity, _, _)) => config_from_identity(&identity),
-            Err(error) => {
-                eprintln!("failed to initialize identity: {error}");
-                std::process::exit(1);
-            }
-        }
+        Config::default()
     };
+    sync_config_identity(&mut config, &identity);
     config.backend_preference = profile.backend;
     let detected = resolved_backend(&config);
 
@@ -7238,11 +7246,13 @@ mod tests {
         resolve_install_control_plane_url, runtime_metrics_from_output,
         runtime_metrics_from_payload, should_prefetch_vllm_catalog_model,
         should_prompt_model_selection, should_retry_local_offline, should_try_local,
-        start_preflight_blockers, terminal_line_endings, vllm_doctor_payload, Cli, ClusterCommands,
-        Commands, ContributedCluster, ContributedClusterCheck, ExecutionMode, JobsCommands,
-        LocalAttemptFailure, PowerState, RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
+        start_preflight_blockers, sync_config_identity, terminal_line_endings,
+        vllm_doctor_payload, Cli, ClusterCommands, Commands, ContributedCluster,
+        ContributedClusterCheck, ExecutionMode, JobsCommands, LocalAttemptFailure, PowerState,
+        RequestRoutingMode, PUBLIC_CONTROL_PLANE_URL,
     };
     use crate::config::Config;
+    use crate::identity::DeviceIdentity;
     use crate::model::ModelRecord;
     use crate::types::Backend;
     use clap::Parser;
@@ -7381,6 +7391,33 @@ mod tests {
 
         assert_eq!(cli.theme, super::theme::ThemeSelection::Classic);
         assert!(matches!(cli.command, Commands::Doctor { json: true }));
+    }
+
+    #[test]
+    fn existing_config_is_synchronized_with_secure_identity() {
+        let mut config = Config {
+            device_id: "stale-device".to_string(),
+            public_key_fingerprint: Some("stale-fingerprint".to_string()),
+            contribution_percent: 80,
+            ..Config::default()
+        };
+        let identity = DeviceIdentity {
+            public_key_hex: "01".repeat(32),
+            private_key_hex: String::new(),
+            fingerprint: "0123456789abcdef".to_string(),
+            keychain_label_hex: None,
+            encrypted_private_key_hex: "encrypted".to_string(),
+            nonce_hex: String::new(),
+        };
+
+        sync_config_identity(&mut config, &identity);
+
+        assert_eq!(config.device_id, "node-0123456789abcdef");
+        assert_eq!(
+            config.public_key_fingerprint.as_deref(),
+            Some("0123456789abcdef")
+        );
+        assert_eq!(config.contribution_percent, 80);
     }
 
     #[test]
