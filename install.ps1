@@ -316,17 +316,24 @@ function Save-TrustedRuntimePath {
 function Copy-ReleaseFile {
   param(
     [string]$Source,
-    [string]$Destination
+    [string]$Destination,
+    [string]$Label = ""
   )
+
+  if (-not $Label) {
+    $Label = Split-Path -Leaf $Destination
+  }
 
   $uri = $null
   if ([System.Uri]::TryCreate($Source, [System.UriKind]::Absolute, [ref]$uri) -and $uri.IsFile) {
     Copy-Item -LiteralPath $uri.LocalPath -Destination $Destination
+    Write-Output "Copied $Label."
     return
   }
 
   if (Test-Path -LiteralPath $Source) {
     Copy-Item -LiteralPath $Source -Destination $Destination
+    Write-Output "Copied $Label."
     return
   }
 
@@ -343,13 +350,80 @@ function Copy-ReleaseFile {
     $headers["X-GitHub-Api-Version"] = "2022-11-28"
   }
 
+  $handler = $null
+  $client = $null
+  $request = $null
+  $response = $null
+  $inputStream = $null
+  $outputStream = $null
   try {
-    if ($headers.Count -gt 0) {
-      Invoke-WebRequest -Uri $downloadSource -Headers $headers -OutFile $Destination
-    } else {
-      Invoke-WebRequest -Uri $downloadSource -OutFile $Destination
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromHours(2)
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("MundusX-Installer/1.0")
+
+    $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $downloadSource)
+    foreach ($name in $headers.Keys) {
+      [void]$request.Headers.TryAddWithoutValidation($name, [string]$headers[$name])
     }
+
+    $response = $client.SendAsync(
+      $request,
+      [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+    ).GetAwaiter().GetResult()
+    [void]$response.EnsureSuccessStatusCode()
+
+    $totalBytes = $response.Content.Headers.ContentLength
+    $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $outputStream = [System.IO.File]::Open(
+      $Destination,
+      [System.IO.FileMode]::Create,
+      [System.IO.FileAccess]::Write,
+      [System.IO.FileShare]::None
+    )
+    $buffer = New-Object byte[] (1024 * 1024)
+    $receivedBytes = [long]0
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastUpdateMs = [long]-1000
+
+    while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      $outputStream.Write($buffer, 0, $read)
+      $receivedBytes += $read
+      if (($stopwatch.ElapsedMilliseconds - $lastUpdateMs) -lt 250 -and
+          (-not $totalBytes -or $receivedBytes -lt $totalBytes)) {
+        continue
+      }
+      $lastUpdateMs = $stopwatch.ElapsedMilliseconds
+      $elapsedSeconds = [Math]::Max($stopwatch.Elapsed.TotalSeconds, 0.001)
+      $megabytes = $receivedBytes / 1MB
+      $speedMbps = ($receivedBytes / 1MB) / $elapsedSeconds
+
+      if ($totalBytes -and $totalBytes -gt 0) {
+        $percent = [Math]::Min(100, [int][Math]::Floor(($receivedBytes * 100.0) / $totalBytes))
+        $totalMegabytes = $totalBytes / 1MB
+        $remainingSeconds = if ($speedMbps -gt 0) {
+          [Math]::Max(0, (($totalBytes - $receivedBytes) / 1MB) / $speedMbps)
+        } else {
+          0
+        }
+        $status = "${percent}% of 100% - $($megabytes.ToString('N1'))/$($totalMegabytes.ToString('N1')) MB - $($speedMbps.ToString('N1')) MB/s - about $([Math]::Ceiling($remainingSeconds))s remaining"
+        Write-Progress -Id 1 -Activity "Downloading $Label" -Status $status -PercentComplete $percent
+      } else {
+        $status = "$($megabytes.ToString('N1')) MB downloaded - $($speedMbps.ToString('N1')) MB/s - total size unavailable"
+        Write-Progress -Id 1 -Activity "Downloading $Label" -Status $status -PercentComplete -1
+      }
+    }
+
+    $stopwatch.Stop()
+    Write-Progress -Id 1 -Activity "Downloading $Label" -Completed
+    $finalMegabytes = $receivedBytes / 1MB
+    Write-Output "Downloaded ${Label}: 100% - $($finalMegabytes.ToString('N1')) MB in $([Math]::Ceiling($stopwatch.Elapsed.TotalSeconds))s."
   } catch {
+    Write-Progress -Id 1 -Activity "Downloading $Label" -Completed
+    if (Test-Path -LiteralPath $Destination) {
+      Remove-Item -Force -LiteralPath $Destination -ErrorAction SilentlyContinue
+    }
     if ($Source -like "https://github.com/*") {
       if ($token) {
         throw "failed to download private GitHub release asset from $Source. Verify the token has access to this repository and release assets. Original error: $($_.Exception.Message)"
@@ -357,8 +431,27 @@ function Copy-ReleaseFile {
       throw "failed to download GitHub release asset from $Source. If this repository or release is private, pass -GitHubToken or set GITHUB_TOKEN/GH_TOKEN with release read access. Original error: $($_.Exception.Message)"
     }
     throw
+  } finally {
+    if ($outputStream) { $outputStream.Dispose() }
+    if ($inputStream) { $inputStream.Dispose() }
+    if ($response) { $response.Dispose() }
+    if ($request) { $request.Dispose() }
+    if ($client) { $client.Dispose() }
+    if ($handler) { $handler.Dispose() }
   }
   Assert-DownloadedReleaseFile -Source $Source -Destination $Destination
+}
+
+function Write-InstallerPhase {
+  param(
+    [int]$Current,
+    [int]$Total,
+    [string]$Message
+  )
+
+  $overallPercent = [int][Math]::Floor((($Current - 1) * 100.0) / $Total)
+  Write-Output ""
+  Write-Output "[$Current/$Total - overall $overallPercent%] $Message"
 }
 
 function Verify-ReleaseAsset {
@@ -377,8 +470,8 @@ function Verify-ReleaseAsset {
   }
 
   $checksumDestination = "$Destination.sha256"
-  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName" -Destination $Destination
-  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName.sha256" -Destination $checksumDestination
+  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName" -Destination $Destination -Label $AssetName
+  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName.sha256" -Destination $checksumDestination -Label "$AssetName checksum"
   $expected = Read-ChecksumHash -Path $checksumDestination
   if ($ManifestAsset -and $ManifestAsset.checksum_sha256) {
     $manifestChecksum = $ManifestAsset.checksum_sha256.ToString().ToUpperInvariant()
@@ -471,12 +564,13 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 try {
-  Write-Output "Fetching opengpu..."
-  Copy-ReleaseFile -Source $releaseUrl -Destination $tempExe
+  Write-InstallerPhase -Current 1 -Total 6 -Message "Downloading OpenGPU CLI"
+  Copy-ReleaseFile -Source $releaseUrl -Destination $tempExe -Label "OpenGPU CLI"
 
   $expected = $null
   try {
-    Copy-ReleaseFile -Source $checksumUrl -Destination $tempChecksum
+    Write-InstallerPhase -Current 2 -Total 6 -Message "Verifying the signed release"
+    Copy-ReleaseFile -Source $checksumUrl -Destination $tempChecksum -Label "OpenGPU CLI checksum"
     Write-Output "Verifying checksum..."
     $expected = Read-ChecksumHash -Path $tempChecksum
     $actual = (Get-FileHash -Algorithm SHA256 -Path $tempExe).Hash.ToUpperInvariant()
@@ -491,8 +585,8 @@ try {
   }
 
   try {
-    Copy-ReleaseFile -Source $manifestUrl -Destination $tempManifest
-    Copy-ReleaseFile -Source $signatureUrl -Destination $tempSignature
+    Copy-ReleaseFile -Source $manifestUrl -Destination $tempManifest -Label "release manifest"
+    Copy-ReleaseFile -Source $signatureUrl -Destination $tempSignature -Label "release signature"
     Write-Output "Checking signed release manifest..."
     $manifest = Read-ReleaseManifest -Path $tempManifest
     if ($manifest.artifact_kind -ne "release-binary") {
@@ -519,6 +613,7 @@ try {
     }
     Write-Warning "dev-only local preview override: signed release manifest unavailable or invalid, continuing without signature verification"
   }
+  Write-InstallerPhase -Current 3 -Total 6 -Message "Downloading the GPU runtime"
   if ($cudaRuntimeRequired) {
     $runtimeManifestAsset = Find-ManifestRuntimeAsset -Manifest $manifest -Name $cudaRuntimeAssetName
     Write-Output "Fetching CUDA llama runtime..."
@@ -531,11 +626,13 @@ try {
     $runtimeExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $vulkanRuntimeAssetName -Destination $tempVulkanRuntime -ManifestAsset $runtimeManifestAsset
   }
 
+  Write-InstallerPhase -Current 4 -Total 6 -Message "Downloading the OpenGPU node agent"
   $agentManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $agentAssetName
   Write-Output "Fetching node agent..."
   Write-Output "Verifying node agent checksum..."
   $agentExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $agentAssetName -Destination $tempAgent -ManifestAsset $agentManifestAsset
 
+  Write-InstallerPhase -Current 5 -Total 6 -Message "Downloading the Windows tray application"
   $trayManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $trayAssetName
   Write-Output "Fetching Windows tray companion..."
   Write-Output "Verifying Windows tray companion checksum..."
@@ -550,6 +647,7 @@ try {
     Write-Warning "release manifest does not include $trayIconAssetName; tray will use the embedded/system icon fallback"
   }
 
+  Write-InstallerPhase -Current 6 -Total 6 -Message "Installing verified components"
   Move-Item -Force -Path $tempExe -Destination $finalExe
   Copy-Item -Force -LiteralPath $finalExe -Destination $compatExe
   Move-Item -Force -Path $tempAgent -Destination $finalAgent

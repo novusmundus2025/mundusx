@@ -165,6 +165,18 @@ try {
   if ($joinedOutput -notmatch "strict enterprise") {
     throw "installer did not report strict enterprise verification mode"
   }
+  foreach ($phase in @(
+    "[1/6 - overall 0%] Downloading OpenGPU CLI",
+    "[2/6 - overall 16%] Verifying the signed release",
+    "[3/6 - overall 33%] Downloading the GPU runtime",
+    "[4/6 - overall 50%] Downloading the OpenGPU node agent",
+    "[5/6 - overall 66%] Downloading the Windows tray application",
+    "[6/6 - overall 83%] Installing verified components"
+  )) {
+    if (-not $joinedOutput.Contains($phase)) {
+      throw "installer output did not report phase: $phase"
+    }
+  }
 
   Remove-Item -LiteralPath $checksumPath -Force
   Remove-Item -LiteralPath $installedExe -Force
