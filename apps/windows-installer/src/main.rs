@@ -20,6 +20,17 @@ fn installed_cli_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("opengpu.exe"))
 }
 
+fn installer_log_path() -> std::path::PathBuf {
+    std::env::var("USERPROFILE")
+        .map(|profile| {
+            std::path::PathBuf::from(profile)
+                .join(".opengpu")
+                .join("logs")
+                .join("installer.log")
+        })
+        .unwrap_or_else(|_| std::env::temp_dir().join("mundusx-installer.log"))
+}
+
 fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
     let mut arguments = vec![
         "-NoProfile".to_string(),
@@ -60,6 +71,11 @@ fn run_installer() -> Result<(), String> {
     std::fs::write(&script_path, INSTALL_SCRIPT)
         .map_err(|error| format!("failed to stage the MundusX installer: {error}"))?;
 
+    let log_path = installer_log_path();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create installer log directory: {error}"))?;
+    }
     let result = std::process::Command::new("powershell.exe")
         .args(installer_arguments(&script_path))
         .status()
@@ -69,8 +85,9 @@ fn run_installer() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "MundusX installation failed with exit code {}",
-            result.code().unwrap_or(-1)
+            "MundusX installation failed with exit code {}.\n\nDetails were saved to:\n{}",
+            result.code().unwrap_or(-1),
+            log_path.display()
         ))
     }
 }
@@ -187,5 +204,10 @@ mod tests {
         ));
         assert!(command.contains("& 'C:\\Users\\tester\\.opengpu\\bin\\opengpu.exe' install"));
         assert!(command.contains("Contributor setup finished"));
+    }
+
+    #[test]
+    fn installer_log_is_kept_under_the_opengpu_home() {
+        assert!(installer_log_path().ends_with(".opengpu\\logs\\installer.log"));
     }
 }

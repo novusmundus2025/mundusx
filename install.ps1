@@ -11,6 +11,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Add-Type -AssemblyName System.Net.Http
+
+$installerLogDir = Join-Path (Split-Path -Parent $InstallDir) "logs"
+$installerLogPath = Join-Path $installerLogDir "installer.log"
+$script:installerTranscriptStarted = $false
+New-Item -ItemType Directory -Force -Path $installerLogDir | Out-Null
+try {
+  Start-Transcript -Path $installerLogPath -Force | Out-Null
+  $script:installerTranscriptStarted = $true
+} catch {
+  Write-Warning "Installer logging could not be started: $($_.Exception.Message)"
+}
+trap {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  if ($script:installerTranscriptStarted) {
+    Stop-Transcript | Out-Null
+  }
+  exit 1
+}
 
 function Show-Usage {
   @"
@@ -717,5 +736,10 @@ if ($pathEntries -notcontains $normalizedInstallDir) {
 }
 
 Write-Output "Next: opengpu install"
+Write-Output ""
+Write-Output "[6/6 - overall 100%] Installation complete"
+if ($script:installerTranscriptStarted) {
+  Stop-Transcript | Out-Null
+}
 
 
