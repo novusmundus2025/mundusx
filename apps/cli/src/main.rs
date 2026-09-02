@@ -3351,9 +3351,9 @@ fn report_stale_previous_session() {
         })
         .unwrap_or_default();
 
-    println!(
-        "previousSessionWarning: node agent (pid {pid}) is no longer running but last reported state `{agent_state}`{age_desc} — it likely ended without a clean shutdown (crash, forced kill, closed terminal, or sleep)"
-    );
+    theme::warn(format!(
+        "Previous node session (pid {pid}) ended without a clean shutdown; last state was `{agent_state}`{age_desc}"
+    ));
 }
 
 fn send_node_agent_stop() -> Result<(), String> {
@@ -3419,7 +3419,7 @@ fn enable_session_raw_mode() -> Option<RawModeGuard> {
     match enable_raw_mode() {
         Ok(()) => Some(RawModeGuard),
         Err(error) => {
-            eprintln!("agentInputWarning: failed to enable raw terminal input: {error}");
+            theme::warn(format!("Could not enable interactive terminal input: {error}"));
             None
         }
     }
@@ -3516,7 +3516,7 @@ fn wait_for_background_agent_startup(
     while Instant::now() < deadline {
         relay_background_startup_output(log_path, &mut log_offset)?;
         if background_worker_is_healthy(previous_state) {
-            println!("agentStartup: ready");
+            theme::field("agent", theme::status("ready"));
             return Ok(());
         }
         if let Some(status) = child.try_wait().map_err(|error| {
@@ -3583,18 +3583,15 @@ fn run_node_agent_foreground(
         command.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
-    println!(
-        "agentMode: {}",
-        if debug {
-            "foreground debug"
-        } else {
-            "foreground"
-        }
+    theme::section("Starting OpenGPU");
+    theme::field(
+        "mode",
+        if debug { "foreground debug" } else { "foreground" },
     );
-    println!("agentCommand: {} run", agent.display());
-    println!("agentHint: press Esc or Ctrl-C to disconnect");
-    println!("agentLog: {}", log_path.display());
-    println!("agentErrorLog: {}", error_log_path.display());
+    theme::field("command", format!("{} run", agent.display()));
+    theme::field("log", log_path.display());
+    theme::field("error log", error_log_path.display());
+    theme::note("Press Esc or Ctrl-C to disconnect");
 
     let mut child = command
         .spawn()
@@ -3635,7 +3632,7 @@ fn run_node_agent_foreground(
                     mark_disconnected()?;
                     drop(raw_mode.take());
                     if let Err(error) = send_node_agent_stop() {
-                        eprintln!("agentStopWarning: {error}");
+                        theme::warn(format!("Could not stop the node agent cleanly: {error}"));
                     }
                     let _ = stop_process_by_pid(pid);
                     remove_node_agent_pid();
@@ -3645,11 +3642,11 @@ fn run_node_agent_foreground(
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    eprintln!("agentInputWarning: failed to read terminal input: {error}")
+                    theme::warn(format!("Could not read terminal input: {error}"))
                 }
             },
             Ok(false) => {}
-            Err(error) => eprintln!("agentInputWarning: failed to poll terminal input: {error}"),
+            Err(error) => theme::warn(format!("Could not poll terminal input: {error}")),
         }
     }
 }
@@ -3662,7 +3659,7 @@ fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
     report_stale_previous_session();
 
     if let Err(error) = stop_background_node_agent() {
-        eprintln!("agentStopWarning: {error}");
+        theme::warn(format!("Could not stop the previous node agent: {error}"));
     }
 
     match mode {
@@ -3738,11 +3735,12 @@ fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
         let _ = stop_process_by_pid(pid);
         return Err(error);
     }
-    println!("agent: started");
-    println!("agentPid: {}", pid);
-    println!("agentMode: background");
-    println!("agentLog: {}", log_path.display());
-    println!("agentErrorLog: {}", error_log_path.display());
+    theme::section("Starting OpenGPU");
+    theme::field("agent", theme::status("running"));
+    theme::field("pid", pid);
+    theme::field("mode", "background");
+    theme::field("log", log_path.display());
+    theme::field("error log", error_log_path.display());
     wait_for_background_agent_startup(
         &mut child,
         &agent,
@@ -4511,19 +4509,25 @@ fn select_menu_option(
 
     let render_menu = |selected: usize| {
         clear_menu_screen();
-        for line in header {
-            raw_println!("{line}");
+        for (index, line) in header.iter().enumerate() {
+            if index == 0 {
+                raw_println!("{}", theme::menu_title(line));
+            } else {
+                raw_println!("{}", theme::muted(line));
+            }
         }
         for (index, (label, detail)) in options.iter().enumerate() {
-            let marker = if index == selected { ">>" } else { "  " };
+            let is_selected = index == selected;
+            let marker = theme::menu_marker(is_selected);
+            let label = theme::menu_label(label, is_selected);
             if detail.is_empty() {
                 raw_println!("{marker} {label}");
             } else {
-                raw_println!("{marker} {label} - {detail}");
+                raw_println!("{marker} {label}  {}", theme::muted(detail));
             }
         }
         raw_println!();
-        raw_println!("{footer}");
+        raw_println!("{}", theme::hint(footer));
         let _ = io::stdout().flush();
     };
 
@@ -4765,25 +4769,38 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
 
     let render_menu = |selected: usize| {
         clear_menu_screen();
-        raw_println!("Contribution level");
-        raw_println!("-------------------");
+        raw_println!("{}", theme::menu_title("Contribution level"));
+        raw_println!("{}", theme::menu_rule());
         for (index, option) in OPTIONS.iter().enumerate() {
-            let marker = if index == selected { ">>" } else { "  " };
+            let is_selected = index == selected;
+            let marker = theme::menu_marker(is_selected);
             match option {
-                Some((percent, label)) => raw_println!("{marker} {percent:>2}% - {label}"),
-                None => raw_println!("{marker} custom - type exact percent (1-80)"),
+                Some((percent, label)) => raw_println!(
+                    "{marker} {}  {}",
+                    theme::menu_label(format!("{percent:>2}%"), is_selected),
+                    theme::muted(label)
+                ),
+                None => raw_println!(
+                    "{marker} {}  {}",
+                    theme::menu_label("Custom", is_selected),
+                    theme::muted("type an exact percent (1–80)")
+                ),
             }
         }
         if cluster_count > 0 {
-            let marker = if selected == cluster_index {
-                ">>"
-            } else {
-                "  "
-            };
-            raw_println!("{marker} Clusters detected ({cluster_count}) - show all and pick one to contribute");
+            let is_selected = selected == cluster_index;
+            let marker = theme::menu_marker(is_selected);
+            raw_println!(
+                "{marker} {}  {}",
+                theme::menu_label(format!("Clusters detected ({cluster_count})"), is_selected),
+                theme::muted("show all and pick one to contribute")
+            );
         }
         raw_println!();
-        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press 1-5");
+        raw_println!(
+            "{}",
+            theme::hint("Use ↑/↓ or Tab/Shift+Tab and Enter, or press 1–5")
+        );
         let _ = io::stdout().flush();
     };
 
@@ -5010,47 +5027,53 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
 
     let render = |selected: usize| {
         clear_menu_screen();
-        raw_println!("Which model should this node run?");
+        raw_println!("{}", theme::menu_title("Which model should this node run?"));
         raw_println!(
-            "detected: {} / {}GB memory",
-            selection.backend,
-            selection.memory_gb
+            "{}",
+            theme::muted(format!(
+                "Detected {} with {} GB memory",
+                selection.backend, selection.memory_gb
+            ))
         );
         if let Some(budget) = available_vram_mb {
             raw_println!(
-                "model budget: {budget} MB VRAM ({}% contribution cap)",
-                config.contribution_percent
+                "{}",
+                theme::muted(format!(
+                    "Model budget {budget} MB VRAM · {}% contribution cap",
+                    config.contribution_percent
+                ))
             );
         }
-        raw_println!("----------------------------------");
+        raw_println!("{}", theme::menu_rule());
         for (i, option) in options.iter().enumerate() {
-            let marker = if i == selected { ">>" } else { "  " };
+            let is_selected = i == selected;
+            let marker = theme::menu_marker(is_selected);
             let estimated = option
                 .estimated_vram_mb
                 .map(|value| format!("~{:.1} GB runtime", value as f64 / 1024.0))
                 .unwrap_or_else(|| "runtime memory unknown".to_string());
             raw_println!(
-                "{marker} {}. {} [{}] — {}; {}",
-                i + 1,
-                option.label,
-                option.name,
-                option.notes,
-                estimated
+                "{marker} {}  {}",
+                theme::menu_label(format!("{}. {}", i + 1, option.label), is_selected),
+                theme::muted(format!("{} · {} · {}", option.name, option.notes, estimated))
             );
         }
         if allow_local_gguf {
-            let marker = if selected == options.len() {
-                ">>"
-            } else {
-                "  "
-            };
+            let is_selected = selected == options.len();
+            let marker = theme::menu_marker(is_selected);
             raw_println!(
-                "{marker} {}. Import local GGUF / LM Studio model",
-                options.len() + 1
+                "{marker} {}",
+                theme::menu_label(
+                    format!("{}. Import local GGUF / LM Studio model", options.len() + 1),
+                    is_selected
+                )
             );
         }
         raw_println!();
-        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter — you must choose one");
+        raw_println!(
+            "{}",
+            theme::hint("Use ↑/↓ or Tab/Shift+Tab and Enter · choose one")
+        );
         let _ = io::stdout().flush();
     };
 
@@ -5134,23 +5157,26 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
     let render = |selected: usize| {
         clear_menu_screen();
         raw_println!(
-            "Choose official model to {}",
-            if active {
-                "download and activate"
-            } else {
-                "download"
-            }
+            "{}",
+            theme::menu_title(&format!(
+                "Choose a model to {}",
+                if active { "download and activate" } else { "download" }
+            ))
         );
-        raw_println!("backend: {}", backend);
+        raw_println!("{}", theme::muted(format!("Backend {backend}")));
         if let Some(budget) = available_vram_mb {
             raw_println!(
-                "model budget: {budget} MB VRAM ({}% contribution cap)",
-                config.contribution_percent
+                "{}",
+                theme::muted(format!(
+                    "Model budget {budget} MB VRAM · {}% contribution cap",
+                    config.contribution_percent
+                ))
             );
         }
-        raw_println!("----------------------------------");
+        raw_println!("{}", theme::menu_rule());
         for (i, option) in options.iter().enumerate() {
-            let marker = if i == selected { ">>" } else { "  " };
+            let is_selected = i == selected;
+            let marker = theme::menu_marker(is_selected);
             let estimated = option
                 .estimated_vram_mb
                 .map(|value| format!("{value} MB VRAM"))
@@ -5165,17 +5191,25 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
                     .collect::<Vec<_>>()
                     .join("/")
             };
-            raw_println!("{marker} {}. {} [{}]", i + 1, option.label, option.name);
             raw_println!(
-                "     provider: {} | fit: ok | backends: {} | {}",
-                option.source_kind,
-                backends,
-                estimated
+                "{marker} {}  {}",
+                theme::menu_label(format!("{}. {}", i + 1, option.label), is_selected),
+                theme::muted(format!("{} · {}", option.name, estimated))
             );
-            raw_println!("     url: {}", option.source_url);
+            raw_println!(
+                "  {}",
+                theme::muted(format!(
+                    "provider {} · fit ok · backends {}",
+                    option.source_kind, backends
+                ))
+            );
+            raw_println!("  {}", theme::muted(&option.source_url));
         }
         raw_println!();
-        raw_println!("Use ↑/↓ or Tab/Shift+Tab and Enter, or press a number — Ctrl-C cancels");
+        raw_println!(
+            "{}",
+            theme::hint("Use ↑/↓ or Tab/Shift+Tab and Enter, or press a number · Ctrl-C cancels")
+        );
         let _ = io::stdout().flush();
     };
 
@@ -5806,20 +5840,22 @@ fn print_start_preflight(config: &Config) {
     );
 
     if blockers.is_empty() {
-        println!("startReadiness: ready");
+        theme::section("Ready to contribute");
+        theme::field("status", theme::status("ready"));
         if config.contributed_cluster.is_some() {
-            println!(
-                "startNote: this node serves work from the contributed cluster, so the control plane must admit the `contributed-cluster` runtime mode"
+            theme::note(
+                "This node serves work from the contributed cluster; the control plane must admit the `contributed-cluster` runtime mode",
             );
         }
         return;
     }
 
-    println!("startReadiness: blocked");
+    theme::section("Not ready to start");
+    theme::field("status", theme::status("blocked"));
     for blocker in &blockers {
-        println!("startBlocker: {blocker}");
+        theme::warn(blocker);
     }
-    println!("startHint: fix the above before running `opengpu start`");
+    theme::note("Fix the items above, then run `opengpu start`");
 }
 
 fn run_init() -> Config {
@@ -5862,6 +5898,10 @@ fn run_install(
     cluster_url: Option<String>,
     max_jobs: Option<u32>,
 ) {
+    theme::banner(
+        "Set up this machine for OpenGPU",
+        "Private compute. Your limits. The MundusX network.",
+    );
     let profile = detect_machine_profile();
     let mut config = if config_exists() {
         current_config_or_default()
@@ -5892,7 +5932,7 @@ fn run_install(
         eprintln!("failed to save control-plane URL: {error}");
         std::process::exit(1);
     }
-    println!("controlPlaneUrl: {}", config.control_plane_url);
+    theme::field("control plane", &config.control_plane_url);
 
     let ranked_clusters = cluster::servable_clusters_by_size(&detected_clusters);
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -5907,11 +5947,11 @@ fn run_install(
             }
         }
     } else if interactive {
-        println!(
-            "contributionQuestion: how much of this {} machine can MundusX use?",
+        theme::note(format!(
+            "Choose how much of this {} machine MundusX may use",
             detected.as_str()
-        );
-        println!("contributionMeaning: {}", contribution_semantics(detected));
+        ));
+        theme::note(contribution_semantics(detected));
         let default_percent = default_contribution_percent(detected);
         // The cluster list is reached from this menu, and Esc or "None" inside it
         // comes back here so the cap can still be chosen.
@@ -5928,9 +5968,9 @@ fn run_install(
                         contributed_from_menu = true;
                         // A contributed cluster is not gated by the cap, but the
                         // node still needs one saved to pass local policy.
-                        println!(
-                            "capNote: the contribution cap does not gate a contributed cluster; saved {default_percent}% for local policy"
-                        );
+                        theme::note(format!(
+                            "The cap does not gate a contributed cluster; saved {default_percent}% for local policy"
+                        ));
                         break Some(default_percent);
                     }
                     ClusterPickOutcome::Declined | ClusterPickOutcome::Skipped => {}
@@ -6314,24 +6354,24 @@ fn run_start_or_connect(
             true
         }
         Err(error) => {
-            eprintln!("failed to load secure device identity: {error}");
+            theme::error(format!("Failed to load the secure device identity: {error}"));
             false
         }
     };
     if config.contribution_percent == 0 && io::stdin().is_terminal() && io::stdout().is_terminal() {
         let detected = resolved_backend(&config);
-        println!(
-            "contributionQuestion: how much of this {} machine can MundusX use?",
+        theme::note(format!(
+            "Choose how much of this {} machine MundusX may use",
             detected.as_str()
-        );
-        println!("contributionMeaning: {}", contribution_semantics(detected));
+        ));
+        theme::note(contribution_semantics(detected));
         match prompt_contribution_percent(default_contribution_percent(detected), 0) {
             PromptOutcome::Selected(value) => {
                 config.contribution_percent = value;
             }
             // The cluster row is not offered here; `start` asks separately below.
             PromptOutcome::UseCluster | PromptOutcome::Cancelled => {
-                println!("capHint: run `opengpu cap` before starting contribution");
+                theme::note("Run `opengpu cap` before starting contribution");
             }
         }
     }
@@ -6377,22 +6417,17 @@ fn run_start_or_connect(
     match save_config(&config) {
         Ok(_) => {
             print_startup_summary(&config, &resolved_config_path());
-            println!(
-                "contributionMeaning: {}",
-                contribution_semantics(config.backend_preference)
-            );
+            theme::note(contribution_semantics(config.backend_preference));
             if config.contribution_percent == 0 {
-                println!("capHint: run `opengpu cap` to choose the contribution budget");
+                theme::note("Run `opengpu cap` to choose the contribution budget");
             }
             if !identity_ready {
-                println!(
-                    "identityHint: secure device identity is unavailable; the node is not online yet"
-                );
+                theme::warn("Secure device identity is unavailable; this node is not online yet");
             }
             if !config.onboarding_completed {
                 print_onboarding_checklist(&config, &resolved_config_path(), false);
-                println!(
-                    "onboardingHint: run `opengpu onboarding --complete` after you review the checklist"
+                theme::note(
+                    "Run `opengpu onboarding --complete` after reviewing the checklist",
                 );
             }
             if identity_ready {
@@ -7335,6 +7370,17 @@ mod tests {
 
         assert_eq!(cli.theme, super::theme::ThemeSelection::Classic);
         assert!(matches!(cli.command, Commands::Doctor { json: true }));
+    }
+
+    #[test]
+    fn mundusx_theme_and_legacy_reactor_alias_parse() {
+        let branded = Cli::try_parse_from(["opengpu", "--theme", "mundusx", "status"])
+            .expect("MundusX theme should parse");
+        assert_eq!(branded.theme, super::theme::ThemeSelection::Mundusx);
+
+        let legacy = Cli::try_parse_from(["opengpu", "--theme", "reactor", "status"])
+            .expect("legacy reactor alias should parse");
+        assert_eq!(legacy.theme, super::theme::ThemeSelection::Mundusx);
     }
 
     #[test]
