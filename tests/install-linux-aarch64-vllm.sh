@@ -68,7 +68,7 @@ output="$(
   INSTALL_DIR="$install_dir" \
   OPENGPU_HOME="$opengpu_home" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
-  bash "$repo_root/install.sh" 2>&1
+  bash "$repo_root/install.sh" --install-only 2>&1
 )"
 
 printf '%s\n' "$output" | grep -F "Detected NVIDIA GB10/GX10" >/dev/null

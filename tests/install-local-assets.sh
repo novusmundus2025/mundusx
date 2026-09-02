@@ -37,7 +37,7 @@ output="$(
   INSTALL_DIR="$install_dir" \
   OPENGPU_GLOBAL_BIN_DIR="$bin_dir" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
-  bash "$repo_root/install.sh" --local-assets "$asset_dir" --without-vllm 2>&1
+  bash "$repo_root/install.sh" --local-assets "$asset_dir" --without-vllm --install-only 2>&1
 )"
 
 printf '%s\n' "$output" | grep -F "source: $asset_dir" >/dev/null

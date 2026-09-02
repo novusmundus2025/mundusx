@@ -70,7 +70,7 @@ export TEST_SHASUM_LOG="$tmp_dir/shasum.log"
 output="$(
   INSTALL_DIR="$install_dir" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
-  bash "$repo_root/install.sh" 2>&1
+  bash "$repo_root/install.sh" --install-only 2>&1
 )"
 
 expected_asset="https://github.com/mundusx/releases/releases/download/opengpu-prod/opengpu-"

@@ -14,14 +14,20 @@ VLLM_IMAGE_TAG="${OPENGPU_VLLM_IMAGE_TAG:-26.06-py3}"
 with_vllm=0
 runtime_only=0
 without_vllm=0
+install_only=0
+cap_percent="${OPENGPU_CAP_PERCENT:-30}"
+max_jobs="${OPENGPU_MAX_JOBS:-2}"
 local_assets=""
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--with-vllm] [--without-vllm] [--runtime-only] [--local-assets DIR] [--help]
+Usage: install.sh [--with-vllm] [--without-vllm] [--install-only] [--cap-percent N] [--max-jobs N] [--runtime-only] [--local-assets DIR] [--help]
 
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
   --without-vllm Skip automatic vLLM installation on detected GB10/GX10 hosts.
+  --install-only Install binaries and runtime without configuring or starting a node.
+  --cap-percent  Contribution cap used by one-click setup (default: 30).
+  --max-jobs     Concurrent job limit used by one-click setup (default: 2).
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
   --local-assets Install release binaries and checksums directly from DIR.
   --help         Show this help.
@@ -35,6 +41,25 @@ while [ "$#" -gt 0 ]; do
       ;;
     --without-vllm)
       without_vllm=1
+      ;;
+    --install-only)
+      install_only=1
+      ;;
+    --cap-percent)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--cap-percent requires a whole number from 1 through 80" >&2
+        exit 1
+      fi
+      cap_percent="$2"
+      shift
+      ;;
+    --max-jobs)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--max-jobs requires a positive whole number" >&2
+        exit 1
+      fi
+      max_jobs="$2"
+      shift
       ;;
     --runtime-only)
       with_vllm=1
@@ -61,6 +86,17 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+case "$cap_percent" in
+  ''|*[!0-9]*) echo "--cap-percent must be a whole number from 1 through 80" >&2; exit 1 ;;
+esac
+if [ "$cap_percent" -lt 1 ] || [ "$cap_percent" -gt 80 ]; then
+  echo "--cap-percent must be a whole number from 1 through 80" >&2
+  exit 1
+fi
+case "$max_jobs" in
+  ''|*[!0-9]*|0) echo "--max-jobs must be a positive whole number" >&2; exit 1 ;;
+esac
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -315,7 +351,27 @@ if [ "$with_vllm" -eq 1 ]; then
   install_vllm_runtime
 fi
 
-if [ "$runtime_only" -eq 0 ]; then
+if [ "$runtime_only" -eq 0 ] && [ "$install_only" -eq 0 ]; then
+  echo
+  echo "Configuring this machine as a public MundusX contributor..."
+  "$INSTALL_DIR/$BIN_NAME" install \
+    --public \
+    --cap-percent "$cap_percent" \
+    --max-jobs "$max_jobs" \
+    --no-contribute-cluster </dev/null
+  "$INSTALL_DIR/$BIN_NAME" onboarding --complete
+
+  echo
+  echo "Starting the OpenGPU node in the background..."
+  "$INSTALL_DIR/$BIN_NAME" start \
+    --background \
+    --max-jobs "$max_jobs" \
+    --no-contribute-cluster </dev/null
+
+  echo
+  echo "OpenGPU is installed and contributing."
+  "$INSTALL_DIR/$BIN_NAME" status
+elif [ "$runtime_only" -eq 0 ]; then
   echo
   echo "Next steps:"
   echo "  opengpu install"
