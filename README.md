@@ -100,6 +100,9 @@ Route each request to the most suitable live node, rather than combining partial
 
 ## First Commands
 
+For complete platform-specific installation instructions, see
+[OpenGPU Getting Started](docs/getting-started.md).
+
 For a fresh contributor machine, review onboarding, set a contribution cap, and then start the node:
 
 ```bash
