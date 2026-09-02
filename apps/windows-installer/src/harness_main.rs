@@ -86,6 +86,8 @@ mod tests {
     fn installer_is_runner_only_and_verifies_checksum() {
         assert!(INSTALL_SCRIPT.contains("mundusx-harness-runner"));
         assert!(INSTALL_SCRIPT.contains("Get-FileHash"));
+        assert!(INSTALL_SCRIPT.contains("https://downloads.mundusx.ai/prod/latest"));
+        assert!(!INSTALL_SCRIPT.contains("github.com/mundusx/releases"));
         assert!(!INSTALL_SCRIPT.contains("llama-runtime"));
         assert!(!INSTALL_SCRIPT.contains("opengpu-node-agent"));
     }
