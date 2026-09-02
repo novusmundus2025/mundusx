@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="mundusx/mundusx"
 BIN_NAME="opengpu"
 COMPAT_BIN_NAME="mundusx"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 GLOBAL_BIN_DIR_OVERRIDE="${OPENGPU_GLOBAL_BIN_DIR:-}"
 GLOBAL_BIN_DIR="${OPENGPU_GLOBAL_BIN_DIR:-/usr/local/bin}"
-RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
+RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/mundusx/releases/releases/download/opengpu-prod}"
 OPENGPU_HOME="${OPENGPU_HOME:-$HOME/.opengpu}"
 VLLM_IMAGE="${OPENGPU_VLLM_IMAGE:-nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e}"
 VLLM_IMAGE_TAG="${OPENGPU_VLLM_IMAGE_TAG:-26.06-py3}"

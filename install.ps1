@@ -1,6 +1,6 @@
 param(
   [string]$InstallDir = "$env:USERPROFILE\.opengpu\bin",
-  [string]$ReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download",
+  [string]$ReleaseBaseUrl = "https://github.com/mundusx/releases/releases/download/opengpu-prod",
   [string]$GitHubToken = "",
   [switch]$AllowUnsignedLocalPreview,
   [switch]$InstallCudaRuntime,

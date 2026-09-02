@@ -163,6 +163,10 @@ mod tests {
         assert!(INSTALL_SCRIPT.contains("mundusx-tray"));
         assert!(INSTALL_SCRIPT.contains("runtime selection"));
         assert!(INSTALL_SCRIPT.contains("llama-server.exe"));
+        assert!(INSTALL_SCRIPT.contains(
+            "https://github.com/mundusx/releases/releases/download/opengpu-prod"
+        ));
+        assert!(!INSTALL_SCRIPT.contains("github.com/mundusx/mundusx/releases/latest"));
     }
 
     #[test]
