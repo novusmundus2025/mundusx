@@ -525,6 +525,21 @@ if (`$setupExit -eq 0) {
   Write-Output "Opened a fresh PowerShell window and started opengpu install."
 }
 
+function Stop-InstalledOpenGpuProcesses {
+  param([string]$OpenGpuHome)
+
+  $normalizedHome = [IO.Path]::GetFullPath($OpenGpuHome).TrimEnd("\") + "\"
+  $installedProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+    $_.ExecutablePath -and
+    $_.ExecutablePath.StartsWith($normalizedHome, [StringComparison]::OrdinalIgnoreCase)
+  })
+  foreach ($process in $installedProcesses) {
+    Write-Output "Stopping installed $($process.Name) before replacement..."
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+    Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+  }
+}
+
 function Write-InstallerPhase {
   param(
     [int]$Current,
@@ -731,12 +746,13 @@ try {
   }
 
   Write-InstallerPhase -Current 6 -Total 6 -Message "Installing verified components"
-  Move-Item -Force -Path $tempExe -Destination $finalExe
+  Stop-InstalledOpenGpuProcesses -OpenGpuHome (Get-OpenGpuHome)
+  Copy-Item -Force -LiteralPath $tempExe -Destination $finalExe
   Copy-Item -Force -LiteralPath $finalExe -Destination $compatExe
-  Move-Item -Force -Path $tempAgent -Destination $finalAgent
-  Move-Item -Force -Path $tempTray -Destination $finalTray
+  Copy-Item -Force -LiteralPath $tempAgent -Destination $finalAgent
+  Copy-Item -Force -LiteralPath $tempTray -Destination $finalTray
   if (Test-Path -LiteralPath $tempTrayIcon) {
-    Move-Item -Force -Path $tempTrayIcon -Destination $finalTrayIcon
+    Copy-Item -Force -LiteralPath $tempTrayIcon -Destination $finalTrayIcon
   }
 
   if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {

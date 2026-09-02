@@ -90,6 +90,14 @@ create_manifest() {
   if [ -n "$tray_name" ] && [ -f "$artifact_dir/$tray_name" ]; then
     tray_checksum="$(checksum_for_binary "$tray_name")"
   fi
+  tray_icon_name=""
+  tray_icon_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) tray_icon_name="mundusx.ico" ;;
+  esac
+  if [ -n "$tray_icon_name" ] && [ -f "$artifact_dir/$tray_icon_name" ]; then
+    tray_icon_checksum="$(checksum_for_binary "$tray_icon_name")"
+  fi
   runtime_name=""
   runtime_checksum=""
   case "$binary_name" in
@@ -120,7 +128,7 @@ print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$vulkan_runtime_name" "$vulkan_runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$vulkan_runtime_name" "$vulkan_runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" "$tray_icon_name" "$tray_icon_checksum" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -142,6 +150,8 @@ vulkan_runtime_name = sys.argv[14]
 vulkan_runtime_checksum = sys.argv[15]
 mac_pkg_name = sys.argv[16]
 mac_pkg_checksum = sys.argv[17]
+tray_icon_name = sys.argv[18]
+tray_icon_checksum = sys.argv[19]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -165,6 +175,13 @@ if tray_name and tray_checksum:
         "install_as": "mundusx-tray.exe",
         "kind": "windows-tray-binary",
         "checksum_sha256": tray_checksum,
+    })
+if tray_icon_name and tray_icon_checksum:
+    assets.append({
+        "name": tray_icon_name,
+        "install_as": "mundusx.ico",
+        "kind": "windows-tray-icon",
+        "checksum_sha256": tray_icon_checksum,
     })
 if assets:
     payload["assets"] = assets

@@ -189,6 +189,8 @@ mod tests {
         assert!(INSTALL_SCRIPT.contains("mundusx-tray"));
         assert!(INSTALL_SCRIPT.contains("runtime selection"));
         assert!(INSTALL_SCRIPT.contains("Start-ContributorSetup"));
+        assert!(INSTALL_SCRIPT.contains("Stop-InstalledOpenGpuProcesses"));
+        assert!(!INSTALL_SCRIPT.contains("Move-Item -Force -Path $tempTray"));
         assert!(INSTALL_SCRIPT.contains("-NoExit"));
         assert!(INSTALL_SCRIPT.contains("llama-server.exe"));
         assert!(INSTALL_SCRIPT.contains(

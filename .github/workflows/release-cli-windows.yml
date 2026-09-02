@@ -23,6 +23,7 @@ env:
   AGENT_EXECUTABLE_NAME: opengpu-node-agent.exe
   TRAY_BINARY_NAME: mundusx-tray-x86_64-pc-windows-msvc.exe
   TRAY_EXECUTABLE_NAME: mundusx-tray.exe
+  TRAY_ICON_NAME: mundusx.ico
   SETUP_BINARY_NAME: MundusX-Setup.exe
   SETUP_EXECUTABLE_NAME: mundusx-bootstrap.exe
   RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-cuda.zip
@@ -74,6 +75,7 @@ jobs:
           cp "target/${TARGET}/release/${EXECUTABLE_NAME}" "${BINARY_NAME}"
           cp "target/${TARGET}/release/${AGENT_EXECUTABLE_NAME}" "${AGENT_BINARY_NAME}"
           cp "target/${TARGET}/release/${TRAY_EXECUTABLE_NAME}" "${TRAY_BINARY_NAME}"
+          cp "apps/tray/assets/${TRAY_ICON_NAME}" "${TRAY_ICON_NAME}"
           cp "target/${TARGET}/release/${SETUP_EXECUTABLE_NAME}" "${SETUP_BINARY_NAME}"
 
       - name: Generate checksums
@@ -82,6 +84,7 @@ jobs:
           sha256sum "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
           sha256sum "${AGENT_BINARY_NAME}" > "${AGENT_BINARY_NAME}.sha256"
           sha256sum "${TRAY_BINARY_NAME}" > "${TRAY_BINARY_NAME}.sha256"
+          sha256sum "${TRAY_ICON_NAME}" > "${TRAY_ICON_NAME}.sha256"
           sha256sum "${SETUP_BINARY_NAME}" > "${SETUP_BINARY_NAME}.sha256"
           sha256sum "${RUNTIME_BINARY_NAME}" > "${RUNTIME_BINARY_NAME}.sha256"
           sha256sum "${VULKAN_RUNTIME_BINARY_NAME}" > "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
@@ -92,6 +95,7 @@ jobs:
           sha256sum -c "${BINARY_NAME}.sha256"
           sha256sum -c "${AGENT_BINARY_NAME}.sha256"
           sha256sum -c "${TRAY_BINARY_NAME}.sha256"
+          sha256sum -c "${TRAY_ICON_NAME}.sha256"
           sha256sum -c "${SETUP_BINARY_NAME}.sha256"
           sha256sum -c "${RUNTIME_BINARY_NAME}.sha256"
           sha256sum -c "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
@@ -127,6 +131,8 @@ jobs:
             ${{ env.AGENT_BINARY_NAME }}.sha256
             ${{ env.TRAY_BINARY_NAME }}
             ${{ env.TRAY_BINARY_NAME }}.sha256
+            ${{ env.TRAY_ICON_NAME }}
+            ${{ env.TRAY_ICON_NAME }}.sha256
             ${{ env.SETUP_BINARY_NAME }}
             ${{ env.SETUP_BINARY_NAME }}.sha256
             ${{ env.RUNTIME_BINARY_NAME }}

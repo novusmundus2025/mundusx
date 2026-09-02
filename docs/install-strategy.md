@@ -47,6 +47,11 @@ The Windows PowerShell bootstrapper fails closed by default. A production instal
 
 The broader enterprise Windows rollout policy, including secret storage, model-source integrity, trusted runtime paths, rollback, and support boundaries, lives in [docs/enterprise-windows-policy.md](enterprise-windows-policy.md).
 
+Windows reinstall and upgrade are idempotent. During the final replacement phase,
+the installer stops only executables running from the resolved OpenGPU home and
+copies the newly verified binaries over existing files. User configuration,
+identity, and model data remain intact during an ordinary upgrade.
+
 ### Windows UAT Install Smoke
 
 For UAT, Windows can be verified against a local preview release source before the public GitHub release asset is published. Run the repository smoke from a Windows x64 host:
