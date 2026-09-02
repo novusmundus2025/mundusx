@@ -213,8 +213,10 @@ pub fn menu_marker(selected: bool) -> String {
     match (current_mode(), selected) {
         (ThemeMode::Classic, true) => ">>".to_string(),
         (ThemeMode::Classic, false) => "  ".to_string(),
-        (ThemeMode::Mundusx, true) => style("❯").with(brand()).bold().to_string(),
-        (ThemeMode::Mundusx, false) => " ".to_string(),
+        // ASCII remains legible in legacy Windows PowerShell hosts whose
+        // selected console font does not contain the heavier arrow glyphs.
+        (ThemeMode::Mundusx, true) => style(">>").with(brand()).bold().to_string(),
+        (ThemeMode::Mundusx, false) => "  ".to_string(),
     }
 }
 
@@ -238,7 +240,11 @@ pub fn hint(value: impl std::fmt::Display) -> String {
     let value = value.to_string();
     match current_mode() {
         ThemeMode::Classic => value,
-        ThemeMode::Mundusx => format!("{} {}", style("↳").with(brand()), style(value).with(Color::DarkGrey)),
+        ThemeMode::Mundusx => format!(
+            "{} {}",
+            style("->").with(brand()),
+            style(value).with(Color::DarkGrey)
+        ),
     }
 }
 
