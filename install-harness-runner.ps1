@@ -1,6 +1,6 @@
 param(
   [string]$ChatUrl = "https://chat.mundusx.ai",
-  [string]$ReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download",
+  [string]$ReleaseBaseUrl = "https://github.com/mundusx/releases/releases/latest/download",
   [string]$InstallDir = "$env:USERPROFILE\.mundusx\bin"
 )
 

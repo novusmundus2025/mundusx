@@ -80,6 +80,13 @@ container runtime and digest-pinned image in the generated `config.json`.
 
 ## Diagnostics
 
+### Public runner releases
+
+User-facing binaries are published in `mundusx/releases`; the application source remains private.
+Configure the private source repository Actions secret `MUNDUSX_PUBLIC_RELEASES_TOKEN` with a
+fine-grained token granting Contents read/write access only to `mundusx/releases`. The release
+workflow retains an internal prerelease in the source repository as an audit copy.
+
 ```text
 mundusx-harness-runner status
 mundusx-harness-runner run --once

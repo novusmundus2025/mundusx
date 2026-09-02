@@ -2,7 +2,7 @@
 set -eu
 
 chat_url="${MUNDUSX_CHAT_URL:-https://chat.mundusx.ai}"
-release_base="${MUNDUSX_HARNESS_RELEASE_URL:-https://github.com/mundusx/mundusx/releases/latest/download}"
+release_base="${MUNDUSX_HARNESS_RELEASE_URL:-https://github.com/mundusx/releases/releases/latest/download}"
 install_dir="${MUNDUSX_HARNESS_INSTALL_DIR:-$HOME/.local/bin}"
 command -v git >/dev/null 2>&1 || { echo "Git is required for local project isolation." >&2; exit 2; }
 os="$(uname -s)"
