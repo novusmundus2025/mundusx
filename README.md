@@ -63,16 +63,17 @@ On Windows, use the native PowerShell bootstrapper:
 ```
 
 On Linux ARM64 GB10/GX10, the same POSIX installer automatically installs the
-CLI, node agent, and pinned NVIDIA vLLM runtime, configures safe public-network
-defaults, and starts the contributor in the background:
+CLI, node agent, and pinned NVIDIA vLLM runtime. Contributor choices remain in
+the interactive `opengpu install` wizard:
 
 ```bash
 curl -fsSL https://github.com/mundusx/releases/releases/download/opengpu-prod/install.sh | bash
+opengpu install
 ```
 
-The one-click defaults are a 30% contribution cap and two concurrent jobs.
-Override them with `--cap-percent` and `--max-jobs`, or pass `--install-only`
-when configuration and startup should be performed later.
+The wizard asks for the control plane, contribution cap, concurrency, model,
+and whether to contribute an existing local cluster. Fully unattended setup
+remains available with `--auto-start`; its defaults are a 30% cap and two jobs.
 
 The installer downloads the matching release binary for the user's operating system and CPU architecture from the local release preview, then verifies the checksum when available. After the binary is installed, `opengpu install` detects the machine profile, control-plane choice, community contribution cap, and model fit.
 

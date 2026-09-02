@@ -14,20 +14,21 @@ VLLM_IMAGE_TAG="${OPENGPU_VLLM_IMAGE_TAG:-26.06-py3}"
 with_vllm=0
 runtime_only=0
 without_vllm=0
-install_only=0
+install_only=1
 cap_percent="${OPENGPU_CAP_PERCENT:-30}"
 max_jobs="${OPENGPU_MAX_JOBS:-2}"
 local_assets=""
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--with-vllm] [--without-vllm] [--install-only] [--cap-percent N] [--max-jobs N] [--runtime-only] [--local-assets DIR] [--help]
+Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only] [--cap-percent N] [--max-jobs N] [--runtime-only] [--local-assets DIR] [--help]
 
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
   --without-vllm Skip automatic vLLM installation on detected GB10/GX10 hosts.
-  --install-only Install binaries and runtime without configuring or starting a node.
-  --cap-percent  Contribution cap used by one-click setup (default: 30).
-  --max-jobs     Concurrent job limit used by one-click setup (default: 2).
+  --auto-start   Unattended mode: configure safe defaults and start the node.
+  --install-only Install binaries/runtime only (default; retained for scripts).
+  --cap-percent  Contribution cap used with --auto-start (default: 30).
+  --max-jobs     Concurrent job limit used with --auto-start (default: 2).
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
   --local-assets Install release binaries and checksums directly from DIR.
   --help         Show this help.
@@ -44,6 +45,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --install-only)
       install_only=1
+      ;;
+    --auto-start)
+      install_only=0
       ;;
     --cap-percent)
       if [ "$#" -lt 2 ] || [ -z "$2" ]; then

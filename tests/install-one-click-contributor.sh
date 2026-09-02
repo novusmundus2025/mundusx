@@ -45,6 +45,7 @@ OPENGPU_GLOBAL_BIN_DIR="$bin_dir" \
 bash "$repo_root/install.sh" \
   --local-assets "$asset_dir" \
   --without-vllm \
+  --auto-start \
   --cap-percent 50 \
   --max-jobs 3 >/dev/null
 
