@@ -52,7 +52,7 @@ fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
 fn contributor_setup_command(cli_path: &std::path::Path) -> String {
     let escaped = cli_path.display().to_string().replace('\'', "''");
     format!(
-        "& '{escaped}' install; Write-Host ''; Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.'; Write-Host 'Press Enter to close this window.'; Read-Host"
+        "& '{escaped}' install; $setupExit = $LASTEXITCODE; Write-Host ''; if ($setupExit -eq 0) {{ Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.'; Write-Host 'Closing this setup window...'; Start-Sleep -Seconds 2; exit 0 }}; Write-Host 'Contributor setup failed. Review the error above.' -ForegroundColor Red; Write-Host 'Press Enter to close this window.'; Read-Host; exit $setupExit"
     )
 }
 
@@ -106,7 +106,6 @@ fn launch_contributor_setup() -> Result<(), String> {
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
-            "-NoExit",
             "-Command",
             &contributor_setup_command(&cli_path),
         ])
@@ -204,6 +203,9 @@ mod tests {
         ));
         assert!(command.contains("& 'C:\\Users\\tester\\.opengpu\\bin\\opengpu.exe' install"));
         assert!(command.contains("Contributor setup finished"));
+        assert!(command.contains("if ($setupExit -eq 0)"));
+        assert!(command.contains("Start-Sleep -Seconds 2; exit 0"));
+        assert!(command.contains("Read-Host; exit $setupExit"));
     }
 
     #[test]
