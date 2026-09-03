@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+mod chat_connector;
+
 const DEFAULT_AGENT_URL: &str = "http://127.0.0.1:11436";
 
 #[derive(Parser)]
@@ -50,6 +52,17 @@ enum Commands {
     Model {
         #[arg(required = true, trailing_var_arg = true)]
         arguments: Vec<String>,
+    },
+    /// Connect this local agent to chat.mundusx.ai using an MCP connection token
+    Connect {
+        #[arg(long, default_value = "https://chat.mundusx.ai")]
+        url: String,
+        #[arg(long, env = "MUNDUSX_CHAT_TOKEN", hide_env_values = true)]
+        token: String,
+        #[arg(long)]
+        device_name: Option<String>,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
     },
 }
 
@@ -286,6 +299,29 @@ fn main() {
                     .ok_or_else(|| status.to_string())
             }),
         Commands::Model { arguments } => forward_model(&arguments),
+        Commands::Connect {
+            url,
+            token,
+            device_name,
+            workspace,
+        } => {
+            let url = chat_connector::validate_chat_url(&url);
+            url.and_then(|chat_url| {
+                chat_connector::connect(
+                    chat_connector::ConnectorOptions {
+                        chat_url,
+                        token,
+                        device_name: device_name.unwrap_or_else(|| {
+                            std::env::var("COMPUTERNAME")
+                                .or_else(|_| std::env::var("HOSTNAME"))
+                                .unwrap_or_else(|_| "MundusX agent".to_string())
+                        }),
+                        workspace,
+                    },
+                    &data_dir(),
+                )
+            })
+        }
     };
     if let Err(error) = result {
         eprintln!("error: {error}");

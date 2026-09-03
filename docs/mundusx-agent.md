@@ -11,6 +11,7 @@ mundusx run "inspect this repository"
 mundusx resume <session-id> "continue and explain the failing test"
 mundusx sessions
 mundusx cancel <session-id>
+mundusx connect --workspace .
 mundusx model list
 mundusx model use <model>
 mundusx model add <model>
@@ -20,6 +21,23 @@ mundusx model remove <model>
 `mundusx model` currently delegates to the proven OpenGPU model manager. The
 equivalent `opengpu model` commands remain supported as compatibility aliases.
 Contributor lifecycle commands remain under `opengpu`.
+
+## MundusX Chat
+
+`mundusx connect` makes an outbound HTTPS connection to `chat.mundusx.ai`, so
+the hosted chat can use this same local agent without exposing the loopback
+server to the internet. Create a connection token in Chat under Account > MCP
+connections, then provide it without placing it in shell history:
+
+```powershell
+$env:MUNDUSX_CHAT_TOKEN = "<connection-token>"
+mundusx connect --workspace .
+```
+
+Chat falls back to the Control Plane when the connector is offline. The bridge
+uploads privacy-filtered progress metadata and the final response; local tool
+arguments, results, files, and transcripts stay on the machine. Remote URLs
+must use HTTPS, and revoking the Chat token disconnects the agent.
 
 ## Runtime boundary
 
