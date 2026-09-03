@@ -866,6 +866,8 @@ version = "0.1.0"
 dependencies = [
  "mundusx-agent-core",
  "serde_json",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]

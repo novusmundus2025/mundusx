@@ -12,6 +12,19 @@ pub struct ValidationProfile {
     pub arguments: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ControlPlaneDelegation {
+    pub base_url: String,
+    pub bearer_token: Option<String>,
+}
+
+pub fn register_control_plane_delegation(
+    registry: &mut ToolRegistry,
+    config: ControlPlaneDelegation,
+) -> Result<(), ToolError> {
+    registry.register(TaskDelegate { config })
+}
+
 pub fn read_only_registry() -> Result<ToolRegistry, ToolError> {
     let mut registry = ToolRegistry::default();
     registry.register(FileRead)?;
@@ -243,6 +256,55 @@ struct MemorySave {
     path: PathBuf,
 }
 
+struct TaskDelegate {
+    config: ControlPlaneDelegation,
+}
+
+impl Tool for TaskDelegate {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "task.delegate".to_string(),
+            description: "Submit an explicitly scoped task to the configured MundusX Control Plane"
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "model": {"type": "string"},
+                    "max_tokens": {"type": "integer", "minimum": 1, "maximum": 16384},
+                    "execution_mode": {"type": "string", "enum": ["single", "decompose"]}
+                },
+                "required": ["prompt"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        }
+    }
+
+    fn execute(&self, arguments: &Value, _: &ToolContext) -> Result<Value, ToolError> {
+        let prompt = required_string(arguments, "prompt")?;
+        let mut request = ureq::post(&format!(
+            "{}/v1/jobs",
+            self.config.base_url.trim_end_matches('/')
+        ));
+        if let Some(token) = &self.config.bearer_token {
+            request = request.set("Authorization", &format!("Bearer {token}"));
+        }
+        request
+            .send_json(json!({
+                "request_id": format!("agent-{}", uuid::Uuid::new_v4().simple()),
+                "prompt": prompt,
+                "model": arguments.get("model").and_then(Value::as_str),
+                "max_tokens": arguments.get("max_tokens").and_then(Value::as_u64).unwrap_or(1024),
+                "max_tokens_source": "agent_explicit",
+                "execution_mode": arguments.get("execution_mode").and_then(Value::as_str).unwrap_or("single")
+            }))
+            .map_err(|error| ToolError::new(format!("control-plane delegation failed: {error}")))?
+            .into_json()
+            .map_err(|error| ToolError::new(format!("invalid control-plane response: {error}")))
+    }
+}
+
 impl Tool for MemorySave {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -419,5 +481,24 @@ mod tests {
                 .read_only
         );
         assert!(!registry.definition("memory.save").expect("save").read_only);
+    }
+
+    #[test]
+    fn control_plane_delegation_is_optional_and_requires_approval() {
+        let mut registry = read_only_registry().expect("registry");
+        register_control_plane_delegation(
+            &mut registry,
+            ControlPlaneDelegation {
+                base_url: "https://control.example".to_string(),
+                bearer_token: None,
+            },
+        )
+        .expect("delegation tool");
+        assert!(
+            !registry
+                .definition("task.delegate")
+                .expect("tool")
+                .read_only
+        );
     }
 }

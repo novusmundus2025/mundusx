@@ -38,6 +38,12 @@ for a request by their name and description. Selected skill names, context
 compaction, approvals, tool activity, and final responses are recorded as
 session events.
 
+Control Plane delegation is disabled by default. Set
+`MUNDUSX_CONTROL_PLANE_URL` (and optionally `MUNDUSX_CONTROL_PLANE_TOKEN`) to
+register the `task.delegate` tool. Delegation sends only the explicit prompt the
+agent proposes, never the complete local transcript, and requires mutation
+approval before any network request.
+
 ## Open WebUI
 
 `integrations/openwebui/mundusx_pipe.py` is a thin adapter. It forwards chat

@@ -373,7 +373,7 @@ fn handle_chat(
         token,
         model: "local-active".to_string(),
     };
-    let tools =
+    let mut tools =
         match mundusx_agent_tools::full_registry(Default::default(), config_dir().join("agent.db"))
         {
             Ok(value) => value,
@@ -382,6 +382,18 @@ fn handle_chat(
                 return;
             }
         };
+    if let Ok(base_url) = std::env::var("MUNDUSX_CONTROL_PLANE_URL") {
+        let delegation = mundusx_agent_tools::ControlPlaneDelegation {
+            base_url,
+            bearer_token: std::env::var("MUNDUSX_CONTROL_PLANE_TOKEN").ok(),
+        };
+        if let Err(error) =
+            mundusx_agent_tools::register_control_plane_delegation(&mut tools, delegation)
+        {
+            let _ = request.respond(api_error(500, "TOOL_REGISTRY_FAILED", error.to_string()));
+            return;
+        }
+    }
     let allow_mutations = header_value(&request, "X-MundusX-Allow-Mutations")
         .is_some_and(|value| value.eq_ignore_ascii_case("true"));
     let mut approval = if allow_mutations {
