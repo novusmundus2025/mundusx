@@ -838,6 +838,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mundusx-agent-orchestration"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "mundusx-agent-server"
 version = "0.1.0"
 dependencies = [
