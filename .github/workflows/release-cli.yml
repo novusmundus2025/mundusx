@@ -27,18 +27,30 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: opengpu-x86_64-unknown-linux-gnu
             executable_name: opengpu
+            mundusx_binary_name: mundusx-x86_64-unknown-linux-gnu
+            mundusx_executable_name: mundusx
+            agent_server_binary_name: mundusx-agent-server-x86_64-unknown-linux-gnu
+            agent_server_executable_name: mundusx-agent-server
             agent_binary_name: opengpu-node-agent-x86_64-unknown-linux-gnu
             agent_executable_name: opengpu-node-agent
           - os: macos-14
             target: aarch64-apple-darwin
             binary_name: opengpu-aarch64-apple-darwin
             executable_name: opengpu
+            mundusx_binary_name: mundusx-aarch64-apple-darwin
+            mundusx_executable_name: mundusx
+            agent_server_binary_name: mundusx-agent-server-aarch64-apple-darwin
+            agent_server_executable_name: mundusx-agent-server
             agent_binary_name: opengpu-node-agent-aarch64-apple-darwin
             agent_executable_name: opengpu-node-agent
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary_name: opengpu-x86_64-pc-windows-msvc.exe
             executable_name: opengpu.exe
+            mundusx_binary_name: mundusx-x86_64-pc-windows-msvc.exe
+            mundusx_executable_name: mundusx.exe
+            agent_server_binary_name: mundusx-agent-server-x86_64-pc-windows-msvc.exe
+            agent_server_executable_name: mundusx-agent-server.exe
             agent_binary_name: opengpu-node-agent-x86_64-pc-windows-msvc.exe
             agent_executable_name: opengpu-node-agent.exe
             tray_binary_name: mundusx-tray-x86_64-pc-windows-msvc.exe
@@ -63,6 +75,9 @@ jobs:
       - name: Build CLI
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ matrix.target }}
 
+      - name: Build MundusX agent server
+        run: cargo build --release --manifest-path apps/agent-server/Cargo.toml --target ${{ matrix.target }}
+
       - name: Build node agent
         run: cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target ${{ matrix.target }}
 
@@ -85,6 +100,8 @@ jobs:
         shell: bash
         run: |
           cp target/${{ matrix.target }}/release/${{ matrix.executable_name }} ${{ matrix.binary_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.mundusx_executable_name }} ${{ matrix.mundusx_binary_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.agent_server_executable_name }} ${{ matrix.agent_server_binary_name }}
           cp target/${{ matrix.target }}/release/${{ matrix.agent_executable_name }} ${{ matrix.agent_binary_name }}
           if [[ -n "${{ matrix.tray_binary_name }}" ]]; then
             cp target/${{ matrix.target }}/release/${{ matrix.tray_executable_name }} ${{ matrix.tray_binary_name }}
@@ -94,6 +111,8 @@ jobs:
           fi
           if [[ "${{ matrix.os }}" != windows-* ]]; then
             chmod +x ${{ matrix.binary_name }}
+            chmod +x ${{ matrix.mundusx_binary_name }}
+            chmod +x ${{ matrix.agent_server_binary_name }}
             chmod +x ${{ matrix.agent_binary_name }}
           fi
 
@@ -102,11 +121,15 @@ jobs:
         run: |
           if command -v shasum >/dev/null 2>&1; then
             shasum -a 256 ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
+            shasum -a 256 ${{ matrix.mundusx_binary_name }} > ${{ matrix.mundusx_binary_name }}.sha256
+            shasum -a 256 ${{ matrix.agent_server_binary_name }} > ${{ matrix.agent_server_binary_name }}.sha256
             shasum -a 256 ${{ matrix.agent_binary_name }} > ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then shasum -a 256 ${{ matrix.tray_binary_name }} > ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then shasum -a 256 ${{ matrix.setup_binary_name }} > ${{ matrix.setup_binary_name }}.sha256; fi
           elif command -v sha256sum >/dev/null 2>&1; then
             sha256sum ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
+            sha256sum ${{ matrix.mundusx_binary_name }} > ${{ matrix.mundusx_binary_name }}.sha256
+            sha256sum ${{ matrix.agent_server_binary_name }} > ${{ matrix.agent_server_binary_name }}.sha256
             sha256sum ${{ matrix.agent_binary_name }} > ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then sha256sum ${{ matrix.tray_binary_name }} > ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then sha256sum ${{ matrix.setup_binary_name }} > ${{ matrix.setup_binary_name }}.sha256; fi
@@ -120,11 +143,15 @@ jobs:
         run: |
           if command -v shasum >/dev/null 2>&1; then
             shasum -a 256 -c ${{ matrix.binary_name }}.sha256
+            shasum -a 256 -c ${{ matrix.mundusx_binary_name }}.sha256
+            shasum -a 256 -c ${{ matrix.agent_server_binary_name }}.sha256
             shasum -a 256 -c ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then shasum -a 256 -c ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then shasum -a 256 -c ${{ matrix.setup_binary_name }}.sha256; fi
           elif command -v sha256sum >/dev/null 2>&1; then
             sha256sum -c ${{ matrix.binary_name }}.sha256
+            sha256sum -c ${{ matrix.mundusx_binary_name }}.sha256
+            sha256sum -c ${{ matrix.agent_server_binary_name }}.sha256
             sha256sum -c ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then sha256sum -c ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then sha256sum -c ${{ matrix.setup_binary_name }}.sha256; fi
@@ -153,6 +180,10 @@ jobs:
           path: |
             ${{ matrix.binary_name }}
             ${{ matrix.binary_name }}.sha256
+            ${{ matrix.mundusx_binary_name }}
+            ${{ matrix.mundusx_binary_name }}.sha256
+            ${{ matrix.agent_server_binary_name }}
+            ${{ matrix.agent_server_binary_name }}.sha256
             ${{ matrix.agent_binary_name }}
             ${{ matrix.agent_binary_name }}.sha256
             ${{ matrix.tray_binary_name }}

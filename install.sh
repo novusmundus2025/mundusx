@@ -102,6 +102,8 @@ esac
 
 asset_name="${BIN_NAME}-${target}"
 agent_asset_name="opengpu-node-agent-${target}"
+mundusx_asset_name="mundusx-${target}"
+agent_server_asset_name="mundusx-agent-server-${target}"
 if [ -n "$local_assets" ]; then
   if [ ! -d "$local_assets" ]; then
     echo "local asset directory not found: $local_assets" >&2
@@ -115,11 +117,19 @@ release_url="${release_source}/${asset_name}"
 checksum_url="${release_url}.sha256"
 agent_url="${release_source}/${agent_asset_name}"
 agent_checksum_url="${agent_url}.sha256"
+mundusx_url="${release_source}/${mundusx_asset_name}"
+mundusx_checksum_url="${mundusx_url}.sha256"
+agent_server_url="${release_source}/${agent_server_asset_name}"
+agent_server_checksum_url="${agent_server_url}.sha256"
 tmp_dir="$(mktemp -d)"
 tmp_bin="${tmp_dir}/${asset_name}"
 tmp_checksum="${tmp_dir}/${asset_name}.sha256"
 tmp_agent="${tmp_dir}/${agent_asset_name}"
 tmp_agent_checksum="${tmp_dir}/${agent_asset_name}.sha256"
+tmp_mundusx="${tmp_dir}/${mundusx_asset_name}"
+tmp_mundusx_checksum="${tmp_dir}/${mundusx_asset_name}.sha256"
+tmp_agent_server="${tmp_dir}/${agent_server_asset_name}"
+tmp_agent_server_checksum="${tmp_dir}/${agent_server_asset_name}.sha256"
 cleanup() {
   rm -rf "$tmp_dir"
 }
@@ -202,12 +212,14 @@ expose_installed_commands() {
   echo "Making opengpu available immediately through ${GLOBAL_BIN_DIR}..."
   if [ -d "$GLOBAL_BIN_DIR" ] && [ -w "$GLOBAL_BIN_DIR" ]; then
     ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
-    ln -sf "$INSTALL_DIR/$COMPAT_BIN_NAME" "$GLOBAL_BIN_DIR/$COMPAT_BIN_NAME"
+    ln -sf "$INSTALL_DIR/mundusx" "$GLOBAL_BIN_DIR/mundusx"
+    ln -sf "$INSTALL_DIR/mundusx-agent-server" "$GLOBAL_BIN_DIR/mundusx-agent-server"
     ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
   elif command -v sudo >/dev/null 2>&1; then
     sudo mkdir -p "$GLOBAL_BIN_DIR"
     sudo ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
-    sudo ln -sf "$INSTALL_DIR/$COMPAT_BIN_NAME" "$GLOBAL_BIN_DIR/$COMPAT_BIN_NAME"
+    sudo ln -sf "$INSTALL_DIR/mundusx" "$GLOBAL_BIN_DIR/mundusx"
+    sudo ln -sf "$INSTALL_DIR/mundusx-agent-server" "$GLOBAL_BIN_DIR/mundusx-agent-server"
     sudo ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
   else
     echo "Cannot write ${GLOBAL_BIN_DIR}; rerun with ${INSTALL_DIR} on PATH." >&2
@@ -295,20 +307,34 @@ if [ "$runtime_only" -eq 0 ]; then
   echo "Verifying node agent checksum..."
   verify_checksum "$tmp_agent_checksum"
 
+  echo "Fetching MundusX agent..."
+  download_to "$mundusx_url" "$tmp_mundusx"
+  download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum"
+  verify_checksum "$tmp_mundusx_checksum"
+  download_to "$agent_server_url" "$tmp_agent_server"
+  download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum"
+  verify_checksum "$tmp_agent_server_checksum"
+
   chmod +x "$tmp_bin"
   chmod +x "$tmp_agent"
+  chmod +x "$tmp_mundusx"
+  chmod +x "$tmp_agent_server"
   mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
   mv "$tmp_agent" "$INSTALL_DIR/opengpu-node-agent"
-  ln -sf "$BIN_NAME" "$INSTALL_DIR/$COMPAT_BIN_NAME"
+  mv "$tmp_mundusx" "$INSTALL_DIR/mundusx"
+  mv "$tmp_agent_server" "$INSTALL_DIR/mundusx-agent-server"
   expose_installed_commands
 
   echo "Running installed binary smoke checks..."
   smoke_installed_binary "$INSTALL_DIR/$BIN_NAME" "$BIN_NAME"
   smoke_installed_binary "$INSTALL_DIR/opengpu-node-agent" "opengpu-node-agent"
+  smoke_installed_binary "$INSTALL_DIR/mundusx" "mundusx"
+  smoke_installed_binary "$INSTALL_DIR/mundusx-agent-server" "mundusx-agent-server"
 
   echo
   echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
-  echo "Installed ${COMPAT_BIN_NAME} compatibility alias to ${INSTALL_DIR}/${COMPAT_BIN_NAME}"
+  echo "Installed MundusX agent to ${INSTALL_DIR}/mundusx"
+  echo "Installed MundusX agent server to ${INSTALL_DIR}/mundusx-agent-server"
   echo "Installed opengpu-node-agent to ${INSTALL_DIR}/opengpu-node-agent"
 fi
 

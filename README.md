@@ -10,6 +10,11 @@ This repository contains the public, contributor-facing CLI, node agent, local w
 
 `opengpu` is the current CLI command name and compatibility binary for contributor machines. It handles install, onboarding, model management, node startup, health checks, and local worker execution.
 
+`mundusx` is the local-first personal agent command. It runs and resumes durable
+agent sessions, manages local models through the existing model implementation,
+and can serve an OpenAI-compatible loopback API for integrations such as Open
+WebUI. See [docs/mundusx-agent.md](docs/mundusx-agent.md).
+
 ## Vision
 
 MundusX exists to make AI more accessible, affordable, and collaborative by allowing individuals, enterprises, and organizations to contribute available compute resources.

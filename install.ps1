@@ -418,6 +418,8 @@ $runtimeSelectionReason = if ($InstallCudaRuntime) {
 $profile = if ($cudaRuntimeRequired) { "windows-x86_64-cuda" } else { "windows-x86_64-vulkan" }
 $assetName = "opengpu-$target.exe"
 $agentAssetName = "opengpu-node-agent-$target.exe"
+$mundusxAssetName = "mundusx-$target.exe"
+$agentServerAssetName = "mundusx-agent-server-$target.exe"
 $trayAssetName = "mundusx-tray-$target.exe"
 $trayIconAssetName = "mundusx.ico"
 $cudaRuntimeAssetName = "llama-runtime-$target-cuda.zip"
@@ -433,12 +435,15 @@ $tempChecksum = Join-Path $tempDir "$assetName.sha256"
 $tempManifest = Join-Path $tempDir "release-manifest.json"
 $tempSignature = Join-Path $tempDir "release-manifest.json.sig"
 $tempAgent = Join-Path $tempDir $agentAssetName
+$tempMundusx = Join-Path $tempDir $mundusxAssetName
+$tempAgentServer = Join-Path $tempDir $agentServerAssetName
 $tempTray = Join-Path $tempDir $trayAssetName
 $tempTrayIcon = Join-Path $tempDir $trayIconAssetName
 $tempCudaRuntime = Join-Path $tempDir $cudaRuntimeAssetName
 $tempVulkanRuntime = Join-Path $tempDir $vulkanRuntimeAssetName
 $finalExe = Join-Path $InstallDir "opengpu.exe"
-$compatExe = Join-Path $InstallDir "mundusx.exe"
+$finalMundusx = Join-Path $InstallDir "mundusx.exe"
+$finalAgentServer = Join-Path $InstallDir "mundusx-agent-server.exe"
 $finalAgent = Join-Path $InstallDir "opengpu-node-agent.exe"
 $finalTray = Join-Path $InstallDir "mundusx-tray.exe"
 $finalTrayIcon = Join-Path $InstallDir "mundusx.ico"
@@ -536,6 +541,10 @@ try {
   Write-Output "Verifying node agent checksum..."
   $agentExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $agentAssetName -Destination $tempAgent -ManifestAsset $agentManifestAsset
 
+  Write-Output "Fetching MundusX agent..."
+  Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $mundusxAssetName -Destination $tempMundusx -ManifestAsset (Find-ManifestReleaseAsset -Manifest $manifest -Name $mundusxAssetName) | Out-Null
+  Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $agentServerAssetName -Destination $tempAgentServer -ManifestAsset (Find-ManifestReleaseAsset -Manifest $manifest -Name $agentServerAssetName) | Out-Null
+
   $trayManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $trayAssetName
   Write-Output "Fetching Windows tray companion..."
   Write-Output "Verifying Windows tray companion checksum..."
@@ -551,7 +560,8 @@ try {
   }
 
   Move-Item -Force -Path $tempExe -Destination $finalExe
-  Copy-Item -Force -LiteralPath $finalExe -Destination $compatExe
+  Move-Item -Force -Path $tempMundusx -Destination $finalMundusx
+  Move-Item -Force -Path $tempAgentServer -Destination $finalAgentServer
   Move-Item -Force -Path $tempAgent -Destination $finalAgent
   Move-Item -Force -Path $tempTray -Destination $finalTray
   if (Test-Path -LiteralPath $tempTrayIcon) {
@@ -590,7 +600,8 @@ try {
 
 Write-Output ""
 Write-Output "Installed opengpu to $finalExe"
-Write-Output "Installed mundusx compatibility alias to $compatExe"
+Write-Output "Installed MundusX agent to $finalMundusx"
+Write-Output "Installed MundusX agent server to $finalAgentServer"
 Write-Output "Installed node agent to $finalAgent"
 Write-Output "Installed tray companion to $finalTray"
 if ($trayIconExpected) {

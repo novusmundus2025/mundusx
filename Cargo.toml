@@ -3,6 +3,11 @@ members = [
     "apps/cli",
     "apps/tray",
     "apps/windows-installer",
+    "apps/agent-server",
     "agents/node",
+    "packages/agent-core",
+    "packages/agent-tools",
+  "packages/agent-skills",
+  "packages/agent-orchestration",
 ]
 resolver = "2"
