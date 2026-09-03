@@ -20,6 +20,17 @@ fn installed_cli_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("opengpu.exe"))
 }
 
+fn installer_log_path() -> std::path::PathBuf {
+    std::env::var("USERPROFILE")
+        .map(|profile| {
+            std::path::PathBuf::from(profile)
+                .join(".opengpu")
+                .join("logs")
+                .join("installer.log")
+        })
+        .unwrap_or_else(|_| std::env::temp_dir().join("mundusx-installer.log"))
+}
+
 fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
     let mut arguments = vec![
         "-NoProfile".to_string(),
@@ -27,6 +38,7 @@ fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
         "Bypass".to_string(),
         "-File".to_string(),
         script_path.display().to_string(),
+        "-SkipContributorSetup".to_string(),
     ];
     if let Ok(release_base) = std::env::var("MUNDUSX_RELEASE_BASE_URL") {
         let release_base = release_base.trim();
@@ -41,7 +53,7 @@ fn installer_arguments(script_path: &std::path::Path) -> Vec<String> {
 fn contributor_setup_command(cli_path: &std::path::Path) -> String {
     let escaped = cli_path.display().to_string().replace('\'', "''");
     format!(
-        "& '{escaped}' install; Write-Host ''; Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.'; Write-Host 'Press Enter to close this window.'; Read-Host"
+        "& '{escaped}' install; $setupExit = $LASTEXITCODE; Write-Host ''; if ($setupExit -eq 0) {{ Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.' -ForegroundColor Green }} else {{ Write-Host 'Contributor setup failed. Review the error above.' -ForegroundColor Red }}"
     )
 }
 
@@ -60,6 +72,11 @@ fn run_installer() -> Result<(), String> {
     std::fs::write(&script_path, INSTALL_SCRIPT)
         .map_err(|error| format!("failed to stage the MundusX installer: {error}"))?;
 
+    let log_path = installer_log_path();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create installer log directory: {error}"))?;
+    }
     let result = std::process::Command::new("powershell.exe")
         .args(installer_arguments(&script_path))
         .status()
@@ -69,8 +86,9 @@ fn run_installer() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "MundusX installation failed with exit code {}",
-            result.code().unwrap_or(-1)
+            "MundusX installation failed with exit code {}.\n\nDetails were saved to:\n{}",
+            result.code().unwrap_or(-1),
+            log_path.display()
         ))
     }
 }
@@ -84,15 +102,23 @@ fn launch_contributor_setup() -> Result<(), String> {
         ));
     }
 
-    std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-NoExit",
-            "-Command",
-            &contributor_setup_command(&cli_path),
-        ])
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &contributor_setup_command(&cli_path),
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        command.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    command
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("failed to launch contributor setup: {error}"))
@@ -162,7 +188,15 @@ mod tests {
         assert!(INSTALL_SCRIPT.contains("MundusX Windows installer"));
         assert!(INSTALL_SCRIPT.contains("mundusx-tray"));
         assert!(INSTALL_SCRIPT.contains("runtime selection"));
+        assert!(INSTALL_SCRIPT.contains("Start-ContributorSetup"));
+        assert!(INSTALL_SCRIPT.contains("Stop-InstalledOpenGpuProcesses"));
+        assert!(!INSTALL_SCRIPT.contains("Move-Item -Force -Path $tempTray"));
+        assert!(INSTALL_SCRIPT.contains("-NoExit"));
         assert!(INSTALL_SCRIPT.contains("llama-server.exe"));
+        assert!(INSTALL_SCRIPT.contains(
+            "https://github.com/mundusx/releases/releases/download/opengpu-prod"
+        ));
+        assert!(!INSTALL_SCRIPT.contains("github.com/mundusx/mundusx/releases/latest"));
     }
 
     #[test]
@@ -174,6 +208,9 @@ mod tests {
         assert!(arguments
             .windows(2)
             .any(|pair| pair == ["-File", "C:\\Temp\\install.ps1"]));
+        assert!(arguments
+            .iter()
+            .any(|argument| argument == "-SkipContributorSetup"));
     }
 
     #[test]
@@ -183,5 +220,13 @@ mod tests {
         ));
         assert!(command.contains("& 'C:\\Users\\tester\\.opengpu\\bin\\opengpu.exe' install"));
         assert!(command.contains("Contributor setup finished"));
+        assert!(command.contains("if ($setupExit -eq 0)"));
+        assert!(!command.contains("Start-Sleep"));
+        assert!(!command.contains("Read-Host"));
+    }
+
+    #[test]
+    fn installer_log_is_kept_under_the_opengpu_home() {
+        assert!(installer_log_path().ends_with(".opengpu\\logs\\installer.log"));
     }
 }

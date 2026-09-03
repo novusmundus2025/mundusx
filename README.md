@@ -68,13 +68,17 @@ On Windows, use the native PowerShell bootstrapper:
 ```
 
 On Linux ARM64 GB10/GX10, the same POSIX installer automatically installs the
-CLI, node agent, and pinned NVIDIA vLLM runtime:
+CLI, node agent, and pinned NVIDIA vLLM runtime. Contributor choices remain in
+the interactive `opengpu install` wizard:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | bash
+curl -fsSL https://github.com/mundusx/releases/releases/download/opengpu-prod/install.sh | bash
 opengpu install
-opengpu start
 ```
+
+The wizard asks for the control plane, contribution cap, concurrency, model,
+and whether to contribute an existing local cluster. Fully unattended setup
+remains available with `--auto-start`; its defaults are a 30% cap and two jobs.
 
 The installer downloads the matching release binary for the user's operating system and CPU architecture from the local release preview, then verifies the checksum when available. After the binary is installed, `opengpu install` detects the machine profile, control-plane choice, community contribution cap, and model fit.
 
@@ -100,6 +104,9 @@ Release builds for the CLI are published from GitHub Actions on `cli-v*` tags wi
 Route each request to the most suitable live node, rather than combining partial outputs from multiple machines.
 
 ## First Commands
+
+For complete platform-specific installation instructions, see
+[OpenGPU Getting Started](docs/getting-started.md).
 
 For a fresh contributor machine, review onboarding, set a contribution cap, and then start the node:
 

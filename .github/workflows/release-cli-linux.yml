@@ -72,6 +72,7 @@ jobs:
           OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
         run: |
           ./scripts/release-signing.sh prepare . "${BINARY_NAME}" "${RELEASE_TAG}" "${RELEASE_TAG}"
+          python3 ./scripts/verify-release-manifest-assets.py .
           mv release-manifest.json "release-manifest-${TARGET}.json"
           mv release-manifest.json.sig "release-manifest-${TARGET}.json.sig"
 
@@ -86,6 +87,7 @@ jobs:
             ${{ env.AGENT_BINARY_NAME }}.sha256
             release-manifest-${{ env.TARGET }}.json
             release-manifest-${{ env.TARGET }}.json.sig
+            install.sh
 
   release:
     needs: build

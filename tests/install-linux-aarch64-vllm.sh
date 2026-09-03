@@ -68,11 +68,16 @@ output="$(
   INSTALL_DIR="$install_dir" \
   OPENGPU_HOME="$opengpu_home" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
-  bash "$repo_root/install.sh" 2>&1
+  bash "$repo_root/install.sh" --install-only 2>&1
 )"
 
 printf '%s\n' "$output" | grep -F "Detected NVIDIA GB10/GX10" >/dev/null
 printf '%s\n' "$output" | grep -F "target: aarch64-unknown-linux-gnu" >/dev/null
+printf '%s\n' "$output" | grep -F "[binary 1/2] OpenGPU CLI" >/dev/null
+printf '%s\n' "$output" | grep -F "Downloaded OpenGPU CLI:" >/dev/null
+printf '%s\n' "$output" | grep -F "[binary 2/2] OpenGPU node agent" >/dev/null
+printf '%s\n' "$output" | grep -F "[runtime 1/2] Validating NVIDIA GPU access inside Docker" >/dev/null
+printf '%s\n' "$output" | grep -F "[runtime 2/2] Pulling pinned NVIDIA vLLM runtime" >/dev/null
 printf '%s\n' "$output" | grep -F "  opengpu install" >/dev/null
 printf '%s\n' "$output" | grep -F "  opengpu start" >/dev/null
 grep -F "opengpu-aarch64-unknown-linux-gnu" "$TEST_DOWNLOAD_LOG" >/dev/null

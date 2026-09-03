@@ -1,16 +1,37 @@
 param(
   [string]$InstallDir = "$env:USERPROFILE\.opengpu\bin",
-  [string]$ReleaseBaseUrl = "https://github.com/mundusx/mundusx/releases/latest/download",
+  [string]$ReleaseBaseUrl = "https://github.com/mundusx/releases/releases/download/opengpu-prod",
   [string]$GitHubToken = "",
   [switch]$AllowUnsignedLocalPreview,
   [switch]$InstallCudaRuntime,
   [switch]$InstallVulkanRuntime,
   [switch]$SkipTrayAutoStart,
+  [switch]$SkipPathUpdate,
+  [switch]$SkipContributorSetup,
   [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Add-Type -AssemblyName System.Net.Http
+
+$installerLogDir = Join-Path (Split-Path -Parent $InstallDir) "logs"
+$installerLogPath = Join-Path $installerLogDir "installer.log"
+$script:installerTranscriptStarted = $false
+New-Item -ItemType Directory -Force -Path $installerLogDir | Out-Null
+try {
+  Start-Transcript -Path $installerLogPath -Force | Out-Null
+  $script:installerTranscriptStarted = $true
+} catch {
+  Write-Warning "Installer logging could not be started: $($_.Exception.Message)"
+}
+trap {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  if ($script:installerTranscriptStarted) {
+    Stop-Transcript | Out-Null
+  }
+  exit 1
+}
 
 function Show-Usage {
   @"
@@ -26,13 +47,15 @@ Options:
                           By default, the installer detects NVIDIA/CUDA and
                           otherwise installs the Vulkan runtime for Windows.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
+  -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
+  -SkipContributorSetup    Do not open a fresh PowerShell window for `opengpu install`.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
                           when testing a local release preview.
   -Help                    Print this help and exit.
 
-After this bootstrapper installs the binary, run:
-  opengpu install
+After this bootstrapper installs the binary, a fresh PowerShell window opens
+and runs `opengpu install` automatically unless -SkipContributorSetup is set.
 "@ | Write-Output
 }
 
@@ -316,17 +339,24 @@ function Save-TrustedRuntimePath {
 function Copy-ReleaseFile {
   param(
     [string]$Source,
-    [string]$Destination
+    [string]$Destination,
+    [string]$Label = ""
   )
+
+  if (-not $Label) {
+    $Label = Split-Path -Leaf $Destination
+  }
 
   $uri = $null
   if ([System.Uri]::TryCreate($Source, [System.UriKind]::Absolute, [ref]$uri) -and $uri.IsFile) {
     Copy-Item -LiteralPath $uri.LocalPath -Destination $Destination
+    Write-Output "Copied $Label."
     return
   }
 
   if (Test-Path -LiteralPath $Source) {
     Copy-Item -LiteralPath $Source -Destination $Destination
+    Write-Output "Copied $Label."
     return
   }
 
@@ -343,13 +373,80 @@ function Copy-ReleaseFile {
     $headers["X-GitHub-Api-Version"] = "2022-11-28"
   }
 
+  $handler = $null
+  $client = $null
+  $request = $null
+  $response = $null
+  $inputStream = $null
+  $outputStream = $null
   try {
-    if ($headers.Count -gt 0) {
-      Invoke-WebRequest -Uri $downloadSource -Headers $headers -OutFile $Destination
-    } else {
-      Invoke-WebRequest -Uri $downloadSource -OutFile $Destination
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromHours(2)
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("MundusX-Installer/1.0")
+
+    $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $downloadSource)
+    foreach ($name in $headers.Keys) {
+      [void]$request.Headers.TryAddWithoutValidation($name, [string]$headers[$name])
     }
+
+    $response = $client.SendAsync(
+      $request,
+      [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+    ).GetAwaiter().GetResult()
+    [void]$response.EnsureSuccessStatusCode()
+
+    $totalBytes = $response.Content.Headers.ContentLength
+    $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $outputStream = [System.IO.File]::Open(
+      $Destination,
+      [System.IO.FileMode]::Create,
+      [System.IO.FileAccess]::Write,
+      [System.IO.FileShare]::None
+    )
+    $buffer = New-Object byte[] (1024 * 1024)
+    $receivedBytes = [long]0
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastUpdateMs = [long]-1000
+
+    while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      $outputStream.Write($buffer, 0, $read)
+      $receivedBytes += $read
+      if (($stopwatch.ElapsedMilliseconds - $lastUpdateMs) -lt 250 -and
+          (-not $totalBytes -or $receivedBytes -lt $totalBytes)) {
+        continue
+      }
+      $lastUpdateMs = $stopwatch.ElapsedMilliseconds
+      $elapsedSeconds = [Math]::Max($stopwatch.Elapsed.TotalSeconds, 0.001)
+      $megabytes = $receivedBytes / 1MB
+      $speedMbps = ($receivedBytes / 1MB) / $elapsedSeconds
+
+      if ($totalBytes -and $totalBytes -gt 0) {
+        $percent = [Math]::Min(100, [int][Math]::Floor(($receivedBytes * 100.0) / $totalBytes))
+        $totalMegabytes = $totalBytes / 1MB
+        $remainingSeconds = if ($speedMbps -gt 0) {
+          [Math]::Max(0, (($totalBytes - $receivedBytes) / 1MB) / $speedMbps)
+        } else {
+          0
+        }
+        $status = "${percent}% of 100% - $($megabytes.ToString('N1'))/$($totalMegabytes.ToString('N1')) MB - $($speedMbps.ToString('N1')) MB/s - about $([Math]::Ceiling($remainingSeconds))s remaining"
+        Write-Progress -Id 1 -Activity "Downloading $Label" -Status $status -PercentComplete $percent
+      } else {
+        $status = "$($megabytes.ToString('N1')) MB downloaded - $($speedMbps.ToString('N1')) MB/s - total size unavailable"
+        Write-Progress -Id 1 -Activity "Downloading $Label" -Status $status -PercentComplete -1
+      }
+    }
+
+    $stopwatch.Stop()
+    Write-Progress -Id 1 -Activity "Downloading $Label" -Completed
+    $finalMegabytes = $receivedBytes / 1MB
+    Write-Output "Downloaded ${Label}: 100% - $($finalMegabytes.ToString('N1')) MB in $([Math]::Ceiling($stopwatch.Elapsed.TotalSeconds))s."
   } catch {
+    Write-Progress -Id 1 -Activity "Downloading $Label" -Completed
+    if (Test-Path -LiteralPath $Destination) {
+      Remove-Item -Force -LiteralPath $Destination -ErrorAction SilentlyContinue
+    }
     if ($Source -like "https://github.com/*") {
       if ($token) {
         throw "failed to download private GitHub release asset from $Source. Verify the token has access to this repository and release assets. Original error: $($_.Exception.Message)"
@@ -357,8 +454,102 @@ function Copy-ReleaseFile {
       throw "failed to download GitHub release asset from $Source. If this repository or release is private, pass -GitHubToken or set GITHUB_TOKEN/GH_TOKEN with release read access. Original error: $($_.Exception.Message)"
     }
     throw
+  } finally {
+    if ($outputStream) { $outputStream.Dispose() }
+    if ($inputStream) { $inputStream.Dispose() }
+    if ($response) { $response.Dispose() }
+    if ($request) { $request.Dispose() }
+    if ($client) { $client.Dispose() }
+    if ($handler) { $handler.Dispose() }
   }
   Assert-DownloadedReleaseFile -Source $Source -Destination $Destination
+}
+
+function Add-DirectoryToUserPath {
+  param([string]$Directory)
+
+  $normalizedDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd("\")
+  $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  $userEntries = @($userPath -split ";" | Where-Object { $_ } | ForEach-Object { $_.TrimEnd("\") })
+  $alreadyPersisted = [bool]($userEntries | Where-Object {
+    $_.Equals($normalizedDirectory, [System.StringComparison]::OrdinalIgnoreCase)
+  })
+
+  if (-not $alreadyPersisted) {
+    $updatedUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) {
+      $normalizedDirectory
+    } else {
+      $userPath.TrimEnd(";") + ";" + $normalizedDirectory
+    }
+    [Environment]::SetEnvironmentVariable("Path", $updatedUserPath, "User")
+    Write-Output "Added $normalizedDirectory to the persistent user PATH."
+  } else {
+    Write-Output "$normalizedDirectory is already present in the persistent user PATH."
+  }
+
+  $processEntries = @($env:PATH -split ";" | Where-Object { $_ } | ForEach-Object { $_.TrimEnd("\") })
+  $alreadyInProcess = [bool]($processEntries | Where-Object {
+    $_.Equals($normalizedDirectory, [System.StringComparison]::OrdinalIgnoreCase)
+  })
+  if (-not $alreadyInProcess) {
+    $env:PATH = $env:PATH.TrimEnd(";") + ";" + $normalizedDirectory
+  }
+}
+
+function Start-ContributorSetup {
+  param([string]$CliPath)
+
+  if (-not (Test-Path -LiteralPath $CliPath -PathType Leaf)) {
+    throw "installed opengpu was not found at $CliPath"
+  }
+
+  $escapedCliPath = $CliPath.Replace("'", "''")
+  $setupCommand = @"
+& '$escapedCliPath' install
+`$setupExit = `$LASTEXITCODE
+Write-Host ''
+if (`$setupExit -eq 0) {
+  Write-Host 'Contributor setup finished. Run opengpu start when you are ready to contribute.' -ForegroundColor Green
+} else {
+  Write-Host 'Contributor setup failed. Review the error above.' -ForegroundColor Red
+}
+"@
+  $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($setupCommand))
+  Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    "-NoLogo",
+    "-NoProfile",
+    "-NoExit",
+    "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", $encodedCommand
+  )
+  Write-Output "Opened a fresh PowerShell window and started opengpu install."
+}
+
+function Stop-InstalledOpenGpuProcesses {
+  param([string]$OpenGpuHome)
+
+  $normalizedHome = [IO.Path]::GetFullPath($OpenGpuHome).TrimEnd("\") + "\"
+  $installedProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+    $_.ExecutablePath -and
+    $_.ExecutablePath.StartsWith($normalizedHome, [StringComparison]::OrdinalIgnoreCase)
+  })
+  foreach ($process in $installedProcesses) {
+    Write-Output "Stopping installed $($process.Name) before replacement..."
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+    Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+  }
+}
+
+function Write-InstallerPhase {
+  param(
+    [int]$Current,
+    [int]$Total,
+    [string]$Message
+  )
+
+  $overallPercent = [int][Math]::Floor((($Current - 1) * 100.0) / $Total)
+  Write-Output ""
+  Write-Output "[$Current/$Total - overall $overallPercent%] $Message"
 }
 
 function Verify-ReleaseAsset {
@@ -377,8 +568,8 @@ function Verify-ReleaseAsset {
   }
 
   $checksumDestination = "$Destination.sha256"
-  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName" -Destination $Destination
-  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName.sha256" -Destination $checksumDestination
+  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName" -Destination $Destination -Label $AssetName
+  Copy-ReleaseFile -Source "$ReleaseBase/$AssetName.sha256" -Destination $checksumDestination -Label "$AssetName checksum"
   $expected = Read-ChecksumHash -Path $checksumDestination
   if ($ManifestAsset -and $ManifestAsset.checksum_sha256) {
     $manifestChecksum = $ManifestAsset.checksum_sha256.ToString().ToUpperInvariant()
@@ -476,12 +667,13 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 try {
-  Write-Output "Fetching opengpu..."
-  Copy-ReleaseFile -Source $releaseUrl -Destination $tempExe
+  Write-InstallerPhase -Current 1 -Total 6 -Message "Downloading OpenGPU CLI"
+  Copy-ReleaseFile -Source $releaseUrl -Destination $tempExe -Label "OpenGPU CLI"
 
   $expected = $null
   try {
-    Copy-ReleaseFile -Source $checksumUrl -Destination $tempChecksum
+    Write-InstallerPhase -Current 2 -Total 6 -Message "Verifying the signed release"
+    Copy-ReleaseFile -Source $checksumUrl -Destination $tempChecksum -Label "OpenGPU CLI checksum"
     Write-Output "Verifying checksum..."
     $expected = Read-ChecksumHash -Path $tempChecksum
     $actual = (Get-FileHash -Algorithm SHA256 -Path $tempExe).Hash.ToUpperInvariant()
@@ -496,8 +688,8 @@ try {
   }
 
   try {
-    Copy-ReleaseFile -Source $manifestUrl -Destination $tempManifest
-    Copy-ReleaseFile -Source $signatureUrl -Destination $tempSignature
+    Copy-ReleaseFile -Source $manifestUrl -Destination $tempManifest -Label "release manifest"
+    Copy-ReleaseFile -Source $signatureUrl -Destination $tempSignature -Label "release signature"
     Write-Output "Checking signed release manifest..."
     $manifest = Read-ReleaseManifest -Path $tempManifest
     if ($manifest.artifact_kind -ne "release-binary") {
@@ -524,6 +716,7 @@ try {
     }
     Write-Warning "dev-only local preview override: signed release manifest unavailable or invalid, continuing without signature verification"
   }
+  Write-InstallerPhase -Current 3 -Total 6 -Message "Downloading the GPU runtime"
   if ($cudaRuntimeRequired) {
     $runtimeManifestAsset = Find-ManifestRuntimeAsset -Manifest $manifest -Name $cudaRuntimeAssetName
     Write-Output "Fetching CUDA llama runtime..."
@@ -536,6 +729,7 @@ try {
     $runtimeExpected = Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $vulkanRuntimeAssetName -Destination $tempVulkanRuntime -ManifestAsset $runtimeManifestAsset
   }
 
+  Write-InstallerPhase -Current 4 -Total 6 -Message "Downloading the OpenGPU node agent"
   $agentManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $agentAssetName
   Write-Output "Fetching node agent..."
   Write-Output "Verifying node agent checksum..."
@@ -545,6 +739,7 @@ try {
   Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $mundusxAssetName -Destination $tempMundusx -ManifestAsset (Find-ManifestReleaseAsset -Manifest $manifest -Name $mundusxAssetName) | Out-Null
   Verify-ReleaseAsset -ReleaseBase $releaseBase -AssetName $agentServerAssetName -Destination $tempAgentServer -ManifestAsset (Find-ManifestReleaseAsset -Manifest $manifest -Name $agentServerAssetName) | Out-Null
 
+  Write-InstallerPhase -Current 5 -Total 6 -Message "Downloading the Windows tray application"
   $trayManifestAsset = Find-ManifestReleaseAsset -Manifest $manifest -Name $trayAssetName
   Write-Output "Fetching Windows tray companion..."
   Write-Output "Verifying Windows tray companion checksum..."
@@ -559,13 +754,15 @@ try {
     Write-Warning "release manifest does not include $trayIconAssetName; tray will use the embedded/system icon fallback"
   }
 
-  Move-Item -Force -Path $tempExe -Destination $finalExe
-  Move-Item -Force -Path $tempMundusx -Destination $finalMundusx
-  Move-Item -Force -Path $tempAgentServer -Destination $finalAgentServer
-  Move-Item -Force -Path $tempAgent -Destination $finalAgent
-  Move-Item -Force -Path $tempTray -Destination $finalTray
+  Write-InstallerPhase -Current 6 -Total 6 -Message "Installing verified components"
+  Stop-InstalledOpenGpuProcesses -OpenGpuHome (Get-OpenGpuHome)
+  Copy-Item -Force -LiteralPath $tempExe -Destination $finalExe
+  Copy-Item -Force -LiteralPath $tempMundusx -Destination $finalMundusx
+  Copy-Item -Force -LiteralPath $tempAgentServer -Destination $finalAgentServer
+  Copy-Item -Force -LiteralPath $tempAgent -Destination $finalAgent
+  Copy-Item -Force -LiteralPath $tempTray -Destination $finalTray
   if (Test-Path -LiteralPath $tempTrayIcon) {
-    Move-Item -Force -Path $tempTrayIcon -Destination $finalTrayIcon
+    Copy-Item -Force -LiteralPath $tempTrayIcon -Destination $finalTrayIcon
   }
 
   if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
@@ -623,12 +820,24 @@ if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
   Write-Output "Pinned trusted runtime path in $trustedRuntimePath"
 }
 
-$pathEntries = ($env:PATH -split ";") | ForEach-Object { $_.TrimEnd("\") }
-$normalizedInstallDir = (Resolve-Path -Path $InstallDir).Path.TrimEnd("\")
-if ($pathEntries -notcontains $normalizedInstallDir) {
-  Write-Warning "$InstallDir is not currently on PATH. Add it to PATH or run $finalExe directly."
+if (-not $SkipPathUpdate) {
+  Add-DirectoryToUserPath -Directory $InstallDir
 }
 
-Write-Output "Next: opengpu install"
+if ($SkipContributorSetup) {
+  Write-Output "Next: opengpu install"
+} else {
+  Write-Output "Next: contributor setup will open in a fresh PowerShell window"
+}
+Write-Output ""
+Write-Output "[6/6 - overall 100%] Installation complete"
+if ($script:installerTranscriptStarted) {
+  Stop-Transcript | Out-Null
+  $script:installerTranscriptStarted = $false
+}
+
+if (-not $SkipContributorSetup) {
+  Start-ContributorSetup -CliPath $finalExe
+}
 
 

@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn selectable_catalog_options_include_all_unique_fitting_official_models() {
-        let options = selectable_catalog_options_for(Backend::Cuda, Some(4096));
+        let options = selectable_catalog_options_for(Backend::Cuda, Some(3276));
 
         assert!(options
             .iter()
@@ -425,6 +425,12 @@ mod tests {
         assert!(options
             .iter()
             .any(|option| option.name == "Qwen/Qwen2.5-1.5B-Instruct"));
+        assert!(options
+            .iter()
+            .any(|option| option.name == "tensorblock/Qwen2.5-3B-Instruct-GGUF"));
+        assert!(!options
+            .iter()
+            .any(|option| option.name == "tensorblock/Qwen2.5-7B-Instruct-GGUF"));
         assert_eq!(
             options
                 .iter()

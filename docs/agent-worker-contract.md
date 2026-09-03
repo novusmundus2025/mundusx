@@ -149,7 +149,7 @@ Heartbeats also carry `worker_health.capabilities`, which is the first-class sch
 - `models`: every model the node can serve under the current contribution cap. Schema v4 records each model's `active`, `warm`, context/output limits, capacity class, roles, and task capabilities.
 - `max_context_tokens`: the largest conservative context budget across the servable inventory
 - `total_vram_mb` and `available_vram_mb`: physical and contribution-capped GPU budget when known
-- `max_parallel_jobs`: worker concurrency budget
+- `max_parallel_jobs`: worker concurrency budget, never higher than the memory-derived or runtime-reported safety ceiling; a contributor setting may only lower it
 - `current_load_percent`: current load derived from available GPU percentage
 - `roles`: scheduler roles such as `chat`, `coding`, `batch`, `reducer`, `vision`, `embedding`, or `tool_use`
 - `skill_tags`: normalized matching tags such as `backend:cuda` and `runtime:cuda`

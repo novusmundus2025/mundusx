@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="mundusx/mundusx"
 BIN_NAME="opengpu"
 COMPAT_BIN_NAME="mundusx"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 GLOBAL_BIN_DIR_OVERRIDE="${OPENGPU_GLOBAL_BIN_DIR:-}"
 GLOBAL_BIN_DIR="${OPENGPU_GLOBAL_BIN_DIR:-/usr/local/bin}"
-RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
+RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/mundusx/releases/releases/download/opengpu-prod}"
 OPENGPU_HOME="${OPENGPU_HOME:-$HOME/.opengpu}"
 VLLM_IMAGE="${OPENGPU_VLLM_IMAGE:-nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e}"
 VLLM_IMAGE_TAG="${OPENGPU_VLLM_IMAGE_TAG:-26.06-py3}"
 with_vllm=0
 runtime_only=0
 without_vllm=0
+install_only=1
+cap_percent="${OPENGPU_CAP_PERCENT:-30}"
+max_jobs="${OPENGPU_MAX_JOBS:-2}"
 local_assets=""
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--with-vllm] [--without-vllm] [--runtime-only] [--local-assets DIR] [--help]
+Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only] [--cap-percent N] [--max-jobs N] [--runtime-only] [--local-assets DIR] [--help]
 
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
   --without-vllm Skip automatic vLLM installation on detected GB10/GX10 hosts.
+  --auto-start   Unattended mode: configure safe defaults and start the node.
+  --install-only Install binaries/runtime only (default; retained for scripts).
+  --cap-percent  Contribution cap used with --auto-start (default: 30).
+  --max-jobs     Concurrent job limit used with --auto-start (default: 2).
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
   --local-assets Install release binaries and checksums directly from DIR.
   --help         Show this help.
@@ -36,6 +42,28 @@ while [ "$#" -gt 0 ]; do
       ;;
     --without-vllm)
       without_vllm=1
+      ;;
+    --install-only)
+      install_only=1
+      ;;
+    --auto-start)
+      install_only=0
+      ;;
+    --cap-percent)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--cap-percent requires a whole number from 1 through 80" >&2
+        exit 1
+      fi
+      cap_percent="$2"
+      shift
+      ;;
+    --max-jobs)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--max-jobs requires a positive whole number" >&2
+        exit 1
+      fi
+      max_jobs="$2"
+      shift
       ;;
     --runtime-only)
       with_vllm=1
@@ -62,6 +90,17 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+case "$cap_percent" in
+  ''|*[!0-9]*) echo "--cap-percent must be a whole number from 1 through 80" >&2; exit 1 ;;
+esac
+if [ "$cap_percent" -lt 1 ] || [ "$cap_percent" -gt 80 ]; then
+  echo "--cap-percent must be a whole number from 1 through 80" >&2
+  exit 1
+fi
+case "$max_jobs" in
+  ''|*[!0-9]*|0) echo "--max-jobs must be a positive whole number" >&2; exit 1 ;;
+esac
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -142,6 +181,14 @@ fi
 download_to() {
   local source="$1"
   local output="$2"
+  local label="$3"
+  local started_at
+  local finished_at
+  local elapsed
+  local bytes
+
+  started_at="$(date +%s)"
+  echo "Downloading ${label}..."
 
   if [ -n "$local_assets" ]; then
     if [ ! -f "$source" ]; then
@@ -149,17 +196,26 @@ download_to() {
       exit 1
     fi
     cp "$source" "$output"
-    return
-  fi
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$source" -o "$output"
+  elif command -v curl >/dev/null 2>&1; then
+    curl \
+      --fail \
+      --location \
+      --retry 3 \
+      --progress-bar \
+      --show-error \
+      "$source" \
+      -o "$output"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$output" "$source"
+    wget --progress=bar:force:noscroll -O "$output" "$source"
   else
     echo "curl or wget is required" >&2
     exit 1
   fi
+
+  finished_at="$(date +%s)"
+  elapsed=$((finished_at - started_at))
+  bytes="$(wc -c <"$output" | tr -d '[:space:]')"
+  echo "Downloaded ${label}: ${bytes} bytes in ${elapsed}s."
 }
 
 verify_checksum() {
@@ -259,12 +315,14 @@ install_vllm_runtime() {
   fi
 
   echo
-  echo "Validating NVIDIA GPU access inside Docker..."
+  echo "[runtime 1/2] Validating NVIDIA GPU access inside Docker..."
+  echo "Docker shows image-layer download progress if the CUDA image is not cached."
   docker run --rm --gpus all \
     nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 \
     nvidia-smi >/dev/null
 
-  echo "Pulling pinned NVIDIA vLLM runtime (${VLLM_IMAGE_TAG})..."
+  echo "[runtime 2/2] Pulling pinned NVIDIA vLLM runtime (${VLLM_IMAGE_TAG})..."
+  echo "Docker reports every layer and shows what remains before completion."
   docker pull "$VLLM_IMAGE"
 
   mkdir -p "$runtime_dir" "${OPENGPU_HOME}/models"
@@ -294,16 +352,16 @@ echo "  install: ${INSTALL_DIR}"
 
 if [ "$runtime_only" -eq 0 ]; then
   echo
-  echo "Fetching ${BIN_NAME}..."
-  download_to "$release_url" "$tmp_bin"
+  echo "[binary 1/2] OpenGPU CLI"
+  download_to "$release_url" "$tmp_bin" "OpenGPU CLI"
 
-  download_to "$checksum_url" "$tmp_checksum"
+  download_to "$checksum_url" "$tmp_checksum" "OpenGPU CLI checksum"
   echo "Verifying checksum..."
   verify_checksum "$tmp_checksum"
 
-  echo "Fetching opengpu-node-agent..."
-  download_to "$agent_url" "$tmp_agent"
-  download_to "$agent_checksum_url" "$tmp_agent_checksum"
+  echo "[binary 2/2] OpenGPU node agent"
+  download_to "$agent_url" "$tmp_agent" "OpenGPU node agent"
+  download_to "$agent_checksum_url" "$tmp_agent_checksum" "OpenGPU node-agent checksum"
   echo "Verifying node agent checksum..."
   verify_checksum "$tmp_agent_checksum"
 
@@ -342,7 +400,27 @@ if [ "$with_vllm" -eq 1 ]; then
   install_vllm_runtime
 fi
 
-if [ "$runtime_only" -eq 0 ]; then
+if [ "$runtime_only" -eq 0 ] && [ "$install_only" -eq 0 ]; then
+  echo
+  echo "Configuring this machine as a public MundusX contributor..."
+  "$INSTALL_DIR/$BIN_NAME" install \
+    --public \
+    --cap-percent "$cap_percent" \
+    --max-jobs "$max_jobs" \
+    --no-contribute-cluster </dev/null
+  "$INSTALL_DIR/$BIN_NAME" onboarding --complete
+
+  echo
+  echo "Starting the OpenGPU node in the background..."
+  "$INSTALL_DIR/$BIN_NAME" start \
+    --background \
+    --max-jobs "$max_jobs" \
+    --no-contribute-cluster </dev/null
+
+  echo
+  echo "OpenGPU is installed and contributing."
+  "$INSTALL_DIR/$BIN_NAME" status
+elif [ "$runtime_only" -eq 0 ]; then
   echo
   echo "Next steps:"
   echo "  opengpu install"

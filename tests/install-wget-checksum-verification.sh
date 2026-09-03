@@ -70,12 +70,12 @@ export TEST_SHASUM_LOG="$tmp_dir/shasum.log"
 output="$(
   INSTALL_DIR="$install_dir" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
-  bash "$repo_root/install.sh" 2>&1
+  bash "$repo_root/install.sh" --install-only 2>&1
 )"
 
-expected_asset="https://github.com/mundusx/mundusx/releases/latest/download/opengpu-"
-expected_checksum="https://github.com/mundusx/mundusx/releases/latest/download/opengpu-"
-expected_agent="https://github.com/mundusx/mundusx/releases/latest/download/opengpu-node-agent-"
+expected_asset="https://github.com/mundusx/releases/releases/download/opengpu-prod/opengpu-"
+expected_checksum="https://github.com/mundusx/releases/releases/download/opengpu-prod/opengpu-"
+expected_agent="https://github.com/mundusx/releases/releases/download/opengpu-prod/opengpu-node-agent-"
 grep -F "$expected_asset" "$TEST_DOWNLOAD_LOG" >/dev/null
 grep -F "$expected_checksum" "$TEST_DOWNLOAD_LOG" | grep -F ".sha256" >/dev/null
 grep -F "$expected_agent" "$TEST_DOWNLOAD_LOG" >/dev/null

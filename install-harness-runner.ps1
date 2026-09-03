@@ -1,12 +1,16 @@
 param(
   [string]$ChatUrl = "https://chat.mundusx.ai",
-  [string]$ReleaseBaseUrl = "https://github.com/mundusx/releases/releases/latest/download",
+  [string]$ReleaseBaseUrl = "https://downloads.mundusx.ai/prod/latest",
   [string]$InstallDir = "$env:USERPROFILE\.mundusx\bin"
 )
 
 $ErrorActionPreference = "Stop"
 $asset = "mundusx-harness-runner-x86_64-pc-windows-msvc.exe"
 $releaseBase = $ReleaseBaseUrl.TrimEnd("/")
+$releaseUri = [Uri]$releaseBase
+if (-not $releaseUri.IsAbsoluteUri -or $releaseUri.Scheme -ne "https") {
+  throw "Harness releases must be downloaded over HTTPS"
+}
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("mundusx-harness-" + [Guid]::NewGuid().ToString("N"))
 $download = Join-Path $temporary $asset
 $checksumFile = "$download.sha256"
@@ -18,8 +22,8 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $temporary | Out-Null
   New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-  Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$asset" -OutFile $download
-  Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$asset.sha256" -OutFile $checksumFile
+  Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri "$releaseBase/$asset" -OutFile $download
+  Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri "$releaseBase/$asset.sha256" -OutFile $checksumFile
   $expected = ((Get-Content -LiteralPath $checksumFile -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
   $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $download).Hash.ToLowerInvariant()
   if ($expected -notmatch "^[0-9a-f]{64}$" -or $actual -ne $expected) {

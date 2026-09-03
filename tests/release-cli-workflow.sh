@@ -40,10 +40,17 @@ assert_contains "$macos_workflow" "runs-on: macos-14"
 assert_contains "$macos_workflow" "TARGET: aarch64-apple-darwin"
 assert_contains "$macos_workflow" "BINARY_NAME: opengpu-aarch64-apple-darwin"
 assert_contains "$macos_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-aarch64-apple-darwin"
+assert_contains "$macos_workflow" "PKG_NAME: MundusX-OpenGPU-Apple-Silicon.pkg"
+assert_contains "$macos_workflow" "verify-release-manifest-assets.py"
+assert_contains "$macos_workflow" "install.sh"
 assert_contains "$macos_workflow" "cargo build --release --manifest-path apps/cli/Cargo.toml --target \${{ env.TARGET }}"
 assert_contains "$macos_workflow" "cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target \${{ env.TARGET }}"
 assert_contains "$macos_workflow" "tag_name: \${{ env.RELEASE_TAG }}"
 assert_contains "$macos_workflow" "name: MundusX macOS Apple Silicon CLI \${{ env.RELEASE_TAG }}"
+if rg -F -q "MundusX-Node-aarch64-dev.pkg" "$macos_workflow" scripts/package-macos-pkg.sh scripts/release-signing.sh; then
+  echo "legacy development package name must not appear in production packaging" >&2
+  exit 1
+fi
 
 assert_contains "$windows_workflow" "name: Release CLI Windows"
 assert_contains "$windows_workflow" "cli-windows-v*"
@@ -52,6 +59,7 @@ assert_contains "$windows_workflow" "TARGET: x86_64-pc-windows-msvc"
 assert_contains "$windows_workflow" "BINARY_NAME: opengpu-x86_64-pc-windows-msvc.exe"
 assert_contains "$windows_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-x86_64-pc-windows-msvc.exe"
 assert_contains "$windows_workflow" "TRAY_BINARY_NAME: mundusx-tray-x86_64-pc-windows-msvc.exe"
+assert_contains "$windows_workflow" "TRAY_ICON_NAME: mundusx.ico"
 assert_contains "$windows_workflow" "SETUP_BINARY_NAME: MundusX-Setup.exe"
 assert_contains "$windows_workflow" "RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-cuda.zip"
 assert_contains "$windows_workflow" "VULKAN_RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-vulkan.zip"
@@ -61,6 +69,8 @@ assert_contains "$windows_workflow" "cargo build --release --manifest-path apps/
 assert_contains "$windows_workflow" "cargo build --release --manifest-path apps/windows-installer/Cargo.toml --target \${{ env.TARGET }}"
 assert_contains "$windows_workflow" "tag_name: \${{ env.RELEASE_TAG }}"
 assert_contains "$windows_workflow" "name: MundusX Windows x86_64 CLI \${{ env.RELEASE_TAG }}"
+assert_contains "$windows_workflow" "verify-release-manifest-assets.py"
+assert_contains "$windows_workflow" "install.ps1"
 
 assert_contains "$linux_workflow" "name: Release CLI Linux"
 assert_contains "$linux_workflow" "cli-linux-v*"
@@ -70,5 +80,10 @@ assert_contains "$linux_workflow" "BINARY_NAME: opengpu-\${{ matrix.target }}"
 assert_contains "$linux_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-\${{ matrix.target }}"
 assert_contains "$linux_workflow" 'mv release-manifest.json "release-manifest-${TARGET}.json"'
 assert_contains "$linux_workflow" "name: MundusX Linux CLI \${{ env.RELEASE_TAG }}"
+assert_contains "$linux_workflow" "verify-release-manifest-assets.py"
+assert_contains "$linux_workflow" "install.sh"
+
+assert_legacy_contains "MundusX-OpenGPU-Apple-Silicon.pkg"
+assert_legacy_contains "verify-release-manifest-assets.py"
 
 echo "release CLI workflows publish separate Linux, macOS, and Windows CLI releases"

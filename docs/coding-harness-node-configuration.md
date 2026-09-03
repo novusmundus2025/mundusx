@@ -83,6 +83,8 @@ container runtime and digest-pinned image in the generated `config.json`.
 ### Public runner releases
 
 User-facing binaries are published in `mundusx/releases`; the application source remains private.
+Installers use the stable `https://downloads.mundusx.ai/prod/latest/<asset>` channel, which redirects
+only allowlisted asset names to the latest public release. GitHub's URL is an internal storage detail.
 Configure the private source repository Actions secret `MUNDUSX_PUBLIC_RELEASES_TOKEN` with a
 fine-grained token granting Contents read/write access only to `mundusx/releases`. The release
 workflow retains an internal prerelease in the source repository as an audit copy.

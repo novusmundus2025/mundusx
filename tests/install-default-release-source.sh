@@ -50,13 +50,13 @@ export TEST_CURL_LOG="$tmp_dir/curl.log"
 output="$(
   INSTALL_DIR="$install_dir" \
   OPENGPU_SKIP_INSTALL_SMOKE=1 \
-  bash "$repo_root/install.sh" 2>&1
+  bash "$repo_root/install.sh" --install-only 2>&1
 )"
 
-expected_source="source: https://github.com/mundusx/mundusx/releases/latest/download"
-expected_asset="https://github.com/mundusx/mundusx/releases/latest/download/opengpu-"
+expected_source="source: https://github.com/mundusx/releases/releases/download/opengpu-prod"
+expected_asset="https://github.com/mundusx/releases/releases/download/opengpu-prod/opengpu-"
 
 printf '%s\n' "$output" | grep -F "$expected_source" >/dev/null
 grep -F "$expected_asset" "$TEST_CURL_LOG" >/dev/null
 
-echo "PASS: install.sh defaults to the current MundusX release repo"
+echo "PASS: install.sh defaults to the public OpenGPU production channel"

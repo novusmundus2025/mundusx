@@ -177,12 +177,9 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
         resolved_backend(config),
         config.contributed_cluster.as_ref(),
     );
-    // The contributor's own limit governs every runtime. Derived figures —
-    // memory ladders for a managed runtime, reported ceilings for a contributed
-    // cluster — only apply when the contributor has not said otherwise.
-    health.parallel_slots = if let Some(max_jobs) = config.max_jobs.filter(|value| *value > 0) {
-        max_jobs.min(u8::MAX as u32) as u8
-    } else if let Some(cluster) = config.contributed_cluster.as_ref() {
+    // A contributor limit can donate fewer slots, but it must never raise the
+    // safe capacity derived from memory or reported by an external runtime.
+    let runtime_ceiling = if let Some(cluster) = config.contributed_cluster.as_ref() {
         // The runtime publishes how many concurrent sequences it can hold, so
         // use that instead of the old hardcoded 1. Fall back to one slot only
         // when it reports nothing.
@@ -196,6 +193,12 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
             config.active_model.as_deref(),
         )
     };
+    health.parallel_slots = config
+        .max_jobs
+        .filter(|value| *value > 0)
+        .map(|requested| requested.min(u32::from(runtime_ceiling)) as u8)
+        .unwrap_or(runtime_ceiling)
+        .max(1);
     let policy = worker::probe_worker_policy(&health, config.contribution_percent);
     (health, policy)
 }
@@ -2530,14 +2533,27 @@ mod tests {
     }
 
     #[test]
-    fn a_node_without_a_cluster_also_honours_the_contributors_limit() {
-        // The memory ladder caps a managed runtime at 4 slots; a contributor
-        // donating a large machine can say otherwise.
+    fn a_node_without_a_cluster_cannot_override_the_memory_ceiling() {
+        // With no detected test GPU the conservative runtime ceiling is one;
+        // an explicit user value must not raise it.
         let mut config = test_config();
         config.contributed_cluster = None;
         config.max_jobs = Some(6);
 
-        assert_eq!(worker_readiness(&config).0.parallel_slots, 6);
+        assert_eq!(worker_readiness(&config).0.parallel_slots, 1);
+    }
+
+    #[test]
+    fn a_cluster_job_limit_cannot_exceed_its_reported_ceiling() {
+        let mut cluster = cluster_config("qwen3-coder", None, None)
+            .contributed_cluster
+            .expect("cluster");
+        cluster.max_concurrency = Some(2);
+        let mut config = cluster_config("qwen3-coder", None, None);
+        config.contributed_cluster = Some(cluster);
+        config.max_jobs = Some(8);
+
+        assert_eq!(worker_readiness(&config).0.parallel_slots, 2);
     }
 
     #[test]
