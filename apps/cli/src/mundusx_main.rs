@@ -37,6 +37,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Cancel a running agent session between turns
+    Cancel { session_id: String },
     /// Run the local OpenAI-compatible agent service
     Serve {
         #[arg(long, default_value = "127.0.0.1:11436")]
@@ -153,22 +155,44 @@ fn run_prompt(
     session_id: Option<&str>,
     approve_mutations: bool,
 ) -> Result<(), String> {
-    let response = match post_chat(prompt, session_id, approve_mutations) {
+    let generated_session;
+    let session_id = match session_id {
+        Some(value) => value,
+        None => {
+            generated_session = SessionId::new().to_string();
+            &generated_session
+        }
+    };
+    eprintln!("session: {session_id}");
+    let response = match post_chat(prompt, Some(session_id), approve_mutations) {
         Ok(value) => value,
         Err(first_error) => {
             let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
             spawn_server(&workspace)
                 .map_err(|start_error| format!("{first_error}; {start_error}"))?;
-            post_chat(prompt, session_id, approve_mutations)?
+            post_chat(prompt, Some(session_id), approve_mutations)?
         }
     };
     let content = response["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| format!("agent response did not contain assistant content: {response}"))?;
     println!("{content}");
-    if let Some(session) = response["mundusx"]["session_id"].as_str() {
-        eprintln!("session: {session}");
+    Ok(())
+}
+
+fn cancel_session(session_id: &str) -> Result<(), String> {
+    SessionId::parse(session_id).map_err(|_| "session_id must be valid".to_string())?;
+    let mut request = ureq::post(&format!(
+        "{}/v1/sessions/{session_id}/cancel",
+        agent_url().trim_end_matches('/')
+    ));
+    if let Some(key) = api_key() {
+        request = request.set("Authorization", &format!("Bearer {key}"));
     }
+    request
+        .call()
+        .map_err(|error| format!("could not cancel session: {error}"))?;
+    println!("Cancellation requested for {session_id}");
     Ok(())
 }
 
@@ -249,6 +273,7 @@ fn main() {
             }
         }
         Commands::Sessions { json } => list_sessions(json),
+        Commands::Cancel { session_id } => cancel_session(&session_id),
         Commands::Serve { bind, workspace } => Command::new(server_executable())
             .args(["--bind", &bind, "--workspace"])
             .arg(workspace)

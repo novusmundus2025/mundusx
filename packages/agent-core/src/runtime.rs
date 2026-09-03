@@ -51,6 +51,7 @@ pub enum AgentRunError {
     Protocol(String),
     Store(StoreError),
     TurnLimit(u32),
+    Cancelled,
 }
 
 impl std::fmt::Display for AgentRunError {
@@ -60,6 +61,7 @@ impl std::fmt::Display for AgentRunError {
             Self::Protocol(message) => write!(formatter, "model protocol failed: {message}"),
             Self::Store(error) => error.fmt(formatter),
             Self::TurnLimit(limit) => write!(formatter, "agent reached its {limit}-turn limit"),
+            Self::Cancelled => write!(formatter, "agent session was cancelled"),
         }
     }
 }
@@ -82,6 +84,7 @@ pub struct AgentRunner<'a> {
     approval: Option<&'a mut dyn ApprovalProvider>,
     max_context_chars: usize,
     additional_instructions: Vec<String>,
+    cancellation: Option<&'a dyn Fn() -> bool>,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -96,6 +99,7 @@ impl<'a> AgentRunner<'a> {
             approval: None,
             max_context_chars: 64 * 1024,
             additional_instructions: Vec::new(),
+            cancellation: None,
         }
     }
 
@@ -130,6 +134,11 @@ impl<'a> AgentRunner<'a> {
         self
     }
 
+    pub fn with_cancellation(mut self, cancellation: &'a dyn Fn() -> bool) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
     pub fn run(
         &mut self,
         store: &mut dyn AgentEventStore,
@@ -160,6 +169,14 @@ When the task is complete return {{\"type\":\"final\",\"content\":\"answer\"}}.\
         let mut tool_calls = 0;
 
         for turn in 1..=self.max_turns {
+            if self.cancellation.is_some_and(|check| check()) {
+                store.append(&AgentEvent::new(
+                    session_id.clone(),
+                    sequence,
+                    AgentEventKind::SessionCancelled,
+                ))?;
+                return Err(AgentRunError::Cancelled);
+            }
             let context_window = compact_transcript(&transcript, self.max_context_chars);
             if context_window.compacted {
                 store.append(&AgentEvent::new(
@@ -438,5 +455,26 @@ mod tests {
             conversation_transcript(&events),
             "USER:\nfirst\n\nASSISTANT:\nanswer"
         );
+    }
+
+    #[test]
+    fn cancellation_stops_before_the_next_model_turn() {
+        let context = ToolContext::new(std::env::current_dir().expect("cwd")).expect("context");
+        let mut store = SqliteEventStore::in_memory().expect("store");
+        let session = AgentSession::new(".", None);
+        store.create_session(&session).expect("session");
+        let tools = ToolRegistry::default();
+        let mut provider = ScriptedProvider {
+            replies: VecDeque::new(),
+        };
+        let cancelled = || true;
+        let result = AgentRunner::new(&mut provider, &tools)
+            .with_cancellation(&cancelled)
+            .run(&mut store, session.id.clone(), 1, "stop", "", &context);
+        assert!(matches!(result, Err(AgentRunError::Cancelled)));
+        assert!(matches!(
+            store.events(&session.id).expect("events")[0].kind,
+            AgentEventKind::SessionCancelled
+        ));
     }
 }

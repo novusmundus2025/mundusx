@@ -10,6 +10,7 @@ coordination surface. The local agent does not require the Control Plane.
 mundusx run "inspect this repository"
 mundusx resume <session-id> "continue and explain the failing test"
 mundusx sessions
+mundusx cancel <session-id>
 mundusx model list
 mundusx model use <model>
 mundusx model add <model>
@@ -37,6 +38,10 @@ Local skills are loaded from `<MUNDUSX_HOME>/skills/<skill>/SKILL.md` and select
 for a request by their name and description. Selected skill names, context
 compaction, approvals, tool activity, and final responses are recorded as
 session events.
+
+Requests execute concurrently. A client that supplies a session id can cancel
+between model/tool turns with `POST /v1/sessions/<session-id>/cancel`; cancellation
+is persisted in that session's event stream.
 
 Control Plane delegation is disabled by default. Set
 `MUNDUSX_CONTROL_PLANE_URL` (and optionally `MUNDUSX_CONTROL_PLANE_TOKEN`) to

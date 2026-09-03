@@ -137,6 +137,7 @@ pub enum AgentEventKind {
     TaskCompleted {
         task_id: String,
     },
+    SessionCancelled,
     FinalResponseProduced {
         content: String,
     },

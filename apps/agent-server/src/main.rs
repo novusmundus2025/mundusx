@@ -7,6 +7,7 @@ use mundusx_agent_core::{
 use mundusx_agent_skills::{load_skills, select_skills};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -268,8 +269,9 @@ fn next_sequence(store: &SqliteEventStore, session_id: &SessionId) -> Result<u64
 fn handle_chat(
     mut request: Request,
     runtime_url: &str,
-    store: &Arc<Mutex<SqliteEventStore>>,
+    database_path: &std::path::Path,
     context: &ToolContext,
+    cancellations: &Arc<Mutex<HashSet<SessionId>>>,
 ) {
     let mut body = String::new();
     if request
@@ -292,6 +294,13 @@ fn handle_chat(
             return;
         }
     };
+    let mut store = match SqliteEventStore::open(database_path) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = request.respond(api_error(500, "SESSION_STORE_FAILED", error.to_string()));
+            return;
+        }
+    };
     let prompt = match current_user_input(&payload.messages) {
         Ok(value) => value,
         Err(error) => {
@@ -302,10 +311,13 @@ fn handle_chat(
     let session_id = header_value(&request, "X-MundusX-Session-Id")
         .and_then(|value| SessionId::parse(value).ok())
         .unwrap_or_default();
+    cancellations
+        .lock()
+        .expect("cancellation lock")
+        .remove(&session_id);
     let working_directory = context.workspace().display().to_string();
     let session = AgentSession::with_id(session_id.clone(), working_directory, None);
     let (mut sequence, prior_transcript) = {
-        let mut store = store.lock().expect("agent store lock");
         if let Err(error) = store.ensure_session(&session) {
             let _ = request.respond(api_error(500, "SESSION_STORE_FAILED", error.to_string()));
             return;
@@ -346,7 +358,6 @@ fn handle_chat(
         })
         .unwrap_or_default();
     if !selected_skills.is_empty() {
-        let mut store = store.lock().expect("agent store lock");
         for skill in &selected_skills {
             sequence += 1;
             if let Err(error) = store.append(&AgentEvent::new(
@@ -402,7 +413,12 @@ fn handle_chat(
         StaticApprovalProvider::read_only()
     };
     let outcome = {
-        let mut store = store.lock().expect("agent store lock");
+        let cancelled = || {
+            cancellations
+                .lock()
+                .expect("cancellation lock")
+                .contains(&session_id)
+        };
         AgentRunner::new(&mut provider, &tools)
             .with_generation(payload.max_tokens, payload.temperature)
             .with_approval_provider(&mut approval)
@@ -412,8 +428,9 @@ fn handle_chat(
                     .map(|skill| format!("Skill: {}\n{}", skill.name, skill.instructions))
                     .collect(),
             )
+            .with_cancellation(&cancelled)
             .run(
-                &mut *store,
+                &mut store,
                 session_id.clone(),
                 sequence + 1,
                 &prompt,
@@ -468,77 +485,115 @@ fn main() -> Result<(), String> {
     }
     let data_dir = config_dir();
     fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
-    let store = Arc::new(Mutex::new(
-        SqliteEventStore::open(data_dir.join("agent.db")).map_err(|error| error.to_string())?,
-    ));
+    let database_path = data_dir.join("agent.db");
+    SqliteEventStore::open(&database_path).map_err(|error| error.to_string())?;
     let context = ToolContext::new(&args.workspace).map_err(|error| error.to_string())?;
+    let cancellations = Arc::new(Mutex::new(HashSet::new()));
     let server = Server::http(&args.bind).map_err(|error| error.to_string())?;
     let api_key = configured_api_key();
     println!("MundusX agent API listening on http://{}", args.bind);
     for request in server.incoming_requests() {
-        if api_key
-            .as_deref()
-            .is_some_and(|key| bearer_token(&request) != Some(key))
-        {
-            let _ = request.respond(api_error(401, "UNAUTHORIZED", "invalid API key"));
-            continue;
-        }
-        match (
-            request.method(),
-            request.url().split('?').next().unwrap_or(""),
-        ) {
-            (&Method::Get, "/health") => {
-                let _ = request.respond(json_response(200, json!({"status": "ok"})));
-            }
-            (&Method::Get, "/v1/models") => {
-                let _ = request.respond(json_response(
-                    200,
-                    json!({
-                        "object": "list",
-                        "data": [{"id": MODEL_ID, "object": "model", "owned_by": "mundusx"}]
-                    }),
-                ));
-            }
-            (&Method::Get, path)
-                if path.starts_with("/v1/sessions/") && path.ends_with("/events") =>
+        let api_key = api_key.clone();
+        let database_path = database_path.clone();
+        let context = context.clone();
+        let runtime_url = args.runtime_url.clone();
+        let cancellations = Arc::clone(&cancellations);
+        std::thread::spawn(move || {
+            if api_key
+                .as_deref()
+                .is_some_and(|key| bearer_token(&request) != Some(key))
             {
-                let id = path
-                    .trim_start_matches("/v1/sessions/")
-                    .trim_end_matches("/events")
-                    .trim_end_matches('/');
-                match SessionId::parse(id) {
-                    Ok(session_id) => {
-                        let result = store.lock().expect("agent store lock").events(&session_id);
-                        match result {
-                            Ok(events) => {
-                                let _ =
-                                    request.respond(json_response(200, json!({"data": events})));
-                            }
-                            Err(error) => {
-                                let _ = request.respond(api_error(
-                                    500,
-                                    "SESSION_STORE_FAILED",
-                                    error.to_string(),
-                                ));
+                let _ = request.respond(api_error(401, "UNAUTHORIZED", "invalid API key"));
+                return;
+            }
+            match (
+                request.method(),
+                request.url().split('?').next().unwrap_or(""),
+            ) {
+                (&Method::Get, "/health") => {
+                    let _ = request.respond(json_response(200, json!({"status": "ok"})));
+                }
+                (&Method::Get, "/v1/models") => {
+                    let _ = request.respond(json_response(
+                        200,
+                        json!({
+                            "object": "list",
+                            "data": [{"id": MODEL_ID, "object": "model", "owned_by": "mundusx"}]
+                        }),
+                    ));
+                }
+                (&Method::Get, path)
+                    if path.starts_with("/v1/sessions/") && path.ends_with("/events") =>
+                {
+                    let id = path
+                        .trim_start_matches("/v1/sessions/")
+                        .trim_end_matches("/events")
+                        .trim_end_matches('/');
+                    match SessionId::parse(id) {
+                        Ok(session_id) => {
+                            let result = SqliteEventStore::open(&database_path)
+                                .and_then(|store| store.events(&session_id));
+                            match result {
+                                Ok(events) => {
+                                    let _ = request
+                                        .respond(json_response(200, json!({"data": events})));
+                                }
+                                Err(error) => {
+                                    let _ = request.respond(api_error(
+                                        500,
+                                        "SESSION_STORE_FAILED",
+                                        error.to_string(),
+                                    ));
+                                }
                             }
                         }
-                    }
-                    Err(_) => {
-                        let _ = request.respond(api_error(
-                            400,
-                            "INVALID_SESSION_ID",
-                            "invalid session id",
-                        ));
+                        Err(_) => {
+                            let _ = request.respond(api_error(
+                                400,
+                                "INVALID_SESSION_ID",
+                                "invalid session id",
+                            ));
+                        }
                     }
                 }
+                (&Method::Post, path)
+                    if path.starts_with("/v1/sessions/") && path.ends_with("/cancel") =>
+                {
+                    let id = path
+                        .trim_start_matches("/v1/sessions/")
+                        .trim_end_matches("/cancel")
+                        .trim_end_matches('/');
+                    match SessionId::parse(id) {
+                        Ok(session_id) => {
+                            cancellations
+                                .lock()
+                                .expect("cancellation lock")
+                                .insert(session_id);
+                            let _ = request.respond(json_response(202, json!({"cancelled": true})));
+                        }
+                        Err(_) => {
+                            let _ = request.respond(api_error(
+                                400,
+                                "INVALID_SESSION_ID",
+                                "invalid session id",
+                            ));
+                        }
+                    }
+                }
+                (&Method::Post, "/v1/chat/completions") => {
+                    handle_chat(
+                        request,
+                        &runtime_url,
+                        &database_path,
+                        &context,
+                        &cancellations,
+                    );
+                }
+                _ => {
+                    let _ = request.respond(api_error(404, "NOT_FOUND", "route not found"));
+                }
             }
-            (&Method::Post, "/v1/chat/completions") => {
-                handle_chat(request, &args.runtime_url, &store, &context);
-            }
-            _ => {
-                let _ = request.respond(api_error(404, "NOT_FOUND", "route not found"));
-            }
-        }
+        });
     }
     Ok(())
 }
