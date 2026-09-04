@@ -71,12 +71,12 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true)]
         arguments: Vec<String>,
     },
-    /// Connect this local agent to chat.mundusx.ai using an MCP connection token
+    /// Connect a local project to Chat; opens the browser for approval when needed
     Connect {
         #[arg(long, default_value = "https://chat.mundusx.ai")]
         url: String,
         #[arg(long, env = "MUNDUSX_CHAT_TOKEN", hide_env_values = true)]
-        token: String,
+        token: Option<String>,
         #[arg(long)]
         device_name: Option<String>,
         #[arg(long, default_value = ".")]
@@ -527,7 +527,7 @@ fn main() {
                 chat_connector::connect(
                     chat_connector::ConnectorOptions {
                         chat_url,
-                        token,
+                        token: token.unwrap_or_default(),
                         device_name: device_name.unwrap_or_else(|| {
                             std::env::var("COMPUTERNAME")
                                 .or_else(|_| std::env::var("HOSTNAME"))

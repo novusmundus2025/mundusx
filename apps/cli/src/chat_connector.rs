@@ -16,6 +16,90 @@ pub struct ConnectorOptions {
     pub workspace: PathBuf,
 }
 
+fn saved_token(data_dir: &Path, chat_url: &str) -> Option<String> {
+    serde_json::from_str::<Value>(&fs::read_to_string(connection_file(data_dir)).ok()?)
+        .ok()
+        .filter(|value| value["chat_url"].as_str() == Some(chat_url))?["token"]
+        .as_str()
+        .map(str::to_string)
+}
+
+fn save_token(data_dir: &Path, chat_url: &str, connector_token: &str) -> Result<(), String> {
+    let path = connection_file(data_dir);
+    let mut value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| json!({}));
+    value["chat_url"] = json!(chat_url);
+    value["token"] = json!(connector_token);
+    fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|error| format!("could not save Chat connection: {error}"))
+}
+
+fn open_browser(url: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("could not open browser: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("could not open browser: {e}"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("could not open browser: {e}"))
+    }
+}
+
+fn bootstrap_token(chat_url: &str, device_name: &str) -> Result<String, String> {
+    let bootstrap: Value = ureq::post(&format!("{chat_url}/api/agent/bootstrap/sessions"))
+        .send_json(json!({"device_name": device_name}))
+        .map_err(|e| format!("could not start browser approval: {e}"))?
+        .into_json()
+        .map_err(|e| format!("Chat returned invalid approval data: {e}"))?;
+    let session = bootstrap["session_id"]
+        .as_str()
+        .ok_or("approval session is missing")?;
+    let connector_token = bootstrap["connector_token"]
+        .as_str()
+        .ok_or("connector credential is missing")?
+        .to_string();
+    let approval_url = bootstrap["approval_url"]
+        .as_str()
+        .ok_or("approval URL is missing")?;
+    eprintln!("Approve this computer in your browser:\n{approval_url}");
+    open_browser(approval_url)?;
+    for _ in 0..120 {
+        let state: Value = ureq::post(&format!(
+            "{chat_url}/api/agent/bootstrap/sessions/{session}/status"
+        ))
+        .send_json(json!({"connector_token": connector_token}))
+        .map_err(|e| format!("approval check failed: {e}"))?
+        .into_json()
+        .map_err(|e| format!("Chat returned invalid approval status: {e}"))?;
+        match state["state"].as_str() {
+            Some("approved") => return Ok(connector_token),
+            Some("expired") => {
+                return Err("browser approval expired; run the command again".to_string())
+            }
+            _ => thread::sleep(Duration::from_secs(2)),
+        }
+    }
+    Err("browser approval timed out; run the command again".to_string())
+}
+
 pub fn validate_chat_url(value: &str) -> Result<String, String> {
     let value = value.trim().trim_end_matches('/');
     let secure = value.starts_with("https://");
@@ -257,8 +341,15 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     Ok(())
 }
 
-pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
+pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
     let connection_id = connection_id(data_dir)?;
+    if options.token.trim().is_empty() {
+        options.token = saved_token(data_dir, &options.chat_url).unwrap_or_default();
+    }
+    if options.token.trim().is_empty() {
+        options.token = bootstrap_token(&options.chat_url, &options.device_name)?;
+        save_token(data_dir, &options.chat_url, &options.token)?;
+    }
     let selected = super::selected_agent();
     if matches!(selected, super::AgentSelection::None) {
         return Err("no local agent is selected; choose one with `mundusx agent use native` or `mundusx agent use hermes` before connecting".to_string());

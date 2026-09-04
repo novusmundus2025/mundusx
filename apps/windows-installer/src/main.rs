@@ -20,6 +20,10 @@ fn installed_cli_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("opengpu.exe"))
 }
 
+fn installed_mundusx_path() -> std::path::PathBuf {
+    installed_cli_path().with_file_name("mundusx.exe")
+}
+
 fn installer_log_path() -> std::path::PathBuf {
     std::env::var("USERPROFILE")
         .map(|profile| {
@@ -126,6 +130,36 @@ fn launch_contributor_setup() -> Result<(), String> {
         .map_err(|error| format!("failed to launch contributor setup: {error}"))
 }
 
+fn launch_developer_setup() -> Result<(), String> {
+    let cli_path = installed_mundusx_path();
+    if !cli_path.is_file() {
+        return Err(format!(
+            "installed mundusx was not found at {}",
+            cli_path.display()
+        ));
+    }
+    let escaped = cli_path.display().to_string().replace('\'', "''");
+    let script = format!("Add-Type -AssemblyName System.Windows.Forms; $picker = New-Object System.Windows.Forms.FolderBrowserDialog; $picker.Description = 'Choose the local project folder MundusX may use'; $picker.ShowNewFolderButton = $true; if ($picker.ShowDialog() -eq 'OK') {{ Start-Process -FilePath '{escaped}' -ArgumentList @('connect','--workspace',$picker.SelectedPath) -WindowStyle Hidden }}");
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to open the project folder picker: {error}"))
+}
+
 #[cfg(windows)]
 fn message(title: &str, body: &str, error: bool) {
     use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
@@ -180,26 +214,59 @@ fn choose_agent() -> Option<&'static str> {
 }
 
 #[cfg(windows)]
+fn choose_role() -> Option<bool> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDNO, IDYES, MB_ICONQUESTION, MB_YESNO,
+    };
+    let title: Vec<u16> = OsStr::new("How will you use MundusX?")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let body: Vec<u16> = OsStr::new("Yes — Develop with AI on my local projects (recommended)\n\nNo — Contribute compute to the network\n\nYou can enable the other role later from MundusX.").encode_wide().chain(Some(0)).collect();
+    match unsafe {
+        MessageBoxW(
+            ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONQUESTION,
+        )
+    } {
+        IDYES => Some(true),
+        IDNO => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
 fn main() {
     message(
         "MundusX Setup",
-        "MundusX will download and verify the CLI, node agent, tray application, and the right GPU runtime for this PC. NVIDIA systems use CUDA; other Windows GPU systems use Vulkan. After installation, contributor setup will open so you can choose your control plane, contribution cap, and model.",
+        "MundusX connects chat.mundusx.ai to project folders you choose on this computer. Development and compute contribution are separate choices.",
         false,
     );
-    let Some(agent_mode) = choose_agent() else {
+    let Some(developer_role) = choose_role() else {
         return;
     };
+    let agent_mode = if developer_role {
+        let Some(mode) = choose_agent() else {
+            return;
+        };
+        mode
+    } else {
+        "none"
+    };
     match run_installer(agent_mode) {
-        Ok(()) => match launch_contributor_setup() {
+        Ok(()) => match if developer_role { launch_developer_setup() } else { launch_contributor_setup() } {
             Ok(()) => message(
                 "MundusX Setup",
-                "MundusX was installed successfully. The contributor setup wizard is open.",
+                if developer_role { "MundusX was installed. Choose your local project folder, then approve this computer in Chat with Google." } else { "MundusX was installed. The contributor setup wizard is open." },
                 false,
             ),
             Err(error) => message(
                 "MundusX Setup",
                 &format!(
-                    "MundusX was installed successfully, but contributor setup could not open automatically.\n\n{error}\n\nRun `opengpu install` manually."
+                    "MundusX was installed successfully, but the next setup step could not open automatically.\n\n{error}"
                 ),
                 true,
             ),
