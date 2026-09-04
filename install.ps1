@@ -9,10 +9,11 @@ param(
   [switch]$SkipPathUpdate,
   [switch]$SkipContributorSetup,
   [ValidateSet("hermes", "native", "none")]
-  [string]$AgentMode = "native",
+  [string]$AgentMode = "none",
   [switch]$Help
 )
 
+$agentModeWasProvided = $PSBoundParameters.ContainsKey("AgentMode")
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Net.Http
@@ -51,7 +52,8 @@ Options:
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
   -SkipContributorSetup    Do not open a fresh PowerShell window for `opengpu install`.
-  -AgentMode <mode>        Agent harness: hermes, native, or none (default: native).
+  -AgentMode <mode>        Agent harness: hermes, native, or none.
+                          When omitted, asks interactively and defaults to none.
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
                           when testing a local release preview.
@@ -73,6 +75,37 @@ function Get-GitHubToken {
     return $env:GH_TOKEN
   }
   return $null
+}
+
+function Select-AgentMode {
+  Write-Host ""
+  Write-Host "Would you like to configure a local coding agent now?"
+  Write-Host "  1. Hermes Agent (full third-party coding harness)"
+  Write-Host "  2. MundusX Agent (built in)"
+  Write-Host "  3. Not now (select an agent later)"
+
+  while ($true) {
+    try {
+      $choice = Read-Host "Choose 1, 2, or 3 [default: 3]"
+    } catch {
+      Write-Warning "Interactive input is unavailable; no agent will be configured now."
+      return "none"
+    }
+
+    $normalizedChoice = if ($null -eq $choice) { "" } else { $choice.Trim().ToLowerInvariant() }
+    switch ($normalizedChoice) {
+      "1" { return "hermes" }
+      "hermes" { return "hermes" }
+      "2" { return "native" }
+      "native" { return "native" }
+      "mundusx" { return "native" }
+      "" { return "none" }
+      "3" { return "none" }
+      "none" { return "none" }
+      "later" { return "none" }
+      default { Write-Warning "Please enter 1, 2, or 3." }
+    }
+  }
 }
 
 function Assert-DownloadedReleaseFile {
@@ -592,6 +625,10 @@ if ($Help) {
   exit 0
 }
 
+if (-not $agentModeWasProvided) {
+  $AgentMode = Select-AgentMode
+}
+
 if ($InstallCudaRuntime -and $InstallVulkanRuntime) {
   throw "choose only one runtime override: -InstallCudaRuntime or -InstallVulkanRuntime"
 }
@@ -841,6 +878,11 @@ if ($SkipContributorSetup) {
   Write-Output "Next: opengpu install"
 } else {
   Write-Output "Next: contributor setup will open in a fresh PowerShell window"
+}
+if ($AgentMode -eq "none") {
+  Write-Output "Agent setup was deferred. Later, run:"
+  Write-Output "  mundusx agent install hermes"
+  Write-Output "  or: mundusx agent use native"
 }
 Write-Output ""
 Write-Output "[6/6 - overall 100%] Installation complete"
