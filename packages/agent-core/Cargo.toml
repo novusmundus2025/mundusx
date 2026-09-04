@@ -1,6 +1,6 @@
 [package]
 name = "mundusx-agent-core"
-version = "0.1.0"
+version = "0.1.28"
 edition = "2021"
 description = "Provider-neutral local agent runtime primitives for MundusX"
 license = "Apache-2.0"

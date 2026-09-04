@@ -1,6 +1,6 @@
 [package]
 name = "mundusx-agent-orchestration"
-version = "0.1.0"
+version = "0.1.28"
 edition = "2021"
 description = "Bounded dependency-aware orchestration for MundusX agents"
 license = "Apache-2.0"

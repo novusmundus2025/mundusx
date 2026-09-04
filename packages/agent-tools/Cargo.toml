@@ -1,6 +1,6 @@
 [package]
 name = "mundusx-agent-tools"
-version = "0.1.0"
+version = "0.1.28"
 edition = "2021"
 description = "Built-in tools for the local MundusX agent"
 license = "Apache-2.0"
