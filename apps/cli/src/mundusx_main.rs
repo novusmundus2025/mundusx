@@ -406,7 +406,7 @@ fn install_hermes() -> Result<(), String> {
     if !cfg!(windows) {
         return Err("automatic Hermes installation is currently supported on Windows only; see https://github.com/NousResearch/Hermes-Agent".to_string());
     }
-    let script = r#"$ErrorActionPreference='Stop'; $uri='https://raw.githubusercontent.com/NousResearch/hermes-agent/9de9c25f620ff7f1ce0fd5457d596052d5159596/scripts/install.ps1'; $path=Join-Path $env:TEMP 'mundusx-hermes-install.ps1'; Invoke-WebRequest -Uri $uri -OutFile $path; $actual=(Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash; if ($actual -ne '65552DF7A1214B288FBF858F47774E0A561D7587824948677633FDA03A0686DC') { throw 'Hermes installer checksum mismatch' }; & $path -Commit '9de9c25f620ff7f1ce0fd5457d596052d5159596' -SkipSetup; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"#;
+    let script = r#"$ErrorActionPreference='Stop'; $uri='https://raw.githubusercontent.com/NousResearch/hermes-agent/9de9c25f620ff7f1ce0fd5457d596052d5159596/scripts/install.ps1'; $path=Join-Path $env:TEMP 'mundusx-hermes-install.ps1'; Invoke-WebRequest -Uri $uri -OutFile $path; $expected='B4998D3B5FC9426F9FE2DA1479424DB0E840A5E67838A9F2BD14F7D52391CC81'; $actual=(Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash; if ($actual -ne $expected) { throw "Hermes installer checksum mismatch (expected $expected, got $actual)" }; & $path -Commit '9de9c25f620ff7f1ce0fd5457d596052d5159596' -SkipSetup; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"#;
     let status = Command::new("powershell.exe")
         .args([
             "-NoProfile",
