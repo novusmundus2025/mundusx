@@ -32,6 +32,12 @@ if ($installerSource -notmatch 'Join-Path \$env:USERPROFILE "MundusX\\Projects"'
 if ($installerSource -notmatch '\$AgentMode -ne "none" -and -not \$SkipChatConnect') {
   throw "Chat connection must run only when an agent is selected"
 }
+if ($installerSource -notmatch '\[switch\]\$SkipModelRuntime') {
+  throw "installer must expose an agent-only profile without a model runtime"
+}
+if ($installerSource -notmatch 'no llama\.cpp server, local model, CUDA, or Vulkan runtime') {
+  throw "agent-only profile must explicitly omit local inference components"
+}
 
 $selector = $functionAst.Body.GetScriptBlock()
 try {

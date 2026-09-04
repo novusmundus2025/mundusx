@@ -35,7 +35,11 @@ fn installer_log_path() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("mundusx-installer.log"))
 }
 
-fn installer_arguments(script_path: &std::path::Path, agent_mode: &str) -> Vec<String> {
+fn installer_arguments(
+    script_path: &std::path::Path,
+    agent_mode: &str,
+    agent_only: bool,
+) -> Vec<String> {
     let mut arguments = vec![
         "-NoProfile".to_string(),
         "-ExecutionPolicy".to_string(),
@@ -46,6 +50,9 @@ fn installer_arguments(script_path: &std::path::Path, agent_mode: &str) -> Vec<S
         "-AgentMode".to_string(),
         agent_mode.to_string(),
     ];
+    if agent_only {
+        arguments.push("-SkipModelRuntime".to_string());
+    }
     if let Ok(release_base) = std::env::var("MUNDUSX_RELEASE_BASE_URL") {
         let release_base = release_base.trim();
         if !release_base.is_empty() {
@@ -63,7 +70,7 @@ fn contributor_setup_command(cli_path: &std::path::Path) -> String {
     )
 }
 
-fn run_installer(agent_mode: &str) -> Result<(), String> {
+fn run_installer(agent_mode: &str, agent_only: bool) -> Result<(), String> {
     let staging = std::env::temp_dir().join(format!(
         "mundusx-setup-{}-{}",
         std::process::id(),
@@ -84,7 +91,7 @@ fn run_installer(agent_mode: &str) -> Result<(), String> {
             .map_err(|error| format!("failed to create installer log directory: {error}"))?;
     }
     let result = std::process::Command::new("powershell.exe")
-        .args(installer_arguments(&script_path, agent_mode))
+        .args(installer_arguments(&script_path, agent_mode, agent_only))
         .status()
         .map_err(|error| format!("failed to start the MundusX installer: {error}"))?;
     let _ = std::fs::remove_dir_all(&staging);
@@ -256,7 +263,7 @@ fn main() {
     } else {
         "none"
     };
-    match run_installer(agent_mode) {
+    match run_installer(agent_mode, developer_role) {
         Ok(()) => match if developer_role { launch_developer_setup() } else { launch_contributor_setup() } {
             Ok(()) => message(
                 "MundusX Setup",
@@ -301,8 +308,11 @@ mod tests {
 
     #[test]
     fn powershell_arguments_use_the_embedded_script() {
-        let arguments =
-            installer_arguments(std::path::Path::new("C:\\Temp\\install.ps1"), "hermes");
+        let arguments = installer_arguments(
+            std::path::Path::new("C:\\Temp\\install.ps1"),
+            "hermes",
+            true,
+        );
         assert!(arguments
             .windows(2)
             .any(|pair| pair == ["-ExecutionPolicy", "Bypass"]));
@@ -315,6 +325,9 @@ mod tests {
         assert!(arguments
             .windows(2)
             .any(|pair| pair == ["-AgentMode", "hermes"]));
+        assert!(arguments
+            .iter()
+            .any(|argument| argument == "-SkipModelRuntime"));
     }
 
     #[test]

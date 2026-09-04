@@ -107,15 +107,7 @@ pub fn run(
         .current_dir(workspace)
         .arg("-z")
         .arg(prompt)
-        .args([
-            "--source",
-            "tool",
-            "--toolsets",
-            "coding",
-            "--max-turns",
-            "100",
-            "--usage-file",
-        ])
+        .args(["--toolsets", "coding", "--max-turns", "100", "--usage-file"])
         .arg(&usage_path);
     // If the MundusX node has an active model, Hermes consumes its authenticated,
     // loopback-only raw inference API. Otherwise Hermes keeps its own configured

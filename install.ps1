@@ -5,6 +5,7 @@ param(
   [switch]$AllowUnsignedLocalPreview,
   [switch]$InstallCudaRuntime,
   [switch]$InstallVulkanRuntime,
+  [switch]$SkipModelRuntime,
   [switch]$SkipTrayAutoStart,
   [switch]$SkipPathUpdate,
   [switch]$SkipContributorSetup,
@@ -51,6 +52,7 @@ Options:
   -InstallVulkanRuntime    Force Vulkan llama runtime installation instead of CUDA.
                           By default, the installer detects NVIDIA/CUDA and
                           otherwise installs the Vulkan runtime for Windows.
+  -SkipModelRuntime        Agent-only install: do not download llama.cpp or a GPU runtime.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
   -SkipContributorSetup    Do not open a fresh PowerShell window for `opengpu install`.
@@ -659,12 +661,17 @@ if (-not $agentModeWasProvided) {
 if ($InstallCudaRuntime -and $InstallVulkanRuntime) {
   throw "choose only one runtime override: -InstallCudaRuntime or -InstallVulkanRuntime"
 }
+if ($SkipModelRuntime -and ($InstallCudaRuntime -or $InstallVulkanRuntime)) {
+  throw "-SkipModelRuntime cannot be combined with a GPU runtime override"
+}
 
 $target = Get-WindowsTarget
 $gpu = Find-NvidiaGpu
-$cudaRuntimeRequired = [bool](($gpu -or $InstallCudaRuntime) -and -not $InstallVulkanRuntime)
-$vulkanRuntimeRequired = [bool](-not $cudaRuntimeRequired)
-$runtimeSelectionReason = if ($InstallCudaRuntime) {
+$cudaRuntimeRequired = [bool](-not $SkipModelRuntime -and ($gpu -or $InstallCudaRuntime) -and -not $InstallVulkanRuntime)
+$vulkanRuntimeRequired = [bool](-not $SkipModelRuntime -and -not $cudaRuntimeRequired)
+$runtimeSelectionReason = if ($SkipModelRuntime) {
+  "skipped for agent-only installation"
+} elseif ($InstallCudaRuntime) {
   "forced CUDA"
 } elseif ($InstallVulkanRuntime) {
   "forced Vulkan"
@@ -673,7 +680,7 @@ $runtimeSelectionReason = if ($InstallCudaRuntime) {
 } else {
   "auto-selected Vulkan fallback"
 }
-$profile = if ($cudaRuntimeRequired) { "windows-x86_64-cuda" } else { "windows-x86_64-vulkan" }
+$profile = if ($SkipModelRuntime) { "windows-x86_64-agent-only" } elseif ($cudaRuntimeRequired) { "windows-x86_64-cuda" } else { "windows-x86_64-vulkan" }
 $assetName = "opengpu-$target.exe"
 $agentAssetName = "opengpu-node-agent-$target.exe"
 $mundusxAssetName = "mundusx-$target.exe"
@@ -724,7 +731,7 @@ Write-Output "  source: $releaseBase"
 Write-Output "  asset: $assetName"
 Write-Output "  node agent: $agentAssetName"
 Write-Output "  tray companion: $trayAssetName"
-Write-Output "  runtime: $(if ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { $vulkanRuntimeAssetName })"
+Write-Output "  runtime: $(if ($SkipModelRuntime) { 'not included' } elseif ($cudaRuntimeRequired) { $cudaRuntimeAssetName } else { $vulkanRuntimeAssetName })"
 Write-Output "  runtime selection: $runtimeSelectionReason"
 Write-Output "  install: $InstallDir"
 Write-Output "  verification: $(if ($AllowUnsignedLocalPreview) { 'local preview override' } else { 'strict enterprise' })"
@@ -783,8 +790,10 @@ try {
     }
     Write-Warning "dev-only local preview override: signed release manifest unavailable or invalid, continuing without signature verification"
   }
-  Write-InstallerPhase -Current 3 -Total 6 -Message "Downloading the GPU runtime"
-  if ($cudaRuntimeRequired) {
+  Write-InstallerPhase -Current 3 -Total 6 -Message $(if ($SkipModelRuntime) { "Skipping the local model runtime" } else { "Downloading the GPU runtime" })
+  if ($SkipModelRuntime) {
+    Write-Output "Agent-only profile selected; no llama.cpp server, local model, CUDA, or Vulkan runtime will be installed."
+  } elseif ($cudaRuntimeRequired) {
     $runtimeManifestAsset = Find-ManifestRuntimeAsset -Manifest $manifest -Name $cudaRuntimeAssetName
     Write-Output "Fetching CUDA llama runtime..."
     Write-Output "Verifying CUDA runtime checksum..."
