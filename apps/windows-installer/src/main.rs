@@ -146,7 +146,7 @@ fn launch_developer_setup() -> Result<(), String> {
         ));
     }
     let escaped = cli_path.display().to_string().replace('\'', "''");
-    let script = format!("Add-Type -AssemblyName System.Windows.Forms; $picker = New-Object System.Windows.Forms.FolderBrowserDialog; $picker.Description = 'Choose the local project folder MundusX may use'; $picker.ShowNewFolderButton = $true; if ($picker.ShowDialog() -eq 'OK') {{ Start-Process -FilePath '{escaped}' -ArgumentList @('connect','--workspace',$picker.SelectedPath) -WindowStyle Hidden }}");
+    let script = format!("Add-Type -AssemblyName System.Windows.Forms; $picker = New-Object System.Windows.Forms.FolderBrowserDialog; $picker.Description = 'Choose the local project folder MundusX may use'; $picker.ShowNewFolderButton = $true; if ($picker.ShowDialog() -eq 'OK') {{ Start-Process -FilePath '{escaped}' -ArgumentList @('connect','--reauthorize','--workspace',$picker.SelectedPath) }}");
     let mut command = std::process::Command::new("powershell.exe");
     command.args([
         "-NoLogo",

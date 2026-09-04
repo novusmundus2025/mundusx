@@ -82,6 +82,9 @@ enum Commands {
         /// Local project root (defaults to ~/MundusX/Projects on every OS)
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Require fresh browser approval instead of reusing a saved account connection
+        #[arg(long)]
+        reauthorize: bool,
     },
 }
 
@@ -547,6 +550,7 @@ fn main() {
             token,
             device_name,
             workspace,
+            reauthorize,
         } => {
             let url = chat_connector::validate_chat_url(&url);
             url.and_then(|chat_url| {
@@ -560,6 +564,7 @@ fn main() {
                                 .unwrap_or_else(|_| "MundusX agent".to_string())
                         }),
                         workspace: workspace.unwrap_or_else(default_workspace_root),
+                        reauthorize,
                     },
                     &data_dir(),
                 )

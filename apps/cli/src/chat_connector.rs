@@ -14,6 +14,7 @@ pub struct ConnectorOptions {
     pub token: String,
     pub device_name: String,
     pub workspace: PathBuf,
+    pub reauthorize: bool,
 }
 
 fn saved_token(data_dir: &Path, chat_url: &str) -> Option<String> {
@@ -349,7 +350,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
     fs::create_dir_all(&options.workspace)
         .map_err(|error| format!("could not create connector workspace: {error}"))?;
     let connection_id = connection_id(data_dir)?;
-    if options.token.trim().is_empty() {
+    if options.token.trim().is_empty() && !options.reauthorize {
         options.token = saved_token(data_dir, &options.chat_url).unwrap_or_default();
     }
     if options.token.trim().is_empty() {
