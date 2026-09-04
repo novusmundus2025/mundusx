@@ -8,7 +8,11 @@ coordination surface. The local agent does not require the Control Plane.
 
 ```text
 mundusx run "inspect this repository"
-mundusx run "inspect this repository" --runtime hermes
+mundusx agent install hermes
+mundusx agent use hermes
+mundusx agent status
+mundusx agent use native
+mundusx agent use none
 mundusx resume <session-id> "continue and explain the failing test"
 mundusx sessions
 mundusx cancel <session-id>
@@ -17,23 +21,38 @@ mundusx model list
 mundusx model use <model>
 mundusx model add <model>
 mundusx model remove <model>
+mundusx contributor start
+mundusx contributor stop
+mundusx contributor status
+mundusx contributor cap 50
+mundusx contributor logs
 ```
 
 `mundusx model` currently delegates to the proven OpenGPU model manager. The
 equivalent `opengpu model` commands remain supported as compatibility aliases.
-Contributor lifecycle commands remain under `opengpu`.
+`mundusx contributor` delegates to the proven OpenGPU contributor
+implementation. The equivalent `opengpu` commands remain supported as
+compatibility aliases.
 
 ## Hermes runtime
 
-Hermes is an optional execution runtime, not the MundusX control boundary.
-Install and configure it with `hermes setup`, then select it per task with
-`--runtime hermes`. Set `MUNDUSX_HERMES_BIN` only when the executable is not on
-`PATH`. MundusX maps its session IDs to Hermes session IDs locally and resumes
-the corresponding Hermes conversation.
+Hermes is an optional execution harness, not the MundusX control boundary.
+Install it with `mundusx agent install hermes`; the verified installer pins an
+upstream Hermes commit and checksum. The selected harness is stored per user in
+`~/.mundusx/agent-config.json`. `--runtime hermes` remains available as a
+one-command override. Set `MUNDUSX_HERMES_BIN` only when the executable is not
+on `PATH`. MundusX maps its session IDs to Hermes session IDs locally and
+resumes the corresponding Hermes conversation.
+
+When the MundusX node is running with an active model, Hermes automatically
+uses its authenticated loopback-only raw inference endpoint. If that endpoint
+is offline, Hermes uses its configured cloud provider instead; run `hermes
+setup` only when a cloud fallback is wanted. MundusX continues to own model
+selection and contributed compute in either case.
 
 Connected Chat devices advertise Hermes only after `hermes --version` succeeds.
-Chat may then request `runtime: "hermes"`; otherwise tasks use the native
-runtime. A Hermes coding task receives `--yolo` only when the submitting user
+Chat advertises the saved preference and Auto routing honors it; otherwise
+tasks use the native runtime. A Hermes coding task receives `--yolo` only when the submitting user
 explicitly enables mutations. Without that grant, Hermes retains its approval
 gate and non-interactive writes fail closed. For strong isolation, configure a
 Hermes Docker/SSH/Daytona terminal backend; an in-process tool allowlist is not

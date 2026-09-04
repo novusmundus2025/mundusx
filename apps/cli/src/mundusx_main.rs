@@ -422,7 +422,7 @@ fn install_hermes() -> Result<(), String> {
     }
     save_selected_agent(AgentSelection::Hermes)?;
     println!(
-        "Hermes Agent installed and selected. Run `hermes setup` to configure its model provider."
+        "Hermes Agent installed and selected. MundusX will use its active local model when the node is running; run `hermes setup` only if you also want a cloud fallback."
     );
     Ok(())
 }

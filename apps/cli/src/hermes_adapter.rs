@@ -28,7 +28,14 @@ fn opengpu_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".opengpu"))
 }
 
-fn mundusx_local_model() -> Option<(String, String)> {
+fn local_api_address() -> String {
+    std::env::var("OPENGPU_LOCAL_AGENT_ADDR")
+        .ok()
+        .filter(|value| value.starts_with("127.0.0.1:") || value.starts_with("[::1]:"))
+        .unwrap_or_else(|| "127.0.0.1:11435".to_string())
+}
+
+fn mundusx_local_model() -> Option<(String, String, String)> {
     let home = opengpu_home();
     let token = fs::read_to_string(home.join("local-agent-token")).ok()?;
     let token = token.trim().to_string();
@@ -40,7 +47,13 @@ fn mundusx_local_model() -> Option<(String, String)> {
     if model.is_empty() {
         return None;
     }
-    Some((model, token))
+    let address = local_api_address();
+    ureq::get(&format!("http://{address}/local/v1/health"))
+        .set("Authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .ok()?;
+    Some((model, token, address))
 }
 
 pub fn available() -> bool {
@@ -83,8 +96,7 @@ pub fn run(
 ) -> Result<Value, String> {
     if !available() {
         return Err(
-            "Hermes runtime is not installed; install Hermes and run `hermes setup` first"
-                .to_string(),
+            "Hermes runtime is not installed; run `mundusx agent install hermes`".to_string(),
         );
     }
     let usage_path = data_dir.join(format!("hermes-usage-{}.json", Uuid::new_v4()));
@@ -108,11 +120,7 @@ pub fn run(
     // loopback-only raw inference API. Otherwise Hermes keeps its own configured
     // cloud provider. This preserves MundusX model ownership without nesting the
     // native MundusX agent loop inside Hermes.
-    if let Some((model, token)) = mundusx_local_model() {
-        let base_url = std::env::var("OPENGPU_LOCAL_AGENT_ADDR")
-            .ok()
-            .filter(|value| value.starts_with("127.0.0.1:") || value.starts_with("[::1]:"))
-            .unwrap_or_else(|| "127.0.0.1:11435".to_string());
+    if let Some((model, token, base_url)) = mundusx_local_model() {
         command
             .args(["--provider", "custom", "--model", &model])
             .env("OPENAI_BASE_URL", format!("http://{base_url}/local/v1"))
