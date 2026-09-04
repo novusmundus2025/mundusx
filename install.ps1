@@ -8,6 +8,8 @@ param(
   [switch]$SkipTrayAutoStart,
   [switch]$SkipPathUpdate,
   [switch]$SkipContributorSetup,
+  [string]$Workspace = "",
+  [switch]$SkipChatConnect,
   [ValidateSet("hermes", "native", "none")]
   [string]$AgentMode = "none",
   [switch]$Help
@@ -52,6 +54,8 @@ Options:
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
   -SkipContributorSetup    Do not open a fresh PowerShell window for `opengpu install`.
+  -Workspace <path>        Local project root. Defaults to <home>\MundusX\Projects.
+  -SkipChatConnect         Install the selected agent without connecting it to Chat.
   -AgentMode <mode>        Agent harness: hermes, native, or none.
                           When omitted, asks interactively and defaults to none.
   -AllowUnsignedLocalPreview
@@ -625,6 +629,29 @@ if ($Help) {
   exit 0
 }
 
+function Start-ChatConnection {
+  param(
+    [string]$CliPath,
+    [string]$WorkspacePath
+  )
+
+  $resolvedWorkspace = if ($WorkspacePath.Trim()) {
+    [IO.Path]::GetFullPath($WorkspacePath)
+  } else {
+    Join-Path $env:USERPROFILE "MundusX\Projects"
+  }
+  New-Item -ItemType Directory -Force -Path $resolvedWorkspace | Out-Null
+  $escapedCliPath = $CliPath.Replace("'", "''")
+  $escapedWorkspace = $resolvedWorkspace.Replace("'", "''")
+  $connectCommand = "& '$escapedCliPath' connect --workspace '$escapedWorkspace'"
+  $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($connectCommand))
+  Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    "-NoLogo", "-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", $encodedCommand
+  )
+  Write-Output "Opened Chat connection setup for workspace $resolvedWorkspace"
+}
+
 if (-not $agentModeWasProvided) {
   $AgentMode = Select-AgentMode
 }
@@ -893,6 +920,10 @@ Write-Output "[6/6 - overall 100%] Installation complete"
 if ($script:installerTranscriptStarted) {
   Stop-Transcript | Out-Null
   $script:installerTranscriptStarted = $false
+}
+
+if ($AgentMode -ne "none" -and -not $SkipChatConnect) {
+  Start-ChatConnection -CliPath $finalMundusx -WorkspacePath $Workspace
 }
 
 if (-not $SkipContributorSetup) {

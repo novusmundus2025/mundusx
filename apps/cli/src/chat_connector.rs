@@ -342,6 +342,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
 }
 
 pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(&options.workspace)
+        .map_err(|error| format!("could not create connector workspace: {error}"))?;
     let connection_id = connection_id(data_dir)?;
     if options.token.trim().is_empty() {
         options.token = saved_token(data_dir, &options.chat_url).unwrap_or_default();

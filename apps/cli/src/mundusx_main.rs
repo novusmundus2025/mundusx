@@ -79,8 +79,9 @@ enum Commands {
         token: Option<String>,
         #[arg(long)]
         device_name: Option<String>,
-        #[arg(long, default_value = ".")]
-        workspace: PathBuf,
+        /// Local project root (defaults to ~/MundusX/Projects on every OS)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
 }
 
@@ -557,7 +558,7 @@ fn main() {
                                 .or_else(|_| std::env::var("HOSTNAME"))
                                 .unwrap_or_else(|_| "MundusX agent".to_string())
                         }),
-                        workspace,
+                        workspace: workspace.unwrap_or_else(default_workspace_root),
                     },
                     &data_dir(),
                 )
@@ -568,4 +569,16 @@ fn main() {
         eprintln!("error: {error}");
         std::process::exit(1);
     }
+}
+
+fn default_workspace_root() -> PathBuf {
+    let home = if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    };
+    home.map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("MundusX")
+        .join("Projects")
 }

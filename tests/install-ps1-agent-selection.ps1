@@ -22,6 +22,17 @@ if (-not $functionAst) {
   throw "Select-AgentMode was not found"
 }
 
+$installerSource = Get-Content -LiteralPath $installerPath -Raw
+if ($installerSource -notmatch '\[string\]\$Workspace\s*=\s*""') {
+  throw "installer must accept an optional workspace"
+}
+if ($installerSource -notmatch 'Join-Path \$env:USERPROFILE "MundusX\\Projects"') {
+  throw "installer must use the Windows home workspace default"
+}
+if ($installerSource -notmatch '\$AgentMode -ne "none" -and -not \$SkipChatConnect') {
+  throw "Chat connection must run only when an agent is selected"
+}
+
 $selector = $functionAst.Body.GetScriptBlock()
 try {
   function global:Read-Host { return "1" }
