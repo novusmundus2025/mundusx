@@ -39,6 +39,17 @@ gate and non-interactive writes fail closed. For strong isolation, configure a
 Hermes Docker/SSH/Daytona terminal backend; an in-process tool allowlist is not
 an OS security boundary.
 
+For Chat Projects, start the connector at the parent directory that contains
+the project slugs. Chat sends only a lowercase project slug; the connector
+rejects absolute paths and traversal, canonicalizes the target, and runs Hermes
+with that directory as its working-directory boundary. A missing project
+directory is created only when the Chat task carries explicit mutation
+authority.
+
+```powershell
+mundusx connect --workspace "$env:USERPROFILE\Documents\mundusx\projects"
+```
+
 ## MundusX Chat
 
 `mundusx connect` makes an outbound HTTPS connection to `chat.mundusx.ai`, so

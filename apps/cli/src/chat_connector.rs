@@ -104,6 +104,45 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
     }).collect()
 }
 
+fn bounded_task_workspace(
+    workspace: &Path,
+    relative: Option<&str>,
+    allow_mutations: bool,
+) -> Result<PathBuf, String> {
+    let root = workspace
+        .canonicalize()
+        .map_err(|error| format!("connector workspace is unavailable: {error}"))?;
+    let Some(relative) = relative.filter(|value| !value.is_empty()) else {
+        return Ok(root);
+    };
+    if !relative
+        .chars()
+        .all(|value| value.is_ascii_lowercase() || value.is_ascii_digit() || value == '-')
+        || relative.starts_with('-')
+        || relative.ends_with('-')
+        || relative.contains("--")
+    {
+        return Err("task workspace must be a project slug".to_string());
+    }
+    let target = root.join(relative);
+    if !target.exists() {
+        if !allow_mutations {
+            return Err(
+                "project directory does not exist and task has no mutation authority".to_string(),
+            );
+        }
+        fs::create_dir(&target)
+            .map_err(|error| format!("could not create project directory: {error}"))?;
+    }
+    let target = target
+        .canonicalize()
+        .map_err(|error| format!("project workspace is unavailable: {error}"))?;
+    if !target.starts_with(&root) {
+        return Err("project workspace escaped the connector boundary".to_string());
+    }
+    Ok(target)
+}
+
 fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Result<(), String> {
     let task_id = task["task_id"]
         .as_str()
@@ -119,6 +158,18 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         .to_string();
     let allow_mutations = task["allow_mutations"].as_bool().unwrap_or(false);
     let runtime = task["runtime_selected"].as_str().unwrap_or("native");
+    let workspace_relative = task["workspace_relative"].as_str();
+    let task_workspace =
+        bounded_task_workspace(&options.workspace, workspace_relative, allow_mutations)?;
+    let bounded_prompt = workspace_relative
+        .map(|relative| {
+            if runtime == "hermes" {
+                format!("The current directory is the complete project boundary.\n\n{prompt}")
+            } else {
+                format!("Work only within project directory `{relative}` beneath the connector workspace.\n\n{prompt}")
+            }
+        })
+        .unwrap_or_else(|| prompt.clone());
     let stop = Arc::new(AtomicBool::new(false));
     let heartbeat_stop = Arc::clone(&stop);
     let heartbeat_url = options.chat_url.clone();
@@ -153,20 +204,20 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
 
     let response = if runtime == "hermes" {
         super::hermes_adapter::run(
-            &prompt,
+            &bounded_prompt,
             &session_id,
-            &options.workspace,
+            &task_workspace,
             &super::data_dir(),
             allow_mutations,
             Some(stop.as_ref()),
         )
     } else {
-        match super::post_chat(&prompt, Some(&session_id), allow_mutations) {
+        match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
             Ok(value) => Ok(value),
             Err(first_error) => {
                 super::spawn_server(&options.workspace)
                     .map_err(|start_error| format!("{first_error}; {start_error}"))?;
-                super::post_chat(&prompt, Some(&session_id), allow_mutations)
+                super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations)
             }
         }
     };
@@ -253,12 +304,24 @@ pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::validate_chat_url;
+    use super::{bounded_task_workspace, validate_chat_url};
+    use std::fs;
 
     #[test]
     fn connector_requires_secure_remote_transport() {
         assert!(validate_chat_url("https://chat.mundusx.ai/").is_ok());
         assert!(validate_chat_url("http://localhost:8787").is_ok());
         assert!(validate_chat_url("http://chat.mundusx.ai").is_err());
+    }
+
+    #[test]
+    fn task_workspace_cannot_escape_connector_root() {
+        let root = std::env::temp_dir().join(format!("mundusx-boundary-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).expect("test root");
+        let project = bounded_task_workspace(&root, Some("my-project"), true).expect("project");
+        assert!(project.starts_with(root.canonicalize().expect("canonical root")));
+        assert!(bounded_task_workspace(&root, Some("../escape"), true).is_err());
+        assert!(bounded_task_workspace(&root, Some("Bad-Name"), true).is_err());
+        fs::remove_dir_all(root).expect("remove test root");
     }
 }
