@@ -8,6 +8,7 @@ coordination surface. The local agent does not require the Control Plane.
 
 ```text
 mundusx run "inspect this repository"
+mundusx run "inspect this repository" --runtime hermes
 mundusx resume <session-id> "continue and explain the failing test"
 mundusx sessions
 mundusx cancel <session-id>
@@ -21,6 +22,22 @@ mundusx model remove <model>
 `mundusx model` currently delegates to the proven OpenGPU model manager. The
 equivalent `opengpu model` commands remain supported as compatibility aliases.
 Contributor lifecycle commands remain under `opengpu`.
+
+## Hermes runtime
+
+Hermes is an optional execution runtime, not the MundusX control boundary.
+Install and configure it with `hermes setup`, then select it per task with
+`--runtime hermes`. Set `MUNDUSX_HERMES_BIN` only when the executable is not on
+`PATH`. MundusX maps its session IDs to Hermes session IDs locally and resumes
+the corresponding Hermes conversation.
+
+Connected Chat devices advertise Hermes only after `hermes --version` succeeds.
+Chat may then request `runtime: "hermes"`; otherwise tasks use the native
+runtime. A Hermes coding task receives `--yolo` only when the submitting user
+explicitly enables mutations. Without that grant, Hermes retains its approval
+gate and non-interactive writes fail closed. For strong isolation, configure a
+Hermes Docker/SSH/Daytona terminal backend; an in-process tool allowlist is not
+an OS security boundary.
 
 ## MundusX Chat
 

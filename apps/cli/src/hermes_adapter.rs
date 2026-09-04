@@ -1,0 +1,161 @@
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+use uuid::Uuid;
+
+fn executable() -> PathBuf {
+    std::env::var_os("MUNDUSX_HERMES_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(if cfg!(windows) {
+                "hermes.exe"
+            } else {
+                "hermes"
+            })
+        })
+}
+
+pub fn available() -> bool {
+    Command::new(executable())
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn map_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("hermes-sessions.json")
+}
+
+fn session_map(data_dir: &Path) -> BTreeMap<String, String> {
+    fs::read(map_path(data_dir))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_session(data_dir: &Path, mundusx_id: &str, hermes_id: &str) -> Result<(), String> {
+    fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+    let mut sessions = session_map(data_dir);
+    sessions.insert(mundusx_id.to_string(), hermes_id.to_string());
+    fs::write(
+        map_path(data_dir),
+        serde_json::to_vec_pretty(&sessions).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("could not save Hermes session mapping: {error}"))
+}
+
+pub fn run(
+    prompt: &str,
+    mundusx_session_id: &str,
+    workspace: &Path,
+    data_dir: &Path,
+    approve_mutations: bool,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Value, String> {
+    if !available() {
+        return Err(
+            "Hermes runtime is not installed; install Hermes and run `hermes setup` first"
+                .to_string(),
+        );
+    }
+    let usage_path = data_dir.join(format!("hermes-usage-{}.json", Uuid::new_v4()));
+    fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+    let mut command = Command::new(executable());
+    command
+        .current_dir(workspace)
+        .arg("-z")
+        .arg(prompt)
+        .args([
+            "--source",
+            "tool",
+            "--toolsets",
+            "coding",
+            "--max-turns",
+            "100",
+            "--usage-file",
+        ])
+        .arg(&usage_path);
+    if let Some(hermes_id) = session_map(data_dir).get(mundusx_session_id) {
+        command.args(["--resume", hermes_id]);
+    }
+    // This is only enabled after the MundusX caller explicitly grants mutation authority.
+    // Without it, Hermes keeps its own approval gate and non-interactive mutations fail closed.
+    if approve_mutations {
+        command.arg("--yolo");
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not start Hermes: {error}"))?;
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or("could not capture Hermes output")?;
+    let mut child_stderr = child
+        .stderr
+        .take()
+        .ok_or("could not capture Hermes errors")?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = child_stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = child_stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = loop {
+        if cancellation
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(&usage_path);
+            return Err("Hermes task was cancelled".to_string());
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("could not monitor Hermes: {error}"))?
+        {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "Hermes output reader failed")?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "Hermes error reader failed")?;
+    let usage: Value = fs::read(&usage_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let _ = fs::remove_file(&usage_path);
+    if let Some(hermes_id) = usage["session_id"].as_str() {
+        save_session(data_dir, mundusx_session_id, hermes_id)?;
+    }
+    if !status.success() {
+        let error = String::from_utf8_lossy(&stderr).trim().to_string();
+        return Err(if error.is_empty() {
+            format!("Hermes exited with {status}")
+        } else {
+            format!("Hermes failed: {error}")
+        });
+    }
+    Ok(serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": String::from_utf8_lossy(&stdout).trim()}}],
+        "runtime": "hermes",
+        "runtime_session_id": usage["session_id"],
+        "usage": usage
+    }))
+}

@@ -7,6 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 mod chat_connector;
+mod hermes_adapter;
 
 const DEFAULT_AGENT_URL: &str = "http://127.0.0.1:11436";
 
@@ -22,6 +23,8 @@ enum Commands {
     /// Run a task with the local MundusX agent
     Run {
         prompt: String,
+        #[arg(long, value_enum, default_value_t = AgentRuntime::Native)]
+        runtime: AgentRuntime,
         #[arg(long)]
         session: Option<String>,
         #[arg(long)]
@@ -31,6 +34,8 @@ enum Commands {
     Resume {
         session_id: String,
         prompt: String,
+        #[arg(long, value_enum, default_value_t = AgentRuntime::Native)]
+        runtime: AgentRuntime,
         #[arg(long)]
         approve_mutations: bool,
     },
@@ -64,6 +69,12 @@ enum Commands {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
     },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum AgentRuntime {
+    Native,
+    Hermes,
 }
 
 fn data_dir() -> PathBuf {
@@ -193,6 +204,40 @@ fn run_prompt(
     Ok(())
 }
 
+fn run_with_runtime(
+    runtime: AgentRuntime,
+    prompt: &str,
+    session_id: Option<&str>,
+    approve_mutations: bool,
+) -> Result<(), String> {
+    if matches!(runtime, AgentRuntime::Native) {
+        return run_prompt(prompt, session_id, approve_mutations);
+    }
+    let generated_session;
+    let session_id = match session_id {
+        Some(value) => value,
+        None => {
+            generated_session = SessionId::new().to_string();
+            &generated_session
+        }
+    };
+    eprintln!("session: {session_id}");
+    let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
+    let response = hermes_adapter::run(
+        prompt,
+        session_id,
+        &workspace,
+        &data_dir(),
+        approve_mutations,
+        None,
+    )?;
+    let content = response["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or("Hermes response did not contain assistant content")?;
+    println!("{content}");
+    Ok(())
+}
+
 fn cancel_session(session_id: &str) -> Result<(), String> {
     SessionId::parse(session_id).map_err(|_| "session_id must be valid".to_string())?;
     let mut request = ureq::post(&format!(
@@ -261,6 +306,7 @@ fn main() {
     let result = match Cli::parse().command {
         Commands::Run {
             prompt,
+            runtime,
             session,
             approve_mutations,
         } => {
@@ -268,21 +314,22 @@ fn main() {
                 if SessionId::parse(value).is_err() {
                     Err("--session must be a valid MundusX session id".to_string())
                 } else {
-                    run_prompt(&prompt, Some(value), approve_mutations)
+                    run_with_runtime(runtime, &prompt, Some(value), approve_mutations)
                 }
             } else {
-                run_prompt(&prompt, None, approve_mutations)
+                run_with_runtime(runtime, &prompt, None, approve_mutations)
             }
         }
         Commands::Resume {
             session_id,
             prompt,
+            runtime,
             approve_mutations,
         } => {
             if SessionId::parse(&session_id).is_err() {
                 Err("session_id must be a valid MundusX session id".to_string())
             } else {
-                run_prompt(&prompt, Some(&session_id), approve_mutations)
+                run_with_runtime(runtime, &prompt, Some(&session_id), approve_mutations)
             }
         }
         Commands::Sessions { json } => list_sessions(json),

@@ -118,6 +118,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         .ok_or("task prompt is missing")?
         .to_string();
     let allow_mutations = task["allow_mutations"].as_bool().unwrap_or(false);
+    let runtime = task["runtime_selected"].as_str().unwrap_or("native");
     let stop = Arc::new(AtomicBool::new(false));
     let heartbeat_stop = Arc::clone(&stop);
     let heartbeat_url = options.chat_url.clone();
@@ -138,6 +139,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 json!({"connection_id": heartbeat_connection}),
             ) {
                 if state["state"] == "cancelled" {
+                    heartbeat_stop.store(true, Ordering::Relaxed);
                     let _ = local_request(
                         "POST",
                         &format!("/v1/sessions/{heartbeat_session}/cancel"),
@@ -149,12 +151,23 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         }
     });
 
-    let response = match super::post_chat(&prompt, Some(&session_id), allow_mutations) {
-        Ok(value) => Ok(value),
-        Err(first_error) => {
-            super::spawn_server(&options.workspace)
-                .map_err(|start_error| format!("{first_error}; {start_error}"))?;
-            super::post_chat(&prompt, Some(&session_id), allow_mutations)
+    let response = if runtime == "hermes" {
+        super::hermes_adapter::run(
+            &prompt,
+            &session_id,
+            &options.workspace,
+            &super::data_dir(),
+            allow_mutations,
+            Some(stop.as_ref()),
+        )
+    } else {
+        match super::post_chat(&prompt, Some(&session_id), allow_mutations) {
+            Ok(value) => Ok(value),
+            Err(first_error) => {
+                super::spawn_server(&options.workspace)
+                    .map_err(|start_error| format!("{first_error}; {start_error}"))?;
+                super::post_chat(&prompt, Some(&session_id), allow_mutations)
+            }
         }
     };
     stop.store(true, Ordering::Relaxed);
@@ -195,6 +208,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
 
 pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
     let connection_id = connection_id(data_dir)?;
+    let mut runtimes = vec!["native"];
+    if super::hermes_adapter::available() {
+        runtimes.push("hermes");
+    }
     post_remote(
         &options.chat_url,
         &options.token,
@@ -202,7 +219,11 @@ pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String>
         json!({
             "connection_id": connection_id,
             "device_name": options.device_name,
-            "capabilities": {"protocol": "mundusx-agent-bridge/v1", "mutations": false}
+            "capabilities": {
+                "protocol": "mundusx-agent-bridge/v1",
+                "mutations": false,
+                "agent_runtimes": runtimes
+            }
         }),
     )?;
     eprintln!(
