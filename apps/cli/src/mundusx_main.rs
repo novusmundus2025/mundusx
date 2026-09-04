@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod chat_connector;
 mod hermes_adapter;
@@ -407,7 +407,10 @@ fn install_hermes() -> Result<(), String> {
         return Err("automatic Hermes installation is currently supported on Windows only; see https://github.com/NousResearch/Hermes-Agent".to_string());
     }
     let script = r#"$ErrorActionPreference='Stop'; $uri='https://github.com/mundusx/releases/releases/download/opengpu-prod/hermes-install.ps1'; $path=Join-Path $env:TEMP 'mundusx-hermes-install.ps1'; Invoke-WebRequest -Uri $uri -OutFile $path; $expected='226C70A90AD47E8A4D34CB11ACA4ECBEB649E2F9B67FBD009EA49791DE2D56F5'; $actual=(Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash; if ($actual -ne $expected) { throw "Hermes installer checksum mismatch (expected $expected, got $actual)" }; $hermesRoot=Join-Path $env:USERPROFILE '.hermes'; & $path -HermesHome $hermesRoot -InstallDir (Join-Path $hermesRoot 'hermes-agent') -Commit '9de9c25f620ff7f1ce0fd5457d596052d5159596' -SkipSetup; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"#;
-    let status = Command::new("powershell.exe")
+    println!(
+        "Hermes setup started. Dependency installation can take several minutes; progress will remain visible."
+    );
+    let mut child = Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -415,11 +418,32 @@ fn install_hermes() -> Result<(), String> {
             "-Command",
             script,
         ])
-        .status()
+        .spawn()
         .map_err(|error| format!("could not start the verified Hermes installer: {error}"))?;
+    let started = Instant::now();
+    let mut next_activity_update = Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("could not monitor the Hermes installer: {error}"))?
+        {
+            break status;
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= next_activity_update {
+            println!("[Hermes setup] working... {}s elapsed", elapsed.as_secs());
+            next_activity_update += Duration::from_secs(5);
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
     if !status.success() {
         return Err(format!("Hermes installer exited with {status}"));
     }
+    println!(
+        "[Hermes setup] complete in {}s",
+        started.elapsed().as_secs()
+    );
     save_selected_agent(AgentSelection::Hermes)?;
     println!(
         "Hermes Agent installed and selected. MundusX will use its active local model when the node is running; run `hermes setup` only if you also want a cloud fallback."

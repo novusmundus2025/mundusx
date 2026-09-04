@@ -869,6 +869,7 @@ if ($AgentMode -eq "hermes") {
   if (-not $env:HERMES_HOME) {
     $env:HERMES_HOME = Join-Path $env:USERPROFILE ".hermes"
   }
+  Write-Output "Hermes dependency setup can take several minutes. A visible activity update will be printed every 5 seconds."
   & $finalMundusx agent install hermes
 } else {
   & $finalMundusx agent use $AgentMode
