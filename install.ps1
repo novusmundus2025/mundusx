@@ -866,6 +866,9 @@ if (-not $SkipPathUpdate) {
 
 Write-Output "Configuring agent harness: $AgentMode"
 if ($AgentMode -eq "hermes") {
+  if (-not $env:HERMES_HOME) {
+    $env:HERMES_HOME = Join-Path $env:USERPROFILE ".hermes"
+  }
   & $finalMundusx agent install hermes
 } else {
   & $finalMundusx agent use $AgentMode
