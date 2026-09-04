@@ -259,6 +259,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
 
 pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
     let connection_id = connection_id(data_dir)?;
+    let selected = super::selected_agent();
+    if matches!(selected, super::AgentSelection::None) {
+        return Err("no local agent is selected; choose one with `mundusx agent use native` or `mundusx agent use hermes` before connecting".to_string());
+    }
     let mut runtimes = vec!["native"];
     if super::hermes_adapter::available() {
         runtimes.push("hermes");
@@ -273,7 +277,8 @@ pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String>
             "capabilities": {
                 "protocol": "mundusx-agent-bridge/v1",
                 "mutations": false,
-                "agent_runtimes": runtimes
+                "agent_runtimes": runtimes,
+                "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
             }
         }),
     )?;

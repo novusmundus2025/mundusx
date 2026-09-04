@@ -21,6 +21,28 @@ fn executable() -> PathBuf {
         })
 }
 
+fn opengpu_home() -> PathBuf {
+    std::env::var_os("OPENGPU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|path| path.join(".opengpu")))
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
+}
+
+fn mundusx_local_model() -> Option<(String, String)> {
+    let home = opengpu_home();
+    let token = fs::read_to_string(home.join("local-agent-token")).ok()?;
+    let token = token.trim().to_string();
+    if token.len() < 32 {
+        return None;
+    }
+    let config: Value = serde_json::from_slice(&fs::read(home.join("config.json")).ok()?).ok()?;
+    let model = config["active_model"].as_str()?.trim().to_string();
+    if model.is_empty() {
+        return None;
+    }
+    Some((model, token))
+}
+
 pub fn available() -> bool {
     Command::new(executable())
         .arg("--version")
@@ -82,6 +104,20 @@ pub fn run(
             "--usage-file",
         ])
         .arg(&usage_path);
+    // If the MundusX node has an active model, Hermes consumes its authenticated,
+    // loopback-only raw inference API. Otherwise Hermes keeps its own configured
+    // cloud provider. This preserves MundusX model ownership without nesting the
+    // native MundusX agent loop inside Hermes.
+    if let Some((model, token)) = mundusx_local_model() {
+        let base_url = std::env::var("OPENGPU_LOCAL_AGENT_ADDR")
+            .ok()
+            .filter(|value| value.starts_with("127.0.0.1:") || value.starts_with("[::1]:"))
+            .unwrap_or_else(|| "127.0.0.1:11435".to_string());
+        command
+            .args(["--provider", "custom", "--model", &model])
+            .env("OPENAI_BASE_URL", format!("http://{base_url}/local/v1"))
+            .env("OPENAI_API_KEY", token);
+    }
     if let Some(hermes_id) = session_map(data_dir).get(mundusx_session_id) {
         command.args(["--resume", hermes_id]);
     }

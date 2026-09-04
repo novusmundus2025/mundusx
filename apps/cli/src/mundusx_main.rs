@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use mundusx_agent_core::{AgentEventStore, SessionId, SqliteEventStore};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,8 +24,9 @@ enum Commands {
     /// Run a task with the local MundusX agent
     Run {
         prompt: String,
-        #[arg(long, value_enum, default_value_t = AgentRuntime::Native)]
-        runtime: AgentRuntime,
+        /// Override the configured agent for this run
+        #[arg(long, value_enum)]
+        runtime: Option<AgentRuntime>,
         #[arg(long)]
         session: Option<String>,
         #[arg(long)]
@@ -34,8 +36,9 @@ enum Commands {
     Resume {
         session_id: String,
         prompt: String,
-        #[arg(long, value_enum, default_value_t = AgentRuntime::Native)]
-        runtime: AgentRuntime,
+        /// Override the configured agent for this turn
+        #[arg(long, value_enum)]
+        runtime: Option<AgentRuntime>,
         #[arg(long)]
         approve_mutations: bool,
     },
@@ -58,6 +61,16 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true)]
         arguments: Vec<String>,
     },
+    /// Select, install, or inspect the local agent harness
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
+    /// Manage contributed compute (forwarded to OpenGPU)
+    Contributor {
+        #[arg(required = true, trailing_var_arg = true)]
+        arguments: Vec<String>,
+    },
     /// Connect this local agent to chat.mundusx.ai using an MCP connection token
     Connect {
         #[arg(long, default_value = "https://chat.mundusx.ai")]
@@ -71,10 +84,36 @@ enum Commands {
     },
 }
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 enum AgentRuntime {
     Native,
     Hermes,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+enum AgentSelection {
+    Hermes,
+    Native,
+    None,
+}
+
+#[derive(Subcommand)]
+enum AgentCommands {
+    /// Make this the default harness for local and connected tasks
+    Use { agent: AgentSelection },
+    /// Install a supported external harness
+    Install { agent: AgentSelection },
+    /// Remove an external harness integration
+    Remove { agent: AgentSelection },
+    /// Show the selected and available harnesses
+    Status,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AgentPreferences {
+    selected: AgentSelection,
 }
 
 fn data_dir() -> PathBuf {
@@ -204,6 +243,43 @@ fn run_prompt(
     Ok(())
 }
 
+fn preferences_path() -> PathBuf {
+    data_dir().join("agent-config.json")
+}
+
+fn selected_agent() -> AgentSelection {
+    std::fs::read(preferences_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AgentPreferences>(&bytes).ok())
+        .map(|config| config.selected)
+        .unwrap_or(AgentSelection::Native)
+}
+
+fn save_selected_agent(selected: AgentSelection) -> Result<(), String> {
+    let directory = data_dir();
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    std::fs::write(
+        preferences_path(),
+        serde_json::to_vec_pretty(&AgentPreferences { selected })
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("could not save agent preference: {error}"))
+}
+
+fn effective_runtime(override_runtime: Option<AgentRuntime>) -> Result<AgentRuntime, String> {
+    if let Some(runtime) = override_runtime {
+        return Ok(runtime);
+    }
+    match selected_agent() {
+        AgentSelection::Native => Ok(AgentRuntime::Native),
+        AgentSelection::Hermes => Ok(AgentRuntime::Hermes),
+        AgentSelection::None => Err(
+            "no local agent is selected; run `mundusx agent use native` or `mundusx agent use hermes`"
+                .to_string(),
+        ),
+    }
+}
+
 fn run_with_runtime(
     runtime: AgentRuntime,
     prompt: &str,
@@ -302,6 +378,93 @@ fn forward_model(arguments: &[String]) -> Result<(), String> {
     }
 }
 
+fn forward_opengpu(arguments: &[String]) -> Result<(), String> {
+    let executable = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(if cfg!(windows) {
+            "opengpu.exe"
+        } else {
+            "opengpu"
+        });
+    let status = Command::new(&executable)
+        .args(arguments)
+        .status()
+        .map_err(|error| format!("could not run {}: {error}", executable.display()))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("contributor command exited with {status}"))
+}
+
+fn install_hermes() -> Result<(), String> {
+    if hermes_adapter::available() {
+        println!("Hermes Agent is already installed.");
+        return Ok(());
+    }
+    if !cfg!(windows) {
+        return Err("automatic Hermes installation is currently supported on Windows only; see https://github.com/NousResearch/Hermes-Agent".to_string());
+    }
+    let script = r#"$ErrorActionPreference='Stop'; $uri='https://raw.githubusercontent.com/NousResearch/hermes-agent/9de9c25f620ff7f1ce0fd5457d596052d5159596/scripts/install.ps1'; $path=Join-Path $env:TEMP 'mundusx-hermes-install.ps1'; Invoke-WebRequest -Uri $uri -OutFile $path; $actual=(Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash; if ($actual -ne '65552DF7A1214B288FBF858F47774E0A561D7587824948677633FDA03A0686DC') { throw 'Hermes installer checksum mismatch' }; & $path -Commit '9de9c25f620ff7f1ce0fd5457d596052d5159596' -SkipSetup; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"#;
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .status()
+        .map_err(|error| format!("could not start the verified Hermes installer: {error}"))?;
+    if !status.success() {
+        return Err(format!("Hermes installer exited with {status}"));
+    }
+    save_selected_agent(AgentSelection::Hermes)?;
+    println!(
+        "Hermes Agent installed and selected. Run `hermes setup` to configure its model provider."
+    );
+    Ok(())
+}
+
+fn manage_agent(command: AgentCommands) -> Result<(), String> {
+    match command {
+        AgentCommands::Use { agent } => {
+            if matches!(agent, AgentSelection::Hermes) && !hermes_adapter::available() {
+                return Err("Hermes Agent is not installed; run `mundusx agent install hermes` first".to_string());
+            }
+            save_selected_agent(agent)?;
+            println!("Default agent: {}", serde_json::to_value(agent).unwrap().as_str().unwrap());
+            Ok(())
+        }
+        AgentCommands::Install { agent: AgentSelection::Hermes } => install_hermes(),
+        AgentCommands::Install { agent: AgentSelection::Native } => {
+            save_selected_agent(AgentSelection::Native)?;
+            println!("MundusX Agent is included with MundusX and is now selected.");
+            Ok(())
+        }
+        AgentCommands::Install { agent: AgentSelection::None } => {
+            Err("`none` is a selection, not an installable agent; run `mundusx agent use none`".to_string())
+        }
+        AgentCommands::Remove { agent: AgentSelection::Hermes } => {
+            Err("MundusX will not delete an independently installed Hermes workspace. Use Hermes' own uninstaller, then run `mundusx agent use native` or `mundusx agent use none`.".to_string())
+        }
+        AgentCommands::Remove { agent: AgentSelection::Native } => {
+            Err("MundusX Agent is a bundled component and cannot be removed separately; select `none` instead".to_string())
+        }
+        AgentCommands::Remove { agent: AgentSelection::None } => Err("`none` is not installed".to_string()),
+        AgentCommands::Status => {
+            let selected = serde_json::to_value(selected_agent()).unwrap();
+            println!("selected: {}", selected.as_str().unwrap());
+            println!("native: available (bundled)");
+            println!("hermes: {}", if hermes_adapter::available() { "available" } else { "not installed" });
+            println!("models: managed by `mundusx model`");
+            println!("compute: managed by `mundusx contributor`");
+            Ok(())
+        }
+    }
+}
+
 fn main() {
     let result = match Cli::parse().command {
         Commands::Run {
@@ -314,10 +477,13 @@ fn main() {
                 if SessionId::parse(value).is_err() {
                     Err("--session must be a valid MundusX session id".to_string())
                 } else {
-                    run_with_runtime(runtime, &prompt, Some(value), approve_mutations)
+                    effective_runtime(runtime).and_then(|runtime| {
+                        run_with_runtime(runtime, &prompt, Some(value), approve_mutations)
+                    })
                 }
             } else {
-                run_with_runtime(runtime, &prompt, None, approve_mutations)
+                effective_runtime(runtime)
+                    .and_then(|runtime| run_with_runtime(runtime, &prompt, None, approve_mutations))
             }
         }
         Commands::Resume {
@@ -329,7 +495,9 @@ fn main() {
             if SessionId::parse(&session_id).is_err() {
                 Err("session_id must be a valid MundusX session id".to_string())
             } else {
-                run_with_runtime(runtime, &prompt, Some(&session_id), approve_mutations)
+                effective_runtime(runtime).and_then(|runtime| {
+                    run_with_runtime(runtime, &prompt, Some(&session_id), approve_mutations)
+                })
             }
         }
         Commands::Sessions { json } => list_sessions(json),
@@ -346,6 +514,8 @@ fn main() {
                     .ok_or_else(|| status.to_string())
             }),
         Commands::Model { arguments } => forward_model(&arguments),
+        Commands::Agent { command } => manage_agent(command),
+        Commands::Contributor { arguments } => forward_opengpu(&arguments),
         Commands::Connect {
             url,
             token,

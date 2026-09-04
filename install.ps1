@@ -8,6 +8,8 @@ param(
   [switch]$SkipTrayAutoStart,
   [switch]$SkipPathUpdate,
   [switch]$SkipContributorSetup,
+  [ValidateSet("hermes", "native", "none")]
+  [string]$AgentMode = "native",
   [switch]$Help
 )
 
@@ -49,6 +51,7 @@ Options:
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
   -SkipContributorSetup    Do not open a fresh PowerShell window for `opengpu install`.
+  -AgentMode <mode>        Agent harness: hermes, native, or none (default: native).
   -AllowUnsignedLocalPreview
                           Dev-only: allow missing checksum or signed manifest
                           when testing a local release preview.
@@ -822,6 +825,16 @@ if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
 
 if (-not $SkipPathUpdate) {
   Add-DirectoryToUserPath -Directory $InstallDir
+}
+
+Write-Output "Configuring agent harness: $AgentMode"
+if ($AgentMode -eq "hermes") {
+  & $finalMundusx agent install hermes
+} else {
+  & $finalMundusx agent use $AgentMode
+}
+if ($LASTEXITCODE -ne 0) {
+  throw "agent harness setup failed for $AgentMode"
 }
 
 if ($SkipContributorSetup) {
