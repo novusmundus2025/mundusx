@@ -59,6 +59,7 @@ jobs:
             setup_binary_name: MundusX-Setup.exe
             setup_executable_name: mundusx-bootstrap.exe
             runtime_binary_name: llama-runtime-x86_64-pc-windows-msvc-cuda.zip
+            vulkan_runtime_binary_name: llama-runtime-x86_64-pc-windows-msvc-vulkan.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -97,6 +98,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: .\scripts\package-windows-llama-runtime.ps1 -Tag b9856 -CudaVersion 12.4 -OutputPath ${{ matrix.runtime_binary_name }}
 
+      - name: Package pinned Windows llama.cpp Vulkan runtime
+        if: startsWith(matrix.os, 'windows-')
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\scripts\package-windows-vulkan-runtime.ps1 -Tag b9856 -OutputPath ${{ matrix.vulkan_runtime_binary_name }}
+
       - name: Prepare binary
         shell: bash
         run: |
@@ -127,6 +135,7 @@ jobs:
             shasum -a 256 ${{ matrix.agent_binary_name }} > ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then shasum -a 256 ${{ matrix.tray_binary_name }} > ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then shasum -a 256 ${{ matrix.setup_binary_name }} > ${{ matrix.setup_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.vulkan_runtime_binary_name }}" ]]; then shasum -a 256 ${{ matrix.vulkan_runtime_binary_name }} > ${{ matrix.vulkan_runtime_binary_name }}.sha256; fi
           elif command -v sha256sum >/dev/null 2>&1; then
             sha256sum ${{ matrix.binary_name }} > ${{ matrix.binary_name }}.sha256
             sha256sum ${{ matrix.mundusx_binary_name }} > ${{ matrix.mundusx_binary_name }}.sha256
@@ -134,6 +143,7 @@ jobs:
             sha256sum ${{ matrix.agent_binary_name }} > ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then sha256sum ${{ matrix.tray_binary_name }} > ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then sha256sum ${{ matrix.setup_binary_name }} > ${{ matrix.setup_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.vulkan_runtime_binary_name }}" ]]; then sha256sum ${{ matrix.vulkan_runtime_binary_name }} > ${{ matrix.vulkan_runtime_binary_name }}.sha256; fi
           else
             echo "checksum tooling not found (need shasum or sha256sum)" >&2
             exit 1
@@ -157,6 +167,7 @@ jobs:
             shasum -a 256 -c ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then shasum -a 256 -c ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then shasum -a 256 -c ${{ matrix.setup_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.vulkan_runtime_binary_name }}" ]]; then shasum -a 256 -c ${{ matrix.vulkan_runtime_binary_name }}.sha256; fi
           elif command -v sha256sum >/dev/null 2>&1; then
             sha256sum -c ${{ matrix.binary_name }}.sha256
             sha256sum -c ${{ matrix.mundusx_binary_name }}.sha256
@@ -164,6 +175,7 @@ jobs:
             sha256sum -c ${{ matrix.agent_binary_name }}.sha256
             if [[ -n "${{ matrix.tray_binary_name }}" ]]; then sha256sum -c ${{ matrix.tray_binary_name }}.sha256; fi
             if [[ -n "${{ matrix.setup_binary_name }}" ]]; then sha256sum -c ${{ matrix.setup_binary_name }}.sha256; fi
+            if [[ -n "${{ matrix.vulkan_runtime_binary_name }}" ]]; then sha256sum -c ${{ matrix.vulkan_runtime_binary_name }}.sha256; fi
           else
             echo "checksum tooling not found (need shasum or sha256sum)" >&2
             exit 1
@@ -205,6 +217,8 @@ jobs:
             ${{ matrix.setup_binary_name }}.sha256
             ${{ matrix.runtime_binary_name }}
             ${{ matrix.runtime_binary_name }}.sha256
+            ${{ matrix.vulkan_runtime_binary_name }}
+            ${{ matrix.vulkan_runtime_binary_name }}.sha256
             ${{ matrix.pkg_name }}
             ${{ matrix.pkg_name }}.sha256
             release-manifest.json
