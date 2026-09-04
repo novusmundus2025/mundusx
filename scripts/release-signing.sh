@@ -68,7 +68,7 @@ node_agent_name_for_binary() {
 }
 
 create_manifest() {
-  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as tray_name tray_checksum runtime_name runtime_checksum vulkan_runtime_name vulkan_runtime_checksum mac_pkg_name mac_pkg_checksum
+  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as mundusx_name mundusx_checksum agent_server_name agent_server_checksum tray_name tray_checksum runtime_name runtime_checksum vulkan_runtime_name vulkan_runtime_checksum mac_pkg_name mac_pkg_checksum
   checksum="$(checksum_for_binary "$binary_name")"
   tag_text="$(normalize_text "$tag_name")"
   version_text="$(normalize_text "$version")"
@@ -81,6 +81,16 @@ create_manifest() {
       *.exe) agent_install_as="opengpu-node-agent.exe" ;;
       *) agent_install_as="opengpu-node-agent" ;;
     esac
+  fi
+  mundusx_name="mundusx-${binary_name#opengpu-}"
+  mundusx_checksum=""
+  if [ -f "$artifact_dir/$mundusx_name" ]; then
+    mundusx_checksum="$(checksum_for_binary "$mundusx_name")"
+  fi
+  agent_server_name="mundusx-agent-server-${binary_name#opengpu-}"
+  agent_server_checksum=""
+  if [ -f "$artifact_dir/$agent_server_name" ]; then
+    agent_server_checksum="$(checksum_for_binary "$agent_server_name")"
   fi
   tray_name=""
   tray_checksum=""
@@ -128,7 +138,7 @@ print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$vulkan_runtime_name" "$vulkan_runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" "$tray_icon_name" "$tray_icon_checksum" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$vulkan_runtime_name" "$vulkan_runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" "$tray_icon_name" "$tray_icon_checksum" "$mundusx_name" "$mundusx_checksum" "$agent_server_name" "$agent_server_checksum" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -152,6 +162,10 @@ mac_pkg_name = sys.argv[16]
 mac_pkg_checksum = sys.argv[17]
 tray_icon_name = sys.argv[18]
 tray_icon_checksum = sys.argv[19]
+mundusx_name = sys.argv[20]
+mundusx_checksum = sys.argv[21]
+agent_server_name = sys.argv[22]
+agent_server_checksum = sys.argv[23]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -175,6 +189,20 @@ if tray_name and tray_checksum:
         "install_as": "mundusx-tray.exe",
         "kind": "windows-tray-binary",
         "checksum_sha256": tray_checksum,
+    })
+if mundusx_name and mundusx_checksum:
+    assets.append({
+        "name": mundusx_name,
+        "install_as": "mundusx.exe" if mundusx_name.endswith(".exe") else "mundusx",
+        "kind": "mundusx-agent-cli",
+        "checksum_sha256": mundusx_checksum,
+    })
+if agent_server_name and agent_server_checksum:
+    assets.append({
+        "name": agent_server_name,
+        "install_as": "mundusx-agent-server.exe" if agent_server_name.endswith(".exe") else "mundusx-agent-server",
+        "kind": "mundusx-agent-server",
+        "checksum_sha256": agent_server_checksum,
     })
 if tray_icon_name and tray_icon_checksum:
     assets.append({
