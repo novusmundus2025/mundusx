@@ -8,10 +8,9 @@ coordination surface. The local agent does not require the Control Plane.
 
 ```text
 mundusx run "inspect this repository"
-mundusx agent run "inspect this repository"
-mundusx agent resume <session-id> "continue and explain the failing test"
-mundusx agent sessions
-mundusx agent cancel <session-id>
+mundusx resume <session-id> "continue and explain the failing test"
+mundusx sessions
+mundusx cancel <session-id>
 mundusx connect --workspace .
 mundusx model list
 mundusx model use <model>
@@ -34,15 +33,6 @@ connections, then provide it without placing it in shell history:
 $env:MUNDUSX_CHAT_TOKEN = "<connection-token>"
 mundusx connect --workspace .
 ```
-
-The older top-level `mundusx run`, `resume`, `sessions`, and `cancel` forms remain
-compatible. New documentation and integrations should use the `mundusx agent`
-namespace so contributor and model management commands remain unambiguous.
-
-Deep Agents is an optional runtime plugin. Set `MUNDUSX_DEEPAGENTS_BIN` to the
-installed `mundusx-deepagents-runtime` executable before starting
-`mundusx connect`. The connector advertises `deepagents` only after verifying
-that executable exists; otherwise all `auto` tasks safely use the native agent.
 
 Chat falls back to the Control Plane when the connector is offline. The bridge
 uploads privacy-filtered progress metadata and the final response; local tool

@@ -1,8 +1,6 @@
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -90,7 +88,7 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
     payload["data"].as_array().into_iter().flatten().filter_map(|item| {
         let sequence = item["sequence"].as_u64()?;
         let kind = item["kind"].as_object()?;
-        let event_type = normalized_event_type(kind.get("type")?.as_str()?)?;
+        let event_type = kind.get("type")?.as_str()?;
         let data = kind.get("data").cloned().unwrap_or_else(|| json!({}));
         let metadata = match event_type {
             "model_requested" => json!({"provider": data["provider"], "model": data["model"]}),
@@ -104,60 +102,6 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
         };
         Some(json!({"sequence": sequence, "event": {"type": event_type, "metadata": metadata}}))
     }).collect()
-}
-
-fn normalized_event_type(value: &str) -> Option<&'static str> {
-    Some(match value {
-        "model_requested" => "model.requested",
-        "tool_proposed" => "tool.proposed",
-        "approval_resolved" => "approval.resolved",
-        "tool_completed" => "tool.completed",
-        "context_compacted" => "context.compacted",
-        "task_delegated" => "task.delegated",
-        "session_created" | "user_message" | "assistant_message" | "skill_loaded" => {
-            "runtime.progress"
-        }
-        "cancelled" => "runtime.completed",
-        _ => return None,
-    })
-}
-
-fn deepagents_executable() -> Option<PathBuf> {
-    std::env::var_os("MUNDUSX_DEEPAGENTS_BIN")
-        .map(PathBuf::from)
-        .filter(|path| path.is_file())
-}
-
-fn run_deepagents(options: &ConnectorOptions, task: &Value) -> Result<Value, String> {
-    let executable = deepagents_executable()
-        .ok_or("Deep Agents runtime was selected but MUNDUSX_DEEPAGENTS_BIN is unavailable")?;
-    let mut child = Command::new(&executable)
-        .arg("run-json")
-        .arg("--workspace")
-        .arg(&options.workspace)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("could not start Deep Agents runtime: {error}"))?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or("Deep Agents runtime stdin is unavailable")?
-        .write_all(task.to_string().as_bytes())
-        .map_err(|error| format!("could not send task to Deep Agents runtime: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Deep Agents runtime failed: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Deep Agents runtime exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Deep Agents runtime returned invalid JSON: {error}"))
 }
 
 fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Result<(), String> {
@@ -205,26 +149,18 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         }
     });
 
-    let response = if task["runtime_selected"] == "deepagents" {
-        run_deepagents(options, task)
-    } else {
-        match super::post_chat(&prompt, Some(&session_id), allow_mutations) {
-            Ok(value) => Ok(value),
-            Err(first_error) => {
-                super::spawn_server(&options.workspace)
-                    .map_err(|start_error| format!("{first_error}; {start_error}"))?;
-                super::post_chat(&prompt, Some(&session_id), allow_mutations)
-            }
+    let response = match super::post_chat(&prompt, Some(&session_id), allow_mutations) {
+        Ok(value) => Ok(value),
+        Err(first_error) => {
+            super::spawn_server(&options.workspace)
+                .map_err(|start_error| format!("{first_error}; {start_error}"))?;
+            super::post_chat(&prompt, Some(&session_id), allow_mutations)
         }
     };
     stop.store(true, Ordering::Relaxed);
     let _ = heartbeat.join();
 
-    let events = response
-        .as_ref()
-        .ok()
-        .and_then(|value| value["events"].as_array().cloned())
-        .unwrap_or_else(|| sanitized_events(&session_id));
+    let events = sanitized_events(&session_id);
     if !events.is_empty() {
         let _ = post_remote(
             &options.chat_url,
@@ -235,10 +171,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     }
     match response {
         Ok(value) => {
-            let content = value
-                .pointer("/choices/0/message/content")
-                .and_then(Value::as_str)
-                .or_else(|| value["output"].as_str())
+            let content = value["choices"][0]["message"]["content"]
+                .as_str()
                 .ok_or("local agent response did not contain assistant content")?;
             post_remote(
                 &options.chat_url,
@@ -268,11 +202,7 @@ pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String>
         json!({
             "connection_id": connection_id,
             "device_name": options.device_name,
-            "capabilities": {
-                "protocol": "mundusx-agent-bridge/v1",
-                "mutations": false,
-                "agent_runtimes": if deepagents_executable().is_some() { json!(["native", "deepagents"]) } else { json!(["native"]) }
-            }
+            "capabilities": {"protocol": "mundusx-agent-bridge/v1", "mutations": false}
         }),
     )?;
     eprintln!(
@@ -302,21 +232,12 @@ pub fn connect(options: ConnectorOptions, data_dir: &Path) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_event_type, validate_chat_url};
+    use super::validate_chat_url;
 
     #[test]
     fn connector_requires_secure_remote_transport() {
         assert!(validate_chat_url("https://chat.mundusx.ai/").is_ok());
         assert!(validate_chat_url("http://localhost:8787").is_ok());
         assert!(validate_chat_url("http://chat.mundusx.ai").is_err());
-    }
-
-    #[test]
-    fn connector_normalizes_only_allowlisted_runtime_events() {
-        assert_eq!(
-            normalized_event_type("tool_completed"),
-            Some("tool.completed")
-        );
-        assert_eq!(normalized_event_type("raw_model_transcript"), None);
     }
 }

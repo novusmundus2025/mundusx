@@ -19,11 +19,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run and manage reusable CodeAgent sessions
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommands,
-    },
     /// Run a task with the local MundusX agent
     Run {
         prompt: String,
@@ -69,32 +64,6 @@ enum Commands {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
     },
-}
-
-#[derive(Subcommand)]
-enum AgentCommands {
-    /// Run a task in a new or specified session
-    Run {
-        prompt: String,
-        #[arg(long)]
-        session: Option<String>,
-        #[arg(long)]
-        approve_mutations: bool,
-    },
-    /// Continue an existing session
-    Resume {
-        session_id: String,
-        prompt: String,
-        #[arg(long)]
-        approve_mutations: bool,
-    },
-    /// List local sessions
-    Sessions {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Cancel a running session between turns
-    Cancel { session_id: String },
 }
 
 fn data_dir() -> PathBuf {
@@ -288,36 +257,8 @@ fn forward_model(arguments: &[String]) -> Result<(), String> {
     }
 }
 
-fn execute_agent_command(command: AgentCommands) -> Result<(), String> {
-    match command {
-        AgentCommands::Run {
-            prompt,
-            session,
-            approve_mutations,
-        } => {
-            if let Some(value) = session.as_deref() {
-                SessionId::parse(value)
-                    .map_err(|_| "--session must be a valid MundusX session id".to_string())?;
-            }
-            run_prompt(&prompt, session.as_deref(), approve_mutations)
-        }
-        AgentCommands::Resume {
-            session_id,
-            prompt,
-            approve_mutations,
-        } => {
-            SessionId::parse(&session_id)
-                .map_err(|_| "session_id must be a valid MundusX session id".to_string())?;
-            run_prompt(&prompt, Some(&session_id), approve_mutations)
-        }
-        AgentCommands::Sessions { json } => list_sessions(json),
-        AgentCommands::Cancel { session_id } => cancel_session(&session_id),
-    }
-}
-
 fn main() {
     let result = match Cli::parse().command {
-        Commands::Agent { command } => execute_agent_command(command),
         Commands::Run {
             prompt,
             session,
