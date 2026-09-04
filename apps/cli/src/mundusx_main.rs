@@ -307,6 +307,7 @@ fn run_with_runtime(
         &data_dir(),
         approve_mutations,
         None,
+        None,
     )?;
     let content = response["choices"][0]["message"]["content"]
         .as_str()

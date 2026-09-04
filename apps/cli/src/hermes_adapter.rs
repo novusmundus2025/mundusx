@@ -93,6 +93,7 @@ pub fn run(
     data_dir: &Path,
     approve_mutations: bool,
     cancellation: Option<&AtomicBool>,
+    remote_model: Option<(&str, &str)>,
 ) -> Result<Value, String> {
     if !available() {
         return Err(
@@ -120,7 +121,12 @@ pub fn run(
     // loopback-only raw inference API. Otherwise Hermes keeps its own configured
     // cloud provider. This preserves MundusX model ownership without nesting the
     // native MundusX agent loop inside Hermes.
-    if let Some((model, token, base_url)) = mundusx_local_model() {
+    if let Some((base_url, token)) = remote_model {
+        command
+            .args(["--provider", "custom", "--model", "mundusx-agnostic"])
+            .env("OPENAI_BASE_URL", base_url)
+            .env("OPENAI_API_KEY", token);
+    } else if let Some((model, token, base_url)) = mundusx_local_model() {
         command
             .args(["--provider", "custom", "--model", &model])
             .env("OPENAI_BASE_URL", format!("http://{base_url}/local/v1"))

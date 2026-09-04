@@ -294,6 +294,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             &super::data_dir(),
             allow_mutations,
             Some(stop.as_ref()),
+            Some((
+                &format!("{}/api/agent/model/v1", options.chat_url),
+                &options.token,
+            )),
         )
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
