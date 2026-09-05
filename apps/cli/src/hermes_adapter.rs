@@ -10,15 +10,21 @@ use std::time::Duration;
 use uuid::Uuid;
 
 fn executable() -> PathBuf {
-    std::env::var_os("MUNDUSX_HERMES_BIN")
+    if let Some(path) = std::env::var_os("MUNDUSX_HERMES_BIN").map(PathBuf::from) {
+        return path;
+    }
+    let binary = if cfg!(windows) {
+        "hermes.exe"
+    } else {
+        "hermes"
+    };
+    let managed = std::env::var_os("HERMES_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(if cfg!(windows) {
-                "hermes.exe"
-            } else {
-                "hermes"
-            })
-        })
+        .or_else(|| dirs::home_dir().map(|home| home.join(".hermes")))
+        .map(|home| home.join("bin").join(binary));
+    managed
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(binary))
 }
 
 fn opengpu_home() -> PathBuf {
