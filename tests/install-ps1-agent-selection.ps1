@@ -38,8 +38,11 @@ if ($installerSource -notmatch '\[switch\]\$SkipModelRuntime') {
 if ($installerSource -notmatch 'no llama\.cpp server, local model, CUDA, or Vulkan runtime') {
   throw "agent-only profile must explicitly omit local inference components"
 }
-if ($installerSource -notmatch 'connect --reauthorize --workspace') {
-  throw "developer setup must require fresh browser account approval"
+if ($installerSource -notmatch 'connect --workspace') {
+  throw "developer setup must start the Chat connector"
+}
+if ($installerSource -match 'connect --reauthorize --workspace') {
+  throw "normal updates must reuse the approved account connection"
 }
 if ($installerSource -notmatch '\) -WindowStyle Hidden') {
   throw "developer connector must remain in a background window"
