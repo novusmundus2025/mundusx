@@ -359,6 +359,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             Some((
                 &format!("{}/api/agent/model/v1", options.chat_url),
                 &options.token,
+                &task_id,
+                connection_id,
             )),
         )
     } else {

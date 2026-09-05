@@ -972,6 +972,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tiny_http",
  "ureq",
  "uuid",
  "windows-sys 0.59.0",

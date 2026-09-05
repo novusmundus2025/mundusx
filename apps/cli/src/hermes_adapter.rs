@@ -99,7 +99,7 @@ pub fn run(
     data_dir: &Path,
     approve_mutations: bool,
     cancellation: Option<&AtomicBool>,
-    remote_model: Option<(&str, &str)>,
+    remote_model: Option<(&str, &str, &str, &str)>,
 ) -> Result<Value, String> {
     if !available() {
         return Err(
@@ -122,14 +122,22 @@ pub fn run(
     // loopback-only raw inference API. Otherwise Hermes keeps its own configured
     // cloud provider. This preserves MundusX model ownership without nesting the
     // native MundusX agent loop inside Hermes.
-    if let Some((base_url, token)) = remote_model {
+    let mut _model_proxy = None;
+    if let Some((base_url, token, project_task_id, connection_id)) = remote_model {
+        let proxy = super::project_model_proxy::ProjectModelProxy::start(
+            base_url,
+            token,
+            project_task_id,
+            connection_id,
+        )?;
         command
             // Hermes' generic `custom` provider does not consistently forward
             // OPENAI_API_KEY. The OpenAI-compatible provider honors both the
             // overridden base URL and bearer credential.
             .args(["--provider", "openai-api", "-m", "mundusx-agnostic"])
-            .env("OPENAI_BASE_URL", base_url)
-            .env("OPENAI_API_KEY", token);
+            .env("OPENAI_BASE_URL", proxy.base_url())
+            .env("OPENAI_API_KEY", proxy.credential());
+        _model_proxy = Some(proxy);
     } else if let Some((model, token, base_url)) = mundusx_local_model() {
         command
             .args(["--provider", "openai-api", "-m", &model])

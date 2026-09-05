@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 mod chat_connector;
 mod hermes_adapter;
+mod project_model_proxy;
 
 const DEFAULT_AGENT_URL: &str = "http://127.0.0.1:11436";
 
