@@ -430,7 +430,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let bounded_prompt = workspace_relative
         .map(|relative| {
             if runtime == "hermes" {
-                format!("The current directory is the complete project boundary.\n\n{prompt}")
+                format!(
+                    "The current directory is the complete project boundary. Treat every explicit user requirement as an acceptance criterion. Before giving a final response, inspect the resulting files and run the applicable tests or executable command. Never claim success for a check you did not run.\n\n{prompt}"
+                )
             } else {
                 format!("Work only within project directory `{relative}` beneath the connector workspace.\n\n{prompt}")
             }
