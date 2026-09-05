@@ -41,6 +41,9 @@ if ($installerSource -notmatch 'no llama\.cpp server, local model, CUDA, or Vulk
 if ($installerSource -notmatch 'connect --reauthorize --workspace') {
   throw "developer setup must require fresh browser account approval"
 }
+if ($installerSource -notmatch '\) -WindowStyle Hidden') {
+  throw "developer connector must remain in a background window"
+}
 
 $selector = $functionAst.Body.GetScriptBlock()
 try {

@@ -648,10 +648,10 @@ function Start-ChatConnection {
   $connectCommand = "& '$escapedCliPath' connect --reauthorize --workspace '$escapedWorkspace'"
   $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($connectCommand))
   Start-Process -FilePath "powershell.exe" -ArgumentList @(
-    "-NoLogo", "-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass",
+    "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
     "-EncodedCommand", $encodedCommand
-  )
-  Write-Output "Opened Chat connection setup for workspace $resolvedWorkspace"
+  ) -WindowStyle Hidden
+  Write-Output "Started the Chat connection in the background for workspace $resolvedWorkspace"
 }
 
 if (-not $agentModeWasProvided) {

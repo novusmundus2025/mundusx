@@ -3425,7 +3425,9 @@ fn enable_session_raw_mode() -> Option<RawModeGuard> {
     match enable_raw_mode() {
         Ok(()) => Some(RawModeGuard),
         Err(error) => {
-            theme::warn(format!("Could not enable interactive terminal input: {error}"));
+            theme::warn(format!(
+                "Could not enable interactive terminal input: {error}"
+            ));
             None
         }
     }
@@ -3592,7 +3594,11 @@ fn run_node_agent_foreground(
     theme::section("Starting OpenGPU");
     theme::field(
         "mode",
-        if debug { "foreground debug" } else { "foreground" },
+        if debug {
+            "foreground debug"
+        } else {
+            "foreground"
+        },
     );
     theme::field("command", format!("{} run", agent.display()));
     theme::field("log", log_path.display());
@@ -3647,9 +3653,7 @@ fn run_node_agent_foreground(
                     return Ok(());
                 }
                 Ok(_) => {}
-                Err(error) => {
-                    theme::warn(format!("Could not read terminal input: {error}"))
-                }
+                Err(error) => theme::warn(format!("Could not read terminal input: {error}")),
             },
             Ok(false) => {}
             Err(error) => theme::warn(format!("Could not poll terminal input: {error}")),
@@ -5063,7 +5067,11 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
                 "Detected {} with {} GB {}",
                 selection.backend,
                 selection.memory_gb,
-                if backend == Backend::Cuda { "VRAM" } else { "memory" }
+                if backend == Backend::Cuda {
+                    "VRAM"
+                } else {
+                    "memory"
+                }
             ))
         );
         if let Some(budget) = available_vram_mb {
@@ -5086,7 +5094,10 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
             raw_println!(
                 "{marker} {}  {}",
                 theme::menu_label(format!("{}. {}", i + 1, option.label), is_selected),
-                theme::muted(format!("{} · {} · {}", option.name, option.notes, estimated))
+                theme::muted(format!(
+                    "{} · {} · {}",
+                    option.name, option.notes, estimated
+                ))
             );
         }
         if allow_local_gguf {
@@ -5191,7 +5202,11 @@ fn prompt_official_model_selection(config: &Config, active: bool) -> ModelOption
             "{}",
             theme::menu_title(&format!(
                 "Choose a model to {}",
-                if active { "download and activate" } else { "download" }
+                if active {
+                    "download and activate"
+                } else {
+                    "download"
+                }
             ))
         );
         raw_println!("{}", theme::muted(format!("Backend {backend}")));
@@ -6051,11 +6066,9 @@ fn run_install(
         // Managed runtimes are capacity-sized automatically. Small CUDA cards
         // cannot safely host multiple active contexts, so make the single-slot
         // ceiling explicit and do not ask the contributor to override it.
-        if let Some(budget_mb) = single_job_cuda_budget_mb(
-            detected,
-            profile.cuda_vram_mb,
-            config.contribution_percent,
-        ) {
+        if let Some(budget_mb) =
+            single_job_cuda_budget_mb(detected, profile.cuda_vram_mb, config.contribution_percent)
+        {
             config.max_jobs = Some(1);
             theme::note(format!(
                 "Job concurrency fixed at 1 for the {budget_mb} MB CUDA contribution budget; additional work waits in the queue"
@@ -6404,7 +6417,9 @@ fn run_start_or_connect(
             true
         }
         Err(error) => {
-            theme::error(format!("Failed to load the secure device identity: {error}"));
+            theme::error(format!(
+                "Failed to load the secure device identity: {error}"
+            ));
             false
         }
     };
@@ -6447,11 +6462,9 @@ fn run_start_or_connect(
 
     if config.contributed_cluster.is_none() {
         let backend = resolved_backend(&config);
-        if let Some(budget_mb) = single_job_cuda_budget_mb(
-            backend,
-            detect_cuda_vram_mb(),
-            config.contribution_percent,
-        ) {
+        if let Some(budget_mb) =
+            single_job_cuda_budget_mb(backend, detect_cuda_vram_mb(), config.contribution_percent)
+        {
             if config.max_jobs != Some(1) {
                 theme::note(format!(
                     "Job concurrency limited to 1 for the {budget_mb} MB CUDA contribution budget"
@@ -6492,9 +6505,7 @@ fn run_start_or_connect(
             }
             if !config.onboarding_completed {
                 print_onboarding_checklist(&config, &resolved_config_path(), false);
-                theme::note(
-                    "Run `opengpu onboarding --complete` after reviewing the checklist",
-                );
+                theme::note("Run `opengpu onboarding --complete` after reviewing the checklist");
             }
             if identity_ready {
                 if let Err(error) = launch_node_agent(mode) {
@@ -7477,10 +7488,7 @@ mod tests {
             single_job_cuda_budget_mb(Backend::Cuda, Some(24_576), 80),
             None
         );
-        assert_eq!(
-            single_job_cuda_budget_mb(Backend::M, Some(4_096), 80),
-            None
-        );
+        assert_eq!(single_job_cuda_budget_mb(Backend::M, Some(4_096), 80), None);
     }
 
     #[test]
@@ -7917,9 +7925,9 @@ mod tests {
         let blockers = start_preflight_blockers(&Config::default(), false, false, None);
 
         assert_eq!(blockers.len(), 4);
-        assert!(blockers.iter().any(|b| {
-            b.contains("device identity") && b.contains("creates it automatically")
-        }));
+        assert!(blockers
+            .iter()
+            .any(|b| { b.contains("device identity") && b.contains("creates it automatically") }));
         assert!(blockers.iter().any(|b| b.contains("opengpu-node-agent")));
         assert!(blockers.iter().any(|b| b.contains("contribution cap")));
         assert!(blockers.iter().any(|b| b.contains("no active model")));

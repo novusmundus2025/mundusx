@@ -181,9 +181,7 @@ pub fn ensure_catalog_model_fits(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "refusing to use `{name}`: catalog format is not supported by {backend}"
-            ),
+            format!("refusing to use `{name}`: catalog format is not supported by {backend}"),
         ));
     }
 

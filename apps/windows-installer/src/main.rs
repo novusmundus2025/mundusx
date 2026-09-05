@@ -52,6 +52,9 @@ fn installer_arguments(
     ];
     if agent_only {
         arguments.push("-SkipModelRuntime".to_string());
+        // The graphical flow asks for the workspace after installation and must
+        // start exactly one connector, not an extra default-workspace process.
+        arguments.push("-SkipChatConnect".to_string());
     }
     if let Ok(release_base) = std::env::var("MUNDUSX_RELEASE_BASE_URL") {
         let release_base = release_base.trim();
@@ -146,7 +149,7 @@ fn launch_developer_setup() -> Result<(), String> {
         ));
     }
     let escaped = cli_path.display().to_string().replace('\'', "''");
-    let script = format!("Add-Type -AssemblyName System.Windows.Forms; $picker = New-Object System.Windows.Forms.FolderBrowserDialog; $picker.Description = 'Choose the local project folder MundusX may use'; $picker.ShowNewFolderButton = $true; if ($picker.ShowDialog() -eq 'OK') {{ Start-Process -FilePath '{escaped}' -ArgumentList @('connect','--reauthorize','--workspace',$picker.SelectedPath) }}");
+    let script = format!("Add-Type -AssemblyName System.Windows.Forms; $picker = New-Object System.Windows.Forms.FolderBrowserDialog; $picker.Description = 'Choose the local project folder MundusX may use'; $picker.ShowNewFolderButton = $true; if ($picker.ShowDialog() -eq 'OK') {{ Start-Process -FilePath '{escaped}' -ArgumentList @('connect','--reauthorize','--workspace',$picker.SelectedPath) -WindowStyle Hidden }}");
     let mut command = std::process::Command::new("powershell.exe");
     command.args([
         "-NoLogo",
@@ -328,6 +331,9 @@ mod tests {
         assert!(arguments
             .iter()
             .any(|argument| argument == "-SkipModelRuntime"));
+        assert!(arguments
+            .iter()
+            .any(|argument| argument == "-SkipChatConnect"));
     }
 
     #[test]

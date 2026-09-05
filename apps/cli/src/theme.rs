@@ -151,7 +151,9 @@ pub fn panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
             println!(
                 "{} {} {}",
                 style("│").with(Color::DarkGrey),
-                style(format!("{:<width$}", title, width = width + 2)).with(accent).bold(),
+                style(format!("{:<width$}", title, width = width + 2))
+                    .with(accent)
+                    .bold(),
                 style("│").with(Color::DarkGrey)
             );
             println!(
@@ -160,7 +162,10 @@ pub fn panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
                 style(format!("{:<width$}", subtitle, width = width + 2)).with(Color::DarkGrey),
                 style("│").with(Color::DarkGrey)
             );
-            println!("{}", style(format!("├{}┤", "─".repeat(width + 4))).with(Color::DarkGrey));
+            println!(
+                "{}",
+                style(format!("├{}┤", "─".repeat(width + 4))).with(Color::DarkGrey)
+            );
             for line in lines {
                 println!(
                     "{} {:<width$} {}",
@@ -205,7 +210,9 @@ pub fn menu_title(value: &str) -> String {
 pub fn menu_rule() -> String {
     match current_mode() {
         ThemeMode::Classic => "------------------------------".to_string(),
-        ThemeMode::Mundusx => style("──────────────────────────────").with(Color::DarkGrey).to_string(),
+        ThemeMode::Mundusx => style("──────────────────────────────")
+            .with(Color::DarkGrey)
+            .to_string(),
     }
 }
 

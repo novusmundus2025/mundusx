@@ -115,25 +115,29 @@ fn connection_file(data_dir: &Path) -> PathBuf {
     data_dir.join("chat-connection.json")
 }
 
-fn connection_id(data_dir: &Path) -> Result<String, String> {
+fn connection_id(data_dir: &Path, regenerate: bool) -> Result<String, String> {
     let path = connection_file(data_dir);
-    if let Ok(value) = fs::read_to_string(&path) {
-        if let Some(id) = serde_json::from_str::<Value>(&value)
-            .ok()
-            .and_then(|value| value["connection_id"].as_str().map(str::to_string))
-            .filter(|id| Uuid::parse_str(id).is_ok())
-        {
-            return Ok(id);
+    if !regenerate {
+        if let Ok(value) = fs::read_to_string(&path) {
+            if let Some(id) = serde_json::from_str::<Value>(&value)
+                .ok()
+                .and_then(|value| value["connection_id"].as_str().map(str::to_string))
+                .filter(|id| Uuid::parse_str(id).is_ok())
+            {
+                return Ok(id);
+            }
         }
     }
     let id = Uuid::new_v4().to_string();
     fs::create_dir_all(data_dir)
         .map_err(|error| format!("could not create MundusX data directory: {error}"))?;
-    fs::write(
-        path,
-        serde_json::to_vec_pretty(&json!({"connection_id": id})).unwrap(),
-    )
-    .map_err(|error| format!("could not save connection identity: {error}"))?;
+    let mut value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| json!({}));
+    value["connection_id"] = json!(id);
+    fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|error| format!("could not save connection identity: {error}"))?;
     Ok(id)
 }
 
@@ -349,7 +353,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
 pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(&options.workspace)
         .map_err(|error| format!("could not create connector workspace: {error}"))?;
-    let connection_id = connection_id(data_dir)?;
+    // Fresh browser approval may intentionally bind this installation to a
+    // different account. Rotate the device identity so server-side ownership
+    // protection does not mistake that authorized rebind for account theft.
+    let connection_id = connection_id(data_dir, options.reauthorize)?;
     if options.token.trim().is_empty() && !options.reauthorize {
         options.token = saved_token(data_dir, &options.chat_url).unwrap_or_default();
     }
@@ -407,7 +414,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_task_workspace, validate_chat_url};
+    use super::{bounded_task_workspace, connection_id, validate_chat_url};
     use std::fs;
 
     #[test]
@@ -425,6 +432,21 @@ mod tests {
         assert!(project.starts_with(root.canonicalize().expect("canonical root")));
         assert!(bounded_task_workspace(&root, Some("../escape"), true).is_err());
         assert!(bounded_task_workspace(&root, Some("Bad-Name"), true).is_err());
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn reauthorization_rotates_the_account_bound_device_identity() {
+        let root = std::env::temp_dir().join(format!("mundusx-identity-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).expect("test root");
+        let first = connection_id(&root, false).expect("initial identity");
+        assert_eq!(connection_id(&root, false).expect("saved identity"), first);
+        let rotated = connection_id(&root, true).expect("rotated identity");
+        assert_ne!(rotated, first);
+        assert_eq!(
+            connection_id(&root, false).expect("new saved identity"),
+            rotated
+        );
         fs::remove_dir_all(root).expect("remove test root");
     }
 }
