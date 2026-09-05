@@ -408,14 +408,24 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     post_task_events(
         options,
         &task_id,
-        vec![json!({
-            "sequence": 1,
-            "event": {
-                "type": "harness_started",
-                "summary": format!("{} started in the project workspace", if runtime == "hermes" { "Hermes" } else { "MundusX Local" }),
-                "metadata": {"runtime": runtime}
-            }
-        })],
+        vec![
+            json!({
+                "sequence": 1,
+                "event": {
+                    "type": "harness_started",
+                    "summary": format!("{} started in the project workspace", if runtime == "hermes" { "Hermes" } else { "MundusX Local" }),
+                    "metadata": {"runtime": runtime}
+                }
+            }),
+            json!({
+                "sequence": 2,
+                "event": {
+                    "type": "model_turn_queued",
+                    "summary": "Planning the project work",
+                    "metadata": {"runtime": runtime}
+                }
+            }),
+        ],
     )?;
     let bounded_prompt = workspace_relative
         .map(|relative| {
@@ -499,6 +509,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     }
     let after_files = workspace_snapshot(&task_workspace);
     let changed_events = changed_file_events(&before_files, &after_files);
+    let changed_files = changed_events
+        .iter()
+        .filter_map(|item| item["event"]["metadata"]["path"].as_str())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     if !changed_events.is_empty() {
         let _ = post_task_events(options, &task_id, changed_events);
     }
@@ -511,7 +526,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 &options.chat_url,
                 &options.token,
                 &format!("/api/agent/connector/tasks/{task_id}/complete"),
-                json!({"status": "completed", "result": {"content": content, "session_id": session_id}}),
+                json!({"status": "completed", "result": {
+                    "content": content,
+                    "session_id": session_id,
+                    "changed_files": changed_files,
+                }}),
             )?;
         }
         Err(error) => {
@@ -519,7 +538,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 &options.chat_url,
                 &options.token,
                 &format!("/api/agent/connector/tasks/{task_id}/complete"),
-                json!({"status": "failed", "error": error}),
+                json!({"status": "failed", "error": error, "result": {
+                    "session_id": session_id,
+                    "changed_files": changed_files,
+                    "partial_changes": !changed_files.is_empty(),
+                }}),
             )?;
         }
     }
