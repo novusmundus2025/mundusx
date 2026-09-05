@@ -62,11 +62,12 @@ def main():
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
-    except BaseException as error:
+        exit_code = main()
+    except Exception as error:
         emit(
             "MUNDUSX_RESULT=",
             {"final_response": "", "failed": True, "partial": False, "error": str(error)},
         )
         traceback.print_exc(file=sys.stderr)
         raise SystemExit(1)
+    raise SystemExit(exit_code)
