@@ -124,12 +124,15 @@ pub fn run(
     // native MundusX agent loop inside Hermes.
     if let Some((base_url, token)) = remote_model {
         command
-            .args(["--provider", "custom", "-m", "mundusx-agnostic"])
+            // Hermes' generic `custom` provider does not consistently forward
+            // OPENAI_API_KEY. The OpenAI-compatible provider honors both the
+            // overridden base URL and bearer credential.
+            .args(["--provider", "openai-api", "-m", "mundusx-agnostic"])
             .env("OPENAI_BASE_URL", base_url)
             .env("OPENAI_API_KEY", token);
     } else if let Some((model, token, base_url)) = mundusx_local_model() {
         command
-            .args(["--provider", "custom", "-m", &model])
+            .args(["--provider", "openai-api", "-m", &model])
             .env("OPENAI_BASE_URL", format!("http://{base_url}/local/v1"))
             .env("OPENAI_API_KEY", token);
     }
@@ -203,8 +206,16 @@ pub fn run(
             format!("Hermes failed: {error}")
         });
     }
+    let content = String::from_utf8_lossy(&stdout).trim().to_string();
+    if content.lines().any(|line| {
+        line.strip_prefix("HTTP ")
+            .and_then(|rest| rest.get(..3))
+            .is_some_and(|code| code.bytes().all(|byte| byte.is_ascii_digit()))
+    }) {
+        return Err(format!("Hermes model request failed: {content}"));
+    }
     Ok(serde_json::json!({
-        "choices": [{"message": {"role": "assistant", "content": String::from_utf8_lossy(&stdout).trim()}}],
+        "choices": [{"message": {"role": "assistant", "content": content}}],
         "runtime": "hermes",
         "runtime_session_id": usage["session_id"],
         "usage": usage
