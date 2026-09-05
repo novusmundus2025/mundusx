@@ -11,12 +11,15 @@ param(
   [switch]$SkipContributorSetup,
   [string]$Workspace = "",
   [switch]$SkipChatConnect,
+  [ValidateSet("developer", "contributor", "both")]
+  [string]$SetupMode,
   [ValidateSet("hermes", "native", "none")]
   [string]$AgentMode = "none",
   [switch]$Help
 )
 
 $agentModeWasProvided = $PSBoundParameters.ContainsKey("AgentMode")
+$setupModeWasProvided = $PSBoundParameters.ContainsKey("SetupMode")
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Net.Http
@@ -58,6 +61,7 @@ Options:
   -SkipContributorSetup    Do not open a fresh PowerShell window for `opengpu install`.
   -Workspace <path>        Local project root. Defaults to <home>\MundusX\Projects.
   -SkipChatConnect         Install the selected agent without connecting it to Chat.
+  -SetupMode <mode>        Guided role: developer, contributor, or both.
   -AgentMode <mode>        Agent harness: hermes, native, or none.
                           When omitted, asks interactively and defaults to none.
   -AllowUnsignedLocalPreview
@@ -112,6 +116,34 @@ function Select-AgentMode {
       default { Write-Warning "Please enter 1, 2, or 3." }
     }
   }
+}
+
+function Select-SetupMode {
+  Write-Host ""
+  Write-Host "How will you use MundusX?"
+  Write-Host "  1. Develop with AI on my local projects (recommended)"
+  Write-Host "  2. Contribute compute to the MundusX network"
+  Write-Host "  3. Both development and compute contribution"
+  while ($true) {
+    $choice = Read-Host "Choose 1, 2, or 3 [default: 1]"
+    switch ($choice.Trim().ToLowerInvariant()) {
+      "" { return "developer" }
+      "1" { return "developer" }
+      "developer" { return "developer" }
+      "2" { return "contributor" }
+      "contributor" { return "contributor" }
+      "3" { return "both" }
+      "both" { return "both" }
+      default { Write-Warning "Please enter 1, 2, or 3." }
+    }
+  }
+}
+
+function Select-Workspace {
+  $defaultWorkspace = Join-Path $env:USERPROFILE "MundusX\Projects"
+  $choice = Read-Host "Local project folder [default: $defaultWorkspace]"
+  if ([string]::IsNullOrWhiteSpace($choice)) { return $defaultWorkspace }
+  return [IO.Path]::GetFullPath($choice.Trim().Trim('"'))
 }
 
 function Assert-DownloadedReleaseFile {
@@ -654,7 +686,25 @@ function Start-ChatConnection {
   Write-Output "Started the Chat connection in the background for workspace $resolvedWorkspace"
 }
 
-if (-not $agentModeWasProvided) {
+if (-not $setupModeWasProvided) {
+  $SetupMode = Select-SetupMode
+}
+switch ($SetupMode) {
+  "developer" {
+    $SkipModelRuntime = $true
+    $SkipContributorSetup = $true
+    if (-not $Workspace.Trim()) { $Workspace = Select-Workspace }
+  }
+  "contributor" {
+    $AgentMode = "none"
+    $agentModeWasProvided = $true
+    $SkipChatConnect = $true
+  }
+  "both" {
+    if (-not $Workspace.Trim()) { $Workspace = Select-Workspace }
+  }
+}
+if (-not $agentModeWasProvided -and $SetupMode -ne "contributor") {
   $AgentMode = Select-AgentMode
 }
 

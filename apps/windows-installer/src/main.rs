@@ -37,7 +37,7 @@ fn installer_log_path() -> std::path::PathBuf {
 
 fn installer_arguments(
     script_path: &std::path::Path,
-    agent_mode: &str,
+    agent_mode: Option<&str>,
     agent_only: bool,
 ) -> Vec<String> {
     let mut arguments = vec![
@@ -46,15 +46,17 @@ fn installer_arguments(
         "Bypass".to_string(),
         "-File".to_string(),
         script_path.display().to_string(),
-        "-SkipContributorSetup".to_string(),
-        "-AgentMode".to_string(),
-        agent_mode.to_string(),
     ];
-    if agent_only {
-        arguments.push("-SkipModelRuntime".to_string());
-        // The graphical flow asks for the workspace after installation and must
-        // start exactly one connector, not an extra default-workspace process.
-        arguments.push("-SkipChatConnect".to_string());
+    if let Some(agent_mode) = agent_mode {
+        arguments.extend([
+            "-SkipContributorSetup".to_string(),
+            "-AgentMode".to_string(),
+            agent_mode.to_string(),
+        ]);
+        if agent_only {
+            arguments.push("-SkipModelRuntime".to_string());
+            arguments.push("-SkipChatConnect".to_string());
+        }
     }
     if let Ok(release_base) = std::env::var("MUNDUSX_RELEASE_BASE_URL") {
         let release_base = release_base.trim();
@@ -73,7 +75,7 @@ fn contributor_setup_command(cli_path: &std::path::Path) -> String {
     )
 }
 
-fn run_installer(agent_mode: &str, agent_only: bool) -> Result<(), String> {
+fn run_installer(agent_mode: Option<&str>, agent_only: bool) -> Result<(), String> {
     let staging = std::env::temp_dir().join(format!(
         "mundusx-setup-{}-{}",
         std::process::id(),
@@ -93,8 +95,14 @@ fn run_installer(agent_mode: &str, agent_only: bool) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create installer log directory: {error}"))?;
     }
-    let result = std::process::Command::new("powershell.exe")
-        .args(installer_arguments(&script_path, agent_mode, agent_only))
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args(installer_arguments(&script_path, agent_mode, agent_only));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0000_0010);
+    }
+    let result = command
         .status()
         .map_err(|error| format!("failed to start the MundusX installer: {error}"))?;
     let _ = std::fs::remove_dir_all(&staging);
@@ -250,38 +258,8 @@ fn choose_role() -> Option<bool> {
 
 #[cfg(windows)]
 fn main() {
-    message(
-        "MundusX Setup",
-        "MundusX connects chat.mundusx.ai to project folders you choose on this computer. Development and compute contribution are separate choices.",
-        false,
-    );
-    let Some(developer_role) = choose_role() else {
-        return;
-    };
-    let agent_mode = if developer_role {
-        let Some(mode) = choose_agent() else {
-            return;
-        };
-        mode
-    } else {
-        "none"
-    };
-    match run_installer(agent_mode, developer_role) {
-        Ok(()) => match if developer_role { launch_developer_setup() } else { launch_contributor_setup() } {
-            Ok(()) => message(
-                "MundusX Setup",
-                if developer_role { "MundusX was installed. Choose your local project folder, then approve this computer in Chat with Google." } else { "MundusX was installed. The contributor setup wizard is open." },
-                false,
-            ),
-            Err(error) => message(
-                "MundusX Setup",
-                &format!(
-                    "MundusX was installed successfully, but the next setup step could not open automatically.\n\n{error}"
-                ),
-                true,
-            ),
-        },
-        Err(error) => message("MundusX Setup failed", &error, true),
+    if let Err(error) = run_installer(None, false) {
+        message("MundusX Setup failed", &error, true);
     }
 }
 
@@ -313,7 +291,7 @@ mod tests {
     fn powershell_arguments_use_the_embedded_script() {
         let arguments = installer_arguments(
             std::path::Path::new("C:\\Temp\\install.ps1"),
-            "hermes",
+            Some("hermes"),
             true,
         );
         assert!(arguments
