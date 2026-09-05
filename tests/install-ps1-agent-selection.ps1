@@ -44,6 +44,9 @@ if ($installerSource -notmatch 'connect --workspace') {
 if ($installerSource -notmatch 'connect --workspace.*--authorize-only') {
   throw "developer setup must hand the approved connection to the background app"
 }
+if ($installerSource -notmatch '\$ReauthorizeChat') {
+  throw "installer must support explicitly rebinding the active Chat account"
+}
 if ($installerSource -match 'connect --reauthorize --workspace') {
   throw "normal updates must reuse the approved account connection"
 }

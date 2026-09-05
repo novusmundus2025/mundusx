@@ -11,6 +11,7 @@ param(
   [switch]$SkipContributorSetup,
   [string]$Workspace = "",
   [switch]$SkipChatConnect,
+  [switch]$ReauthorizeChat,
   [ValidateSet("developer", "contributor", "both")]
   [string]$SetupMode,
   [ValidateSet("hermes", "native", "none")]
@@ -677,7 +678,8 @@ function Start-ChatConnection {
   New-Item -ItemType Directory -Force -Path $resolvedWorkspace | Out-Null
   $escapedCliPath = $CliPath.Replace("'", "''")
   $escapedWorkspace = $resolvedWorkspace.Replace("'", "''")
-  $connectCommand = "& '$escapedCliPath' connect --workspace '$escapedWorkspace' --authorize-only"
+  $reauthorizeArgument = if ($ReauthorizeChat) { " --reauthorize" } else { "" }
+  $connectCommand = "& '$escapedCliPath' connect --workspace '$escapedWorkspace' --authorize-only$reauthorizeArgument"
   $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($connectCommand))
   Start-Process -FilePath "powershell.exe" -ArgumentList @(
     "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",

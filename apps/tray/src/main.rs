@@ -11,7 +11,7 @@ mod windows_tray {
         ffi::OsStr,
         os::windows::{ffi::OsStrExt, process::CommandExt},
         path::PathBuf,
-        process::{Child, Command},
+        process::{Child, Command, Stdio},
         ptr, thread,
     };
     use windows_sys::Win32::{
@@ -124,6 +124,23 @@ mod windows_tray {
             .unwrap_or(false)
     }
 
+    fn connector_log_files() -> Option<(std::fs::File, std::fs::File)> {
+        let directory = connection_file()?.parent()?.join("logs");
+        std::fs::create_dir_all(&directory).ok()?;
+        let path = directory.join("connector.log");
+        let stdout = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok()?;
+        let stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()?;
+        Some((stdout, stderr))
+    }
+
     /// Keep the ordinary-user Chat connector alive. The installer starts the tray
     /// once and Windows starts it again at sign-in; no terminal is required.
     fn supervise_chat_connector() {
@@ -137,11 +154,14 @@ mod windows_tray {
                         None => true,
                     };
                     if stopped {
-                        child = Command::new(agent_path())
-                            .arg("connect")
-                            .creation_flags(CREATE_NO_WINDOW)
-                            .spawn()
-                            .ok();
+                        let mut command = Command::new(agent_path());
+                        command.arg("connect").creation_flags(CREATE_NO_WINDOW);
+                        if let Some((stdout, stderr)) = connector_log_files() {
+                            command
+                                .stdout(Stdio::from(stdout))
+                                .stderr(Stdio::from(stderr));
+                        }
+                        child = command.spawn().ok();
                     }
                 }
                 thread::sleep(std::time::Duration::from_secs(5));
