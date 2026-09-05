@@ -251,6 +251,41 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
     }).collect()
 }
 
+fn structured_hermes_events(response: &Value) -> Vec<Value> {
+    response["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(500)
+        .enumerate()
+        .map(|(index, item)| {
+            let raw_type = item["type"].as_str().unwrap_or("agent_progress");
+            let event_type = match raw_type {
+                "tool_start" | "tool_started" => "tool_started",
+                "tool_complete" | "tool_completed" => "tool_completed",
+                "model_start" | "model_requested" => "model_requested",
+                "model_complete" | "model_completed" => "model_turn_completed",
+                _ => "agent_progress",
+            };
+            let tool = item["data"]["tool"]
+                .as_str()
+                .or_else(|| item["data"]["name"].as_str());
+            json!({
+                "sequence": 1_000 + index,
+                "event": {
+                    "type": event_type,
+                    "summary": match tool {
+                        Some(name) if event_type == "tool_started" => format!("Running {name}"),
+                        Some(name) if event_type == "tool_completed" => format!("Completed {name}"),
+                        _ => "Hermes is working".to_string(),
+                    },
+                    "metadata": {"tool": tool, "source_type": raw_type}
+                }
+            })
+        })
+        .collect()
+}
+
 fn post_task_events(
     options: &ConnectorOptions,
     task_id: &str,
@@ -508,6 +543,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         .collect::<Vec<_>>();
     if !events.is_empty() {
         let _ = post_task_events(options, &task_id, events);
+    }
+    if let Ok(value) = &response {
+        let events = structured_hermes_events(value);
+        if !events.is_empty() {
+            let _ = post_task_events(options, &task_id, events);
+        }
     }
     let after_files = workspace_snapshot(&task_workspace);
     let changed_events = changed_file_events(&before_files, &after_files);
