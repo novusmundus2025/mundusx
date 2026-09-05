@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -250,6 +251,102 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
     }).collect()
 }
 
+fn post_task_events(
+    options: &ConnectorOptions,
+    task_id: &str,
+    events: Vec<Value>,
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    post_remote(
+        &options.chat_url,
+        &options.token,
+        &format!("/api/agent/connector/tasks/{task_id}/events"),
+        json!({"events": events}),
+    )
+    .map(|_| ())
+}
+
+fn workspace_snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        result: &mut BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
+    ) {
+        if result.len() >= 5_000 {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(current) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if result.len() >= 5_000 {
+                break;
+            }
+            let path = entry.path();
+            let name = entry.file_name();
+            if matches!(
+                name.to_str(),
+                Some(".git" | "node_modules" | "target" | ".venv")
+            ) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                visit(root, &path, result);
+            } else if metadata.is_file() {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    result.insert(
+                        relative.to_path_buf(),
+                        (metadata.len(), metadata.modified().ok()),
+                    );
+                }
+            }
+        }
+    }
+    let mut result = BTreeMap::new();
+    visit(root, root, &mut result);
+    result
+}
+
+fn changed_file_events(
+    before: &BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
+    after: &BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
+) -> Vec<Value> {
+    before
+        .keys()
+        .chain(after.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(*path) != after.get(*path))
+        .take(200)
+        .enumerate()
+        .map(|(index, path)| {
+            let action = if !before.contains_key(path) {
+                "created"
+            } else if !after.contains_key(path) {
+                "deleted"
+            } else {
+                "modified"
+            };
+            json!({
+                "sequence": 10_000 + index,
+                "event": {
+                    "type": "file_changed",
+                    "summary": format!("{} {}", action, path.display()),
+                    "metadata": {"path": path.display().to_string(), "action": action}
+                }
+            })
+        })
+        .collect()
+}
+
 fn bounded_task_workspace(
     workspace: &Path,
     relative: Option<&str>,
@@ -307,6 +404,19 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let workspace_relative = task["workspace_relative"].as_str();
     let task_workspace =
         bounded_task_workspace(&options.workspace, workspace_relative, allow_mutations)?;
+    let before_files = workspace_snapshot(&task_workspace);
+    post_task_events(
+        options,
+        &task_id,
+        vec![json!({
+            "sequence": 1,
+            "event": {
+                "type": "harness_started",
+                "summary": format!("{} started in the project workspace", if runtime == "hermes" { "Hermes" } else { "MundusX Local" }),
+                "metadata": {"runtime": runtime}
+            }
+        })],
+    )?;
     let bounded_prompt = workspace_relative
         .map(|relative| {
             if runtime == "hermes" {
@@ -376,14 +486,21 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     stop.store(true, Ordering::Relaxed);
     let _ = heartbeat.join();
 
-    let events = sanitized_events(&session_id);
+    let events = sanitized_events(&session_id)
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut event)| {
+            event["sequence"] = json!(100 + index);
+            event
+        })
+        .collect::<Vec<_>>();
     if !events.is_empty() {
-        let _ = post_remote(
-            &options.chat_url,
-            &options.token,
-            &format!("/api/agent/connector/tasks/{task_id}/events"),
-            json!({"events": events}),
-        );
+        let _ = post_task_events(options, &task_id, events);
+    }
+    let after_files = workspace_snapshot(&task_workspace);
+    let changed_events = changed_file_events(&before_files, &after_files);
+    if !changed_events.is_empty() {
+        let _ = post_task_events(options, &task_id, changed_events);
     }
     match response {
         Ok(value) => {
@@ -480,7 +597,10 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_task_workspace, connection_id, validate_chat_url};
+    use super::{
+        bounded_task_workspace, changed_file_events, connection_id, validate_chat_url,
+        workspace_snapshot,
+    };
     use std::fs;
 
     #[test]
@@ -513,6 +633,20 @@ mod tests {
             connection_id(&root, false).expect("new saved identity"),
             rotated
         );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn project_progress_reports_created_files_without_reading_their_contents() {
+        let root = std::env::temp_dir().join(format!("mundusx-progress-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).expect("test root");
+        let before = workspace_snapshot(&root);
+        fs::write(root.join("main.rs"), "fn main() {}\n").expect("write project file");
+        let events = changed_file_events(&before, &workspace_snapshot(&root));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event"]["type"], "file_changed");
+        assert_eq!(events[0]["event"]["metadata"]["path"], "main.rs");
+        assert_eq!(events[0]["event"]["metadata"]["action"], "created");
         fs::remove_dir_all(root).expect("remove test root");
     }
 }
