@@ -37,7 +37,8 @@ parent project task.
 
 `POST /api/agent/model/jobs`
 
-The request follows `project-agent-v1.schema.json#/$defs/modelJobSubmit`. A
+The request includes the active `connection_id` and follows
+`project-agent-v1.schema.json#/$defs/modelJobSubmit`. A
 successful submission returns HTTP 202 and a stable `job_id`; it never waits
 for model completion.
 
@@ -115,4 +116,3 @@ The runner advertises `mundusx-project-agent/v1`. Chat rejects an unsupported
 major version with `upgrade_required` and may accept additive minor fields.
 Unknown response fields are ignored. Unknown states, tool result variants, or
 major versions fail closed.
-
