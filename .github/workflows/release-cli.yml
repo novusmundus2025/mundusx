@@ -16,6 +16,7 @@ permissions:
 
 env:
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  MUNDUSX_RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   build:

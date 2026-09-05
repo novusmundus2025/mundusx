@@ -16,6 +16,7 @@ permissions:
 
 env:
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  MUNDUSX_RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
   TARGET: x86_64-pc-windows-msvc
   BINARY_NAME: opengpu-x86_64-pc-windows-msvc.exe
   EXECUTABLE_NAME: opengpu.exe
