@@ -215,11 +215,7 @@ pub fn run(
         });
     }
     let content = String::from_utf8_lossy(&stdout).trim().to_string();
-    if content.lines().any(|line| {
-        line.strip_prefix("HTTP ")
-            .and_then(|rest| rest.get(..3))
-            .is_some_and(|code| code.bytes().all(|byte| byte.is_ascii_digit()))
-    }) {
+    if hermes_output_reports_model_failure(&content) {
         return Err(format!("Hermes model request failed: {content}"));
     }
     Ok(serde_json::json!({
@@ -228,4 +224,35 @@ pub fn run(
         "runtime_session_id": usage["session_id"],
         "usage": usage
     }))
+}
+
+fn hermes_output_reports_model_failure(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    lower.contains("api call failed after")
+        || lower.contains("application failed to respond")
+        || lower.contains("model gateway returned 5")
+        || content.lines().any(|line| {
+            line.trim_start()
+                .strip_prefix("HTTP ")
+                .and_then(|rest| rest.get(..3))
+                .is_some_and(|code| {
+                    code.starts_with('5') && code.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        })
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::hermes_output_reports_model_failure;
+
+    #[test]
+    fn classifies_retried_gateway_errors_as_failures() {
+        assert!(hermes_output_reports_model_failure(
+            "API call failed after 3 retries: HTTP 502: model gateway returned 502: Application failed to respond",
+        ));
+        assert!(hermes_output_reports_model_failure("HTTP 503: unavailable"));
+        assert!(!hermes_output_reports_model_failure(
+            "Created files and verified the CLI."
+        ));
+    }
 }
