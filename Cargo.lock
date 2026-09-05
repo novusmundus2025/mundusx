@@ -881,6 +881,7 @@ dependencies = [
 name = "mundusx-tray"
 version = "0.1.35"
 dependencies = [
+ "serde_json",
  "windows-sys 0.59.0",
 ]
 

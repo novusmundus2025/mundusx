@@ -677,7 +677,7 @@ function Start-ChatConnection {
   New-Item -ItemType Directory -Force -Path $resolvedWorkspace | Out-Null
   $escapedCliPath = $CliPath.Replace("'", "''")
   $escapedWorkspace = $resolvedWorkspace.Replace("'", "''")
-  $connectCommand = "& '$escapedCliPath' connect --workspace '$escapedWorkspace'"
+  $connectCommand = "& '$escapedCliPath' connect --workspace '$escapedWorkspace' --authorize-only"
   $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($connectCommand))
   Start-Process -FilePath "powershell.exe" -ArgumentList @(
     "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",

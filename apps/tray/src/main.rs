@@ -11,7 +11,7 @@ mod windows_tray {
         ffi::OsStr,
         os::windows::{ffi::OsStrExt, process::CommandExt},
         path::PathBuf,
-        process::Command,
+        process::{Child, Command},
         ptr, thread,
     };
     use windows_sys::Win32::{
@@ -90,6 +90,63 @@ mod windows_tray {
             .and_then(|path| path.parent().map(|parent| parent.join("opengpu.exe")))
             .filter(|path| path.is_file())
             .unwrap_or_else(|| PathBuf::from("opengpu.exe"))
+    }
+
+    fn agent_path() -> PathBuf {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("mundusx.exe")))
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from("mundusx.exe"))
+    }
+
+    fn connection_file() -> Option<PathBuf> {
+        std::env::var_os("MUNDUSX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".mundusx"))
+            })
+            .map(|home| home.join("chat-connection.json"))
+    }
+
+    fn chat_connector_is_configured() -> bool {
+        let Some(path) = connection_file() else {
+            return false;
+        };
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|value| {
+                value["token"]
+                    .as_str()
+                    .map(|token| !token.trim().is_empty())
+            })
+            .unwrap_or(false)
+    }
+
+    /// Keep the ordinary-user Chat connector alive. The installer starts the tray
+    /// once and Windows starts it again at sign-in; no terminal is required.
+    fn supervise_chat_connector() {
+        thread::spawn(|| {
+            let mut child: Option<Child> = None;
+            loop {
+                let configured = chat_connector_is_configured();
+                if configured {
+                    let stopped = match child.as_mut() {
+                        Some(process) => process.try_wait().ok().flatten().is_some(),
+                        None => true,
+                    };
+                    if stopped {
+                        child = Command::new(agent_path())
+                            .arg("connect")
+                            .creation_flags(CREATE_NO_WINDOW)
+                            .spawn()
+                            .ok();
+                    }
+                }
+                thread::sleep(std::time::Duration::from_secs(5));
+            }
+        });
     }
 
     fn tray_icon_path() -> Option<PathBuf> {
@@ -1315,7 +1372,7 @@ mod windows_tray {
                 }
             })
             .unwrap_or_else(|| LoadIconW(ptr::null_mut(), IDI_APPLICATION));
-        let tip = wide("MundusX contributor");
+        let tip = wide("MundusX Local");
         let count = tip.len().min(data.szTip.len());
         data.szTip[..count].copy_from_slice(&tip[..count]);
         data
@@ -1327,6 +1384,7 @@ mod windows_tray {
     }
 
     pub fn run() -> Result<(), String> {
+        supervise_chat_connector();
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
             if instance.is_null() {

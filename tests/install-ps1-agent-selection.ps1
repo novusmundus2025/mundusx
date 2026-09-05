@@ -41,6 +41,9 @@ if ($installerSource -notmatch 'no llama\.cpp server, local model, CUDA, or Vulk
 if ($installerSource -notmatch 'connect --workspace') {
   throw "developer setup must start the Chat connector"
 }
+if ($installerSource -notmatch 'connect --workspace.*--authorize-only') {
+  throw "developer setup must hand the approved connection to the background app"
+}
 if ($installerSource -match 'connect --reauthorize --workspace') {
   throw "normal updates must reuse the approved account connection"
 }

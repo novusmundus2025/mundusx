@@ -9,12 +9,50 @@ use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
+#[cfg(windows)]
+struct ConnectorInstance(*mut core::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for ConnectorInstance {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn acquire_connector_instance() -> Result<ConnectorInstance, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
+        System::Threading::CreateMutexW,
+    };
+    let name: Vec<u16> = std::ffi::OsStr::new("Local\\MundusXChatConnector")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err("could not create the local connector lock".to_string());
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err("the MundusX Chat connector is already running".to_string());
+    }
+    Ok(ConnectorInstance(handle))
+}
+
+#[cfg(not(windows))]
+fn acquire_connector_instance() -> Result<(), String> {
+    Ok(())
+}
+
 pub struct ConnectorOptions {
     pub chat_url: String,
     pub token: String,
     pub device_name: String,
     pub workspace: PathBuf,
     pub reauthorize: bool,
+    pub authorize_only: bool,
 }
 
 fn saved_token(data_dir: &Path, chat_url: &str) -> Option<String> {
@@ -35,6 +73,25 @@ fn save_token(data_dir: &Path, chat_url: &str, connector_token: &str) -> Result<
     value["token"] = json!(connector_token);
     fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
         .map_err(|error| format!("could not save Chat connection: {error}"))
+}
+
+pub fn saved_workspace(data_dir: &Path) -> Option<PathBuf> {
+    serde_json::from_str::<Value>(&fs::read_to_string(connection_file(data_dir)).ok()?).ok()?
+        ["workspace"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn save_workspace(data_dir: &Path, workspace: &Path) -> Result<(), String> {
+    let path = connection_file(data_dir);
+    let mut value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| json!({}));
+    value["workspace"] = json!(workspace.display().to_string());
+    fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|error| format!("could not save connector workspace: {error}"))
 }
 
 fn open_browser(url: &str) -> Result<(), String> {
@@ -351,8 +408,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
 }
 
 pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
+    let _instance = acquire_connector_instance()?;
     fs::create_dir_all(&options.workspace)
         .map_err(|error| format!("could not create connector workspace: {error}"))?;
+    save_workspace(data_dir, &options.workspace)?;
     // Fresh browser approval may intentionally bind this installation to a
     // different account. Rotate the device identity so server-side ownership
     // protection does not mistake that authorized rebind for account theft.
@@ -388,6 +447,10 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             }
         }),
     )?;
+    if options.authorize_only {
+        eprintln!("MundusX Chat connection approved. The background app will keep it online.");
+        return Ok(());
+    }
     eprintln!(
         "Connected local MundusX agent to {}. Press Ctrl+C to stop.",
         options.chat_url

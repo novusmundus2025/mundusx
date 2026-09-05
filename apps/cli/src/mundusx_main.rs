@@ -85,6 +85,9 @@ enum Commands {
         /// Require fresh browser approval instead of reusing a saved account connection
         #[arg(long)]
         reauthorize: bool,
+        /// Save browser approval and let the MundusX background app own the connection
+        #[arg(long, hide = true)]
+        authorize_only: bool,
     },
 }
 
@@ -551,6 +554,7 @@ fn main() {
             device_name,
             workspace,
             reauthorize,
+            authorize_only,
         } => {
             let url = chat_connector::validate_chat_url(&url);
             url.and_then(|chat_url| {
@@ -563,8 +567,11 @@ fn main() {
                                 .or_else(|_| std::env::var("HOSTNAME"))
                                 .unwrap_or_else(|_| "MundusX agent".to_string())
                         }),
-                        workspace: workspace.unwrap_or_else(default_workspace_root),
+                        workspace: workspace
+                            .or_else(|| chat_connector::saved_workspace(&data_dir()))
+                            .unwrap_or_else(default_workspace_root),
                         reauthorize,
+                        authorize_only,
                     },
                     &data_dir(),
                 )
