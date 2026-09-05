@@ -113,7 +113,10 @@ pub fn run(
         .current_dir(workspace)
         .arg("-z")
         .arg(prompt)
-        .args(["--toolsets", "coding", "--max-turns", "100", "--usage-file"])
+        // Hermes exposes the toolset option as `-t`; it does not support the
+        // legacy `--max-turns` option. Passing that option made its value
+        // (`100`) get parsed as a positional command.
+        .args(["-t", "coding", "--usage-file"])
         .arg(&usage_path);
     // If the MundusX node has an active model, Hermes consumes its authenticated,
     // loopback-only raw inference API. Otherwise Hermes keeps its own configured
@@ -121,12 +124,12 @@ pub fn run(
     // native MundusX agent loop inside Hermes.
     if let Some((base_url, token)) = remote_model {
         command
-            .args(["--provider", "custom", "--model", "mundusx-agnostic"])
+            .args(["--provider", "custom", "-m", "mundusx-agnostic"])
             .env("OPENAI_BASE_URL", base_url)
             .env("OPENAI_API_KEY", token);
     } else if let Some((model, token, base_url)) = mundusx_local_model() {
         command
-            .args(["--provider", "custom", "--model", &model])
+            .args(["--provider", "custom", "-m", &model])
             .env("OPENAI_BASE_URL", format!("http://{base_url}/local/v1"))
             .env("OPENAI_API_KEY", token);
     }
