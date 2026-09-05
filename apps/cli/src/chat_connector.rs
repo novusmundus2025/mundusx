@@ -236,6 +236,37 @@ fn transient_agent_failure(error: &str) -> bool {
     .any(|needle| value.contains(needle))
 }
 
+fn requires_project_file_change(prompt: &str) -> bool {
+    let value = prompt.to_ascii_lowercase();
+    [
+        "create",
+        "make",
+        "add",
+        "write",
+        "edit",
+        "modify",
+        "update",
+        "delete",
+        "remove",
+        "rename",
+        "move",
+        "generate",
+        "scaffold",
+        "implement",
+        "fix",
+        "refactor",
+        "format",
+        "install",
+        "build",
+    ]
+    .iter()
+    .any(|word| {
+        value
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|token| token == *word)
+    })
+}
+
 fn local_request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
     let base = super::agent_url();
     let mut request = match method {
@@ -533,7 +564,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         }
     });
 
-    let response = if runtime == "hermes" {
+    let mut response = if runtime == "hermes" {
         let mut result = Err("Hermes did not start".to_string());
         for attempt in 0..4 {
             result = super::hermes_adapter::run(
@@ -583,6 +614,56 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             }
         }
     };
+    if runtime == "hermes"
+        && allow_mutations
+        && requires_project_file_change(&prompt)
+        && response.is_ok()
+    {
+        let used_tools = response
+            .as_ref()
+            .ok()
+            .and_then(|value| value["tool_calls"].as_array())
+            .map(|calls| !calls.is_empty())
+            .unwrap_or(false);
+        let changed_workspace = workspace_snapshot(&task_workspace) != before_files;
+        if !used_tools || !changed_workspace {
+            let _ = post_task_events(
+                options,
+                &task_id,
+                vec![json!({
+                    "sequence": 50,
+                    "event": {
+                        "type": "acceptance_retrying",
+                        "summary": "Hermes returned without changing the project; continuing with tool execution",
+                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace}
+                    }
+                })],
+            );
+            let correction = format!(
+                "Continue the existing project task now. The previous response did not satisfy the request because it did not modify the project workspace. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests. Do not return source code only in chat.\n\nOriginal request:\n{prompt}"
+            );
+            response = super::hermes_adapter::run(
+                &correction,
+                &session_id,
+                &task_workspace,
+                &super::data_dir(),
+                true,
+                Some(stop.as_ref()),
+                Some((
+                    &format!("{}/api/agent/model/v1", options.chat_url),
+                    &options.token,
+                    &task_id,
+                    connection_id,
+                )),
+            );
+        }
+        if response.is_ok() && workspace_snapshot(&task_workspace) == before_files {
+            response = Err(
+                "Hermes returned without changing the project; the task was not completed"
+                    .to_string(),
+            );
+        }
+    }
     stop.store(true, Ordering::Relaxed);
     let _ = heartbeat.join();
 
@@ -717,8 +798,8 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_task_workspace, changed_file_events, connection_id, transient_agent_failure,
-        validate_chat_url, workspace_snapshot,
+        bounded_task_workspace, changed_file_events, connection_id, requires_project_file_change,
+        transient_agent_failure, validate_chat_url, workspace_snapshot,
     };
     use std::fs;
 
@@ -739,6 +820,18 @@ mod tests {
         ));
         assert!(!transient_agent_failure(
             "Hermes rejected an invalid tool argument"
+        ));
+    }
+
+    #[test]
+    fn file_change_acceptance_excludes_read_only_project_commands() {
+        assert!(requires_project_file_change(
+            "create a Node.js Fibonacci CLI"
+        ));
+        assert!(requires_project_file_change("fix the failing tests"));
+        assert!(!requires_project_file_change("run the existing tests"));
+        assert!(!requires_project_file_change(
+            "explain how this module works"
         ));
     }
 
