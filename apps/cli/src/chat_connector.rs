@@ -201,11 +201,39 @@ fn connection_id(data_dir: &Path, regenerate: bool) -> Result<String, String> {
 
 fn post_remote(url: &str, token: &str, path: &str, body: Value) -> Result<Value, String> {
     ureq::post(&format!("{url}{path}"))
+        .timeout(Duration::from_secs(30))
         .set("Authorization", &format!("Bearer {token}"))
         .send_json(body)
         .map_err(|error| format!("Chat connector request failed: {error}"))?
         .into_json()
         .map_err(|error| format!("Chat connector returned invalid JSON: {error}"))
+}
+
+fn transient_agent_failure(error: &str) -> bool {
+    let value = error.to_ascii_lowercase();
+    [
+        "http 408",
+        "http 425",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "status code 408",
+        "status code 425",
+        "status code 429",
+        "status code 500",
+        "status code 502",
+        "status code 503",
+        "status code 504",
+        "application failed to respond",
+        "timed out",
+        "connection reset",
+        "connection closed",
+        "connection refused",
+    ]
+    .iter()
+    .any(|needle| value.contains(needle))
 }
 
 fn local_request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
@@ -506,20 +534,45 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     });
 
     let response = if runtime == "hermes" {
-        super::hermes_adapter::run(
-            &bounded_prompt,
-            &session_id,
-            &task_workspace,
-            &super::data_dir(),
-            allow_mutations,
-            Some(stop.as_ref()),
-            Some((
-                &format!("{}/api/agent/model/v1", options.chat_url),
-                &options.token,
+        let mut result = Err("Hermes did not start".to_string());
+        for attempt in 0..4 {
+            result = super::hermes_adapter::run(
+                &bounded_prompt,
+                &session_id,
+                &task_workspace,
+                &super::data_dir(),
+                allow_mutations,
+                Some(stop.as_ref()),
+                Some((
+                    &format!("{}/api/agent/model/v1", options.chat_url),
+                    &options.token,
+                    &task_id,
+                    connection_id,
+                )),
+            );
+            let retry = result
+                .as_ref()
+                .err()
+                .map(|error| transient_agent_failure(error))
+                .unwrap_or(false);
+            if !retry || attempt == 3 || stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let _ = post_task_events(
+                options,
                 &task_id,
-                connection_id,
-            )),
-        )
+                vec![json!({
+                    "sequence": 10 + attempt,
+                    "event": {
+                        "type": "model_turn_retrying",
+                        "summary": "The model service was interrupted; Hermes is resuming automatically",
+                        "metadata": {"attempt": attempt + 2}
+                    }
+                })],
+            );
+            thread::sleep(Duration::from_secs(2 * (attempt + 1) as u64));
+        }
+        result
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
             Ok(value) => Ok(value),
@@ -664,8 +717,8 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_task_workspace, changed_file_events, connection_id, validate_chat_url,
-        workspace_snapshot,
+        bounded_task_workspace, changed_file_events, connection_id, transient_agent_failure,
+        validate_chat_url, workspace_snapshot,
     };
     use std::fs;
 
@@ -674,6 +727,19 @@ mod tests {
         assert!(validate_chat_url("https://chat.mundusx.ai/").is_ok());
         assert!(validate_chat_url("http://localhost:8787").is_ok());
         assert!(validate_chat_url("http://chat.mundusx.ai").is_err());
+    }
+
+    #[test]
+    fn retries_only_transient_agent_failures() {
+        assert!(transient_agent_failure(
+            "HTTP 502: Application failed to respond"
+        ));
+        assert!(transient_agent_failure(
+            "Chat connector request failed: timed out"
+        ));
+        assert!(!transient_agent_failure(
+            "Hermes rejected an invalid tool argument"
+        ));
     }
 
     #[test]
