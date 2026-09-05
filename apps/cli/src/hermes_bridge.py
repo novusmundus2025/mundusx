@@ -34,10 +34,26 @@ def main():
         skip_memory=True,
         load_soul_identity=False,
     )
-    result = agent.run_conversation(
-        user_message=os.environ["MUNDUSX_HERMES_PROMPT"],
-        task_id=os.environ.get("MUNDUSX_HERMES_TASK") or session_id,
-    )
+    try:
+        result = agent.run_conversation(
+            user_message=os.environ["MUNDUSX_HERMES_PROMPT"],
+            task_id=os.environ.get("MUNDUSX_HERMES_TASK") or session_id,
+        )
+    except Exception as error:
+        emit(
+            "MUNDUSX_RESULT=",
+            {
+                "final_response": "",
+                "failed": True,
+                "partial": True,
+                "error": str(error),
+                "session_id": getattr(agent, "session_id", None) or session_id,
+                "tool_calls": [],
+                "turn_count": 0,
+            },
+        )
+        traceback.print_exc(file=sys.stderr)
+        return 1
     messages = result.get("messages") or []
     tool_calls = []
     for message in messages:
