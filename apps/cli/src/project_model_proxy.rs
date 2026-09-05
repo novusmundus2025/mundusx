@@ -128,52 +128,100 @@ fn execute_remote_job(
     mut body: Value,
     stop: &AtomicBool,
 ) -> Result<Value, String> {
+    let idempotency_key = Uuid::new_v4().to_string();
     body["protocol"] = json!("mundusx-project-agent/v1");
     body["project_task_id"] = json!(task_id);
     body["connection_id"] = json!(connection_id);
-    body["idempotency_key"] = json!(Uuid::new_v4().to_string());
+    body["idempotency_key"] = json!(idempotency_key);
     body["model"] = json!("mundusx-agnostic");
-    let accepted: Value = ureq::post(&format!("{remote}/jobs"))
-        .set("Authorization", &format!("Bearer {token}"))
-        .send_json(body)
-        .map_err(remote_error)?
-        .into_json()
-        .map_err(|error| error.to_string())?;
-    let job_id = accepted["job_id"]
-        .as_str()
-        .ok_or("model gateway did not return job_id")?;
-    let mut delay = 250;
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            let _ = ureq::post(&format!("{remote}/jobs/{job_id}/cancel"))
+    for recovery_attempt in 0..4 {
+        let accepted = retry_remote_json(stop, || {
+            ureq::post(&format!("{remote}/jobs"))
+                .timeout(Duration::from_secs(30))
                 .set("Authorization", &format!("Bearer {token}"))
-                .call();
-            return Err("project model job cancelled".to_string());
-        }
-        let state: Value = ureq::get(&format!("{remote}/jobs/{job_id}"))
-            .set("Authorization", &format!("Bearer {token}"))
-            .call()
-            .map_err(remote_error)?
-            .into_json()
-            .map_err(|error| error.to_string())?;
-        match state["status"].as_str().unwrap_or("failed") {
-            "completed" => return Ok(state["result"].clone()),
-            "queued" | "running" => {
-                delay = state["retry_after_ms"]
-                    .as_u64()
-                    .unwrap_or(delay)
-                    .clamp(100, 2000);
-                thread::sleep(Duration::from_millis(delay));
-                delay = (delay * 2).min(2000);
+                .send_json(body.clone())
+        })?;
+        let job_id = accepted["job_id"]
+            .as_str()
+            .ok_or("model gateway did not return job_id")?
+            .to_string();
+        let mut delay = 250;
+        let mut poll_errors = 0;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                let _ = ureq::post(&format!("{remote}/jobs/{job_id}/cancel"))
+                    .timeout(Duration::from_secs(10))
+                    .set("Authorization", &format!("Bearer {token}"))
+                    .call();
+                return Err("project model job cancelled".to_string());
             }
-            terminal => {
-                return Err(state["error"]["message"]
-                    .as_str()
-                    .unwrap_or(terminal)
-                    .to_string())
+            let state = match ureq::get(&format!("{remote}/jobs/{job_id}"))
+                .timeout(Duration::from_secs(30))
+                .set("Authorization", &format!("Bearer {token}"))
+                .call()
+            {
+                Ok(response) => {
+                    poll_errors = 0;
+                    response
+                        .into_json::<Value>()
+                        .map_err(|error| error.to_string())?
+                }
+                Err(_error) if poll_errors < 5 => {
+                    poll_errors += 1;
+                    thread::sleep(Duration::from_secs(poll_errors));
+                    continue;
+                }
+                Err(error) => return Err(remote_error(error)),
+            };
+            match state["status"].as_str().unwrap_or("failed") {
+                "completed" => return Ok(state["result"].clone()),
+                "queued" | "running" => {
+                    delay = state["retry_after_ms"]
+                        .as_u64()
+                        .unwrap_or(delay)
+                        .clamp(100, 2000);
+                    thread::sleep(Duration::from_millis(delay));
+                    delay = (delay * 2).min(2000);
+                }
+                terminal => {
+                    let retryable = state["error"]["retryable"].as_bool().unwrap_or(false);
+                    if retryable && recovery_attempt < 3 {
+                        thread::sleep(Duration::from_secs(2 * (recovery_attempt + 1)));
+                        break;
+                    }
+                    return Err(state["error"]["message"]
+                        .as_str()
+                        .unwrap_or(terminal)
+                        .to_string());
+                }
             }
         }
     }
+    Err("project model job exhausted recovery attempts".to_string())
+}
+
+fn retry_remote_json<F>(stop: &AtomicBool, mut request: F) -> Result<Value, String>
+where
+    F: FnMut() -> Result<ureq::Response, ureq::Error>,
+{
+    let mut last_error = None;
+    for attempt in 0..4 {
+        if stop.load(Ordering::Relaxed) {
+            return Err("project model job cancelled".to_string());
+        }
+        match request() {
+            Ok(response) => {
+                return response
+                    .into_json()
+                    .map_err(|error| format!("model gateway returned invalid JSON: {error}"));
+            }
+            Err(error) => last_error = Some(remote_error(error)),
+        }
+        if attempt < 3 {
+            thread::sleep(Duration::from_secs(attempt + 1));
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "model gateway request failed".to_string()))
 }
 
 fn remote_error(error: ureq::Error) -> String {
