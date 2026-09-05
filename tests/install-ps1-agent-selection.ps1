@@ -47,6 +47,9 @@ if ($installerSource -notmatch 'connect --workspace.*--authorize-only') {
 if ($installerSource -notmatch '\$ReauthorizeChat') {
   throw "installer must support explicitly rebinding the active Chat account"
 }
+if ($installerSource -notmatch 'tray will start after browser account approval') {
+  throw "account repair must not let the tray race browser approval"
+}
 if ($installerSource -match 'connect --reauthorize --workspace') {
   throw "normal updates must reuse the approved account connection"
 }

@@ -667,7 +667,9 @@ if ($Help) {
 function Start-ChatConnection {
   param(
     [string]$CliPath,
-    [string]$WorkspacePath
+    [string]$WorkspacePath,
+    [string]$TrayPath,
+    [bool]$StartTrayAfterApproval = $false
   )
 
   $resolvedWorkspace = if ($WorkspacePath.Trim()) {
@@ -679,7 +681,11 @@ function Start-ChatConnection {
   $escapedCliPath = $CliPath.Replace("'", "''")
   $escapedWorkspace = $resolvedWorkspace.Replace("'", "''")
   $reauthorizeArgument = if ($ReauthorizeChat) { " --reauthorize" } else { "" }
-  $connectCommand = "& '$escapedCliPath' connect --workspace '$escapedWorkspace' --authorize-only$reauthorizeArgument"
+  $startTrayCommand = if ($StartTrayAfterApproval) {
+    $escapedTrayPath = $TrayPath.Replace("'", "''")
+    "; `$connectionExit = `$LASTEXITCODE; Start-Process -FilePath '$escapedTrayPath' -WindowStyle Hidden; exit `$connectionExit"
+  } else { "" }
+  $connectCommand = "& '$escapedCliPath' connect --workspace '$escapedWorkspace' --authorize-only$reauthorizeArgument$startTrayCommand"
   $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($connectCommand))
   Start-Process -FilePath "powershell.exe" -ArgumentList @(
     "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -938,8 +944,12 @@ if (-not $SkipTrayAutoStart) {
   New-Item -Path $runKey -Force | Out-Null
   New-ItemProperty -Path $runKey -Name "MundusX" -Value ('"' + $finalTray + '"') -PropertyType String -Force | Out-Null
   Write-Output "Configured MundusX tray to start at sign-in"
-  Start-Process -FilePath $finalTray
-  Write-Output "Started MundusX tray companion"
+  if ($ReauthorizeChat -and -not $SkipChatConnect -and $AgentMode -ne "none") {
+    Write-Output "MundusX tray will start after browser account approval"
+  } else {
+    Start-Process -FilePath $finalTray
+    Write-Output "Started MundusX tray companion"
+  }
 }
 if ($cudaRuntimeRequired -or $vulkanRuntimeRequired) {
   $installedRuntimeLabel = if ($cudaRuntimeRequired) { "CUDA" } else { "Vulkan" }
@@ -984,7 +994,7 @@ if ($script:installerTranscriptStarted) {
 }
 
 if ($AgentMode -ne "none" -and -not $SkipChatConnect) {
-  Start-ChatConnection -CliPath $finalMundusx -WorkspacePath $Workspace
+  Start-ChatConnection -CliPath $finalMundusx -WorkspacePath $Workspace -TrayPath $finalTray -StartTrayAfterApproval ([bool]($ReauthorizeChat -and -not $SkipTrayAutoStart))
 }
 
 if (-not $SkipContributorSetup) {
