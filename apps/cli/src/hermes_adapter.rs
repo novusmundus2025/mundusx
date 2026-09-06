@@ -111,6 +111,18 @@ fn save_session(data_dir: &Path, mundusx_id: &str, hermes_id: &str) -> Result<()
     .map_err(|error| format!("could not save Hermes session mapping: {error}"))
 }
 
+pub fn clear_session(data_dir: &Path, mundusx_id: &str) -> Result<(), String> {
+    let mut sessions = session_map(data_dir);
+    if sessions.remove(mundusx_id).is_none() {
+        return Ok(());
+    }
+    fs::write(
+        map_path(data_dir),
+        serde_json::to_vec_pretty(&sessions).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("could not clear failed Hermes session mapping: {error}"))
+}
+
 pub fn run(
     prompt: &str,
     mundusx_session_id: &str,
@@ -390,7 +402,10 @@ pub fn is_retryable_model_failure(message: &str) -> bool {
 
 #[cfg(test)]
 mod output_tests {
-    use super::{hermes_output_reports_model_failure, is_retryable_model_failure, STRUCTURED_BRIDGE};
+    use super::{
+        clear_session, hermes_output_reports_model_failure, is_retryable_model_failure, save_session,
+        session_map, STRUCTURED_BRIDGE,
+    };
 
     #[test]
     fn structured_bridge_enables_native_hermes_skills() {
@@ -418,5 +433,19 @@ mod output_tests {
         assert!(is_retryable_model_failure("MundusX model turn did not respond within 3 minutes"));
         assert!(!is_retryable_model_failure("Hermes runtime is not installed"));
         assert!(!is_retryable_model_failure("permission denied"));
+    }
+
+    #[test]
+    fn recovery_discards_only_the_failed_hermes_session() {
+        let data_dir = std::env::temp_dir().join(format!("mundusx-hermes-test-{}", uuid::Uuid::new_v4()));
+        save_session(&data_dir, "failed-task", "poisoned-session").expect("save failed task");
+        save_session(&data_dir, "healthy-task", "healthy-session").expect("save healthy task");
+
+        clear_session(&data_dir, "failed-task").expect("clear failed task");
+
+        let sessions = session_map(&data_dir);
+        assert!(!sessions.contains_key("failed-task"));
+        assert_eq!(sessions.get("healthy-task").map(String::as_str), Some("healthy-session"));
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }

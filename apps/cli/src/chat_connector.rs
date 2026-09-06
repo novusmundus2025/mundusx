@@ -692,6 +692,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                         && !stop.load(Ordering::Relaxed) =>
                 {
                     last_error = error;
+                    // A failed model turn may leave Hermes' provider transcript
+                    // over-sized or malformed. Reusing that same transcript makes
+                    // every process-level retry deterministic. Keep the project
+                    // files, but rebuild agent context from the original request.
+                    super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
                     let delay_seconds = (2_u64.pow(attempt as u32)).min(30);
                     let _ = post_task_events(
                         options,
@@ -700,7 +705,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                             "sequence": 10_000 + attempt,
                             "event": {
                                 "type": "model_turn_recovering",
-                                "summary": format!("EHDA interrupted the model turn; Hermes is resuming automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS),
+                                "summary": format!("EHDA interrupted the model turn; Hermes is rebuilding context automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS),
                                 "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds}
                             }
                         })],
