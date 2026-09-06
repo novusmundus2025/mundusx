@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "mundusx-agent-server"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "clap",
  "dirs",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "mundusx-tray"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "serde_json",
  "windows-sys 0.59.0",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "mundusx-windows-installer"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "windows-sys 0.59.0",
 ]
@@ -960,7 +960,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "opengpu"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "clap",
  "crossterm",

@@ -665,25 +665,63 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         streamed_event_sequence += 1;
         let _ = post_task_events(options, &task_id, vec![mapped]);
     };
+    let mut run_hermes_with_recovery = |initial_prompt: &str| {
+        const HARNESS_RECOVERY_ATTEMPTS: usize = 6;
+        let mut resume_prompt = initial_prompt.to_string();
+        let mut last_error = String::new();
+        for attempt in 0..HARNESS_RECOVERY_ATTEMPTS {
+            match super::hermes_adapter::run(
+                &resume_prompt,
+                &session_id,
+                &task_workspace,
+                &super::data_dir(),
+                allow_mutations,
+                Some(stop.as_ref()),
+                Some((
+                    &format!("{}/api/agent/model/v1", options.chat_url),
+                    &options.token,
+                    &task_id,
+                    connection_id,
+                )),
+                Some(&mut stream_hermes_event),
+            ) {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if super::hermes_adapter::is_retryable_model_failure(&error)
+                        && attempt + 1 < HARNESS_RECOVERY_ATTEMPTS
+                        && !stop.load(Ordering::Relaxed) =>
+                {
+                    last_error = error;
+                    let delay_seconds = (2_u64.pow(attempt as u32)).min(30);
+                    let _ = post_task_events(
+                        options,
+                        &task_id,
+                        vec![json!({
+                            "sequence": 10_000 + attempt,
+                            "event": {
+                                "type": "model_turn_recovering",
+                                "summary": format!("EHDA interrupted the model turn; Hermes is resuming automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS),
+                                "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds}
+                            }
+                        })],
+                    );
+                    for _ in 0..delay_seconds {
+                        if stop.load(Ordering::Relaxed) {
+                            return Err("Hermes task was cancelled".to_string());
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                    resume_prompt = format!(
+                        "Resume the existing Hermes project task after a temporary model-service interruption. Continue from the files and tool results already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error)
+    };
     let mut response = if runtime == "hermes" {
-        // The project model proxy owns idempotent, bounded recovery for every
-        // model turn. Restarting the whole Hermes process here multiplied its
-        // retries and could leave Chat apparently working for many minutes.
-        super::hermes_adapter::run(
-            &bounded_prompt,
-            &session_id,
-            &task_workspace,
-            &super::data_dir(),
-            allow_mutations,
-            Some(stop.as_ref()),
-            Some((
-                &format!("{}/api/agent/model/v1", options.chat_url),
-                &options.token,
-                &task_id,
-                connection_id,
-            )),
-            Some(&mut stream_hermes_event),
-        )
+        run_hermes_with_recovery(&bounded_prompt)
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
             Ok(value) => Ok(value),
@@ -724,21 +762,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             let correction = format!(
                 "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
             );
-            response = super::hermes_adapter::run(
-                &correction,
-                &session_id,
-                &task_workspace,
-                &super::data_dir(),
-                true,
-                Some(stop.as_ref()),
-                Some((
-                    &format!("{}/api/agent/model/v1", options.chat_url),
-                    &options.token,
-                    &task_id,
-                    connection_id,
-                )),
-                Some(&mut stream_hermes_event),
-            );
+            response = run_hermes_with_recovery(&correction);
         }
         if response.is_ok() && workspace_snapshot(&task_workspace) == before_files {
             response = Err(
