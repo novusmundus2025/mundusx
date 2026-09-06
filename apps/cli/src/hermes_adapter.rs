@@ -400,11 +400,22 @@ pub fn is_retryable_model_failure(message: &str) -> bool {
         || lower.contains("timeout")
 }
 
+pub fn should_rebuild_session_after_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("context length")
+        || lower.contains("context window")
+        || lower.contains("maximum context")
+        || lower.contains("too many tokens")
+        || lower.contains("prompt is too long")
+        || lower.contains("malformed conversation")
+        || lower.contains("invalid conversation")
+}
+
 #[cfg(test)]
 mod output_tests {
     use super::{
-        clear_session, hermes_output_reports_model_failure, is_retryable_model_failure, save_session,
-        session_map, STRUCTURED_BRIDGE,
+        clear_session, hermes_output_reports_model_failure, is_retryable_model_failure,
+        save_session, session_map, should_rebuild_session_after_failure, STRUCTURED_BRIDGE,
     };
 
     #[test]
@@ -431,14 +442,29 @@ mod output_tests {
         assert!(is_retryable_model_failure(
             "HTTP 502: model gateway returned 502: Application failed to respond"
         ));
-        assert!(is_retryable_model_failure("MundusX model turn did not respond within 3 minutes"));
-        assert!(!is_retryable_model_failure("Hermes runtime is not installed"));
+        assert!(is_retryable_model_failure(
+            "MundusX model turn did not respond within 3 minutes"
+        ));
+        assert!(!is_retryable_model_failure(
+            "Hermes runtime is not installed"
+        ));
         assert!(!is_retryable_model_failure("permission denied"));
     }
 
     #[test]
+    fn rebuilds_only_explicitly_invalid_model_contexts() {
+        assert!(!should_rebuild_session_after_failure(
+            "HTTP 502: model gateway returned 502: Application failed to respond"
+        ));
+        assert!(should_rebuild_session_after_failure(
+            "maximum context length exceeded"
+        ));
+    }
+
+    #[test]
     fn recovery_discards_only_the_failed_hermes_session() {
-        let data_dir = std::env::temp_dir().join(format!("mundusx-hermes-test-{}", uuid::Uuid::new_v4()));
+        let data_dir =
+            std::env::temp_dir().join(format!("mundusx-hermes-test-{}", uuid::Uuid::new_v4()));
         save_session(&data_dir, "failed-task", "poisoned-session").expect("save failed task");
         save_session(&data_dir, "healthy-task", "healthy-session").expect("save healthy task");
 
@@ -446,7 +472,10 @@ mod output_tests {
 
         let sessions = session_map(&data_dir);
         assert!(!sessions.contains_key("failed-task"));
-        assert_eq!(sessions.get("healthy-task").map(String::as_str), Some("healthy-session"));
+        assert_eq!(
+            sessions.get("healthy-task").map(String::as_str),
+            Some("healthy-session")
+        );
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

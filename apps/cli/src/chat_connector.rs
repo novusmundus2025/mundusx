@@ -666,7 +666,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         let _ = post_task_events(options, &task_id, vec![mapped]);
     };
     let mut run_hermes_with_recovery = |initial_prompt: &str| {
-        const HARNESS_RECOVERY_ATTEMPTS: usize = 6;
+        const HARNESS_RECOVERY_ATTEMPTS: usize = 12;
         let mut resume_prompt = initial_prompt.to_string();
         let mut last_error = String::new();
         for attempt in 0..HARNESS_RECOVERY_ATTEMPTS {
@@ -691,12 +691,15 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                         && attempt + 1 < HARNESS_RECOVERY_ATTEMPTS
                         && !stop.load(Ordering::Relaxed) =>
                 {
+                    // Preserve completed tool turns across transient gateway
+                    // failures. Rebuild only when the provider says the saved
+                    // conversation itself is invalid or over its context limit.
+                    let rebuilding =
+                        super::hermes_adapter::should_rebuild_session_after_failure(&error);
                     last_error = error;
-                    // A failed model turn may leave Hermes' provider transcript
-                    // over-sized or malformed. Reusing that same transcript makes
-                    // every process-level retry deterministic. Keep the project
-                    // files, but rebuild agent context from the original request.
-                    super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
+                    if rebuilding {
+                        super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
+                    }
                     let delay_seconds = (2_u64.pow(attempt as u32)).min(30);
                     let _ = post_task_events(
                         options,
@@ -705,8 +708,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                             "sequence": 10_000 + attempt,
                             "event": {
                                 "type": "model_turn_recovering",
-                                "summary": format!("EHDA interrupted the model turn; Hermes is rebuilding context automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS),
-                                "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds}
+                                "summary": if rebuilding {
+                                    format!("EHDA rejected the saved context; Hermes is rebuilding it automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                } else {
+                                    format!("EHDA is temporarily unavailable; Hermes preserved its tool progress and will continue automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                },
+                                "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds, "session_preserved": !rebuilding}
                             }
                         })],
                     );
@@ -716,9 +723,13 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                         }
                         thread::sleep(Duration::from_secs(1));
                     }
-                    resume_prompt = format!(
-                        "Resume the existing Hermes project task after a temporary model-service interruption. Continue from the files and tool results already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
-                    );
+                    resume_prompt = if rebuilding {
+                        format!(
+                            "Resume the existing Hermes project task after rebuilding an invalid model context. Continue from the files already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
+                        )
+                    } else {
+                        "Continue the interrupted project task from the preserved Hermes session and existing tool results. Do not restart or repeat completed work.".to_string()
+                    };
                 }
                 Err(error) => return Err(error),
             }
