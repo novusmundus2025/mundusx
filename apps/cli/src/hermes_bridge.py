@@ -13,7 +13,7 @@ def emit(prefix, value):
 def select_project_skills(prompt):
     """Choose a small native Hermes skill set for a project request."""
     text = (prompt or "").lower()
-    selected = []
+    selected = ["codebase-inspection"]
 
     def add(name):
         if name not in selected:
@@ -21,7 +21,7 @@ def select_project_skills(prompt):
 
     if any(word in text for word in ("bug", "debug", "error", "fail", "fix", "broken")):
         add("systematic-debugging")
-    if any(word in text for word in ("test", "tests", "tdd", "implement", "create", "build", "code", "app")):
+    if any(word in text for word in ("test", "tests", "tdd", "implement", "create", "build", "code", "app", "add", "function", "index")):
         add("test-driven-development")
     if any(word in text for word in ("plan", "design", "architecture", "refactor", "migrate")):
         add("plan")
@@ -125,11 +125,10 @@ def main():
         api_key=os.environ["OPENAI_API_KEY"],
         provider="openai-api",
         model="mundusx-agnostic",
-        # Project work uses Hermes' native coding tools and its progressive-
-        # disclosure SKILL.md loader.  Keeping this explicit avoids enabling
-        # unrelated integrations while still allowing Hermes to discover and
-        # load the right development workflow for the request.
-        enabled_toolsets=["coding", "skills"],
+        # Relevant SKILL.md content is preloaded above. Enabling Hermes' global
+        # skills toolset here also injects the complete installed skill catalog
+        # into every model turn, which can overflow smaller routed workers.
+        enabled_toolsets=["coding"],
         quiet_mode=True,
         tool_progress_mode="all",
         event_callback=event_callback,
