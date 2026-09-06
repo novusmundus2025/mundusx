@@ -1,10 +1,11 @@
 use serde_json::{json, Value};
+use std::io::{self, Read};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
@@ -73,18 +74,33 @@ impl ProjectModelProxy {
                         serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())
                     })
                     .and_then(|body| {
-                        execute_remote_job(
+                        open_remote_stream(
                             &remote,
                             &connector_token,
                             &task_id,
                             &connection_id,
                             body,
-                            &worker_stop,
                         )
                     });
                 match result {
-                    Ok(completion) => {
-                        let _ = request.respond(sse_response(completion));
+                    Ok(upstream) => {
+                        let status = StatusCode(upstream.status());
+                        let headers = vec![
+                            Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
+                            Header::from_bytes("Cache-Control", "no-cache").unwrap(),
+                            Header::from_bytes("X-Accel-Buffering", "no").unwrap(),
+                        ];
+                        let response = Response::new(
+                            status,
+                            headers,
+                            CancellableReader {
+                                inner: upstream.into_reader(),
+                                stop: Arc::clone(&worker_stop),
+                            },
+                            None,
+                            None,
+                        );
+                        let _ = request.respond(response);
                     }
                     Err(error) => {
                         let _ = request.respond(json_response(
@@ -120,118 +136,46 @@ impl Drop for ProjectModelProxy {
     }
 }
 
-fn execute_remote_job(
+fn open_remote_stream(
     remote: &str,
     token: &str,
     task_id: &str,
     connection_id: &str,
     mut body: Value,
-    stop: &AtomicBool,
-) -> Result<Value, String> {
-    const MODEL_TURN_BUDGET: Duration = Duration::from_secs(180);
-    const RECOVERY_ATTEMPTS: usize = 3;
-    let idempotency_key = Uuid::new_v4().to_string();
-    let deadline = Instant::now() + MODEL_TURN_BUDGET;
+) -> Result<ureq::Response, String> {
+    let request_id = body["request_id"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("chatcmpl-{}", Uuid::new_v4().simple()));
     body["protocol"] = json!("mundusx-project-agent/v1");
     body["project_task_id"] = json!(task_id);
     body["connection_id"] = json!(connection_id);
-    body["idempotency_key"] = json!(idempotency_key);
+    body["request_id"] = json!(request_id);
     body["model"] = json!("mundusx-agnostic");
-    for recovery_attempt in 0..RECOVERY_ATTEMPTS {
-        let accepted = retry_remote_json(stop, || {
-            ureq::post(&format!("{remote}/jobs"))
-                .timeout(Duration::from_secs(30))
-                .set("Authorization", &format!("Bearer {token}"))
-                .send_json(body.clone())
-        })?;
-        let job_id = accepted["job_id"]
-            .as_str()
-            .ok_or("model gateway did not return job_id")?
-            .to_string();
-        let mut delay = 250;
-        let mut poll_errors = 0;
-        loop {
-            if stop.load(Ordering::Relaxed) {
-                let _ = ureq::post(&format!("{remote}/jobs/{job_id}/cancel"))
-                    .timeout(Duration::from_secs(10))
-                    .set("Authorization", &format!("Bearer {token}"))
-                    .call();
-                return Err("project model job cancelled".to_string());
-            }
-            if Instant::now() >= deadline {
-                let _ = ureq::post(&format!("{remote}/jobs/{job_id}/cancel"))
-                    .timeout(Duration::from_secs(10))
-                    .set("Authorization", &format!("Bearer {token}"))
-                    .call();
-                return Err("MundusX model turn did not respond within 3 minutes".to_string());
-            }
-            let state = match ureq::get(&format!("{remote}/jobs/{job_id}"))
-                .timeout(Duration::from_secs(30))
-                .set("Authorization", &format!("Bearer {token}"))
-                .call()
-            {
-                Ok(response) => {
-                    poll_errors = 0;
-                    response
-                        .into_json::<Value>()
-                        .map_err(|error| error.to_string())?
-                }
-                Err(_error) if poll_errors < 3 => {
-                    poll_errors += 1;
-                    thread::sleep(Duration::from_secs(poll_errors));
-                    continue;
-                }
-                Err(error) => return Err(remote_error(error)),
-            };
-            match state["status"].as_str().unwrap_or("failed") {
-                "completed" => return Ok(state["result"].clone()),
-                "queued" | "running" => {
-                    delay = state["retry_after_ms"]
-                        .as_u64()
-                        .unwrap_or(delay)
-                        .clamp(100, 2000);
-                    thread::sleep(Duration::from_millis(delay));
-                    delay = (delay * 2).min(2000);
-                }
-                terminal => {
-                    let retryable = state["error"]["retryable"].as_bool().unwrap_or(false);
-                    if retryable && recovery_attempt + 1 < RECOVERY_ATTEMPTS {
-                        thread::sleep(Duration::from_secs(2 * (recovery_attempt + 1) as u64));
-                        break;
-                    }
-                    return Err(state["error"]["message"]
-                        .as_str()
-                        .unwrap_or(terminal)
-                        .to_string());
-                }
-            }
-        }
-    }
-    Err("project model job exhausted recovery attempts".to_string())
+    body["stream"] = json!(true);
+    ureq::post(&format!("{remote}/chat/completions"))
+        // Chat sends SSE heartbeats every ten seconds, so this deadline detects
+        // a genuinely broken stream without imposing a short model-turn cap.
+        .timeout(Duration::from_secs(900))
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Accept", "text/event-stream")
+        .send_json(body)
+        .map_err(remote_error)
 }
 
-fn retry_remote_json<F>(stop: &AtomicBool, mut request: F) -> Result<Value, String>
-where
-    F: FnMut() -> Result<ureq::Response, ureq::Error>,
-{
-    let mut last_error = None;
-    for attempt in 0..3 {
-        if stop.load(Ordering::Relaxed) {
-            return Err("project model job cancelled".to_string());
+struct CancellableReader {
+    inner: Box<dyn Read + Send + Sync>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Read for CancellableReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Ok(0);
         }
-        match request() {
-            Ok(response) => {
-                return response
-                    .into_json()
-                    .map_err(|error| format!("model gateway returned invalid JSON: {error}"));
-            }
-            Err(error) => last_error = Some(remote_error(error)),
-        }
-        if attempt < 2 {
-            thread::sleep(Duration::from_secs(attempt + 1));
-        }
+        self.inner.read(buffer)
     }
-    Err(last_error.unwrap_or_else(|| "model gateway request failed".to_string()))
 }
 
 fn remote_error(error: ureq::Error) -> String {
@@ -248,26 +192,6 @@ fn json_response(status: StatusCode, value: Value) -> Response<std::io::Cursor<V
     Response::from_data(serde_json::to_vec(&value).unwrap_or_default())
         .with_status_code(status)
         .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-}
-
-fn sse_response(completion: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let choice = &completion["choices"][0];
-    let message = &choice["message"];
-    let mut delta = json!({"role":"assistant"});
-    if !message["tool_calls"].is_null() {
-        delta["tool_calls"] = message["tool_calls"].clone();
-    } else {
-        delta["content"] = message["content"].clone();
-    }
-    let chunk = json!({
-        "id": completion["id"], "object":"chat.completion.chunk",
-        "created": completion["created"], "model":"mundusx-agnostic",
-        "choices":[{"index":0,"delta":delta,"finish_reason":choice["finish_reason"]}]
-    });
-    let body = format!("data: {}\n\ndata: [DONE]\n\n", chunk);
-    Response::from_data(body.into_bytes())
-        .with_status_code(StatusCode(200))
-        .with_header(Header::from_bytes("Content-Type", "text/event-stream").unwrap())
 }
 
 #[cfg(test)]
@@ -290,13 +214,47 @@ mod tests {
     }
 
     #[test]
-    fn tool_completion_is_encoded_as_an_sse_tool_delta() {
-        let response = sse_response(
-            json!({"id":"x","created":1,"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}),
-        );
+    fn model_turn_uses_the_openai_compatible_streaming_route() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap().to_string();
+        let remote = format!("http://{address}/api/agent/model/v1");
+        let receiver = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            assert_eq!(request.url(), "/api/agent/model/v1/chat/completions");
+            assert!(request.headers().iter().any(|header| {
+                header.field.equiv("Authorization") && header.value.as_str() == "Bearer secret"
+            }));
+            let mut bytes = Vec::new();
+            request.as_reader().read_to_end(&mut bytes).unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["stream"], true);
+            assert_eq!(body["model"], "mundusx-agnostic");
+            assert_eq!(body["project_task_id"], "task");
+            assert_eq!(body["connection_id"], "connection");
+            assert!(body["request_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("chatcmpl-"));
+            request
+                .respond(
+                    Response::from_string("data: {\"choices\":[]}\n\ndata: [DONE]\n\n")
+                        .with_header(
+                            Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
+                        ),
+                )
+                .unwrap();
+        });
+        let response = open_remote_stream(
+            &remote,
+            "secret",
+            "task",
+            "connection",
+            json!({"messages":[{"role":"user","content":"hello"}],"tools":[]}),
+        )
+        .unwrap();
         let mut body = String::new();
         response.into_reader().read_to_string(&mut body).unwrap();
-        assert!(body.contains("\"tool_calls\""));
+        receiver.join().unwrap();
         assert!(body.ends_with("data: [DONE]\n\n"));
     }
 }
