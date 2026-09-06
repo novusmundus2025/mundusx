@@ -30,6 +30,29 @@ def select_project_skills(prompt):
     return selected[:3]
 
 
+def is_verification_command(command):
+    value = " " + str(command or "").lower().strip() + " "
+    checks = (
+        " npm test ", " npm run test ", " pnpm test ", " yarn test ",
+        " pytest ", " python -m pytest ", " cargo test ", " go test ",
+        " dotnet test ", " mvn test ", " gradle test ", " gradlew test ",
+        " npm run build ", " pnpm build ", " yarn build ", " cargo build ",
+        " npm run lint ", " pnpm lint ", " yarn lint ",
+    )
+    return any(check in value for check in checks)
+
+
+def tool_result_succeeded(result):
+    if isinstance(result, dict):
+        if result.get("success") is False or result.get("is_error") is True:
+            return False
+        code = result.get("exit_code", result.get("returncode"))
+        if code is not None:
+            return int(code) == 0
+    text = str(result or "").lower()
+    return not any(marker in text for marker in ('"success": false', '"exit_code": 1', "traceback (most recent call last)"))
+
+
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
     sys.path.insert(0, project_root)
@@ -39,6 +62,35 @@ def main():
     def event_callback(kind, data=None):
         payload = data if isinstance(data, dict) else {"value": data}
         emit("MUNDUSX_EVENT=", {"type": str(kind), "data": payload})
+
+    def tool_start_callback(call_id, name, arguments):
+        command = arguments.get("command") if isinstance(arguments, dict) else None
+        emit(
+            "MUNDUSX_EVENT=",
+            {
+                "type": "tool_started",
+                "data": {
+                    "call_id": call_id,
+                    "name": name,
+                    "verification": is_verification_command(command),
+                },
+            },
+        )
+
+    def tool_complete_callback(call_id, name, arguments, result):
+        command = arguments.get("command") if isinstance(arguments, dict) else None
+        emit(
+            "MUNDUSX_EVENT=",
+            {
+                "type": "tool_completed",
+                "data": {
+                    "call_id": call_id,
+                    "name": name,
+                    "verification": is_verification_command(command),
+                    "success": tool_result_succeeded(result),
+                },
+            },
+        )
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
     user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
@@ -81,6 +133,8 @@ def main():
         quiet_mode=True,
         tool_progress_mode="all",
         event_callback=event_callback,
+        tool_start_callback=tool_start_callback,
+        tool_complete_callback=tool_complete_callback,
         session_id=session_id,
         skip_memory=True,
         load_soul_identity=False,

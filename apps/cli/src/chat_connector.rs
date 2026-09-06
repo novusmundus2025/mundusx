@@ -310,39 +310,96 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
     }).collect()
 }
 
-fn structured_hermes_events(response: &Value) -> Vec<Value> {
+fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
+    let raw_type = item["type"].as_str().unwrap_or("agent_progress");
+    let event_type = match raw_type {
+        "tool_start" | "tool_started" => "tool_started",
+        "tool_complete" | "tool_completed" => "tool_completed",
+        "model_start" | "model_requested" => "model_requested",
+        "model_complete" | "model_completed" => "model_turn_completed",
+        "skills_selected" => "skills_selected",
+        "skills_unavailable" => "skills_unavailable",
+        _ => "agent_progress",
+    };
+    let tool = item["data"]["tool"]
+        .as_str()
+        .or_else(|| item["data"]["name"].as_str());
+    let skills = item["data"]["skills"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "sequence": sequence,
+        "event": {
+            "type": event_type,
+            "summary": match tool {
+                Some(name) if event_type == "tool_started" => format!("Running {name}"),
+                Some(name) if event_type == "tool_completed" => format!("Completed {name}"),
+                _ if event_type == "skills_selected" && !skills.is_empty() => format!(
+                    "Using {}",
+                    skills.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+                ),
+                _ if event_type == "model_requested" => "Asking the model for the next step".to_string(),
+                _ if event_type == "model_turn_completed" => "Model step completed".to_string(),
+                _ => "Hermes is working".to_string(),
+            },
+            "metadata": {"tool": tool, "skills": skills, "source_type": raw_type}
+        }
+    })
+}
+
+fn request_requires_verification(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        "test", "tests", "run them", "run it", "build", "compile", "lint",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn successful_verification(response: &Value) -> bool {
     response["events"]
         .as_array()
         .into_iter()
         .flatten()
-        .take(500)
-        .enumerate()
-        .map(|(index, item)| {
-            let raw_type = item["type"].as_str().unwrap_or("agent_progress");
-            let event_type = match raw_type {
-                "tool_start" | "tool_started" => "tool_started",
-                "tool_complete" | "tool_completed" => "tool_completed",
-                "model_start" | "model_requested" => "model_requested",
-                "model_complete" | "model_completed" => "model_turn_completed",
-                _ => "agent_progress",
-            };
-            let tool = item["data"]["tool"]
-                .as_str()
-                .or_else(|| item["data"]["name"].as_str());
-            json!({
-                "sequence": 1_000 + index,
-                "event": {
-                    "type": event_type,
-                    "summary": match tool {
-                        Some(name) if event_type == "tool_started" => format!("Running {name}"),
-                        Some(name) if event_type == "tool_completed" => format!("Completed {name}"),
-                        _ => "Hermes is working".to_string(),
-                    },
-                    "metadata": {"tool": tool, "source_type": raw_type}
-                }
-            })
+        .any(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("tool_complete" | "tool_completed")
+            ) && event["data"]["verification"].as_bool() == Some(true)
+                && event["data"]["success"].as_bool() == Some(true)
         })
-        .collect()
+}
+
+fn harness_completion_content(
+    content: &str,
+    changed_files: &[String],
+    skills: &[Value],
+    verified: bool,
+) -> String {
+    let mut sections = vec![content.trim().to_string()];
+    let skill_names = skills.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+    if !skill_names.is_empty() {
+        sections.push(format!("Skills used: {}", skill_names.join(", ")));
+    }
+    if !changed_files.is_empty() {
+        sections.push(format!(
+            "Files changed:\n{}",
+            changed_files
+                .iter()
+                .map(|path| format!("- {path}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    if verified {
+        sections.push("Verification: passed".to_string());
+    }
+    sections
+        .into_iter()
+        .filter(|section| !section.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn post_task_events(
@@ -564,6 +621,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         }
     });
 
+    let mut streamed_event_sequence = 1_000_u64;
+    let mut stream_hermes_event = |event: Value| {
+        let mapped = structured_hermes_event(&event, streamed_event_sequence);
+        streamed_event_sequence += 1;
+        let _ = post_task_events(options, &task_id, vec![mapped]);
+    };
     let mut response = if runtime == "hermes" {
         let mut result = Err("Hermes did not start".to_string());
         for attempt in 0..4 {
@@ -580,6 +643,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     &task_id,
                     connection_id,
                 )),
+                Some(&mut stream_hermes_event),
             );
             let retry = result
                 .as_ref()
@@ -626,7 +690,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             .map(|calls| !calls.is_empty())
             .unwrap_or(false);
         let changed_workspace = workspace_snapshot(&task_workspace) != before_files;
-        if !used_tools || !changed_workspace {
+        let verification_required = request_requires_verification(&prompt);
+        let verified = response.as_ref().ok().is_some_and(successful_verification);
+        if !used_tools || !changed_workspace || (verification_required && !verified) {
             let _ = post_task_events(
                 options,
                 &task_id,
@@ -635,12 +701,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "event": {
                         "type": "acceptance_retrying",
                         "summary": "Hermes returned without changing the project; continuing with tool execution",
-                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace}
+                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified}
                     }
                 })],
             );
             let correction = format!(
-                "Continue the existing project task now. The previous response did not satisfy the request because it did not modify the project workspace. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests. Do not return source code only in chat.\n\nOriginal request:\n{prompt}"
+                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
             );
             response = super::hermes_adapter::run(
                 &correction,
@@ -655,11 +721,23 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     &task_id,
                     connection_id,
                 )),
+                Some(&mut stream_hermes_event),
             );
         }
         if response.is_ok() && workspace_snapshot(&task_workspace) == before_files {
             response = Err(
                 "Hermes returned without changing the project; the task was not completed"
+                    .to_string(),
+            );
+        }
+        if request_requires_verification(&prompt)
+            && response
+                .as_ref()
+                .ok()
+                .is_some_and(|value| !successful_verification(value))
+        {
+            response = Err(
+                "Hermes changed project files but did not complete the requested verification successfully"
                     .to_string(),
             );
         }
@@ -678,12 +756,6 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     if !events.is_empty() {
         let _ = post_task_events(options, &task_id, events);
     }
-    if let Ok(value) = &response {
-        let events = structured_hermes_events(value);
-        if !events.is_empty() {
-            let _ = post_task_events(options, &task_id, events);
-        }
-    }
     let after_files = workspace_snapshot(&task_workspace);
     let changed_events = changed_file_events(&before_files, &after_files);
     let changed_files = changed_events
@@ -699,6 +771,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             let content = value["choices"][0]["message"]["content"]
                 .as_str()
                 .ok_or("local agent response did not contain assistant content")?;
+            let skills = value["skills"].as_array().cloned().unwrap_or_default();
+            let verified = successful_verification(&value);
+            let content = harness_completion_content(content, &changed_files, &skills, verified);
             post_remote(
                 &options.chat_url,
                 &options.token,
@@ -707,6 +782,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "content": content,
                     "session_id": session_id,
                     "changed_files": changed_files,
+                    "skills": skills,
+                    "verified": verified,
                 }}),
             )?;
         }
@@ -798,8 +875,9 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_task_workspace, changed_file_events, connection_id, requires_project_file_change,
-        transient_agent_failure, validate_chat_url, workspace_snapshot,
+        bounded_task_workspace, changed_file_events, connection_id, harness_completion_content,
+        request_requires_verification, requires_project_file_change, structured_hermes_event,
+        successful_verification, transient_agent_failure, validate_chat_url, workspace_snapshot,
     };
     use std::fs;
 
@@ -873,5 +951,50 @@ mod tests {
         assert_eq!(events[0]["event"]["metadata"]["path"], "main.rs");
         assert_eq!(events[0]["event"]["metadata"]["action"], "created");
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn hermes_skill_events_are_presented_as_harness_progress() {
+        let event = structured_hermes_event(
+            &serde_json::json!({
+                "type": "skills_selected",
+                "data": {"skills": ["test-driven-development"]}
+            }),
+            42,
+        );
+        assert_eq!(event["sequence"], 42);
+        assert_eq!(event["event"]["type"], "skills_selected");
+        assert_eq!(event["event"]["summary"], "Using test-driven-development");
+    }
+
+    #[test]
+    fn requested_tests_require_a_successful_hermes_verification_event() {
+        assert!(request_requires_verification("Add tests and run them"));
+        assert!(!request_requires_verification("Create a README"));
+        assert!(successful_verification(&serde_json::json!({
+            "events": [{
+                "type": "tool_completed",
+                "data": {"name": "terminal", "verification": true, "success": true}
+            }]
+        })));
+        assert!(!successful_verification(&serde_json::json!({
+            "events": [{
+                "type": "tool_completed",
+                "data": {"name": "terminal", "verification": true, "success": false}
+            }]
+        })));
+    }
+
+    #[test]
+    fn completed_harness_response_summarizes_evidence_without_file_contents() {
+        let summary = harness_completion_content(
+            "Implemented the CLI.",
+            &["index.js".to_string(), "test.js".to_string()],
+            &[serde_json::json!("test-driven-development")],
+            true,
+        );
+        assert!(summary.contains("Skills used: test-driven-development"));
+        assert!(summary.contains("- index.js"));
+        assert!(summary.contains("Verification: passed"));
     }
 }

@@ -1,10 +1,11 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
@@ -118,6 +119,7 @@ pub fn run(
     approve_mutations: bool,
     cancellation: Option<&AtomicBool>,
     remote_model: Option<(&str, &str, &str, &str)>,
+    mut event_callback: Option<&mut dyn FnMut(Value)>,
 ) -> Result<Value, String> {
     if !available() {
         return Err(
@@ -206,7 +208,7 @@ pub fn run(
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start Hermes: {error}"))?;
-    let mut child_stdout = child
+    let child_stdout = child
         .stdout
         .take()
         .ok_or("could not capture Hermes output")?;
@@ -214,10 +216,28 @@ pub fn run(
         .stderr
         .take()
         .ok_or("could not capture Hermes errors")?;
+    let (event_sender, event_receiver) = mpsc::channel::<Value>();
     let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = child_stdout.read_to_end(&mut bytes);
-        bytes
+        let mut output = String::new();
+        let mut reader = BufReader::new(child_stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    output.push_str(&line);
+                    if let Some(payload) = line
+                        .trim_end()
+                        .strip_prefix("MUNDUSX_EVENT=")
+                        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+                    {
+                        let _ = event_sender.send(payload);
+                    }
+                }
+            }
+        }
+        output
     });
     let stderr_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -225,6 +245,11 @@ pub fn run(
         bytes
     });
     let status = loop {
+        while let Ok(event) = event_receiver.try_recv() {
+            if let Some(callback) = event_callback.as_mut() {
+                callback(event);
+            }
+        }
         if cancellation
             .map(|flag| flag.load(Ordering::Relaxed))
             .unwrap_or(false)
@@ -242,6 +267,11 @@ pub fn run(
         }
         thread::sleep(Duration::from_millis(200));
     };
+    while let Ok(event) = event_receiver.try_recv() {
+        if let Some(callback) = event_callback.as_mut() {
+            callback(event);
+        }
+    }
     let stdout = stdout_reader
         .join()
         .map_err(|_| "Hermes output reader failed")?;
@@ -256,7 +286,12 @@ pub fn run(
     if let Some(hermes_id) = usage["session_id"].as_str() {
         save_session(data_dir, mundusx_session_id, hermes_id)?;
     }
-    let content = String::from_utf8_lossy(&stdout).trim().to_string();
+    while let Ok(event) = event_receiver.try_recv() {
+        if let Some(callback) = event_callback.as_mut() {
+            callback(event);
+        }
+    }
+    let content = stdout.trim().to_string();
     if structured {
         let events = content
             .lines()
