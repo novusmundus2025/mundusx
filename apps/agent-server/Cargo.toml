@@ -1,6 +1,6 @@
 [package]
 name = "mundusx-agent-server"
-version = "0.1.59"
+version = "0.1.60"
 edition = "2021"
 description = "Local HTTP adapter for the MundusX agent runtime"
 license = "Apache-2.0"

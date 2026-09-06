@@ -666,46 +666,24 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         let _ = post_task_events(options, &task_id, vec![mapped]);
     };
     let mut response = if runtime == "hermes" {
-        let mut result = Err("Hermes did not start".to_string());
-        for attempt in 0..4 {
-            result = super::hermes_adapter::run(
-                &bounded_prompt,
-                &session_id,
-                &task_workspace,
-                &super::data_dir(),
-                allow_mutations,
-                Some(stop.as_ref()),
-                Some((
-                    &format!("{}/api/agent/model/v1", options.chat_url),
-                    &options.token,
-                    &task_id,
-                    connection_id,
-                )),
-                Some(&mut stream_hermes_event),
-            );
-            let retry = result
-                .as_ref()
-                .err()
-                .map(|error| transient_agent_failure(error))
-                .unwrap_or(false);
-            if !retry || attempt == 3 || stop.load(Ordering::Relaxed) {
-                break;
-            }
-            let _ = post_task_events(
-                options,
+        // The project model proxy owns idempotent, bounded recovery for every
+        // model turn. Restarting the whole Hermes process here multiplied its
+        // retries and could leave Chat apparently working for many minutes.
+        super::hermes_adapter::run(
+            &bounded_prompt,
+            &session_id,
+            &task_workspace,
+            &super::data_dir(),
+            allow_mutations,
+            Some(stop.as_ref()),
+            Some((
+                &format!("{}/api/agent/model/v1", options.chat_url),
+                &options.token,
                 &task_id,
-                vec![json!({
-                    "sequence": 10 + attempt,
-                    "event": {
-                        "type": "model_turn_retrying",
-                        "summary": "The model service was interrupted; Hermes is resuming automatically",
-                        "metadata": {"attempt": attempt + 2}
-                    }
-                })],
-            );
-            thread::sleep(Duration::from_secs(2 * (attempt + 1) as u64));
-        }
-        result
+                connection_id,
+            )),
+            Some(&mut stream_hermes_event),
+        )
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
             Ok(value) => Ok(value),

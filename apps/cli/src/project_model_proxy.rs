@@ -4,7 +4,7 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
@@ -128,13 +128,16 @@ fn execute_remote_job(
     mut body: Value,
     stop: &AtomicBool,
 ) -> Result<Value, String> {
+    const MODEL_TURN_BUDGET: Duration = Duration::from_secs(180);
+    const RECOVERY_ATTEMPTS: usize = 3;
     let idempotency_key = Uuid::new_v4().to_string();
+    let deadline = Instant::now() + MODEL_TURN_BUDGET;
     body["protocol"] = json!("mundusx-project-agent/v1");
     body["project_task_id"] = json!(task_id);
     body["connection_id"] = json!(connection_id);
     body["idempotency_key"] = json!(idempotency_key);
     body["model"] = json!("mundusx-agnostic");
-    for recovery_attempt in 0..4 {
+    for recovery_attempt in 0..RECOVERY_ATTEMPTS {
         let accepted = retry_remote_json(stop, || {
             ureq::post(&format!("{remote}/jobs"))
                 .timeout(Duration::from_secs(30))
@@ -155,6 +158,13 @@ fn execute_remote_job(
                     .call();
                 return Err("project model job cancelled".to_string());
             }
+            if Instant::now() >= deadline {
+                let _ = ureq::post(&format!("{remote}/jobs/{job_id}/cancel"))
+                    .timeout(Duration::from_secs(10))
+                    .set("Authorization", &format!("Bearer {token}"))
+                    .call();
+                return Err("MundusX model turn did not respond within 3 minutes".to_string());
+            }
             let state = match ureq::get(&format!("{remote}/jobs/{job_id}"))
                 .timeout(Duration::from_secs(30))
                 .set("Authorization", &format!("Bearer {token}"))
@@ -166,7 +176,7 @@ fn execute_remote_job(
                         .into_json::<Value>()
                         .map_err(|error| error.to_string())?
                 }
-                Err(_error) if poll_errors < 5 => {
+                Err(_error) if poll_errors < 3 => {
                     poll_errors += 1;
                     thread::sleep(Duration::from_secs(poll_errors));
                     continue;
@@ -185,8 +195,8 @@ fn execute_remote_job(
                 }
                 terminal => {
                     let retryable = state["error"]["retryable"].as_bool().unwrap_or(false);
-                    if retryable && recovery_attempt < 3 {
-                        thread::sleep(Duration::from_secs(2 * (recovery_attempt + 1)));
+                    if retryable && recovery_attempt + 1 < RECOVERY_ATTEMPTS {
+                        thread::sleep(Duration::from_secs(2 * (recovery_attempt + 1) as u64));
                         break;
                     }
                     return Err(state["error"]["message"]
@@ -205,7 +215,7 @@ where
     F: FnMut() -> Result<ureq::Response, ureq::Error>,
 {
     let mut last_error = None;
-    for attempt in 0..4 {
+    for attempt in 0..3 {
         if stop.load(Ordering::Relaxed) {
             return Err("project model job cancelled".to_string());
         }
@@ -217,7 +227,7 @@ where
             }
             Err(error) => last_error = Some(remote_error(error)),
         }
-        if attempt < 3 {
+        if attempt < 2 {
             thread::sleep(Duration::from_secs(attempt + 1));
         }
     }
