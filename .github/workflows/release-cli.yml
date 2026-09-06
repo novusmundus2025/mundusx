@@ -295,3 +295,39 @@ jobs:
           name: ${{ steps.platform.outputs.name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-windows-stable:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download signed Windows bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: opengpu-x86_64-pc-windows-msvc.exe
+          path: release-stable
+
+      - name: Verify signed stable bundle
+        env:
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: |
+          ./scripts/verify-release-packaging.sh release-stable opengpu-x86_64-pc-windows-msvc.exe opengpu-node-agent-x86_64-pc-windows-msvc.exe
+          ./scripts/release-signing.sh verify release-stable opengpu-x86_64-pc-windows-msvc.exe
+
+      - name: Publish atomic Windows stable channel
+        env:
+          GH_TOKEN: ${{ secrets.MUNDUSX_PUBLIC_RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo "MUNDUSX_PUBLIC_RELEASES_TOKEN is required" >&2; exit 1; }
+          gh release upload opengpu-prod release-stable/* --repo mundusx/releases --clobber
+
+      - name: Verify public stable manifest
+        env:
+          GH_TOKEN: ${{ secrets.MUNDUSX_PUBLIC_RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download opengpu-prod --repo mundusx/releases --pattern release-manifest.json --dir public-proof --clobber
+          cmp release-stable/release-manifest.json public-proof/release-manifest.json

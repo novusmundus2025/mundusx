@@ -46,7 +46,6 @@ fn installer_arguments(
         "Bypass".to_string(),
         "-File".to_string(),
         script_path.display().to_string(),
-        "-ReauthorizeChat".to_string(),
     ];
     if let Some(agent_mode) = agent_mode {
         arguments.extend([
@@ -313,7 +312,7 @@ mod tests {
         assert!(arguments
             .iter()
             .any(|argument| argument == "-SkipChatConnect"));
-        assert!(arguments
+        assert!(!arguments
             .iter()
             .any(|argument| argument == "-ReauthorizeChat"));
     }

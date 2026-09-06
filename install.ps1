@@ -664,6 +664,19 @@ if ($Help) {
   exit 0
 }
 
+function Stop-MundusXConnectorProcesses {
+  $connectorProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+    $_.Name -ieq "mundusx.exe" -and
+    $_.CommandLine -and
+    $_.CommandLine -match '(?i)(?:^|\s)connect(?:\s|$)'
+  })
+  foreach ($process in $connectorProcesses) {
+    Write-Output "Stopping active MundusX connector $($process.ProcessId) before replacement..."
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+    Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+  }
+}
+
 function Start-ChatConnection {
   param(
     [string]$CliPath,
@@ -889,6 +902,7 @@ try {
   }
 
   Write-InstallerPhase -Current 6 -Total 6 -Message "Installing verified components"
+  Stop-MundusXConnectorProcesses
   Stop-InstalledOpenGpuProcesses -OpenGpuHome (Get-OpenGpuHome)
   Copy-Item -Force -LiteralPath $tempExe -Destination $finalExe
   Copy-Item -Force -LiteralPath $tempMundusx -Destination $finalMundusx
