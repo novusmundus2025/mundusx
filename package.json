@@ -2,14 +2,34 @@
   "name": "opengpu",
   "private": true,
   "version": "0.1.0",
-  "packageManager": "pnpm@9.0.0",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@9.15.9",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
+    "build:docs-site": "node scripts/build-public-docs-site.mjs dist/public-docs-site",
     "lint": "echo \"lint not configured yet\"",
     "test": "echo \"test not configured yet\"",
+    "test:automation-policy": "bash tests/automation-policy.sh",
+    "test:priority-label-policy": "bash tests/priority-label-policy.sh",
+    "test:automation-notifications": "bash tests/automation-notifications.sh",
+    "test:branding": "bash tests/branding-surface.sh",
+    "test:cli-docs": "bash tests/cli-docs-surface.sh",
+    "test:cluster-contribution": "bash tests/cluster-contribution-smoke.sh",
+    "test:docs-site": "bash tests/public-docs-site.sh",
+    "test:homebrew-formula": "bash tests/homebrew-formula.sh",
+    "test:install-ps1": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-ps1-local-release.ps1",
+    "test:install-linux-vllm": "bash tests/install-linux-aarch64-vllm.sh",
+    "test:windows-uat-install": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows-uat-install-smoke.ps1",
+    "test:license": "bash tests/license-surface.sh",
+    "test:macos-identity-policy": "bash tests/macos-identity-policy.sh",
+    "test:shared-contract": "bash tests/shared-contract-surface.sh",
+    "test:local-release-homebrew": "bash tests/local-release-preview-homebrew.sh",
+    "test:release-cli-workflow": "bash tests/release-cli-workflow.sh",
+    "test:release-signing-ci-keys": "bash tests/release-signing-ci-keys.sh",
+    "test:requestor-api": "bash tests/requestor-api-contract.sh",
     "smoke:local": "./scripts/localhost-smoke.sh"
   }
 }

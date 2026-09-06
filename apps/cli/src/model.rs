@@ -1,8 +1,9 @@
 use crate::config::{config_dir, Config};
-use crate::model_catalog::{lookup_model, ModelOption};
+use crate::model_catalog::{lookup_model_for_backend, ModelOption};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +14,31 @@ pub struct ModelRecord {
     pub active: bool,
     pub cached_at: String,
     pub model_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_vram_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportModelOptions<'a> {
+    pub name: Option<&'a str>,
+    pub path: &'a Path,
+    pub active: bool,
+    pub backend: crate::types::Backend,
+    pub available_vram_mb: Option<u64>,
 }
 
 pub fn effective_model_dir(config: &Config) -> PathBuf {
@@ -77,6 +103,21 @@ pub fn add_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
 pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     ensure_effective_model_dir(config);
     let _ = download_model_if_available(config, name)?;
+    let remote_runtime_model = lookup_model_for_backend(name, config.backend_preference)
+        .map(|option| {
+            matches!(
+                option.source_kind.as_str(),
+                "huggingface-mlx" | "huggingface-vllm"
+            )
+        })
+        .unwrap_or(false);
+    let cached_path = cached_model_path(config, name)?;
+    if cached_path.is_none() && !remote_runtime_model {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("model `{name}` is not cached; download or import it before activating"),
+        ));
+    }
     let mut models = list_models(config)?;
     let record = upsert_model(config, &mut models, name, true)?;
     sync_config_models(config, &models);
@@ -84,10 +125,117 @@ pub fn use_model(config: &mut Config, name: &str) -> io::Result<ModelRecord> {
     Ok(record)
 }
 
+pub fn import_model(
+    config: &mut Config,
+    options: ImportModelOptions<'_>,
+) -> io::Result<ModelRecord> {
+    ensure_effective_model_dir(config);
+    let source = options.path;
+    let metadata = fs::metadata(source)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "model import path must point to a file",
+        ));
+    }
+
+    let name = options
+        .name
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            source
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string())
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "model name is required"))?;
+
+    let mut models = list_models(config)?;
+    let record = upsert_imported_model(config, &mut models, &name, options, metadata.len())?;
+    sync_config_models(config, &models);
+    write_models(config, &models)?;
+    Ok(record)
+}
+
+pub fn ensure_catalog_model_fits(
+    name: &str,
+    backend: crate::types::Backend,
+    available_vram_mb: Option<u64>,
+) -> io::Result<()> {
+    let Some(option) = lookup_model_for_backend(name, backend) else {
+        return Ok(());
+    };
+
+    let expected_format = match backend {
+        crate::types::Backend::M => ["gguf", "mlx"].as_slice(),
+        crate::types::Backend::Vllm => ["safetensors"].as_slice(),
+        _ => ["gguf"].as_slice(),
+    };
+    if !option
+        .format
+        .as_deref()
+        .map(|format| expected_format.contains(&format))
+        .unwrap_or(false)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to use `{name}`: catalog format is not supported by {backend}"),
+        ));
+    }
+
+    if !option.supports_backend(backend) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to download `{name}`: catalog entry is not compatible with {backend}"
+            ),
+        ));
+    }
+
+    if !matches!(
+        backend,
+        crate::types::Backend::Cuda
+            | crate::types::Backend::M
+            | crate::types::Backend::Vulkan
+            | crate::types::Backend::Vllm
+    ) {
+        return Ok(());
+    }
+
+    let Some(estimated_vram_mb) = option.estimated_vram_mb else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to download `{name}`: catalog is missing estimated VRAM metadata"),
+        ));
+    };
+
+    let Some(available_vram_mb) = available_vram_mb else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to download `{name}`: available model memory could not be detected"),
+        ));
+    };
+
+    if estimated_vram_mb > available_vram_mb {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to download `{name}`: estimated {estimated_vram_mb} MB VRAM exceeds available budget {available_vram_mb} MB"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn remove_model(config: &mut Config, name: &str, force: bool) -> io::Result<bool> {
     ensure_effective_model_dir(config);
     let mut models = list_models(config)?;
-    let target_active = models.iter().any(|model| model.name == name && model.active);
+    let target_active = models
+        .iter()
+        .any(|model| model.name == name && model.active);
     if target_active && !force {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -148,9 +296,12 @@ pub fn active_model_name(config: &Config) -> Option<String> {
         return Some(name);
     }
 
-    list_models(config)
-        .ok()
-        .and_then(|models| models.into_iter().find(|model| model.active).map(|model| model.name))
+    list_models(config).ok().and_then(|models| {
+        models
+            .into_iter()
+            .find(|model| model.active)
+            .map(|model| model.name)
+    })
 }
 
 pub fn configured_model_dir_string(config: &Config) -> String {
@@ -178,10 +329,163 @@ fn model_file_path(config: &Config, name: &str, option: &ModelOption) -> PathBuf
     model_cache_dir(config, name).join(source_filename(&option.source_url))
 }
 
+fn cached_model_path(config: &Config, name: &str) -> io::Result<Option<PathBuf>> {
+    if let Some(option) = lookup_model_for_backend(name, config.backend_preference) {
+        let path = model_file_path(config, name, &option);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+
+    for model in list_models(config)? {
+        if model.name != name {
+            continue;
+        }
+
+        if let Some(path) = model
+            .source_path
+            .as_ref()
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+        {
+            return Ok(Some(path));
+        }
+
+        if let Some(path) = model.file_name.as_ref().map(|file_name| {
+            effective_model_dir(config)
+                .join(sanitize_model_name(&model.name))
+                .join(file_name)
+        }) {
+            if path.is_file() {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    let cache_dir = model_cache_dir(config, name);
+    if cache_dir.exists() {
+        let mut files = Vec::new();
+        collect_gguf_files(&cache_dir, &mut files)?;
+        files.sort();
+        return Ok(files.into_iter().next());
+    }
+
+    Ok(None)
+}
+
+fn collect_gguf_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_gguf_files(&path, files)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("gguf") {
+            files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn model_format(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn model_quantization(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
+    let parts = stem.split(['.', '-']).collect::<Vec<_>>();
+    for part in parts {
+        let subparts = part.split('_').collect::<Vec<_>>();
+        for (index, value) in subparts.iter().enumerate() {
+            if value.len() >= 2
+                && value.starts_with('q')
+                && value[1..].chars().all(|ch| ch.is_ascii_digit())
+            {
+                let mut tag = vec![*value];
+                for next in subparts.iter().skip(index + 1).take(2) {
+                    if next.len() == 1 && next.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                        tag.push(*next);
+                    } else {
+                        break;
+                    }
+                }
+                return Some(tag.join("_").to_ascii_uppercase());
+            }
+        }
+    }
+    None
+}
+
+fn estimate_vram_mb(size_bytes: u64) -> u64 {
+    let base_mb = size_bytes.div_ceil(1024 * 1024);
+    base_mb.saturating_mul(5).div_ceil(4).saturating_add(512)
+}
+
+fn compatibility_for(
+    backend: crate::types::Backend,
+    format: Option<&str>,
+    estimated_vram_mb: u64,
+    available_vram_mb: Option<u64>,
+) -> (String, String) {
+    if format != Some("gguf") {
+        return (
+            "rejected".to_string(),
+            "only GGUF files are currently runnable by the local worker".to_string(),
+        );
+    }
+
+    if matches!(
+        backend,
+        crate::types::Backend::Cuda | crate::types::Backend::Vulkan
+    ) {
+        match available_vram_mb {
+            Some(available) if estimated_vram_mb > available => (
+                "rejected".to_string(),
+                format!("estimated {estimated_vram_mb} MB VRAM exceeds available {available} MB"),
+            ),
+            Some(available) if estimated_vram_mb > available.saturating_mul(4) / 5 => (
+                "degraded".to_string(),
+                format!(
+                    "estimated {estimated_vram_mb} MB VRAM is close to available {available} MB"
+                ),
+            ),
+            Some(available) => (
+                "accepted".to_string(),
+                format!("estimated {estimated_vram_mb} MB VRAM fits available {available} MB"),
+            ),
+            None => (
+                "degraded".to_string(),
+                format!(
+                    "{} memory budget was not supplied; compatibility needs runtime confirmation",
+                    backend.as_str()
+                ),
+            ),
+        }
+    } else {
+        (
+            "accepted".to_string(),
+            "GGUF file is compatible with the local llama.cpp worker path".to_string(),
+        )
+    }
+}
+
 fn download_model_if_available(config: &Config, name: &str) -> io::Result<bool> {
-    let Some(option) = lookup_model(name) else {
+    let Some(option) = lookup_model_for_backend(name, config.backend_preference) else {
         return Ok(false);
     };
+
+    if matches!(
+        option.source_kind.as_str(),
+        "huggingface-mlx" | "huggingface-vllm"
+    ) {
+        return Ok(false);
+    }
 
     download_model_from_option(config, name, &option)
 }
@@ -197,7 +501,16 @@ fn download_model_from_option(
 
     let dest = model_file_path(config, name, &option);
     if dest.exists() {
+        eprintln!("model download: cached `{name}` at {}", dest.display());
         return Ok(false);
+    }
+
+    let is_local_source = option.source_url.starts_with("file://");
+    if !is_local_source && option.sha256.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("refusing to download `{name}`: official remote model is missing sha256"),
+        ));
     }
 
     let parent = dest.parent().unwrap_or_else(|| Path::new("."));
@@ -208,10 +521,13 @@ fn download_model_from_option(
         let _ = fs::remove_file(&tmp);
     }
 
-    if option.source_url.starts_with("file://") {
+    if is_local_source {
         let source_path = option.source_url.trim_start_matches("file://");
+        eprintln!("model download: copying `{name}` from {source_path}");
         fs::copy(source_path, &tmp)?;
     } else {
+        eprintln!("model download: starting `{name}`");
+        eprintln!("model download: {}", option.source_url);
         let status = Command::new("curl")
             .args([
                 "-fL",
@@ -219,7 +535,7 @@ fn download_model_from_option(
                 "3",
                 "--continue-at",
                 "-",
-                "--silent",
+                "--progress-bar",
                 "--show-error",
                 "--output",
             ])
@@ -237,6 +553,7 @@ fn download_model_from_option(
     }
 
     if !option.sha256.trim().is_empty() {
+        eprintln!("model download: verifying checksum");
         verify_sha256(&tmp, &option.sha256)?;
     }
 
@@ -244,41 +561,32 @@ fn download_model_from_option(
         let _ = fs::remove_file(&dest);
     }
     fs::rename(&tmp, &dest)?;
+    eprintln!("model download: saved `{name}` to {}", dest.display());
     Ok(true)
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
-    if let Ok(output) = Command::new("shasum").args(["-a", "256"]).arg(path).output() {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            let digest = raw.split_whitespace().next().unwrap_or("").trim();
-            if digest.eq_ignore_ascii_case(expected) {
-                return Ok(());
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("checksum mismatch for {}", path.display()),
-            ));
+    let expected = expected.trim();
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
         }
+        hasher.update(&buffer[..read]);
     }
 
-    if let Ok(output) = Command::new("sha256sum").arg(path).output() {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            let digest = raw.split_whitespace().next().unwrap_or("").trim();
-            if digest.eq_ignore_ascii_case(expected) {
-                return Ok(());
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("checksum mismatch for {}", path.display()),
-            ));
-        }
+    let digest = format!("{:x}", hasher.finalize());
+    if digest.eq_ignore_ascii_case(expected) {
+        return Ok(());
     }
 
     Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "could not verify checksum: shasum or sha256sum not available",
+        io::ErrorKind::InvalidData,
+        format!("checksum mismatch for {}", path.display()),
     ))
 }
 
@@ -353,6 +661,14 @@ fn upsert_model(
             active,
             cached_at: now,
             model_dir,
+            source_path: None,
+            file_name: None,
+            format: None,
+            quantization: None,
+            size_bytes: None,
+            estimated_vram_mb: None,
+            compatibility: None,
+            compatibility_reason: None,
         });
     }
 
@@ -372,6 +688,84 @@ fn upsert_model(
         .expect("model record");
 
     Ok(record)
+}
+
+fn upsert_imported_model(
+    config: &mut Config,
+    models: &mut Vec<ModelRecord>,
+    name: &str,
+    options: ImportModelOptions<'_>,
+    size_bytes: u64,
+) -> io::Result<ModelRecord> {
+    ensure_manifest_dir(config)?;
+    let model_dir = effective_model_dir(config).display().to_string();
+    let now = now_unix_seconds();
+    let format = model_format(options.path);
+    let estimated_vram_mb = estimate_vram_mb(size_bytes);
+    let (compatibility, compatibility_reason) = compatibility_for(
+        options.backend,
+        format.as_deref(),
+        estimated_vram_mb,
+        options.available_vram_mb,
+    );
+    let active = options.active && compatibility != "rejected";
+
+    for model in models.iter_mut() {
+        if model.name == name {
+            model.active = if compatibility == "rejected" {
+                false
+            } else {
+                active || model.active
+            };
+            model.cached_at = now.clone();
+            model.model_dir = model_dir.clone();
+            model.source_path = Some(options.path.display().to_string());
+            model.file_name = options
+                .path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string());
+            model.format = format.clone();
+            model.quantization = model_quantization(options.path);
+            model.size_bytes = Some(size_bytes);
+            model.estimated_vram_mb = Some(estimated_vram_mb);
+            model.compatibility = Some(compatibility.clone());
+            model.compatibility_reason = Some(compatibility_reason.clone());
+        } else if active {
+            model.active = false;
+        }
+    }
+
+    if !models.iter().any(|model| model.name == name) {
+        models.push(ModelRecord {
+            name: name.to_string(),
+            active,
+            cached_at: now,
+            model_dir,
+            source_path: Some(options.path.display().to_string()),
+            file_name: options
+                .path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string()),
+            format,
+            quantization: model_quantization(options.path),
+            size_bytes: Some(size_bytes),
+            estimated_vram_mb: Some(estimated_vram_mb),
+            compatibility: Some(compatibility),
+            compatibility_reason: Some(compatibility_reason),
+        });
+    }
+
+    if active {
+        config.active_model = Some(name.to_string());
+    }
+
+    models
+        .iter()
+        .find(|model| model.name == name)
+        .cloned()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "model import failed"))
 }
 
 fn write_models(config: &Config, models: &[ModelRecord]) -> io::Result<()> {
@@ -455,6 +849,10 @@ mod tests {
         let added_path = manifest_path(&config, "llama3.1:8b");
         assert!(added_path.exists());
 
+        let cache_dir = model_cache_dir(&config, "llama3.1:8b");
+        fs::create_dir_all(&cache_dir).expect("cache dir");
+        fs::write(cache_dir.join("llama3.1-q4_k_m.gguf"), b"model").expect("model");
+
         let active = use_model(&mut config, "llama3.1:8b").expect("use model");
         assert_eq!(active.name, "llama3.1:8b");
         assert_eq!(config.active_model.as_deref(), Some("llama3.1:8b"));
@@ -475,6 +873,46 @@ mod tests {
     }
 
     #[test]
+    fn activates_prefetched_mlx_hub_model_without_gguf_cache() {
+        let (mut config, temp_dir) = temp_config();
+        config.backend_preference = crate::types::Backend::M;
+        let name = "mlx-community/Qwen2.5-3B-Instruct-4bit";
+
+        let active = use_model(&mut config, name).expect("activate MLX model");
+        assert_eq!(active.name, name);
+        assert_eq!(config.active_model.as_deref(), Some(name));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn activates_vllm_hub_model_without_local_file_cache() {
+        let (mut config, temp_dir) = temp_config();
+        config.backend_preference = crate::types::Backend::Vllm;
+        let name = "Qwen/Qwen2.5-14B-Instruct";
+
+        let active = use_model(&mut config, name).expect("activate vLLM model");
+        assert_eq!(active.name, name);
+        assert_eq!(config.active_model.as_deref(), Some(name));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn use_model_rejects_manifest_without_cached_file() {
+        let (mut config, temp_dir) = temp_config();
+
+        add_model(&mut config, "Missing/Model").expect("add manifest");
+        let error = use_model(&mut config, "Missing/Model")
+            .expect_err("missing model file should not activate");
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(config.active_model, None);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn downloads_local_file_source_for_open_model() {
         let (config, temp_dir) = temp_config();
         fs::create_dir_all(&temp_dir).expect("temp dir");
@@ -488,10 +926,13 @@ mod tests {
             source_kind: "huggingface-open".to_string(),
             source_url: format!("file://{}", source_path.display()),
             sha256: String::new(),
+            format: Some("gguf".to_string()),
+            backend_compatibility: vec![crate::types::Backend::Auto],
+            estimated_vram_mb: Some(1),
         };
 
-        let downloaded = download_model_from_option(&config, &option.name, &option)
-            .expect("download");
+        let downloaded =
+            download_model_from_option(&config, &option.name, &option).expect("download");
         assert!(downloaded);
 
         let dest = model_file_path(&config, &option.name, &option);
@@ -499,5 +940,165 @@ mod tests {
         assert_eq!(fs::read(&dest).expect("dest"), b"model-bytes");
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn verifies_sha256_without_external_tools() {
+        let (_config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let path = temp_dir.join("checksum.gguf");
+        fs::write(&path, b"model").expect("model");
+
+        verify_sha256(
+            &path,
+            "9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4",
+        )
+        .expect("checksum should verify");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_sha256_mismatch_without_external_tools() {
+        let (_config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let path = temp_dir.join("checksum-mismatch.gguf");
+        fs::write(&path, b"model").expect("model");
+
+        let error = verify_sha256(
+            &path,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect_err("checksum should fail");
+
+        assert!(error.to_string().contains("checksum mismatch"));
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_remote_open_model_without_checksum_before_download() {
+        let (config, temp_dir) = temp_config();
+
+        let option = crate::model_catalog::ModelOption {
+            name: "Test/RemoteModel".to_string(),
+            label: "Test Remote Model".to_string(),
+            notes: "remote test source".to_string(),
+            source_kind: "huggingface-open".to_string(),
+            source_url: "https://example.invalid/model.gguf".to_string(),
+            sha256: String::new(),
+            format: Some("gguf".to_string()),
+            backend_compatibility: vec![crate::types::Backend::Auto],
+            estimated_vram_mb: Some(1),
+        };
+
+        let error = download_model_from_option(&config, &option.name, &option).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("missing sha256"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_catalog_model_before_download_when_cuda_vram_is_too_small() {
+        let error = ensure_catalog_model_fits(
+            "Qwen/Qwen2.5-1.5B-Instruct",
+            crate::types::Backend::Cuda,
+            Some(512),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("refusing to download"));
+    }
+
+    #[test]
+    fn accepts_catalog_model_before_download_when_cuda_vram_fits() {
+        ensure_catalog_model_fits(
+            "Qwen/Qwen2.5-0.5B-Instruct",
+            crate::types::Backend::Cuda,
+            Some(4096),
+        )
+        .expect("model should fit");
+    }
+
+    #[test]
+    fn imports_compatible_local_gguf_model() {
+        let (mut config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let source_path = temp_dir.join("llama-3.2-q4_k_m.gguf");
+        fs::write(&source_path, vec![0u8; 1024 * 1024]).expect("write source");
+
+        let record = import_model(
+            &mut config,
+            ImportModelOptions {
+                name: Some("local-llama"),
+                path: &source_path,
+                active: true,
+                backend: crate::types::Backend::Cuda,
+                available_vram_mb: Some(4096),
+            },
+        )
+        .expect("import model");
+
+        assert_eq!(record.name, "local-llama");
+        assert!(record.active);
+        assert_eq!(record.format.as_deref(), Some("gguf"));
+        assert_eq!(record.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(record.compatibility.as_deref(), Some("accepted"));
+        assert_eq!(config.active_model.as_deref(), Some("local-llama"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rejects_local_model_that_exceeds_cuda_vram() {
+        let (mut config, temp_dir) = temp_config();
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let source_path = temp_dir.join("too-large-q8_0.gguf");
+        fs::write(&source_path, vec![0u8; 2 * 1024 * 1024]).expect("write source");
+
+        let record = import_model(
+            &mut config,
+            ImportModelOptions {
+                name: None,
+                path: &source_path,
+                active: true,
+                backend: crate::types::Backend::Cuda,
+                available_vram_mb: Some(1),
+            },
+        )
+        .expect("import model");
+
+        assert_eq!(record.name, "too-large-q8_0");
+        assert!(!record.active);
+        assert_eq!(config.active_model, None);
+        assert_eq!(record.compatibility.as_deref(), Some("rejected"));
+        assert!(record
+            .compatibility_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("exceeds available"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn import_requires_existing_model_file() {
+        let (mut config, temp_dir) = temp_config();
+        let missing = temp_dir.join("missing.gguf");
+
+        let error = import_model(
+            &mut config,
+            ImportModelOptions {
+                name: Some("missing"),
+                path: &missing,
+                active: false,
+                backend: crate::types::Backend::Cuda,
+                available_vram_mb: Some(4096),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }

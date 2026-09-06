@@ -33,6 +33,16 @@ private_key_path="${artifact_dir}/.signing/private.pem"
 public_key_path="${artifact_dir}/.signing/public.pem"
 generated_keys=0
 
+python_cmd() {
+  if command -v python3 >/dev/null 2>&1; then
+    printf 'python3\n'
+  elif command -v python >/dev/null 2>&1; then
+    printf 'python\n'
+  else
+    die "python3 or python is required"
+  fi
+}
+
 normalize_text() {
   local value="$1"
   if [ -n "$value" ]; then
@@ -43,24 +53,92 @@ normalize_text() {
 }
 
 checksum_for_binary() {
-  local checksum_path="$artifact_dir/$binary_name.sha256"
+  local name="${1:-$binary_name}"
+  local checksum_path="$artifact_dir/$name.sha256"
   [ -f "$checksum_path" ] || die "missing checksum file: $checksum_path"
 
   awk '{print $1}' "$checksum_path" | head -n 1
 }
 
+node_agent_name_for_binary() {
+  case "$binary_name" in
+    opengpu-*) printf 'opengpu-node-agent-%s\n' "${binary_name#opengpu-}" ;;
+    *) printf '' ;;
+  esac
+}
+
 create_manifest() {
-  local checksum tag_text version_text generated_at
-  checksum="$(checksum_for_binary)"
+  local checksum tag_text version_text generated_at agent_name agent_checksum agent_install_as mundusx_name mundusx_checksum agent_server_name agent_server_checksum tray_name tray_checksum runtime_name runtime_checksum vulkan_runtime_name vulkan_runtime_checksum mac_pkg_name mac_pkg_checksum
+  checksum="$(checksum_for_binary "$binary_name")"
   tag_text="$(normalize_text "$tag_name")"
   version_text="$(normalize_text "$version")"
-  generated_at="$(python3 - <<'PY'
+  agent_name="$(node_agent_name_for_binary)"
+  agent_checksum=""
+  agent_install_as=""
+  if [ -n "$agent_name" ] && [ -f "$artifact_dir/$agent_name" ]; then
+    agent_checksum="$(checksum_for_binary "$agent_name")"
+    case "$agent_name" in
+      *.exe) agent_install_as="opengpu-node-agent.exe" ;;
+      *) agent_install_as="opengpu-node-agent" ;;
+    esac
+  fi
+  mundusx_name="mundusx-${binary_name#opengpu-}"
+  mundusx_checksum=""
+  if [ -f "$artifact_dir/$mundusx_name" ]; then
+    mundusx_checksum="$(checksum_for_binary "$mundusx_name")"
+  fi
+  agent_server_name="mundusx-agent-server-${binary_name#opengpu-}"
+  agent_server_checksum=""
+  if [ -f "$artifact_dir/$agent_server_name" ]; then
+    agent_server_checksum="$(checksum_for_binary "$agent_server_name")"
+  fi
+  tray_name=""
+  tray_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) tray_name="mundusx-tray-${binary_name#opengpu-}" ;;
+  esac
+  if [ -n "$tray_name" ] && [ -f "$artifact_dir/$tray_name" ]; then
+    tray_checksum="$(checksum_for_binary "$tray_name")"
+  fi
+  tray_icon_name=""
+  tray_icon_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) tray_icon_name="mundusx.ico" ;;
+  esac
+  if [ -n "$tray_icon_name" ] && [ -f "$artifact_dir/$tray_icon_name" ]; then
+    tray_icon_checksum="$(checksum_for_binary "$tray_icon_name")"
+  fi
+  runtime_name=""
+  runtime_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) runtime_name="llama-runtime-x86_64-pc-windows-msvc-cuda.zip" ;;
+  esac
+  if [ -n "$runtime_name" ] && [ -f "$artifact_dir/$runtime_name" ]; then
+    runtime_checksum="$(checksum_for_binary "$runtime_name")"
+  fi
+  vulkan_runtime_name=""
+  vulkan_runtime_checksum=""
+  case "$binary_name" in
+    opengpu-*.exe) vulkan_runtime_name="llama-runtime-x86_64-pc-windows-msvc-vulkan.zip" ;;
+  esac
+  if [ -n "$vulkan_runtime_name" ] && [ -f "$artifact_dir/$vulkan_runtime_name" ]; then
+    vulkan_runtime_checksum="$(checksum_for_binary "$vulkan_runtime_name")"
+  fi
+  mac_pkg_name=""
+  mac_pkg_checksum=""
+  case "$binary_name" in
+    opengpu-aarch64-apple-darwin) mac_pkg_name="MundusX-OpenGPU-Apple-Silicon.pkg" ;;
+  esac
+  if [ -n "$mac_pkg_name" ] && [ -f "$artifact_dir/$mac_pkg_name" ]; then
+    mac_pkg_checksum="$(checksum_for_binary "$mac_pkg_name")"
+  fi
+  generated_at="$("$(python_cmd)" - <<'PY'
 from datetime import datetime, timezone
 print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
 
-  python3 - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" <<'PY'
+  "$(python_cmd)" - "$manifest_path" "$binary_name" "$checksum" "$tag_text" "$version_text" "$generated_at" "$agent_name" "$agent_checksum" "$agent_install_as" "$tray_name" "$tray_checksum" "$runtime_name" "$runtime_checksum" "$vulkan_runtime_name" "$vulkan_runtime_checksum" "$mac_pkg_name" "$mac_pkg_checksum" "$tray_icon_name" "$tray_icon_checksum" "$mundusx_name" "$mundusx_checksum" "$agent_server_name" "$agent_server_checksum" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -71,6 +149,23 @@ checksum = sys.argv[3]
 tag = sys.argv[4]
 version = sys.argv[5]
 generated_at = sys.argv[6]
+agent_name = sys.argv[7]
+agent_checksum = sys.argv[8]
+agent_install_as = sys.argv[9]
+tray_name = sys.argv[10]
+tray_checksum = sys.argv[11]
+runtime_name = sys.argv[12]
+runtime_checksum = sys.argv[13]
+vulkan_runtime_name = sys.argv[14]
+vulkan_runtime_checksum = sys.argv[15]
+mac_pkg_name = sys.argv[16]
+mac_pkg_checksum = sys.argv[17]
+tray_icon_name = sys.argv[18]
+tray_icon_checksum = sys.argv[19]
+mundusx_name = sys.argv[20]
+mundusx_checksum = sys.argv[21]
+agent_server_name = sys.argv[22]
+agent_server_checksum = sys.argv[23]
 
 payload = {
     "artifact_kind": "release-binary",
@@ -80,6 +175,70 @@ payload = {
     "tag": tag,
     "version": version,
 }
+assets = []
+if agent_name and agent_checksum:
+    assets.append({
+            "name": agent_name,
+            "install_as": agent_install_as,
+            "kind": "node-agent-binary",
+            "checksum_sha256": agent_checksum,
+        })
+if tray_name and tray_checksum:
+    assets.append({
+        "name": tray_name,
+        "install_as": "mundusx-tray.exe",
+        "kind": "windows-tray-binary",
+        "checksum_sha256": tray_checksum,
+    })
+if mundusx_name and mundusx_checksum:
+    assets.append({
+        "name": mundusx_name,
+        "install_as": "mundusx.exe" if mundusx_name.endswith(".exe") else "mundusx",
+        "kind": "mundusx-agent-cli",
+        "checksum_sha256": mundusx_checksum,
+    })
+if agent_server_name and agent_server_checksum:
+    assets.append({
+        "name": agent_server_name,
+        "install_as": "mundusx-agent-server.exe" if agent_server_name.endswith(".exe") else "mundusx-agent-server",
+        "kind": "mundusx-agent-server",
+        "checksum_sha256": agent_server_checksum,
+    })
+if tray_icon_name and tray_icon_checksum:
+    assets.append({
+        "name": tray_icon_name,
+        "install_as": "mundusx.ico",
+        "kind": "windows-tray-icon",
+        "checksum_sha256": tray_icon_checksum,
+    })
+if assets:
+    payload["assets"] = assets
+if mac_pkg_name and mac_pkg_checksum:
+    payload.setdefault("installers", []).append({
+        "name": mac_pkg_name,
+        "kind": "macos-pkg-installer",
+        "install_as": "MundusX Node Installer",
+        "checksum_sha256": mac_pkg_checksum,
+        "signed": False,
+        "notarized": False,
+    })
+runtime_assets = []
+if runtime_name and runtime_checksum:
+    runtime_assets.append({
+        "name": runtime_name,
+        "install_as": "runtimes/llama",
+        "kind": "llama-cpp-cuda-runtime-bundle",
+        "checksum_sha256": runtime_checksum,
+    })
+if vulkan_runtime_name and vulkan_runtime_checksum:
+    runtime_assets.append({
+        "name": vulkan_runtime_name,
+        "install_as": "runtimes/llama",
+        "kind": "llama-cpp-vulkan-runtime-bundle",
+        "checksum_sha256": vulkan_runtime_checksum,
+    })
+if runtime_assets:
+    payload["runtime_assets"] = runtime_assets
 manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
 }
@@ -102,14 +261,24 @@ ensure_local_keys() {
 decode_env_key() {
   local value="$1"
   local path="$2"
-  python3 - "$value" "$path" <<'PY'
+  local label="$3"
+  "$(python_cmd)" - "$value" "$path" "$label" <<'PY'
 import base64
+import binascii
 import sys
 from pathlib import Path
 
 value = sys.argv[1]
 path = Path(sys.argv[2])
-  path.write_bytes(base64.b64decode(value))
+label = sys.argv[3]
+
+try:
+    key_bytes = base64.b64decode(value, validate=True)
+except binascii.Error as exc:
+    print(f"FAILED: invalid base64 release signing {label}: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+path.write_bytes(key_bytes)
 PY
 }
 
@@ -119,8 +288,8 @@ load_private_key_for_sign() {
     temp_dir="$(mktemp -d)"
     private_key_path="$temp_dir/private.pem"
     public_key_path="$temp_dir/public.pem"
-    decode_env_key "${OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64}" "$private_key_path"
-    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path"
+    decode_env_key "${OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64}" "$private_key_path" "private-key"
+    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path" "public-key"
     return 0
   fi
 
@@ -136,7 +305,7 @@ load_public_key_for_verify() {
     local temp_dir
     temp_dir="$(mktemp -d)"
     public_key_path="$temp_dir/public.pem"
-    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path"
+    decode_env_key "${OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64}" "$public_key_path" "public-key"
     return 0
   fi
 

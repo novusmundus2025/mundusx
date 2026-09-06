@@ -1,6 +1,6 @@
 # Governance Model
 
-This document describes the longer-term federated structure for NovusX:
+This document describes the longer-term federated structure for MundusX:
 
 - many operator companies can run their own control planes
 - a top-level standards org defines the protocol, license rules, and settlement rules

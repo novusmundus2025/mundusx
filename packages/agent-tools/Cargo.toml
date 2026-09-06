@@ -1,0 +1,12 @@
+[package]
+name = "mundusx-agent-tools"
+version = "0.1.28"
+edition = "2021"
+description = "Built-in tools for the local MundusX agent"
+license = "Apache-2.0"
+
+[dependencies]
+mundusx-agent-core = { path = "../agent-core" }
+serde_json = "1.0"
+ureq = { version = "2.12", features = ["json"] }
+uuid = { version = "1.10", features = ["v4"] }

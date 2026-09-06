@@ -1,0 +1,71 @@
+name: Feature request
+description: Propose a concrete public-repo feature or improvement with clear scope.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for product or engineering improvements that should land in this public repository.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are we solving?
+      description: Explain the operator, contributor, or release problem behind this request.
+      placeholder: Contributors cannot tell whether the local node agent is healthy without digging through logs.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the desired behavior or user-visible outcome.
+      placeholder: Add a CLI status section that surfaces heartbeat freshness and worker readiness.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the conditions that must be true before this issue is done.
+      placeholder: |
+        - ...
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Relevant files, packages, or docs
+      description: Point to the likely code surfaces and include the originating Notion spec or backlog page when one exists.
+      placeholder: |
+        Source: [Related spec or backlog page](https://www.notion.so/...)
+        Related: mundusx/mundusx#31
+        Surfaces: apps/cli, agents/node, install.sh, docs/install-page.md
+    validations:
+      required: false
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Choose the delivery priority that should map to the matching GitHub label.
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Choose the repo area that owns this work.
+      options:
+        - Public
+        - Private
+        - Platform
+        - Workflow
+        - Docs
+    validations:
+      required: true

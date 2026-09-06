@@ -1,11 +1,17 @@
+#[cfg(target_os = "linux")]
+#[path = "../../../tools/linux_identity.rs"]
+mod linux_identity;
 #[cfg(target_os = "macos")]
 #[path = "../../../tools/macos_identity.rs"]
 mod macos_identity;
+#[cfg(windows)]
+#[path = "../../../tools/windows_identity.rs"]
+mod windows_identity;
 
 use crate::storage::{config_dir, identity_path};
-use ed25519_dalek::{SigningKey, VerifyingKey};
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(windows)))]
 use ed25519_dalek::Signer;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,11 +65,21 @@ impl DeviceIdentity {
             return macos_sign_hex(message);
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
         {
-        let signing_key = self.signing_key()?;
-        let signature = signing_key.sign(message.as_bytes());
-        Ok(hex::encode(signature.to_bytes()))
+            return windows_sign_hex(message);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            return linux_sign_hex(message);
+        }
+
+        #[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(windows)))]
+        {
+            let signing_key = self.signing_key()?;
+            let signature = signing_key.sign(message.as_bytes());
+            Ok(hex::encode(signature.to_bytes()))
         }
     }
 }
@@ -76,7 +92,17 @@ pub fn trust_path() -> String {
             .to_string();
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        return windows_identity::trust_path().to_string();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return linux_identity::trust_path().to_string();
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(windows)))]
     {
         "legacy-file".to_string()
     }
@@ -90,21 +116,39 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
         return Ok(Some(identity));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-    let path = resolved_identity_path();
-    if !path.exists() {
-        return Ok(None);
+        if !resolved_identity_path().exists() {
+            return Ok(None);
+        }
+        let identity = windows_secure_identity()?;
+        let _ = persist_identity_metadata(&identity)?;
+        return Ok(Some(identity));
     }
 
-    let raw = fs::read_to_string(path)?;
-    let identity: DeviceIdentity = serde_json::from_str(&raw)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    identity.verifying_key()?;
-    if !cfg!(target_os = "macos") || !identity.private_key_hex.trim().is_empty() {
-        identity.signing_key()?;
+    #[cfg(target_os = "linux")]
+    {
+        if !resolved_identity_path().exists() {
+            return Ok(None);
+        }
+        let identity = linux_secure_identity()?;
+        let _ = persist_identity_metadata(&identity)?;
+        return Ok(Some(identity));
     }
-    Ok(Some(identity))
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(windows)))]
+    {
+        let path = resolved_identity_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let raw = fs::read_to_string(path)?;
+        let identity: DeviceIdentity = serde_json::from_str(&raw)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        identity.verifying_key()?;
+        identity.signing_key()?;
+        Ok(Some(identity))
     }
 }
 
@@ -145,7 +189,6 @@ fn invalid_identity(error: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
 }
 
-#[cfg(target_os = "macos")]
 fn persist_identity_metadata(identity: &DeviceIdentity) -> std::io::Result<PathBuf> {
     let data = serde_json::to_string_pretty(identity).expect("identity serialization");
     if let Some(path) = try_write(&identity_path(), &data)? {
@@ -160,7 +203,6 @@ fn persist_identity_metadata(identity: &DeviceIdentity) -> std::io::Result<PathB
     ))
 }
 
-#[cfg(target_os = "macos")]
 fn try_write(path: &std::path::Path, data: &str) -> std::io::Result<Option<PathBuf>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -194,4 +236,74 @@ fn macos_secure_identity() -> std::io::Result<DeviceIdentity> {
 #[cfg(target_os = "macos")]
 fn macos_sign_hex(message: &str) -> std::io::Result<String> {
     macos_identity::sign_message(&macos_storage_dir(), message.as_bytes())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_storage_dir() -> PathBuf {
+    if std::env::var_os("OPENGPU_HOME").is_some() {
+        return config_dir();
+    }
+
+    let home = config_dir();
+    if identity_path().exists() || !local_identity_path().exists() {
+        return home;
+    }
+
+    local_identity_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_secure_identity() -> std::io::Result<DeviceIdentity> {
+    let secure = linux_identity::ensure_identity(&linux_storage_dir())?;
+    Ok(DeviceIdentity {
+        public_key_hex: secure.public_key_hex,
+        private_key_hex: String::new(),
+        fingerprint: secure.fingerprint,
+        keychain_label_hex: Some(secure.keychain_label_hex),
+        encrypted_private_key_hex: secure.encrypted_private_key_hex,
+        nonce_hex: secure.nonce_hex,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sign_hex(message: &str) -> std::io::Result<String> {
+    linux_identity::sign_message(&linux_storage_dir(), message.as_bytes())
+}
+
+#[cfg(windows)]
+fn windows_storage_dir() -> PathBuf {
+    if std::env::var_os("OPENGPU_HOME").is_some() {
+        return config_dir();
+    }
+
+    let home = config_dir();
+    if identity_path().exists() || !local_identity_path().exists() {
+        return home;
+    }
+
+    local_identity_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".opengpu"))
+}
+
+#[cfg(windows)]
+fn windows_secure_identity() -> std::io::Result<DeviceIdentity> {
+    let secure = windows_identity::ensure_identity(&windows_storage_dir())?;
+    Ok(DeviceIdentity {
+        public_key_hex: secure.public_key_hex,
+        private_key_hex: String::new(),
+        fingerprint: secure.fingerprint,
+        keychain_label_hex: None,
+        encrypted_private_key_hex: secure.encrypted_private_key_hex,
+        nonce_hex: String::new(),
+    })
+}
+
+#[cfg(windows)]
+fn windows_sign_hex(message: &str) -> std::io::Result<String> {
+    windows_identity::sign_message(&windows_storage_dir(), message.as_bytes())
 }

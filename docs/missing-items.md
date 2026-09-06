@@ -1,9 +1,9 @@
 # Missing Items
 
-This document tracks what is still missing before NovusX becomes a full product.
+This document tracks what is still missing before MundusX becomes a full product.
 
-For the active working list, see [docs/master-checklist.md](/Users/DBATALL/Documents/mundusx/docs/master-checklist.md).
-For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Documents/mundusx/docs/pending-items.md).
+For the active working list, see [docs/master-checklist.md](master-checklist.md).
+For broader next-step context, see [docs/pending-items.md](pending-items.md).
 
 ## CLI Phase
 
@@ -17,16 +17,29 @@ For broader next-step context, see [docs/pending-items.md](/Users/DBATALL/Docume
 - [x] Device identity keypair reuse
 - [x] macOS non-exportable device identity in encrypted-at-rest sign-only fallback
 - [ ] macOS non-exportable device key storage in OS secure storage
-- [ ] Windows/Linux non-exportable device key storage in OS secure storage
+- [x] macOS non-exportable identity enforcement policy
+- [x] Windows DPAPI-protected device identity and operator-token storage
+- [ ] Windows non-exportable key enforcement policy and implementation beyond DPAPI
+- [x] Linux protected device identity storage
+- [ ] Linux non-exportable key enforcement policy beyond Secret Service fallback
 - [x] Start-first onboarding flow
 - [x] Friendly exit command
 - [x] Reviewable official model catalog config
 - [x] Signed release binaries published from tags
-- [ ] Public install endpoint behind `novusx.ai`
+- [ ] Public install endpoint behind `mundusx.ai`
 - [x] Packaging checks on macOS and Linux release artifacts
+- [ ] Windows CLI release asset published from tags
 - [ ] WinGet package publishing
 - [ ] Homebrew tap or formula publishing
 - [x] Final CLI help polish and error messaging
+
+### CLI Follow-Up Issues
+
+- Windows release asset: [mundusx/mundusx#73](https://github.com/mundusx/mundusx/issues/73)
+- Windows release runner and signing decision: [mundusx/mundusx#109](https://github.com/mundusx/mundusx/issues/109)
+- Homebrew channel publishing: [mundusx/mundusx#110](https://github.com/mundusx/mundusx/issues/110)
+- WinGet package publishing: [mundusx/mundusx#111](https://github.com/mundusx/mundusx/issues/111)
+- macOS identity policy: [docs/macos-identity-policy.md](macos-identity-policy.md)
 
 ## Control Plane Phase
 

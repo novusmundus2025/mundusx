@@ -2,10 +2,10 @@
   "name": "@opengpu/proto",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
     "check": "echo \"proto check not configured yet\""
   }
 }
-

@@ -32,6 +32,7 @@ The CLI now has working local cache commands that operate on a manifest director
 - `opengpu model list`
 - `opengpu model use <name>`
 - `opengpu model add <name>`
+- `opengpu model import <path> --name <name>`
 - `opengpu model remove <name>`
 - `opengpu model prune --yes`
 
@@ -73,7 +74,26 @@ Behavior:
 
 - Add the model to the local cache.
 - If the model is one of the official open presets, download it from Hugging Face first.
+- Before downloading on CUDA machines, compare the catalog's estimated VRAM requirement against the selected contribution cap applied to detected GPU VRAM and refuse models that do not fit.
+- Refuse CUDA catalog downloads when required size metadata is missing instead of guessing.
 - Do not make it active unless the user also asks to use it.
+
+### Importing a local model
+
+Use a command like:
+
+```bash
+opengpu model import ./models/local-q4_k_m.gguf --name local-q4 --backend cuda --vram-mb 4096 --activate
+```
+
+Behavior:
+
+- Record the existing file path instead of downloading a catalog model.
+- Capture file name, format, quantization tag, size, estimated VRAM, and compatibility status in the local manifest.
+- Mark CUDA models as accepted, degraded, or rejected against the supplied VRAM budget.
+- Use the selected contribution cap applied to detected CUDA VRAM when `--vram-mb` is omitted.
+- Do not activate rejected imports.
+- Keep unsupported formats rejected until the local worker can run them.
 
 ### Removing a model
 

@@ -1,0 +1,109 @@
+name: Release CLI Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Linux release tag to build and publish, for example cli-linux-v0.1.14"
+        required: true
+        type: string
+  push:
+    tags:
+      - "cli-linux-v*"
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  MUNDUSX_RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            cross_compiler: ""
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            cross_compiler: ""
+
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+      BINARY_NAME: opengpu-${{ matrix.target }}
+      AGENT_BINARY_NAME: opengpu-node-agent-${{ matrix.target }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build CLI and node agent
+        run: |
+          cargo build --release --manifest-path apps/cli/Cargo.toml --target "${TARGET}"
+          cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target "${TARGET}"
+
+      - name: Prepare binaries and checksums
+        run: |
+          cp "target/${TARGET}/release/opengpu" "${BINARY_NAME}"
+          cp "target/${TARGET}/release/opengpu-node-agent" "${AGENT_BINARY_NAME}"
+          chmod +x "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
+          sha256sum "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
+          sha256sum "${AGENT_BINARY_NAME}" > "${AGENT_BINARY_NAME}.sha256"
+          sha256sum -c "${BINARY_NAME}.sha256"
+          sha256sum -c "${AGENT_BINARY_NAME}.sha256"
+
+      - name: Verify packaging
+        run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
+
+      - name: Prepare signed manifest
+        env:
+          OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: |
+          ./scripts/release-signing.sh prepare . "${BINARY_NAME}" "${RELEASE_TAG}" "${RELEASE_TAG}"
+          python3 ./scripts/verify-release-manifest-assets.py .
+          mv release-manifest.json "release-manifest-${TARGET}.json"
+          mv release-manifest.json.sig "release-manifest-${TARGET}.json.sig"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}
+          path: |
+            ${{ env.BINARY_NAME }}
+            ${{ env.BINARY_NAME }}.sha256
+            ${{ env.AGENT_BINARY_NAME }}
+            ${{ env.AGENT_BINARY_NAME }}.sha256
+            release-manifest-${{ env.TARGET }}.json
+            release-manifest-${{ env.TARGET }}.json.sig
+            install.sh
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish Linux release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: MundusX Linux CLI ${{ env.RELEASE_TAG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

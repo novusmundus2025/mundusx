@@ -2,9 +2,9 @@
   "name": "@opengpu/worker-m-series",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "check": "echo \"m-series worker check not configured yet\""
   }
 }
-

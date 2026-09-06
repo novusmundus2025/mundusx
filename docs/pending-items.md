@@ -2,14 +2,14 @@
 
 This document tracks the next concrete implementation steps after the current Mac-first prototype.
 
-For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/Documents/mundusx/docs/master-checklist.md).
+For the single working checklist, see [docs/master-checklist.md](master-checklist.md).
 
 ## Next Up
 
 1. **Port secure device identity to all platforms**
-   - macOS uses encrypted-at-rest device identity metadata and will use Keychain when available, but the long-term goal is still OS-backed secure storage everywhere
-   - keep the private key non-exportable on Windows and Linux too
-   - reuse the same sign-only identity model on the remaining platforms
+   - macOS uses encrypted-at-rest device identity metadata and Keychain when available, with environment rules in [docs/macos-identity-policy.md](macos-identity-policy.md)
+   - Windows now protects device identity and operator tokens with DPAPI; the remaining Windows work is the stricter non-exportable key policy and implementation beyond DPAPI
+   - Linux now protects device identity with encrypted-at-rest metadata and Secret Service when available; the remaining Linux work is stricter non-exportable TPM, PKCS#11, or kernel-keyring signing policy beyond the fallback path
 
 2. **Define the federated governance model**
    - document the top-level standards / clearing-house org
@@ -19,12 +19,14 @@ For the single working checklist, see [docs/master-checklist.md](/Users/DBATALL/
 
 3. **Public install and release rollout**
    - public install endpoint
-   - Homebrew and WinGet publishing
+   - Windows CLI release asset from the signed tag workflow ([mundusx/mundusx#73](https://github.com/mundusx/mundusx/issues/73))
+   - Homebrew publishing ([mundusx/mundusx#110](https://github.com/mundusx/mundusx/issues/110))
+   - WinGet publishing ([mundusx/mundusx#111](https://github.com/mundusx/mundusx/issues/111))
 
 ## Why These Are Pending
 
 - The Mac-first core runtime is now working end to end, so the remaining work is mostly platform expansion and productization.
-- Secure device identity is sign-only and non-exportable on macOS with encrypted-at-rest storage and an optional Keychain secret, but the other platforms still need the same treatment.
+- Secure device identity now avoids plaintext private-key persistence on macOS, Windows, and Linux. macOS and Linux both have visible fallback storage paths for constrained hosts, while Windows and Linux still need stricter enterprise enforcement policy beyond their current protected storage.
 - Onboarding and governance are still design-heavy product layers rather than runtime plumbing.
 - The public install endpoint and package-manager publishing are still required before public rollout.
 
