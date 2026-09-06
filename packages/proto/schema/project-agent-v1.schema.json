@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mundusx.ai/schemas/project-agent-v1.schema.json",
+  "title": "MundusX Project Agent Protocol v1",
+  "type": "object",
+  "$defs": {
+    "message": {
+      "type": "object",
+      "required": ["role"],
+      "properties": {
+        "role": { "enum": ["system", "user", "assistant", "tool"] },
+        "content": { "type": ["string", "null"] },
+        "tool_call_id": { "type": "string", "minLength": 1 },
+        "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } }
+      },
+      "additionalProperties": true
+    },
+    "tool": {
+      "type": "object",
+      "required": ["type", "function"],
+      "properties": {
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name", "parameters"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "description": { "type": "string" },
+            "parameters": { "type": "object" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "toolCall": {
+      "type": "object",
+      "required": ["id", "type", "function"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name", "arguments"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "arguments": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "modelJobSubmit": {
+      "type": "object",
+      "required": ["protocol", "project_task_id", "connection_id", "idempotency_key", "model", "messages", "tools"],
+      "properties": {
+        "protocol": { "const": "mundusx-project-agent/v1" },
+        "project_task_id": { "type": "string", "format": "uuid" },
+        "connection_id": { "type": "string", "format": "uuid" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "model": { "const": "mundusx-agnostic" },
+        "messages": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/message" } },
+        "tools": { "type": "array", "items": { "$ref": "#/$defs/tool" } },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "temperature": { "type": "number", "minimum": 0, "maximum": 2 }
+      },
+      "additionalProperties": false
+    },
+    "modelJobAccepted": {
+      "type": "object",
+      "required": ["protocol", "job_id", "status"],
+      "properties": {
+        "protocol": { "const": "mundusx-project-agent/v1" },
+        "job_id": { "type": "string", "format": "uuid" },
+        "status": { "const": "queued" },
+        "retry_after_ms": { "type": "integer", "minimum": 100, "maximum": 10000 }
+      },
+      "additionalProperties": false
+    },
+    "modelJobStatus": {
+      "type": "object",
+      "required": ["protocol", "job_id", "status"],
+      "properties": {
+        "protocol": { "const": "mundusx-project-agent/v1" },
+        "job_id": { "type": "string", "format": "uuid" },
+        "status": { "enum": ["queued", "running", "completed", "failed", "cancelled", "expired"] },
+        "retry_after_ms": { "type": "integer", "minimum": 100, "maximum": 10000 },
+        "result": {
+          "type": "object",
+          "properties": {
+            "message": { "$ref": "#/$defs/message" },
+            "finish_reason": { "enum": ["stop", "tool_calls", "length"] }
+          },
+          "required": ["message", "finish_reason"],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 },
+            "retryable": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } } },
+          "then": { "required": ["result"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "failed" } } },
+          "then": { "required": ["error"] }
+        }
+      ]
+    },
+    "progressEvent": {
+      "type": "object",
+      "required": ["protocol", "project_task_id", "sequence", "type", "timestamp"],
+      "properties": {
+        "protocol": { "const": "mundusx-project-agent/v1" },
+        "project_task_id": { "type": "string", "format": "uuid" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "type": {
+          "enum": [
+            "harness_started", "model_turn_queued", "model_turn_completed",
+            "tool_started", "tool_completed", "file_changed",
+            "verification_started", "verification_completed",
+            "task_completed", "task_failed"
+          ]
+        },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "summary": { "type": "string", "maxLength": 1000 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

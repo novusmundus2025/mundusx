@@ -24,6 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 ureq = { version = "2.12", features = ["json"] }
+tiny_http = "0.12"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 mundusx-agent-core = { path = "../../packages/agent-core" }
 
