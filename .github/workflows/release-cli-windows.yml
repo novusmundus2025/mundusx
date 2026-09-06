@@ -1,0 +1,149 @@
+name: Release CLI Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Windows release tag to build and publish, for example cli-windows-v0.1.11"
+        required: true
+        type: string
+  push:
+    tags:
+      - "cli-windows-v*"
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  MUNDUSX_RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
+  TARGET: x86_64-pc-windows-msvc
+  BINARY_NAME: opengpu-x86_64-pc-windows-msvc.exe
+  EXECUTABLE_NAME: opengpu.exe
+  AGENT_BINARY_NAME: opengpu-node-agent-x86_64-pc-windows-msvc.exe
+  AGENT_EXECUTABLE_NAME: opengpu-node-agent.exe
+  TRAY_BINARY_NAME: mundusx-tray-x86_64-pc-windows-msvc.exe
+  TRAY_EXECUTABLE_NAME: mundusx-tray.exe
+  TRAY_ICON_NAME: mundusx.ico
+  SETUP_BINARY_NAME: MundusX-Setup.exe
+  SETUP_EXECUTABLE_NAME: mundusx-bootstrap.exe
+  RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-cuda.zip
+  VULKAN_RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-vulkan.zip
+
+jobs:
+  release:
+    name: Build and publish Windows CLI
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build CLI
+        run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ env.TARGET }}
+
+      - name: Build node agent
+        run: cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target ${{ env.TARGET }}
+
+      - name: Build tray companion
+        run: cargo build --release --manifest-path apps/tray/Cargo.toml --target ${{ env.TARGET }}
+
+      - name: Build clickable installer
+        run: cargo build --release --manifest-path apps/windows-installer/Cargo.toml --target ${{ env.TARGET }}
+
+      - name: Package pinned llama.cpp CUDA runtime
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\scripts\package-windows-llama-runtime.ps1 -Tag b9856 -CudaVersion 12.4 -OutputPath $env:RUNTIME_BINARY_NAME
+
+      - name: Package pinned llama.cpp Vulkan runtime
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .\\scripts\\package-windows-vulkan-runtime.ps1 -Tag b9856 -OutputPath $env:VULKAN_RUNTIME_BINARY_NAME
+
+      - name: Prepare binaries
+        shell: bash
+        run: |
+          cp "target/${TARGET}/release/${EXECUTABLE_NAME}" "${BINARY_NAME}"
+          cp "target/${TARGET}/release/${AGENT_EXECUTABLE_NAME}" "${AGENT_BINARY_NAME}"
+          cp "target/${TARGET}/release/${TRAY_EXECUTABLE_NAME}" "${TRAY_BINARY_NAME}"
+          cp "apps/tray/assets/${TRAY_ICON_NAME}" "${TRAY_ICON_NAME}"
+          cp "target/${TARGET}/release/${SETUP_EXECUTABLE_NAME}" "${SETUP_BINARY_NAME}"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          sha256sum "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
+          sha256sum "${AGENT_BINARY_NAME}" > "${AGENT_BINARY_NAME}.sha256"
+          sha256sum "${TRAY_BINARY_NAME}" > "${TRAY_BINARY_NAME}.sha256"
+          sha256sum "${TRAY_ICON_NAME}" > "${TRAY_ICON_NAME}.sha256"
+          sha256sum "${SETUP_BINARY_NAME}" > "${SETUP_BINARY_NAME}.sha256"
+          sha256sum "${RUNTIME_BINARY_NAME}" > "${RUNTIME_BINARY_NAME}.sha256"
+          sha256sum "${VULKAN_RUNTIME_BINARY_NAME}" > "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
+
+      - name: Verify checksums
+        shell: bash
+        run: |
+          sha256sum -c "${BINARY_NAME}.sha256"
+          sha256sum -c "${AGENT_BINARY_NAME}.sha256"
+          sha256sum -c "${TRAY_BINARY_NAME}.sha256"
+          sha256sum -c "${TRAY_ICON_NAME}.sha256"
+          sha256sum -c "${SETUP_BINARY_NAME}.sha256"
+          sha256sum -c "${RUNTIME_BINARY_NAME}.sha256"
+          sha256sum -c "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
+
+      - name: Verify packaging
+        shell: bash
+        run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
+
+      - name: Prepare signed manifest
+        shell: bash
+        env:
+          OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: ./scripts/release-signing.sh prepare . "${BINARY_NAME}" "${RELEASE_TAG}" "${RELEASE_TAG}"
+
+      - name: Verify signed manifest
+        shell: bash
+        env:
+          OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PUBLIC_KEY_PEM_B64 }}
+        run: ./scripts/release-signing.sh verify . "${BINARY_NAME}"
+
+      - name: Verify every manifest asset
+        shell: bash
+        run: python ./scripts/verify-release-manifest-assets.py .
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.BINARY_NAME }}
+            ${{ env.BINARY_NAME }}.sha256
+            ${{ env.AGENT_BINARY_NAME }}
+            ${{ env.AGENT_BINARY_NAME }}.sha256
+            ${{ env.TRAY_BINARY_NAME }}
+            ${{ env.TRAY_BINARY_NAME }}.sha256
+            ${{ env.TRAY_ICON_NAME }}
+            ${{ env.TRAY_ICON_NAME }}.sha256
+            ${{ env.SETUP_BINARY_NAME }}
+            ${{ env.SETUP_BINARY_NAME }}.sha256
+            ${{ env.RUNTIME_BINARY_NAME }}
+            ${{ env.RUNTIME_BINARY_NAME }}.sha256
+            ${{ env.VULKAN_RUNTIME_BINARY_NAME }}
+            ${{ env.VULKAN_RUNTIME_BINARY_NAME }}.sha256
+            release-manifest.json
+            release-manifest.json.sig
+            install.ps1
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: MundusX Windows x86_64 CLI ${{ env.RELEASE_TAG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,6 +10,9 @@ pub fn sample_nodes() -> Vec<NodeStatus> {
             available_gpu_percent: 72,
             label: "MacBook M-series".to_string(),
             region: Some("local".to_string()),
+            policy_allowed: None,
+            worker_healthy: None,
+            models: Vec::new(),
         },
         NodeStatus {
             node_id: "m-002".to_string(),
@@ -19,6 +22,9 @@ pub fn sample_nodes() -> Vec<NodeStatus> {
             available_gpu_percent: 44,
             label: "Studio M-series".to_string(),
             region: Some("local".to_string()),
+            policy_allowed: None,
+            worker_healthy: None,
+            models: Vec::new(),
         },
     ]
 }

@@ -1,6 +1,22 @@
-# NovusX System Flow
+# MundusX System Flow
 
-This page is the living end-to-end one-pager for how NovusX works.
+This page is the living end-to-end one-pager for how MundusX works.
+
+## Requestor → Control Plane → GPU
+
+```mermaid
+flowchart TD
+    R[Requestor / Client / SDK / Dashboard] -->|POST /v1/jobs| AG[Operator Auth Gate]
+    AG -->|valid token| CP[Control Plane]
+    CP --> Q[Job queued]
+    Q --> SCH[Scheduler picks best live eligible node]
+    SCH -->|GET /v1/jobs/next| NA[Node Agent on contributor machine]
+    NA --> W[Launch local worker]
+    W --> GPU[Run compute on GPU\nM-series or CUDA]
+    GPU --> R2[Result]
+    R2 -->|POST /v1/jobs/complete| CP
+    CP --> OUT[Return response to requestor]
+```
 
 ```mermaid
 flowchart TD
@@ -80,7 +96,7 @@ flowchart TD
 ### Operator requests
 
 - Human-facing control-plane routes use a bearer token when `OPENGPU_OPERATOR_TOKEN` is set.
-- The CLI stores that token locally with `opengpu login` and clears it with `opengpu logout`.
+- The CLI stores that token locally with `opengpu login` and clears it with `opengpu logout`; on Windows the token is DPAPI-protected outside `config.json`.
 - If the token is not configured on the control plane, the prototype keeps those routes open for local development.
 
 ## How The Control Plane Checks Requests
@@ -143,7 +159,9 @@ The contribution percent is a **cap**, not full ownership of the machine:
 
 - `20%` means light background contribution
 - `50%` means balanced contribution
-- `90%` means near-max contribution, still bounded by safety policy
+- `65%` and `80%` are quick picks for higher-capacity contributors
+- custom whole-percent caps are allowed from `1%` through `80%`
+- community nodes are capped at `80%` maximum; higher dedicated-machine modes are intentionally not offered
 
 The agent should still enforce:
 

@@ -1,6 +1,6 @@
 # Repository Standards
 
-This document is the living guide for folder structure, code ownership, and review expectations in the NovusX repo.
+This document is the living guide for folder structure, code ownership, and review expectations in the MundusX repo.
 
 ## Canonical Folder Structure
 
@@ -30,6 +30,7 @@ The private operator repo owns the control plane, dashboard, and company-side da
 
 - All top-level product code in this repo is intended to remain under the repository-level Apache 2.0 license.
 - When adding a new folder, choose its license and owner before merging so the boundary is explicit in docs and code.
+- Run `bash tests/license-surface.sh` when touching manifest or license metadata so Apache-2.0 declarations stay aligned across the public repo.
 
 ## Review Rules
 
@@ -42,6 +43,7 @@ Before merging code, verify:
 5. Tests pass.
 6. New code has a clear owner and purpose.
 7. Placeholder code does not leak into runtime trees that should already be real.
+8. Automation-facing metadata stays aligned with the repo type and verification surface.
 
 ## Current Expectations
 
@@ -58,3 +60,10 @@ Update this doc when:
 - a placeholder becomes real code
 - the review checklist changes
 - a folder is renamed or split
+- automation success or blocker rules change for this repo
+
+## Automation Policy
+
+- This repo is treated as a CLI/distribution repo for automation purposes.
+- Use [`docs/automation-policy.md`](/Users/DBATALL/Documents/mundusx/docs/automation-policy.md) for the human-readable rules.
+- Use `.github/automation-policy.json` for machine-readable automation classification and verification expectations.

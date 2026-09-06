@@ -8,8 +8,9 @@ use std::str::FromStr;
 pub enum Backend {
     Auto,
     M,
-    #[value(skip)]
     Cuda,
+    Vulkan,
+    Vllm,
 }
 
 impl Default for Backend {
@@ -24,6 +25,8 @@ impl Backend {
             Self::Auto => "auto",
             Self::M => "m",
             Self::Cuda => "cuda",
+            Self::Vulkan => "vulkan",
+            Self::Vllm => "vllm",
         }
     }
 
@@ -39,7 +42,10 @@ impl FromStr for Backend {
         match input.trim().to_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "m" => Ok(Self::M),
-            _ => Err("backend must be one of: auto or m".to_string()),
+            "cuda" => Ok(Self::Cuda),
+            "vulkan" => Ok(Self::Vulkan),
+            "vllm" => Ok(Self::Vllm),
+            _ => Err("backend must be one of: auto, m, cuda, vulkan, vllm".to_string()),
         }
     }
 }
@@ -113,6 +119,18 @@ pub struct NodeStatus {
     pub available_gpu_percent: u32,
     pub label: String,
     pub region: Option<String>,
+    /// Whether the node's policy currently permits it to accept jobs.
+    /// `None` means unknown; treated as allowed for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_allowed: Option<bool>,
+    /// Whether the local worker is healthy and ready to run inference.
+    /// `None` means unknown; treated as healthy for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_healthy: Option<bool>,
+    /// Model identifiers available on this node (e.g. `["llama3.1:8b"]`).
+    /// Empty means no model information was reported.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -140,10 +158,190 @@ pub struct RoutingDecision {
 pub struct AgentRegistration {
     pub node_id: String,
     pub public_key_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key_hex: Option<String>,
     pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_trust_path: Option<String>,
     pub backend: Backend,
     pub contribution_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<NodeCapabilityAdvertisement>,
     pub agent_version: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerHealthReport {
+    pub healthy: bool,
+    pub model_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_path: Option<String>,
+    pub llama_cli_available: bool,
+    #[serde(default)]
+    pub llama_server_available: bool,
+    #[serde(default)]
+    pub persistent_runtime_warm: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistent_runtime_url: Option<String>,
+    #[serde(default)]
+    pub runtime_kind: String,
+    #[serde(default)]
+    pub runtime_preference: Option<String>,
+    #[serde(default)]
+    pub fallback_runtime: Option<String>,
+    #[serde(default)]
+    pub mlx_available: bool,
+    pub blas_device_available: bool,
+    #[serde(default)]
+    pub cuda_device_available: bool,
+    #[serde(default)]
+    pub cuda_driver_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_device_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub cuda_low_vram_profile: bool,
+    pub power_source: String,
+    pub on_battery: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_percent: Option<u8>,
+    pub runtime_mode: String,
+    #[serde(default)]
+    pub supported_runtime_modes: Vec<String>,
+    #[serde(default)]
+    pub capabilities: NodeCapabilityProfile,
+    pub checked_at: String,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModelCapability {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_vram_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    Chat,
+    Coding,
+    Vision,
+    Embedding,
+    ToolUse,
+    Reducer,
+    Batch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeCapabilityProfile {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub models: Vec<ModelCapability>,
+    #[serde(default)]
+    pub physical_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub usable_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub available_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub capacity_class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_vram_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_vram_mb: Option<u32>,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_embeddings: bool,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default = "default_parallel_jobs")]
+    pub max_parallel_jobs: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_load_percent: Option<u8>,
+    #[serde(default)]
+    pub roles: Vec<NodeRole>,
+    #[serde(default)]
+    pub skill_tags: Vec<String>,
+    #[serde(default)]
+    pub supported_tools: Vec<String>,
+}
+
+impl Default for NodeCapabilityProfile {
+    fn default() -> Self {
+        Self {
+            schema_version: 0,
+            models: Vec::new(),
+            physical_memory_mb: None,
+            usable_memory_mb: None,
+            available_memory_mb: None,
+            capacity_class: String::new(),
+            max_context_tokens: None,
+            total_vram_mb: None,
+            available_vram_mb: None,
+            supports_vision: false,
+            supports_embeddings: false,
+            supports_tools: false,
+            max_parallel_jobs: 1,
+            current_load_percent: None,
+            roles: Vec::new(),
+            skill_tags: Vec::new(),
+            supported_tools: Vec::new(),
+        }
+    }
+}
+
+fn default_parallel_jobs() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeCapabilityAdvertisement {
+    #[serde(default)]
+    pub schema_version: u32,
+    pub backend: Backend,
+    pub contribution_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_memory_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usable_memory_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_memory_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_vram_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usable_vram_mb: Option<u32>,
+    pub runtime_mode: String,
+    #[serde(default)]
+    pub capacity_class: String,
+    #[serde(default)]
+    pub supported_roles: Vec<String>,
+    #[serde(default)]
+    pub supported_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<ModelCapability>,
+    pub ready_for_jobs: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -156,6 +354,22 @@ pub struct Heartbeat {
     pub updated_at: String,
     pub contribution_percent: u8,
     pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_trust_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_battery: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_percent: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_allowed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_health: Option<WorkerHealthReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<NodeCapabilityAdvertisement>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -177,7 +391,13 @@ pub struct WorkerLaunchResponse {
     pub job_id: String,
     pub worker_id: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<Backend>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -186,4 +406,207 @@ pub struct WorkerStatus {
     pub node_id: String,
     pub status: String,
     pub updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::ValueEnum;
+
+    #[test]
+    fn backend_accepts_runtime_backends_across_cli_parsing() {
+        assert_eq!(
+            <Backend as std::str::FromStr>::from_str("cuda").expect("parse cuda backend"),
+            Backend::Cuda
+        );
+        assert_eq!(
+            <Backend as ValueEnum>::from_str("cuda", false).expect("clap parse cuda backend"),
+            Backend::Cuda
+        );
+        assert_eq!(
+            <Backend as std::str::FromStr>::from_str("vulkan").expect("parse vulkan backend"),
+            Backend::Vulkan
+        );
+        assert_eq!(
+            <Backend as ValueEnum>::from_str("vulkan", false).expect("clap parse vulkan backend"),
+            Backend::Vulkan
+        );
+        assert_eq!(
+            <Backend as std::str::FromStr>::from_str("vllm").expect("parse vllm backend"),
+            Backend::Vllm
+        );
+        assert_eq!(
+            <Backend as ValueEnum>::from_str("vllm", false).expect("clap parse vllm backend"),
+            Backend::Vllm
+        );
+
+        let variants = Backend::value_variants()
+            .iter()
+            .map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("possible value")
+                    .get_name()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            variants.iter().any(|variant| variant == "cuda"),
+            "expected clap variants to expose cuda"
+        );
+        assert!(
+            variants.iter().any(|variant| variant == "vulkan"),
+            "expected clap variants to expose vulkan"
+        );
+        assert!(
+            variants.iter().any(|variant| variant == "vllm"),
+            "expected clap variants to expose vllm"
+        );
+    }
+
+    #[test]
+    fn agent_registration_preserves_agent_contract_fields() {
+        let registration: AgentRegistration = serde_json::from_str(
+            r#"{
+                "node_id": "node-1",
+                "public_key_fingerprint": "fingerprint",
+                "public_key_hex": "abcd",
+                "hostname": "host-1",
+                "identity_trust_path": "/tmp/trust",
+                "backend": "m",
+                "contribution_percent": 70,
+                "agent_version": "0.1.0"
+            }"#,
+        )
+        .expect("deserialize agent registration");
+
+        let json = serde_json::to_value(registration).expect("serialize registration");
+        assert_eq!(
+            json.get("public_key_hex").and_then(|value| value.as_str()),
+            Some("abcd")
+        );
+        assert_eq!(
+            json.get("identity_trust_path")
+                .and_then(|value| value.as_str()),
+            Some("/tmp/trust")
+        );
+    }
+
+    #[test]
+    fn heartbeat_preserves_extended_agent_status_fields() {
+        let heartbeat: Heartbeat = serde_json::from_str(
+            r#"{
+                "node_id": "node-1",
+                "backend": "cuda",
+                "agent_state": "paused",
+                "available_memory_mb": 32768,
+                "available_gpu_percent": 55,
+                "updated_at": "2026-06-02T12:00:00Z",
+                "contribution_percent": 40,
+                "hostname": "host-1",
+                "identity_trust_path": "/tmp/trust",
+                "power_source": "Battery Power",
+                "on_battery": true,
+                "battery_percent": 42,
+                "policy_allowed": false,
+                "policy_reason": "battery saver",
+                "worker_health": {
+                    "healthy": false,
+                    "model_dir": "/models",
+                    "model_name": "llama",
+                    "model_path": "/models/llama.gguf",
+                    "llama_cli_available": true,
+                    "blas_device_available": false,
+                    "power_source": "Battery Power",
+                    "on_battery": true,
+                    "battery_percent": 42,
+                    "runtime_mode": "cpu",
+                    "capabilities": {
+                        "models": [
+                            {
+                                "name": "llama",
+                                "format": "gguf",
+                                "quantization": "Q4_K_M"
+                            }
+                        ],
+                        "max_context_tokens": 8192,
+                        "available_vram_mb": 2048,
+                        "supports_embeddings": true,
+                        "max_parallel_jobs": 2,
+                        "current_load_percent": 45,
+                        "roles": ["chat", "embedding", "batch"],
+                        "skill_tags": ["backend:cuda", "runtime:cpu"]
+                    },
+                    "checked_at": "2026-06-02T12:00:00Z",
+                    "notes": ["using fallback"]
+                }
+            }"#,
+        )
+        .expect("deserialize heartbeat");
+
+        let json = serde_json::to_value(heartbeat).expect("serialize heartbeat");
+        assert_eq!(
+            json.get("backend").and_then(|value| value.as_str()),
+            Some("cuda")
+        );
+        assert_eq!(
+            json.get("identity_trust_path")
+                .and_then(|value| value.as_str()),
+            Some("/tmp/trust")
+        );
+        assert_eq!(
+            json.get("worker_health")
+                .and_then(|value| value.get("runtime_mode"))
+                .and_then(|value| value.as_str()),
+            Some("cpu")
+        );
+        let worker_capabilities = json
+            .get("worker_health")
+            .and_then(|value| value.get("capabilities"))
+            .expect("worker capability profile");
+        assert_eq!(
+            worker_capabilities
+                .get("max_context_tokens")
+                .and_then(|value| value.as_u64()),
+            Some(8192)
+        );
+        assert_eq!(
+            worker_capabilities
+                .get("roles")
+                .and_then(|value| value.as_array())
+                .and_then(|roles| roles.first())
+                .and_then(|value| value.as_str()),
+            Some("chat")
+        );
+    }
+
+    #[test]
+    fn worker_launch_response_preserves_worker_output_and_origin() {
+        let response: WorkerLaunchResponse = serde_json::from_str(
+            r#"{
+                "job_id": "job-1",
+                "worker_id": "worker-1",
+                "status": "completed",
+                "output": "hello world",
+                "error": null,
+                "backend": "m",
+                "node_id": "node-1"
+            }"#,
+        )
+        .expect("deserialize worker launch response");
+
+        let json = serde_json::to_value(response).expect("serialize worker launch response");
+        assert_eq!(
+            json.get("output").and_then(|value| value.as_str()),
+            Some("hello world")
+        );
+        assert_eq!(
+            json.get("backend").and_then(|value| value.as_str()),
+            Some("m")
+        );
+        assert_eq!(
+            json.get("node_id").and_then(|value| value.as_str()),
+            Some("node-1")
+        );
+    }
 }

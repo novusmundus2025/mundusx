@@ -5,6 +5,14 @@ pub fn score_node(node: &NodeStatus, preferred_backend: Backend) -> f64 {
         return -1.0;
     }
 
+    if node.policy_allowed == Some(false) {
+        return -1.0;
+    }
+
+    if node.worker_healthy == Some(false) {
+        return -1.0;
+    }
+
     if !preferred_backend.is_auto() && node.backend != preferred_backend {
         return -1.0;
     }
@@ -20,6 +28,8 @@ pub fn score_node(node: &NodeStatus, preferred_backend: Backend) -> f64 {
     let backend_score = match node.backend {
         Backend::M => 8.0,
         Backend::Cuda => 0.0,
+        Backend::Vulkan => 0.0,
+        Backend::Vllm => 0.0,
         Backend::Auto => 0.0,
     };
 
@@ -31,6 +41,13 @@ pub fn select_best_node(nodes: &[NodeStatus], request: &JobRequest) -> RoutingDe
     let mut best_score = f64::NEG_INFINITY;
 
     for node in nodes {
+        // Skip nodes that advertise a model list but don't have the required model.
+        if let Some(required) = &request.model {
+            if !node.models.is_empty() && !node.models.iter().any(|m| m == required) {
+                continue;
+            }
+        }
+
         let score = score_node(node, request.preferred_backend);
         if score > best_score {
             best_score = score;
@@ -67,14 +84,15 @@ mod tests {
             available_gpu_percent: gpu,
             label: id.to_string(),
             region: None,
+            policy_allowed: None,
+            worker_healthy: None,
+            models: Vec::new(),
         }
     }
 
     #[test]
     fn prefers_matching_backend_when_requested() {
-        let nodes = vec![
-            node("m-1", Backend::M, NodeState::Idle, 12_288, 40),
-        ];
+        let nodes = vec![node("m-1", Backend::M, NodeState::Idle, 12_288, 40)];
         let request = JobRequest {
             request_id: "req-1".to_string(),
             prompt: "hello".to_string(),
@@ -114,5 +132,100 @@ mod tests {
         let decision = select_best_node(&nodes, &request);
 
         assert_eq!(decision.selected_node_id.as_deref(), Some("live"));
+    }
+
+    #[test]
+    fn skips_policy_blocked_nodes() {
+        let mut blocked = node("blocked", Backend::M, NodeState::Idle, 65_536, 100);
+        blocked.policy_allowed = Some(false);
+        let mut allowed = node("allowed", Backend::M, NodeState::Idle, 16_384, 50);
+        allowed.policy_allowed = Some(true);
+        let nodes = vec![blocked, allowed];
+        let request = JobRequest {
+            request_id: "req-3".to_string(),
+            prompt: "test".to_string(),
+            preferred_backend: Backend::Auto,
+            model: None,
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
+        };
+
+        let decision = select_best_node(&nodes, &request);
+
+        assert_eq!(decision.selected_node_id.as_deref(), Some("allowed"));
+    }
+
+    #[test]
+    fn skips_unhealthy_worker_nodes() {
+        let mut unhealthy = node("unhealthy", Backend::M, NodeState::Idle, 65_536, 100);
+        unhealthy.worker_healthy = Some(false);
+        let mut healthy = node("healthy", Backend::M, NodeState::Idle, 16_384, 50);
+        healthy.worker_healthy = Some(true);
+        let nodes = vec![unhealthy, healthy];
+        let request = JobRequest {
+            request_id: "req-4".to_string(),
+            prompt: "test".to_string(),
+            preferred_backend: Backend::Auto,
+            model: None,
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
+        };
+
+        let decision = select_best_node(&nodes, &request);
+
+        assert_eq!(decision.selected_node_id.as_deref(), Some("healthy"));
+    }
+
+    #[test]
+    fn skips_nodes_missing_required_model() {
+        let mut wrong_model = node("wrong", Backend::M, NodeState::Idle, 65_536, 100);
+        wrong_model.models = vec!["llama3.1:8b".to_string()];
+        let mut right_model = node("right", Backend::M, NodeState::Idle, 16_384, 50);
+        right_model.models = vec!["qwen2.5:7b".to_string()];
+        let nodes = vec![wrong_model, right_model];
+        let request = JobRequest {
+            request_id: "req-5".to_string(),
+            prompt: "test".to_string(),
+            preferred_backend: Backend::Auto,
+            model: Some("qwen2.5:7b".to_string()),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
+        };
+
+        let decision = select_best_node(&nodes, &request);
+
+        assert_eq!(decision.selected_node_id.as_deref(), Some("right"));
+    }
+
+    #[test]
+    fn accepts_node_with_no_model_list_for_any_model_request() {
+        // A node that hasn't reported its model list should not be excluded.
+        let mut no_list = node("no-list", Backend::M, NodeState::Idle, 16_384, 50);
+        no_list.models = Vec::new();
+        let nodes = vec![no_list];
+        let request = JobRequest {
+            request_id: "req-6".to_string(),
+            prompt: "test".to_string(),
+            preferred_backend: Backend::Auto,
+            model: Some("qwen2.5:7b".to_string()),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
+        };
+
+        let decision = select_best_node(&nodes, &request);
+
+        assert_eq!(decision.selected_node_id.as_deref(), Some("no-list"));
     }
 }

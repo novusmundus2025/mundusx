@@ -1,0 +1,73 @@
+{
+  "repository_type": "cli-distribution",
+  "default_branch_for_integration": "uat",
+  "success_verification": {
+    "requires_merge_to_uat": true,
+    "requires_deployment_url": false,
+    "post_merge_checks": [
+      "repo_validations",
+      "artifact_or_smoke_verification"
+    ],
+    "artifact_or_smoke_examples": [
+      "bash tests/license-surface.sh",
+      "bash scripts/localhost-smoke.sh",
+      "bash scripts/verify-release-packaging.sh"
+    ]
+  },
+  "blocker_rules": {
+    "hard_blockers": [
+      "failing_validations",
+      "ambiguous_issue_selection",
+      "missing_required_credentials",
+      "merge_conflicts_requiring_code_changes",
+      "missing_required_configuration_for_selected_issue"
+    ],
+    "transient_blockers": [
+      "temporary_github_failure",
+      "temporary_git_failure",
+      "temporary_network_failure",
+      "temporary_dns_failure",
+      "temporary_ci_failure",
+      "temporary_rate_limit"
+    ],
+    "non_blockers_for_cli_repos": [
+      "missing_uat_service_url",
+      "missing_live_deployment_healthcheck",
+      "missing_public_web_deployment_target"
+    ]
+  },
+  "issue_priority_policy": {
+    "source_of_truth": "GitHub Project 3",
+    "allowed_labels": [
+      "priority:P0",
+      "priority:P1",
+      "priority:P2"
+    ],
+    "default_label": "priority:P1",
+    "selection_rule": "choose the highest-priority repo-local issue from GitHub Project 3; break ties by smallest clearly shippable change"
+  },
+  "issue_link_policy": {
+    "source_prefix": "Source:",
+    "required_notion_host": "https://www.notion.so/",
+    "github_reference_format": "owner/repo#issue-number",
+    "template_rule": "issues derived from Notion specs or backlog pages should include a Source line that links the originating Notion page"
+  },
+  "terminal_notifications": {
+    "success_channels": [
+      "codex_inbox",
+      "email"
+    ],
+    "blocker_channels": [
+      "codex_inbox",
+      "email"
+    ],
+    "transient_retry_window_minutes": 30,
+    "blocker_email_after": "hard_blocker_or_retry_window_exhausted",
+    "gmail_unavailable_treated_as_blocker": true
+  },
+  "notes": [
+    "This repository ships a CLI, release artifacts, installer flow, and public docs surface.",
+    "A merge to uat is successful for automation purposes when repo validations pass and the relevant artifact or localhost smoke checks pass.",
+    "A missing web deployment URL must not by itself downgrade a successful CLI repo run into a blocker."
+  ]
+}

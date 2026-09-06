@@ -6,6 +6,7 @@ enum Backend {
   BACKEND_UNSPECIFIED = 0;
   BACKEND_M = 1;
   BACKEND_CUDA = 2;
+  BACKEND_VULKAN = 3;
 }
 
 enum AgentState {
@@ -33,6 +34,15 @@ message NodeHeartbeat {
   uint32 available_gpu_percent = 5;
   string updated_at = 6;
   uint32 contribution_percent = 7;
+  string hostname = 8;
+  string identity_trust_path = 9;
+  string power_source = 10;
+  bool on_battery = 11;
+  optional uint32 battery_percent = 12;
+  bool policy_allowed = 13;
+  optional string policy_reason = 14;
+  WorkerHealthReport worker_health = 15;
+  NodeCapabilityAdvertisement capabilities = 16;
 }
 
 message JobRequest {
@@ -70,6 +80,7 @@ message JobRecord {
   Backend backend = 12;
   string output = 13;
   string error = 14;
+  string mode = 15;
 }
 
 message JobClaimResponse {
@@ -84,14 +95,21 @@ message JobCompletion {
   JobStatus status = 5;
   string output = 6;
   string error = 7;
+  uint64 duration_ms = 8;
+  string model = 9;
+  string runtime_mode = 10;
 }
 
 message AgentRegistration {
   string node_id = 1;
   string public_key_fingerprint = 2;
-  Backend backend = 3;
-  uint32 contribution_percent = 4;
-  string agent_version = 5;
+  string public_key_hex = 3;
+  string hostname = 4;
+  string identity_trust_path = 5;
+  Backend backend = 6;
+  uint32 contribution_percent = 7;
+  NodeCapabilityAdvertisement capabilities = 8;
+  string agent_version = 9;
 }
 
 message WorkerLaunchRequest {
@@ -105,13 +123,17 @@ message WorkerLaunchRequest {
   float temperature = 8;
   float top_p = 9;
   uint64 seed = 10;
+  string mode = 11;
 }
 
 message WorkerLaunchResponse {
   string job_id = 1;
   string worker_id = 2;
   string status = 3;
-  string error = 4;
+  string output = 4;
+  string error = 5;
+  Backend backend = 6;
+  string node_id = 7;
 }
 
 message WorkerStatus {
@@ -119,4 +141,53 @@ message WorkerStatus {
   string node_id = 2;
   string status = 3;
   string updated_at = 4;
+}
+
+message WorkerHealthReport {
+  bool healthy = 1;
+  string model_dir = 2;
+  optional string model_name = 3;
+  optional string model_path = 4;
+  bool llama_cli_available = 5;
+  bool blas_device_available = 6;
+  string power_source = 7;
+  bool on_battery = 8;
+  optional uint32 battery_percent = 9;
+  string runtime_mode = 10;
+  string checked_at = 11;
+  repeated string notes = 12;
+  bool cuda_device_available = 13;
+  bool cuda_driver_available = 14;
+  optional string cuda_device_name = 15;
+  optional uint32 cuda_memory_mb = 16;
+  bool cuda_low_vram_profile = 17;
+}
+
+message ModelCapability {
+  string name = 1;
+  optional string path = 2;
+  optional string format = 3;
+  optional string quantization = 4;
+  optional uint64 size_bytes = 5;
+  optional uint64 estimated_vram_mb = 6;
+  optional string compatibility = 7;
+  optional string compatibility_reason = 8;
+}
+
+message NodeCapabilityAdvertisement {
+  Backend backend = 1;
+  uint32 contribution_percent = 2;
+  optional uint32 physical_vram_mb = 3;
+  optional uint32 usable_vram_mb = 4;
+  string runtime_mode = 5;
+  optional ModelCapability active_model = 6;
+  bool ready_for_jobs = 7;
+  optional string readiness_reason = 8;
+  uint32 schema_version = 9;
+  optional uint32 physical_memory_mb = 10;
+  optional uint32 usable_memory_mb = 11;
+  optional uint32 available_memory_mb = 12;
+  string capacity_class = 13;
+  repeated string supported_roles = 14;
+  repeated string supported_tools = 15;
 }

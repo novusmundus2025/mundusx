@@ -1,52 +1,31 @@
 use crate::identity::DeviceIdentity;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
-pub struct HttpEndpoint {
-    pub host: String,
-    pub port: u16,
+pub struct ControlPlaneEndpoint {
+    pub url: String,
     pub path: String,
 }
 
-pub fn parse_http_endpoint(input: &str, default_path: &str) -> Result<HttpEndpoint, String> {
-    let trimmed = input.trim();
-    if trimmed.starts_with("https://") {
-        return Err(
-            "prototype control plane client only supports http://; set control-plane-url to http://127.0.0.1:8787"
-                .to_string(),
-        );
+pub fn control_plane_endpoint(
+    control_plane_url: &str,
+    path: &str,
+) -> Result<ControlPlaneEndpoint, String> {
+    let base = control_plane_url.trim().trim_end_matches('/');
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err("control-plane-url must start with http:// or https://".to_string());
     }
 
-    let without_scheme = trimmed
-        .strip_prefix("http://")
-        .ok_or_else(|| {
-            "control plane URL must use http://; set control-plane-url to http://127.0.0.1:8787"
-                .to_string()
-        })?;
-
-    let mut parts = without_scheme.splitn(2, '/');
-    let host_port = parts.next().unwrap_or_default();
-    let path = parts
-        .next()
-        .map(|tail| format!("/{}", tail.trim_start_matches('/')))
-        .unwrap_or_else(|| default_path.to_string());
-
-    let mut host_parts = host_port.splitn(2, ':');
-    let host = host_parts.next().unwrap_or_default().to_string();
-    if host.is_empty() {
-        return Err("control plane host cannot be empty".to_string());
+    if path.is_empty() || !path.starts_with('/') {
+        return Err("control-plane API path must start with /".to_string());
     }
 
-    let port = host_parts
-        .next()
-        .map(|value| value.parse::<u16>().map_err(|_| "invalid control plane port".to_string()))
-        .transpose()?
-        .unwrap_or(80);
-
-    Ok(HttpEndpoint { host, port, path })
+    Ok(ControlPlaneEndpoint {
+        url: format!("{base}{path}"),
+        path: path.to_string(),
+    })
 }
 
 pub fn post_json<T: Serialize>(
@@ -54,26 +33,14 @@ pub fn post_json<T: Serialize>(
     path: &str,
     payload: &T,
 ) -> Result<String, String> {
-    let endpoint = parse_http_endpoint(control_plane_url, path)?;
+    let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let body = serde_json::to_string(payload).map_err(|error| error.to_string())?;
-    let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        endpoint.path,
-        endpoint.host,
-        endpoint.port,
-        body.len(),
-        body
-    );
-    send_request(&endpoint.host, endpoint.port, &request)
+    send_request("POST", &endpoint.url, Vec::new(), Some(body))
 }
 
 pub fn get_json<T: DeserializeOwned>(control_plane_url: &str, path: &str) -> Result<T, String> {
-    let endpoint = parse_http_endpoint(control_plane_url, path)?;
-    let request = format!(
-        "GET {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
-        endpoint.path, endpoint.host, endpoint.port
-    );
-    let response = send_request(&endpoint.host, endpoint.port, &request)?;
+    let endpoint = control_plane_endpoint(control_plane_url, path)?;
+    let response = send_request("GET", &endpoint.url, Vec::new(), None)?;
     parse_json_body(&response)
 }
 
@@ -82,17 +49,9 @@ pub fn post_json_body<T: Serialize, R: DeserializeOwned>(
     path: &str,
     payload: &T,
 ) -> Result<R, String> {
-    let endpoint = parse_http_endpoint(control_plane_url, path)?;
+    let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let body = serde_json::to_string(payload).map_err(|error| error.to_string())?;
-    let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        endpoint.path,
-        endpoint.host,
-        endpoint.port,
-        body.len(),
-        body
-    );
-    let response = send_request(&endpoint.host, endpoint.port, &request)?;
+    let response = send_request("POST", &endpoint.url, Vec::new(), Some(body))?;
     parse_json_body(&response)
 }
 
@@ -103,7 +62,15 @@ pub fn signed_post_json<T: Serialize>(
     identity: &DeviceIdentity,
     payload: &T,
 ) -> Result<String, String> {
-    signed_request(control_plane_url, "POST", path, node_id, identity, payload)
+    signed_request(
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        payload,
+    )
 }
 
 pub fn signed_get_json<T: DeserializeOwned>(
@@ -112,7 +79,15 @@ pub fn signed_get_json<T: DeserializeOwned>(
     node_id: &str,
     identity: &DeviceIdentity,
 ) -> Result<T, String> {
-    let response = signed_request(control_plane_url, "GET", path, node_id, identity, &serde_json::json!({}))?;
+    let response = signed_request(
+        control_plane_url,
+        "GET",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        &serde_json::json!({}),
+    )?;
     parse_json_body(&response)
 }
 
@@ -123,7 +98,52 @@ pub fn signed_post_json_body<T: Serialize, R: DeserializeOwned>(
     identity: &DeviceIdentity,
     payload: &T,
 ) -> Result<R, String> {
-    let response = signed_request(control_plane_url, "POST", path, node_id, identity, payload)?;
+    let response = signed_request(
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        payload,
+    )?;
+    parse_json_body(&response)
+}
+
+pub fn signed_runner_get_json<T: DeserializeOwned>(
+    control_plane_url: &str,
+    path: &str,
+    runner_id: &str,
+    identity: &DeviceIdentity,
+) -> Result<T, String> {
+    let response = signed_request(
+        control_plane_url,
+        "GET",
+        path,
+        "X-MundusX-Runner-Id",
+        runner_id,
+        identity,
+        &serde_json::json!({}),
+    )?;
+    parse_json_body(&response)
+}
+
+pub fn signed_runner_post_json_body<T: Serialize, R: DeserializeOwned>(
+    control_plane_url: &str,
+    path: &str,
+    runner_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<R, String> {
+    let response = signed_request(
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Runner-Id",
+        runner_id,
+        identity,
+        payload,
+    )?;
     parse_json_body(&response)
 }
 
@@ -131,11 +151,12 @@ fn signed_request<T: Serialize>(
     control_plane_url: &str,
     method: &str,
     path: &str,
-    node_id: &str,
+    identity_header: &str,
+    identity_id: &str,
     identity: &DeviceIdentity,
     payload: &T,
 ) -> Result<String, String> {
-    let endpoint = parse_http_endpoint(control_plane_url, path)?;
+    let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let body = if method == "GET" {
         String::new()
     } else {
@@ -143,33 +164,17 @@ fn signed_request<T: Serialize>(
     };
     let timestamp = unix_seconds_string();
     let message = format!("{method}\n{}\n{timestamp}\n{body}", endpoint.path);
-    let signature = identity.sign_hex(&message).map_err(|error| error.to_string())?;
-    let request = if method == "GET" {
-        format!(
-            "GET {} HTTP/1.1\r\nHost: {}:{}\r\nX-OpenGPU-Node-Id: {}\r\nX-OpenGPU-Public-Key: {}\r\nX-OpenGPU-Timestamp: {}\r\nX-OpenGPU-Signature: {}\r\nConnection: close\r\n\r\n",
-            endpoint.path,
-            endpoint.host,
-            endpoint.port,
-            node_id,
-            identity.public_key_hex,
-            timestamp,
-            signature
-        )
-    } else {
-        format!(
-            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-OpenGPU-Node-Id: {}\r\nX-OpenGPU-Public-Key: {}\r\nX-OpenGPU-Timestamp: {}\r\nX-OpenGPU-Signature: {}\r\nConnection: close\r\n\r\n{}",
-            endpoint.path,
-            endpoint.host,
-            endpoint.port,
-            body.len(),
-            node_id,
-            identity.public_key_hex,
-            timestamp,
-            signature,
-            body
-        )
-    };
-    send_request(&endpoint.host, endpoint.port, &request)
+    let signature = identity
+        .sign_hex(&message)
+        .map_err(|error| error.to_string())?;
+    let headers = vec![
+        (identity_header, identity_id.to_string()),
+        ("X-MundusX-Public-Key", identity.public_key_hex.clone()),
+        ("X-MundusX-Timestamp", timestamp),
+        ("X-MundusX-Signature", signature),
+    ];
+    let payload = if method == "GET" { None } else { Some(body) };
+    send_request(method, &endpoint.url, headers, payload)
 }
 
 fn unix_seconds_string() -> String {
@@ -184,19 +189,116 @@ fn parse_json_body<T: DeserializeOwned>(response: &str) -> Result<T, String> {
     let body = response
         .split_once("\r\n\r\n")
         .map(|(_, body)| body)
-        .unwrap_or_default();
+        .unwrap_or(response);
     serde_json::from_str(body).map_err(|error| error.to_string())
 }
 
-fn send_request(host: &str, port: u16, request: &str) -> Result<String, String> {
-    let mut stream =
-        TcpStream::connect((host, port)).map_err(|error| format!("connect failed: {error}"))?;
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| format!("write failed: {error}"))?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|error| format!("read failed: {error}"))?;
-    Ok(response)
+fn request_timeout() -> Duration {
+    std::env::var("OPENGPU_HTTP_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(5))
+}
+
+fn control_plane_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(code, response) => {
+            let body = response
+                .into_string()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if body.is_empty() {
+                format!("HTTP {code}")
+            } else {
+                format!("HTTP {code}: {body}")
+            }
+        }
+        ureq::Error::Transport(error) => format!("transport failed: {error}"),
+    }
+}
+
+fn send_request(
+    method: &str,
+    url: &str,
+    headers: Vec<(&str, String)>,
+    body: Option<String>,
+) -> Result<String, String> {
+    let timeout = request_timeout();
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let mut request = match method {
+        "GET" => agent.get(url),
+        "POST" => agent.post(url),
+        other => return Err(format!("unsupported HTTP method `{other}`")),
+    };
+    for (name, value) in headers {
+        request = request.set(name, &value);
+    }
+    if body.is_some() {
+        request = request.set("Content-Type", "application/json");
+    }
+
+    let response = match body {
+        Some(body) => request.send_string(&body).map_err(control_plane_error)?,
+        None => request.call().map_err(control_plane_error)?,
+    };
+    let status = response.status();
+    let reason = response.status_text().to_string();
+    let response_body = response.into_string().map_err(|error| error.to_string())?;
+    Ok(format!("HTTP/1.1 {status} {reason}\r\n\r\n{response_body}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{control_plane_endpoint, request_timeout};
+    use std::env;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn control_plane_endpoint_accepts_https_and_local_http() {
+        let hosted = control_plane_endpoint("https://uat.mundusx.ai", "/v1/register")
+            .expect("hosted endpoint");
+        assert_eq!(hosted.url, "https://uat.mundusx.ai/v1/register");
+        assert_eq!(hosted.path, "/v1/register");
+
+        let local = control_plane_endpoint("http://127.0.0.1:8787/", "/v1/heartbeat")
+            .expect("local endpoint");
+        assert_eq!(local.url, "http://127.0.0.1:8787/v1/heartbeat");
+        assert_eq!(local.path, "/v1/heartbeat");
+    }
+
+    #[test]
+    fn control_plane_endpoint_rejects_invalid_urls_and_paths() {
+        assert!(control_plane_endpoint("uat.mundusx.ai", "/v1/register").is_err());
+        assert!(control_plane_endpoint("ftp://uat.mundusx.ai", "/v1/register").is_err());
+        assert!(control_plane_endpoint("https://uat.mundusx.ai", "v1/register").is_err());
+    }
+
+    #[test]
+    fn request_timeout_uses_env_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        env::set_var("OPENGPU_HTTP_TIMEOUT_MS", "25");
+        let timeout = request_timeout();
+        env::remove_var("OPENGPU_HTTP_TIMEOUT_MS");
+
+        assert_eq!(timeout, Duration::from_millis(25));
+    }
+
+    #[test]
+    fn request_timeout_ignores_invalid_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        env::set_var("OPENGPU_HTTP_TIMEOUT_MS", "bad");
+        let timeout = request_timeout();
+        env::remove_var("OPENGPU_HTTP_TIMEOUT_MS");
+
+        assert_eq!(timeout, Duration::from_secs(5));
+    }
 }

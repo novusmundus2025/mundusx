@@ -20,11 +20,16 @@ These pieces already exist in the current local prototype and should be treated 
 - dashboard preview
 - contributor portal preview
 - requestor API adapter
+- requestor API completion
+  - documented `GET /v1/models` contract
+  - documented streaming response contract
+  - documented retry / timeout / idempotency rules
 - credits ledger
 - onboarding flow
 - local install page preview
 - local docs preview
 - local release preview helper
+- public release hosting and distribution mirror
 - localhost smoke test
 - release packaging checks
 - signed release manifest flow
@@ -39,17 +44,12 @@ These are the remaining steps before the product feels public, polished, and dis
 
 - public install endpoint
 - public docs site
-- public release hosting and distribution
 - package manager distribution
   - Homebrew tap or formula
   - WinGet package
 - contributor earnings portal polish
   - searchable, paginated job history
   - payout / withdrawal history
-- requestor API completion
-  - `GET /v1/models`
-  - streaming responses
-  - retry / timeout / idempotency rules
 - contributor onboarding polish
 - branding and naming cleanup
 - production observability and release monitoring
@@ -79,9 +79,9 @@ These are the larger ecosystem pieces needed if multiple operator companies and 
 
 The current local prototype still uses the `opengpu` CLI and route names because that is what the repo already implements and tests.
 
-`NovusX` is the user-facing brand for the product and the local UI surfaces.
+`MundusX` is the user-facing brand for the product and the local UI surfaces.
 
-If the binary family is renamed later, `novusx` can become the command name too, but that should be an intentional compatibility pass rather than an incidental change.
+If the binary family is renamed later, `mundusx` can become the command name too, but that should be an intentional compatibility pass rather than an incidental change.
 
 ## How To Use This Doc
 

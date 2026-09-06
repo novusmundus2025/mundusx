@@ -1,0 +1,10 @@
+[package]
+name = "mundusx-agent-skills"
+version = "0.1.28"
+edition = "2021"
+description = "Filesystem skill discovery for MundusX"
+license = "Apache-2.0"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
