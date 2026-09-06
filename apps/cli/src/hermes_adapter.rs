@@ -177,7 +177,9 @@ pub fn run(
         command
             .arg("-z")
             .arg(prompt)
-            .args(["-t", "coding", "--usage-file"])
+            // Match the embedded bridge: project tasks need both the coding
+            // tools and Hermes' native SKILL.md discovery/loading tools.
+            .args(["-t", "coding,skills", "--usage-file"])
             .arg(&usage_path);
         if let Some((base_url, token, model)) = model_runtime.as_ref() {
             command
@@ -301,6 +303,7 @@ pub fn run(
             "events": events,
             "tool_calls": result["tool_calls"],
             "turn_count": result["turn_count"],
+            "skills": result["skills"],
         }));
     }
     if !status.success() {
@@ -339,7 +342,14 @@ fn hermes_output_reports_model_failure(content: &str) -> bool {
 
 #[cfg(test)]
 mod output_tests {
-    use super::hermes_output_reports_model_failure;
+    use super::{hermes_output_reports_model_failure, STRUCTURED_BRIDGE};
+
+    #[test]
+    fn structured_bridge_enables_native_hermes_skills() {
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\", \"skills\"]"));
+        assert!(STRUCTURED_BRIDGE.contains("build_preloaded_skills_prompt"));
+        assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
+    }
 
     #[test]
     fn classifies_retried_gateway_errors_as_failures() {
