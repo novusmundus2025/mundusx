@@ -409,9 +409,10 @@ mod output_tests {
 
     #[test]
     fn structured_bridge_enables_native_hermes_skills() {
-        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\", \"skills\"]"));
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\"]"));
         assert!(STRUCTURED_BRIDGE.contains("build_preloaded_skills_prompt"));
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
+        assert!(STRUCTURED_BRIDGE.contains("selected = [\"codebase-inspection\"]"));
     }
 
     #[test]
