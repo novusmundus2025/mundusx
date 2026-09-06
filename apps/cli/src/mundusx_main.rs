@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 mod chat_connector;
 mod hermes_adapter;
+mod project_model_proxy;
 
 const DEFAULT_AGENT_URL: &str = "http://127.0.0.1:11436";
 
@@ -312,6 +313,7 @@ fn run_with_runtime(
         &workspace,
         &data_dir(),
         approve_mutations,
+        None,
         None,
         None,
     )?;
