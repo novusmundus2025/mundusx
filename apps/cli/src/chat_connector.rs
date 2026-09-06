@@ -350,11 +350,15 @@ fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
 
 fn request_requires_verification(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
-    [
-        "test", "tests", "run them", "run it", "build", "compile", "lint",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
+    let words = lower
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    words
+        .iter()
+        .any(|word| matches!(*word, "test" | "tests" | "build" | "compile" | "lint"))
+        || lower.contains("run them")
+        || lower.contains("run it")
 }
 
 fn successful_verification(response: &Value) -> bool {
@@ -971,6 +975,7 @@ mod tests {
     fn requested_tests_require_a_successful_hermes_verification_event() {
         assert!(request_requires_verification("Add tests and run them"));
         assert!(!request_requires_verification("Create a README"));
+        assert!(!request_requires_verification("Use the latest package"));
         assert!(successful_verification(&serde_json::json!({
             "events": [{
                 "type": "tool_completed",
