@@ -143,11 +143,11 @@ fn open_remote_stream(
     connection_id: &str,
     mut body: Value,
 ) -> Result<ureq::Response, String> {
-    let request_id = body["request_id"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("chatcmpl-{}", Uuid::new_v4().simple()));
+    // Hermes may reuse its client request id for every model turn in one agent
+    // run. The control plane treats request ids as idempotency keys, so forwarding
+    // that value caused later tool turns to replay the first model decision. Give
+    // every HTTP model turn its own gateway id instead.
+    let request_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
     body["protocol"] = json!("mundusx-project-agent/v1");
     body["project_task_id"] = json!(task_id);
     body["connection_id"] = json!(connection_id);
@@ -256,5 +256,39 @@ mod tests {
         response.into_reader().read_to_string(&mut body).unwrap();
         receiver.join().unwrap();
         assert!(body.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn model_turns_receive_distinct_gateway_request_ids() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap().to_string();
+        let remote = format!("http://{address}/api/agent/model/v1");
+        let receiver = thread::spawn(move || {
+            let mut ids = Vec::new();
+            for _ in 0..2 {
+                let mut request = server.recv().unwrap();
+                let mut bytes = Vec::new();
+                request.as_reader().read_to_end(&mut bytes).unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                ids.push(body["request_id"].as_str().unwrap().to_string());
+                request
+                    .respond(Response::from_string("data: [DONE]\n\n"))
+                    .unwrap();
+            }
+            ids
+        });
+        for _ in 0..2 {
+            open_remote_stream(
+                &remote,
+                "secret",
+                "task",
+                "connection",
+                json!({"request_id":"reused-by-hermes","messages":[],"tools":[]}),
+            )
+            .unwrap();
+        }
+        let ids = receiver.join().unwrap();
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids.iter().all(|id| id != "reused-by-hermes"));
     }
 }
