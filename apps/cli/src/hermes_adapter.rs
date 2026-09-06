@@ -375,9 +375,22 @@ fn hermes_output_reports_model_failure(content: &str) -> bool {
         })
 }
 
+pub fn is_retryable_model_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("application failed to respond")
+        || lower.contains("model gateway returned 5")
+        || lower.contains("api call failed after")
+        || lower.contains("model turn did not respond")
+        || lower.contains("project model job exhausted recovery attempts")
+        || lower.contains("connection reset")
+        || lower.contains("connection closed")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+}
+
 #[cfg(test)]
 mod output_tests {
-    use super::{hermes_output_reports_model_failure, STRUCTURED_BRIDGE};
+    use super::{hermes_output_reports_model_failure, is_retryable_model_failure, STRUCTURED_BRIDGE};
 
     #[test]
     fn structured_bridge_enables_native_hermes_skills() {
@@ -395,5 +408,15 @@ mod output_tests {
         assert!(!hermes_output_reports_model_failure(
             "Created files and verified the CLI."
         ));
+    }
+
+    #[test]
+    fn classifies_only_transient_model_failures_for_full_harness_resume() {
+        assert!(is_retryable_model_failure(
+            "HTTP 502: model gateway returned 502: Application failed to respond"
+        ));
+        assert!(is_retryable_model_failure("MundusX model turn did not respond within 3 minutes"));
+        assert!(!is_retryable_model_failure("Hermes runtime is not installed"));
+        assert!(!is_retryable_model_failure("permission denied"));
     }
 }
