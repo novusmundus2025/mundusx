@@ -515,6 +515,7 @@ fn enrich_model_capability(
     }
     if declared("tool") {
         tasks.push("tool_use".to_string());
+        tasks.push("native_tool_calls_v1".to_string());
         roles.push(NodeRole::ToolUse);
     }
     if declared("vision") {
@@ -701,6 +702,7 @@ fn build_scheduler_capabilities(
     let mut supported_tools = capabilities.supported_tools.clone();
     if supports_tools {
         supported_tools.push("tool_use".to_string());
+        supported_tools.push("native_tool_calls_v1".to_string());
     }
     if roles.contains(&NodeRole::Coding) {
         supported_tools.push("repository".to_string());
