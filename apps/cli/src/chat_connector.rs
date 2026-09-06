@@ -8,6 +8,8 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
+
+const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -559,6 +561,38 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let workspace_relative = task["workspace_relative"].as_str();
     let task_workspace =
         bounded_task_workspace(&options.workspace, workspace_relative, allow_mutations)?;
+
+    // Project creation is a filesystem operation, not a model turn.  Keeping it
+    // in the connector protocol makes the browser wait for proof that the
+    // directory exists instead of optimistically creating browser-only state.
+    if prompt == PROJECT_INITIALIZE_PROMPT {
+        post_task_events(
+            options,
+            &task_id,
+            vec![json!({
+                "sequence": 1,
+                "event": {
+                    "type": "project_initialized",
+                    "summary": "Project folder created on this computer",
+                    "metadata": {"workspace": task_workspace.display().to_string()}
+                }
+            })],
+        )?;
+        post_remote(
+            &options.chat_url,
+            &options.token,
+            &format!("/api/agent/connector/tasks/{task_id}/complete"),
+            json!({"status": "completed", "result": {
+                "content": "Project folder is ready",
+                "session_id": session_id,
+                "workspace": task_workspace.display().to_string(),
+                "changed_files": [],
+                "skills": [],
+                "verified": true
+            }}),
+        )?;
+        return Ok(());
+    }
     let before_files = workspace_snapshot(&task_workspace);
     post_task_events(
         options,
@@ -631,11 +665,13 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         streamed_event_sequence += 1;
         let _ = post_task_events(options, &task_id, vec![mapped]);
     };
-    let mut response = if runtime == "hermes" {
-        let mut result = Err("Hermes did not start".to_string());
-        for attempt in 0..4 {
-            result = super::hermes_adapter::run(
-                &bounded_prompt,
+    let mut run_hermes_with_recovery = |initial_prompt: &str| {
+        const HARNESS_RECOVERY_ATTEMPTS: usize = 12;
+        let mut resume_prompt = initial_prompt.to_string();
+        let mut last_error = String::new();
+        for attempt in 0..HARNESS_RECOVERY_ATTEMPTS {
+            match super::hermes_adapter::run(
+                &resume_prompt,
                 &session_id,
                 &task_workspace,
                 &super::data_dir(),
@@ -648,30 +684,60 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     connection_id,
                 )),
                 Some(&mut stream_hermes_event),
-            );
-            let retry = result
-                .as_ref()
-                .err()
-                .map(|error| transient_agent_failure(error))
-                .unwrap_or(false);
-            if !retry || attempt == 3 || stop.load(Ordering::Relaxed) {
-                break;
-            }
-            let _ = post_task_events(
-                options,
-                &task_id,
-                vec![json!({
-                    "sequence": 10 + attempt,
-                    "event": {
-                        "type": "model_turn_retrying",
-                        "summary": "The model service was interrupted; Hermes is resuming automatically",
-                        "metadata": {"attempt": attempt + 2}
+            ) {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if super::hermes_adapter::is_retryable_model_failure(&error)
+                        && attempt + 1 < HARNESS_RECOVERY_ATTEMPTS
+                        && !stop.load(Ordering::Relaxed) =>
+                {
+                    // Preserve completed tool turns across transient gateway
+                    // failures. Rebuild only when the provider says the saved
+                    // conversation itself is invalid or over its context limit.
+                    let rebuilding =
+                        super::hermes_adapter::should_rebuild_session_after_failure(&error);
+                    last_error = error;
+                    if rebuilding {
+                        super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
                     }
-                })],
-            );
-            thread::sleep(Duration::from_secs(2 * (attempt + 1) as u64));
+                    let delay_seconds = (2_u64.pow(attempt as u32)).min(30);
+                    let _ = post_task_events(
+                        options,
+                        &task_id,
+                        vec![json!({
+                            "sequence": 10_000 + attempt,
+                            "event": {
+                                "type": "model_turn_recovering",
+                                "summary": if rebuilding {
+                                    format!("EHDA rejected the saved context; Hermes is rebuilding it automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                } else {
+                                    format!("EHDA is temporarily unavailable; Hermes preserved its tool progress and will continue automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                },
+                                "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds, "session_preserved": !rebuilding}
+                            }
+                        })],
+                    );
+                    for _ in 0..delay_seconds {
+                        if stop.load(Ordering::Relaxed) {
+                            return Err("Hermes task was cancelled".to_string());
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                    resume_prompt = if rebuilding {
+                        format!(
+                            "Resume the existing Hermes project task after rebuilding an invalid model context. Continue from the files already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
+                        )
+                    } else {
+                        "Continue the interrupted project task from the preserved Hermes session and existing tool results. Do not restart or repeat completed work.".to_string()
+                    };
+                }
+                Err(error) => return Err(error),
+            }
         }
-        result
+        Err(last_error)
+    };
+    let mut response = if runtime == "hermes" {
+        run_hermes_with_recovery(&bounded_prompt)
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
             Ok(value) => Ok(value),
@@ -712,21 +778,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             let correction = format!(
                 "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
             );
-            response = super::hermes_adapter::run(
-                &correction,
-                &session_id,
-                &task_workspace,
-                &super::data_dir(),
-                true,
-                Some(stop.as_ref()),
-                Some((
-                    &format!("{}/api/agent/model/v1", options.chat_url),
-                    &options.token,
-                    &task_id,
-                    connection_id,
-                )),
-                Some(&mut stream_hermes_event),
-            );
+            response = run_hermes_with_recovery(&correction);
         }
         if response.is_ok() && workspace_snapshot(&task_workspace) == before_files {
             response = Err(
@@ -865,6 +917,18 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             Ok(payload) if !payload["task"].is_null() => {
                 if let Err(error) = run_task(&options, &connection_id, &payload["task"]) {
                     eprintln!("local task failed: {error}");
+                    // Failures during workspace validation happen before
+                    // run_task's normal completion path. Report them so the
+                    // server does not lease and reclaim the same poisoned task
+                    // forever while Chat keeps displaying "working".
+                    if let Some(task_id) = payload["task"]["task_id"].as_str() {
+                        let _ = post_remote(
+                            &options.chat_url,
+                            &options.token,
+                            &format!("/api/agent/connector/tasks/{task_id}/complete"),
+                            json!({"status": "failed", "error": error}),
+                        );
+                    }
                 }
             }
             Ok(_) => thread::sleep(Duration::from_secs(2)),
