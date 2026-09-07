@@ -1824,8 +1824,81 @@ fn clear_runtime_environment() {
     std::env::remove_var("OPENGPU_VLLM_URL");
 }
 
+/// Verify native OpenAI tool calling against the contributed runtime itself.
+/// Runtime metrics are only a hint: some vLLM versions do not expose their
+/// tool-parser metric until after the first tool request has been served.
+fn refresh_contributed_tool_capability(config: &mut AgentConfig) -> bool {
+    let Some(cluster) = config.contributed_cluster.as_mut() else {
+        return false;
+    };
+    let Some(model) = cluster
+        .model
+        .clone()
+        .or_else(|| cluster.models.first().cloned())
+    else {
+        return false;
+    };
+    let payload = serde_json::json!({
+        "model": model,
+        "stream": false,
+        "max_tokens": 32,
+        "messages": [{
+            "role": "user",
+            "content": "Call mundusx_capability_probe exactly once with an empty object."
+        }],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "mundusx_capability_probe",
+                "description": "A side-effect-free runtime capability probe.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }
+            }
+        }],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "mundusx_capability_probe"}
+        }
+    });
+    let supported = ureq::post(&format!("{}/v1/chat/completions", cluster.base_url))
+        .timeout(Duration::from_secs(15))
+        .send_json(payload)
+        .ok()
+        .filter(|response| response.status() < 400)
+        .and_then(|response| response.into_json::<serde_json::Value>().ok())
+        .is_some_and(|body| native_tool_response_supported(&body));
+    // A startup timeout is not proof that a capability disappeared. Preserve a
+    // previous successful verification and only promote newly verified support.
+    if supported && !cluster.supports_tool_calls {
+        cluster.supports_tool_calls = true;
+        true
+    } else {
+        false
+    }
+}
+
+fn native_tool_response_supported(body: &serde_json::Value) -> bool {
+    body.pointer("/choices/0/message/tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("mundusx_capability_probe")
+            })
+        })
+}
+
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
-    let config = load_config_or_exit();
+    let mut config = load_config_or_exit();
+    if refresh_contributed_tool_capability(&mut config) {
+        if let Err(error) = save_agent_config(&config) {
+            eprintln!("failed to persist contributed tool capability: {error}");
+        }
+    }
     let identity = load_identity_or_exit();
     let runtime_parallel_slots = worker_readiness(&config).0.parallel_slots;
     let mut persistent_runtime = if json || !should_keep_runtime_warm(&config) {
@@ -3056,5 +3129,37 @@ mod tests {
             Some("no active model is configured")
         );
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn native_tool_probe_accepts_a_real_openai_tool_call() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {
+                            "name": "mundusx_capability_probe",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        assert!(native_tool_response_supported(&body));
+    }
+
+    #[test]
+    fn native_tool_probe_rejects_tool_shaped_plain_text() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "{\"name\":\"mundusx_capability_probe\",\"arguments\":{}}"
+                }
+            }]
+        });
+
+        assert!(!native_tool_response_supported(&body));
     }
 }
