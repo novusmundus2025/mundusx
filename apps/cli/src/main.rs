@@ -65,7 +65,7 @@ use model_catalog::{
     selection_for, ModelOption,
 };
 
-const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://mundusx.ai";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -4683,7 +4683,7 @@ fn read_private_control_plane_url() -> String {
         if is_valid_control_plane_url(url) {
             return url.to_string();
         }
-        println!("Enter a full URL, for example http://127.0.0.1:8787 or https://uat.mundusx.ai");
+        println!("Enter a full URL, for example http://127.0.0.1:8787 or https://mundusx.ai");
     }
 }
 
