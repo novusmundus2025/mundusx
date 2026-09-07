@@ -105,7 +105,7 @@ impl Default for AgentConfig {
             paused: false,
             backend_preference: Backend::Auto,
             contribution_percent: 0,
-            control_plane_url: "https://uat.mundusx.ai".to_string(),
+            control_plane_url: "https://mundusx.ai".to_string(),
             model_dir: None,
             active_model: None,
             models: Vec::new(),
