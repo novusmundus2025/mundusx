@@ -4,10 +4,45 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const CONNECTOR_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+static CONNECTOR_ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
+
+fn record_connector_activity() {
+    if let Some(activity) = CONNECTOR_ACTIVITY.get() {
+        if let Ok(mut last_activity) = activity.lock() {
+            *last_activity = Instant::now();
+        }
+    }
+}
+
+fn connector_stalled(idle: Duration) -> bool {
+    idle >= CONNECTOR_STALL_TIMEOUT
+}
+
+fn start_connector_watchdog() {
+    start_watchdog(CONNECTOR_STALL_TIMEOUT, Duration::from_secs(5));
+}
+
+fn start_watchdog(timeout: Duration, interval: Duration) {
+    let activity = CONNECTOR_ACTIVITY.get_or_init(|| Mutex::new(Instant::now()));
+    thread::spawn(move || loop {
+        thread::sleep(interval);
+        let stalled = activity
+            .lock()
+            .map(|last| last.elapsed() >= timeout)
+            .unwrap_or(true);
+        if stalled {
+            // Do not log here: blocked console/file output can itself cause the
+            // stall. Exiting lets the tray relaunch with the saved credentials.
+            std::process::exit(75);
+        }
+    });
+}
 
 const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 use uuid::Uuid;
@@ -202,13 +237,18 @@ fn connection_id(data_dir: &Path, regenerate: bool) -> Result<String, String> {
 }
 
 fn post_remote(url: &str, token: &str, path: &str, body: Value) -> Result<Value, String> {
-    ureq::post(&format!("{url}{path}"))
+    record_connector_activity();
+    let result = ureq::post(&format!("{url}{path}"))
         .timeout(Duration::from_secs(30))
         .set("Authorization", &format!("Bearer {token}"))
         .send_json(body)
         .map_err(|error| format!("Chat connector request failed: {error}"))?
         .into_json()
-        .map_err(|error| format!("Chat connector returned invalid JSON: {error}"))
+        .map_err(|error| format!("Chat connector returned invalid JSON: {error}"));
+    // Retryable failures still prove that the loop is responsive. Task
+    // heartbeats use this same path, so long-running work stays alive.
+    record_connector_activity();
+    result
 }
 
 fn transient_agent_failure(error: &str) -> bool {
@@ -864,6 +904,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
         options.token = bootstrap_token(&options.chat_url, &options.device_name)?;
         save_token(data_dir, &options.chat_url, &options.token)?;
     }
+    start_connector_watchdog();
     let selected = super::selected_agent();
     if matches!(selected, super::AgentSelection::None) {
         return Err("no local agent is selected; choose one with `mundusx agent use native` or `mundusx agent use hermes` before connecting".to_string());
@@ -937,6 +978,48 @@ mod tests {
         successful_verification, transient_agent_failure, validate_chat_url, workspace_snapshot,
     };
     use std::fs;
+
+    #[test]
+    fn watchdog_allows_normal_requests_and_retries_but_detects_stalls() {
+        assert!(!super::connector_stalled(std::time::Duration::from_secs(
+            35
+        )));
+        assert!(!super::connector_stalled(std::time::Duration::from_secs(
+            179
+        )));
+        assert!(super::connector_stalled(std::time::Duration::from_secs(
+            180
+        )));
+        assert!(super::connector_stalled(std::time::Duration::from_secs(
+            600
+        )));
+    }
+
+    #[test]
+    fn watchdog_exits_stalled_process_but_preserves_active_heartbeats() {
+        const MODE: &str = "MUNDUSX_WATCHDOG_TEST_MODE";
+        if let Ok(mode) = std::env::var(MODE) {
+            super::start_watchdog(
+                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(10),
+            );
+            if mode == "active" {
+                for _ in 0..50 {
+                    super::record_connector_activity();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                std::process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            panic!("stalled connector was not stopped");
+        }
+        for (mode, expected) in [("stalled", 75), ("active", 0)] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "chat_connector::tests::watchdog_exits_stalled_process_but_preserves_active_heartbeats"])
+                .env(MODE, mode).status().unwrap();
+            assert_eq!(status.code(), Some(expected));
+        }
+    }
 
     #[test]
     fn connector_requires_secure_remote_transport() {
