@@ -7,6 +7,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
+use std::io::Read;
+
+const MAX_MODEL_BODY_BYTES: u64 = 32 * 1024 * 1024;
+
+fn proxy_error_status(error: &str) -> u16 {
+    if error.starts_with("model gateway returned 413:") || error == "model request exceeds 32 MiB transport limit" { return 413; }
+    if error.starts_with("model gateway returned 422:") { return 422; }
+    if error.starts_with("model gateway returned 400:") || error.starts_with("invalid json body:")
+        || error.to_ascii_lowercase().contains("maximum context length") || error.contains("context_length_exceeded") { return 400; }
+    502
+}
 
 pub struct ProjectModelProxy {
     address: String,
@@ -54,7 +65,7 @@ impl ProjectModelProxy {
                     continue;
                 }
                 if request.method() == &Method::Get && request.url() == "/v1/models" {
-                    let _ = request.respond(json_response(StatusCode(200), json!({"object":"list","data":[{"id":"mundusx-agnostic","object":"model","owned_by":"mundusx"}]})));
+                    let _ = request.respond(json_response(StatusCode(200), json!({"object":"list","data":[{"id":"mundusx-agnostic","object":"model","owned_by":"mundusx","context_length":131072,"max_model_len":131072}]})));
                     continue;
                 }
                 if request.method() != &Method::Post || request.url() != "/v1/chat/completions" {
@@ -67,10 +78,12 @@ impl ProjectModelProxy {
                 let mut bytes = Vec::new();
                 let result = request
                     .as_reader()
+                    .take(MAX_MODEL_BODY_BYTES + 1)
                     .read_to_end(&mut bytes)
                     .map_err(|error| error.to_string())
                     .and_then(|_| {
-                        serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())
+                        if bytes.len() as u64 > MAX_MODEL_BODY_BYTES { return Err("model request exceeds 32 MiB transport limit".to_string()); }
+                        serde_json::from_slice::<Value>(&bytes).map_err(|error| format!("invalid json body: {error}"))
                     })
                     .and_then(|body| {
                         execute_remote_job(
@@ -88,7 +101,7 @@ impl ProjectModelProxy {
                     }
                     Err(error) => {
                         let _ = request.respond(json_response(
-                            StatusCode(502),
+                            StatusCode(proxy_error_status(&error)),
                             json!({"error":{"message":error}}),
                         ));
                     }
@@ -273,6 +286,14 @@ fn sse_response(completion: Value) -> Response<std::io::Cursor<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_errors_are_not_retryable_outages() {
+        assert_eq!(proxy_error_status("model gateway returned 413: too large"), 413);
+        assert_eq!(proxy_error_status("maximum context length is 131072"), 400);
+        assert_eq!(proxy_error_status("model gateway returned 422: invalid request"), 422);
+        assert_eq!(proxy_error_status("connection timed out"), 502);
+    }
     use std::io::Read;
 
     #[test]
