@@ -239,7 +239,24 @@ fn transient_agent_failure(error: &str) -> bool {
 }
 
 fn requires_project_file_change(prompt: &str) -> bool {
-    let value = prompt.to_ascii_lowercase();
+    let value = prompt.trim().to_ascii_lowercase();
+    let advisory_opening = [
+        "what ", "why ", "how ", "should ", "do i ", "does ", "is ", "are ",
+        "explain ", "compare ", "recommend ", "can i ask", "could i ask", "may i ask",
+        "can i know", "could i know", "may i know",
+    ]
+    .iter()
+    .any(|prefix| value.starts_with(prefix));
+    let advisory_change_question = [
+        "what are the changes", "what changes would", "what changes will", "what changes do",
+        "which changes would", "which files would", "what files would", "what steps would",
+        "what requirements would",
+    ]
+    .iter()
+    .any(|phrase| value.contains(phrase));
+    if advisory_opening || advisory_change_question {
+        return false;
+    }
     [
         "create",
         "make",
@@ -978,6 +995,12 @@ mod tests {
         assert!(!requires_project_file_change("run the existing tests"));
         assert!(!requires_project_file_change(
             "explain how this module works"
+        ));
+        assert!(!requires_project_file_change(
+            "Can I ask you something if I wanted to create also an enrollment system here? what are the changes that we need?"
+        ));
+        assert!(requires_project_file_change(
+            "Can you create an enrollment system here?"
         ));
     }
 
