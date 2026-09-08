@@ -4,10 +4,47 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const CONNECTOR_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+static CONNECTOR_ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
+
+fn record_connector_activity() {
+    if let Some(activity) = CONNECTOR_ACTIVITY.get() {
+        if let Ok(mut last_activity) = activity.lock() {
+            *last_activity = Instant::now();
+        }
+    }
+}
+
+fn connector_stalled(idle: Duration) -> bool {
+    idle >= CONNECTOR_STALL_TIMEOUT
+}
+
+fn start_connector_watchdog() {
+    start_watchdog(CONNECTOR_STALL_TIMEOUT, Duration::from_secs(5));
+}
+
+fn start_watchdog(timeout: Duration, interval: Duration) {
+    let activity = CONNECTOR_ACTIVITY.get_or_init(|| Mutex::new(Instant::now()));
+    thread::spawn(move || loop {
+        thread::sleep(interval);
+        let stalled = activity
+            .lock()
+            .map(|last| last.elapsed() >= timeout)
+            .unwrap_or(true);
+        if stalled {
+            // Do not log here: blocked console/file output can itself cause the
+            // stall. Exiting lets the tray relaunch with the saved credentials.
+            std::process::exit(75);
+        }
+    });
+}
+
+const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -200,13 +237,18 @@ fn connection_id(data_dir: &Path, regenerate: bool) -> Result<String, String> {
 }
 
 fn post_remote(url: &str, token: &str, path: &str, body: Value) -> Result<Value, String> {
-    ureq::post(&format!("{url}{path}"))
+    record_connector_activity();
+    let result = ureq::post(&format!("{url}{path}"))
         .timeout(Duration::from_secs(30))
         .set("Authorization", &format!("Bearer {token}"))
         .send_json(body)
         .map_err(|error| format!("Chat connector request failed: {error}"))?
         .into_json()
-        .map_err(|error| format!("Chat connector returned invalid JSON: {error}"))
+        .map_err(|error| format!("Chat connector returned invalid JSON: {error}"));
+    // Retryable failures still prove that the loop is responsive. Task
+    // heartbeats use this same path, so long-running work stays alive.
+    record_connector_activity();
+    result
 }
 
 fn transient_agent_failure(error: &str) -> bool {
@@ -559,6 +601,38 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let workspace_relative = task["workspace_relative"].as_str();
     let task_workspace =
         bounded_task_workspace(&options.workspace, workspace_relative, allow_mutations)?;
+
+    // Project creation is a filesystem operation, not a model turn.  Keeping it
+    // in the connector protocol makes the browser wait for proof that the
+    // directory exists instead of optimistically creating browser-only state.
+    if prompt == PROJECT_INITIALIZE_PROMPT {
+        post_task_events(
+            options,
+            &task_id,
+            vec![json!({
+                "sequence": 1,
+                "event": {
+                    "type": "project_initialized",
+                    "summary": "Project folder created on this computer",
+                    "metadata": {"workspace": task_workspace.display().to_string()}
+                }
+            })],
+        )?;
+        post_remote(
+            &options.chat_url,
+            &options.token,
+            &format!("/api/agent/connector/tasks/{task_id}/complete"),
+            json!({"status": "completed", "result": {
+                "content": "Project folder is ready",
+                "session_id": session_id,
+                "workspace": task_workspace.display().to_string(),
+                "changed_files": [],
+                "skills": [],
+                "verified": true
+            }}),
+        )?;
+        return Ok(());
+    }
     let before_files = workspace_snapshot(&task_workspace);
     post_task_events(
         options,
@@ -631,11 +705,13 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         streamed_event_sequence += 1;
         let _ = post_task_events(options, &task_id, vec![mapped]);
     };
-    let mut response = if runtime == "hermes" {
-        let mut result = Err("Hermes did not start".to_string());
-        for attempt in 0..4 {
-            result = super::hermes_adapter::run(
-                &bounded_prompt,
+    let mut run_hermes_with_recovery = |initial_prompt: &str| {
+        const HARNESS_RECOVERY_ATTEMPTS: usize = 6;
+        let mut resume_prompt = initial_prompt.to_string();
+        let mut last_error = String::new();
+        for attempt in 0..HARNESS_RECOVERY_ATTEMPTS {
+            match super::hermes_adapter::run(
+                &resume_prompt,
                 &session_id,
                 &task_workspace,
                 &super::data_dir(),
@@ -648,30 +724,49 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     connection_id,
                 )),
                 Some(&mut stream_hermes_event),
-            );
-            let retry = result
-                .as_ref()
-                .err()
-                .map(|error| transient_agent_failure(error))
-                .unwrap_or(false);
-            if !retry || attempt == 3 || stop.load(Ordering::Relaxed) {
-                break;
-            }
-            let _ = post_task_events(
-                options,
-                &task_id,
-                vec![json!({
-                    "sequence": 10 + attempt,
-                    "event": {
-                        "type": "model_turn_retrying",
-                        "summary": "The model service was interrupted; Hermes is resuming automatically",
-                        "metadata": {"attempt": attempt + 2}
+            ) {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if super::hermes_adapter::is_retryable_model_failure(&error)
+                        && attempt + 1 < HARNESS_RECOVERY_ATTEMPTS
+                        && !stop.load(Ordering::Relaxed) =>
+                {
+                    last_error = error;
+                    // A failed model turn may leave Hermes' provider transcript
+                    // over-sized or malformed. Reusing that same transcript makes
+                    // every process-level retry deterministic. Keep the project
+                    // files, but rebuild agent context from the original request.
+                    super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
+                    let delay_seconds = (2_u64.pow(attempt as u32)).min(30);
+                    let _ = post_task_events(
+                        options,
+                        &task_id,
+                        vec![json!({
+                            "sequence": 10_000 + attempt,
+                            "event": {
+                                "type": "model_turn_recovering",
+                                "summary": format!("EHDA interrupted the model turn; Hermes is rebuilding context automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS),
+                                "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds}
+                            }
+                        })],
+                    );
+                    for _ in 0..delay_seconds {
+                        if stop.load(Ordering::Relaxed) {
+                            return Err("Hermes task was cancelled".to_string());
+                        }
+                        thread::sleep(Duration::from_secs(1));
                     }
-                })],
-            );
-            thread::sleep(Duration::from_secs(2 * (attempt + 1) as u64));
+                    resume_prompt = format!(
+                        "Resume the existing Hermes project task after a temporary model-service interruption. Continue from the files and tool results already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         }
-        result
+        Err(last_error)
+    };
+    let mut response = if runtime == "hermes" {
+        run_hermes_with_recovery(&bounded_prompt)
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
             Ok(value) => Ok(value),
@@ -712,21 +807,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             let correction = format!(
                 "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
             );
-            response = super::hermes_adapter::run(
-                &correction,
-                &session_id,
-                &task_workspace,
-                &super::data_dir(),
-                true,
-                Some(stop.as_ref()),
-                Some((
-                    &format!("{}/api/agent/model/v1", options.chat_url),
-                    &options.token,
-                    &task_id,
-                    connection_id,
-                )),
-                Some(&mut stream_hermes_event),
-            );
+            response = run_hermes_with_recovery(&correction);
         }
         if response.is_ok() && workspace_snapshot(&task_workspace) == before_files {
             response = Err(
@@ -823,6 +904,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
         options.token = bootstrap_token(&options.chat_url, &options.device_name)?;
         save_token(data_dir, &options.chat_url, &options.token)?;
     }
+    start_connector_watchdog();
     let selected = super::selected_agent();
     if matches!(selected, super::AgentSelection::None) {
         return Err("no local agent is selected; choose one with `mundusx agent use native` or `mundusx agent use hermes` before connecting".to_string());
@@ -865,6 +947,18 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             Ok(payload) if !payload["task"].is_null() => {
                 if let Err(error) = run_task(&options, &connection_id, &payload["task"]) {
                     eprintln!("local task failed: {error}");
+                    // Failures during workspace validation happen before
+                    // run_task's normal completion path. Report them so the
+                    // server does not lease and reclaim the same poisoned task
+                    // forever while Chat keeps displaying "working".
+                    if let Some(task_id) = payload["task"]["task_id"].as_str() {
+                        let _ = post_remote(
+                            &options.chat_url,
+                            &options.token,
+                            &format!("/api/agent/connector/tasks/{task_id}/complete"),
+                            json!({"status": "failed", "error": error}),
+                        );
+                    }
                 }
             }
             Ok(_) => thread::sleep(Duration::from_secs(2)),
@@ -884,6 +978,48 @@ mod tests {
         successful_verification, transient_agent_failure, validate_chat_url, workspace_snapshot,
     };
     use std::fs;
+
+    #[test]
+    fn watchdog_allows_normal_requests_and_retries_but_detects_stalls() {
+        assert!(!super::connector_stalled(std::time::Duration::from_secs(
+            35
+        )));
+        assert!(!super::connector_stalled(std::time::Duration::from_secs(
+            179
+        )));
+        assert!(super::connector_stalled(std::time::Duration::from_secs(
+            180
+        )));
+        assert!(super::connector_stalled(std::time::Duration::from_secs(
+            600
+        )));
+    }
+
+    #[test]
+    fn watchdog_exits_stalled_process_but_preserves_active_heartbeats() {
+        const MODE: &str = "MUNDUSX_WATCHDOG_TEST_MODE";
+        if let Ok(mode) = std::env::var(MODE) {
+            super::start_watchdog(
+                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(10),
+            );
+            if mode == "active" {
+                for _ in 0..50 {
+                    super::record_connector_activity();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                std::process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            panic!("stalled connector was not stopped");
+        }
+        for (mode, expected) in [("stalled", 75), ("active", 0)] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "chat_connector::tests::watchdog_exits_stalled_process_but_preserves_active_heartbeats"])
+                .env(MODE, mode).status().unwrap();
+            assert_eq!(status.code(), Some(expected));
+        }
+    }
 
     #[test]
     fn connector_requires_secure_remote_transport() {

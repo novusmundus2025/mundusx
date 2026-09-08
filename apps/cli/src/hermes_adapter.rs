@@ -111,6 +111,18 @@ fn save_session(data_dir: &Path, mundusx_id: &str, hermes_id: &str) -> Result<()
     .map_err(|error| format!("could not save Hermes session mapping: {error}"))
 }
 
+pub fn clear_session(data_dir: &Path, mundusx_id: &str) -> Result<(), String> {
+    let mut sessions = session_map(data_dir);
+    if sessions.remove(mundusx_id).is_none() {
+        return Ok(());
+    }
+    fs::write(
+        map_path(data_dir),
+        serde_json::to_vec_pretty(&sessions).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("could not clear failed Hermes session mapping: {error}"))
+}
+
 pub fn run(
     prompt: &str,
     mundusx_session_id: &str,
@@ -375,15 +387,32 @@ fn hermes_output_reports_model_failure(content: &str) -> bool {
         })
 }
 
+pub fn is_retryable_model_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("application failed to respond")
+        || lower.contains("model gateway returned 5")
+        || lower.contains("api call failed after")
+        || lower.contains("model turn did not respond")
+        || lower.contains("project model job exhausted recovery attempts")
+        || lower.contains("connection reset")
+        || lower.contains("connection closed")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+}
+
 #[cfg(test)]
 mod output_tests {
-    use super::{hermes_output_reports_model_failure, STRUCTURED_BRIDGE};
+    use super::{
+        clear_session, hermes_output_reports_model_failure, is_retryable_model_failure, save_session,
+        session_map, STRUCTURED_BRIDGE,
+    };
 
     #[test]
     fn structured_bridge_enables_native_hermes_skills() {
-        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\", \"skills\"]"));
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\"]"));
         assert!(STRUCTURED_BRIDGE.contains("build_preloaded_skills_prompt"));
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
+        assert!(STRUCTURED_BRIDGE.contains("selected = [\"codebase-inspection\"]"));
     }
 
     #[test]
@@ -395,5 +424,29 @@ mod output_tests {
         assert!(!hermes_output_reports_model_failure(
             "Created files and verified the CLI."
         ));
+    }
+
+    #[test]
+    fn classifies_only_transient_model_failures_for_full_harness_resume() {
+        assert!(is_retryable_model_failure(
+            "HTTP 502: model gateway returned 502: Application failed to respond"
+        ));
+        assert!(is_retryable_model_failure("MundusX model turn did not respond within 3 minutes"));
+        assert!(!is_retryable_model_failure("Hermes runtime is not installed"));
+        assert!(!is_retryable_model_failure("permission denied"));
+    }
+
+    #[test]
+    fn recovery_discards_only_the_failed_hermes_session() {
+        let data_dir = std::env::temp_dir().join(format!("mundusx-hermes-test-{}", uuid::Uuid::new_v4()));
+        save_session(&data_dir, "failed-task", "poisoned-session").expect("save failed task");
+        save_session(&data_dir, "healthy-task", "healthy-session").expect("save healthy task");
+
+        clear_session(&data_dir, "failed-task").expect("clear failed task");
+
+        let sessions = session_map(&data_dir);
+        assert!(!sessions.contains_key("failed-task"));
+        assert_eq!(sessions.get("healthy-task").map(String::as_str), Some("healthy-session"));
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }

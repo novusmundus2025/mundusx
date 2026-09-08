@@ -953,6 +953,13 @@ if ($trayIconExpected) {
   Write-Output "Installed tray icon to $finalTrayIcon"
   Write-Output "Tray icon checksum: $($trayIconExpected.ToLowerInvariant())"
 }
+$chatProtocolKey = 'HKCU:\Software\Classes\mundusx'
+New-Item -Path $chatProtocolKey -Force | Out-Null
+Set-Item -Path $chatProtocolKey -Value 'URL:MundusX'
+New-ItemProperty -Path $chatProtocolKey -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null
+New-Item -Path "$chatProtocolKey\shell\open\command" -Force | Out-Null
+Set-Item -Path "$chatProtocolKey\shell\open\command" -Value ('"' + $finalTray + '" --reconnect "%1"')
+Write-Output 'Configured browser Reconnect to open the installed MundusX app'
 if (-not $SkipTrayAutoStart) {
   $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
   New-Item -Path $runKey -Force | Out-Null
