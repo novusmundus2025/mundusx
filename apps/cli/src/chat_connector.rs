@@ -159,9 +159,9 @@ fn open_browser(url: &str) -> Result<(), String> {
     }
 }
 
-fn bootstrap_token(chat_url: &str, device_name: &str) -> Result<String, String> {
+fn bootstrap_token(chat_url: &str, device_name: &str, device_id: &str) -> Result<String, String> {
     let bootstrap: Value = ureq::post(&format!("{chat_url}/api/agent/bootstrap/sessions"))
-        .send_json(json!({"device_name": device_name}))
+        .send_json(json!({"device_name": device_name, "device_id": device_id}))
         .map_err(|e| format!("could not start browser approval: {e}"))?
         .into_json()
         .map_err(|e| format!("Chat returned invalid approval data: {e}"))?;
@@ -208,6 +208,36 @@ pub fn validate_chat_url(value: &str) -> Result<String, String> {
 
 fn connection_file(data_dir: &Path) -> PathBuf {
     data_dir.join("chat-connection.json")
+}
+
+// This installation identity survives credential rotation and account switches.
+// Upgrade in place by adopting the existing connection UUID when available.
+fn persistent_device_id(data_dir: &Path) -> Result<String, String> {
+    let path = connection_file(data_dir);
+    let mut value = fs::read_to_string(&path).ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(id) = value["device_id"].as_str().filter(|id| Uuid::parse_str(id).is_ok()) {
+        return Ok(id.to_string());
+    }
+    let id = value["connection_id"].as_str().filter(|id| Uuid::parse_str(id).is_ok())
+        .map(str::to_string).unwrap_or_else(|| Uuid::new_v4().to_string());
+    value["device_id"] = json!(id);
+    fs::create_dir_all(data_dir).map_err(|error| format!("could not create device directory: {error}"))?;
+    fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|error| format!("could not save device identity: {error}"))?;
+    Ok(id)
+}
+
+fn save_connection_id(data_dir: &Path, id: &str) -> Result<(), String> {
+    Uuid::parse_str(id).map_err(|_| "server returned an invalid connection identity".to_string())?;
+    let path = connection_file(data_dir);
+    let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)
+        .map_err(|e| format!("could not read connection identity: {e}"))?)
+        .map_err(|e| format!("could not parse connection identity: {e}"))?;
+    value["connection_id"] = json!(id);
+    fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|e| format!("could not save connection identity: {e}"))
 }
 
 fn connection_id(data_dir: &Path, regenerate: bool) -> Result<String, String> {
@@ -896,12 +926,13 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
     // Fresh browser approval may intentionally bind this installation to a
     // different account. Rotate the device identity so server-side ownership
     // protection does not mistake that authorized rebind for account theft.
-    let connection_id = connection_id(data_dir, options.reauthorize)?;
+    let device_id = persistent_device_id(data_dir)?;
+    let mut connection_id = connection_id(data_dir, options.reauthorize)?;
     if options.token.trim().is_empty() && !options.reauthorize {
         options.token = saved_token(data_dir, &options.chat_url).unwrap_or_default();
     }
     if options.token.trim().is_empty() {
-        options.token = bootstrap_token(&options.chat_url, &options.device_name)?;
+        options.token = bootstrap_token(&options.chat_url, &options.device_name, &device_id)?;
         save_token(data_dir, &options.chat_url, &options.token)?;
     }
     start_connector_watchdog();
@@ -913,12 +944,13 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
     if super::hermes_adapter::available() {
         runtimes.push("hermes");
     }
-    post_remote(
+    let registration = post_remote(
         &options.chat_url,
         &options.token,
         "/api/agent/connector/register",
         json!({
             "connection_id": connection_id,
+            "device_id": device_id,
             "device_name": options.device_name,
             "capabilities": {
                 "protocol": "mundusx-agent-bridge/v1",
@@ -929,6 +961,10 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             }
         }),
     )?;
+    if let Some(canonical) = registration["connection_id"].as_str() {
+        save_connection_id(data_dir, canonical)?;
+        connection_id = canonical.to_string();
+    }
     if options.authorize_only {
         eprintln!("MundusX Chat connection approved. The background app will keep it online.");
         return Ok(());
@@ -1062,6 +1098,25 @@ mod tests {
         assert!(bounded_task_workspace(&root, Some("../escape"), true).is_err());
         assert!(bounded_task_workspace(&root, Some("Bad-Name"), true).is_err());
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn device_identity_survives_reauthorization_and_adopts_existing_installation() {
+        use super::{persistent_device_id, save_token, save_connection_id, saved_token};
+        use uuid::Uuid;
+        let root = std::env::temp_dir().join(format!("mundusx-device-{}", Uuid::new_v4()));
+        let original = connection_id(&root, false).unwrap();
+        let device = persistent_device_id(&root).unwrap();
+        assert_eq!(device, original);
+        save_token(&root, "https://chat.mundusx.ai", "test-only-credential").unwrap();
+        let new_connection = connection_id(&root, true).unwrap();
+        assert_ne!(new_connection, original);
+        assert_eq!(persistent_device_id(&root).unwrap(), device);
+        save_connection_id(&root, &original).unwrap();
+        assert_eq!(connection_id(&root, false).unwrap(), original);
+        assert_eq!(persistent_device_id(&root).unwrap(), device);
+        assert_eq!(saved_token(&root, "https://chat.mundusx.ai").as_deref(), Some("test-only-credential"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
