@@ -80,7 +80,7 @@ def tool_activity(name, arguments):
     return "tool"
 
 
-def tool_outcome(result):
+def tool_outcome(result, name=None):
     if isinstance(result, str):
         try:
             result = json.loads(result)
@@ -88,7 +88,7 @@ def tool_outcome(result):
             return None
     if not isinstance(result, dict):
         return None
-    if result.get("is_error") is True or result.get("success") is False:
+    if result.get("error") or result.get("is_error") is True or result.get("success") is False:
         return False
     code = result.get("exit_code", result.get("returncode"))
     if code is not None:
@@ -97,6 +97,14 @@ def tool_outcome(result):
         except (ValueError, TypeError):
             return None
     if result.get("success") is True or result.get("is_error") is False:
+        return True
+    # Recognize Hermes' typed file results, including empty files and searches.
+    # A successful write is not proof that a subsequent build or test passes.
+    if name == "read_file" and isinstance(result.get("content"), str) and "total_lines" in result:
+        return True
+    if name == "write_file" and type(result.get("bytes_written")) is int and result["bytes_written"] >= 0:
+        return True
+    if name == "search_files" and type(result.get("total_count")) is int and result["total_count"] >= 0:
         return True
     return None
 
@@ -136,7 +144,7 @@ def main():
                     "call_id": call_id,
                     "name": name,
                     "verification": is_verification_command(command),
-                    "success": tool_outcome(result),
+                    "success": tool_outcome(result, name),
                     "activity": tool_activity(name, arguments),
                 },
             },

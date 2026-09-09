@@ -16,6 +16,15 @@ class ProgressTests(unittest.TestCase):
         self.assertIs(tool_outcome('{"exit_code": 1}'), False)
         self.assertIsNone(tool_outcome("Unstructured command output"))
 
+    def test_hermes_file_results(self):
+        self.assertIs(tool_outcome({"content": "", "total_lines": 0}, "read_file"), True)
+        self.assertIs(tool_outcome({"bytes_written": 0}, "write_file"), True)
+        self.assertIs(tool_outcome({"total_count": 0}, "search_files"), True)
+        self.assertIs(tool_outcome({"bytes_written": 0, "error": "Permission denied"}, "write_file"), False)
+        self.assertIs(tool_outcome({"success": True, "error": "Partial failure"}), False)
+        self.assertIsNone(tool_outcome({"content": "some text"}, "terminal"))
+        self.assertIsNone(tool_outcome({"bytes_written": True}, "write_file"))
+
 
 if __name__ == "__main__":
     unittest.main()
