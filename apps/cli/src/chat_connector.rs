@@ -1,4 +1,6 @@
 use serde_json::{json, Value};
+#[path = "project_browser.rs"]
+mod project_browser;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -84,6 +86,7 @@ fn acquire_connector_instance() -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct ConnectorOptions {
     pub chat_url: String,
     pub token: String,
@@ -632,6 +635,16 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let task_workspace =
         bounded_task_workspace(&options.workspace, workspace_relative, allow_mutations)?;
 
+    if let Some(body) = prompt.strip_prefix(project_browser::PREFIX) {
+        if workspace_relative.is_none() { return Err("Project operations require a project".into()); }
+        let request: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let result = project_browser::execute(&task_workspace, &request, allow_mutations)?;
+        post_remote(&options.chat_url, &options.token,
+            &format!("/api/agent/connector/tasks/{task_id}/complete"),
+            json!({"status": "completed", "result": result}))?;
+        return Ok(());
+    }
+
     // Project creation is a filesystem operation, not a model turn.  Keeping it
     // in the connector protocol makes the browser wait for proof that the
     // directory exists instead of optimistically creating browser-only state.
@@ -697,6 +710,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             }
         })
         .unwrap_or_else(|| prompt.clone());
+    let bounded_prompt = format!("{}\n\n{}", project_browser::guidance(&task_workspace)?, bounded_prompt);
     let stop = Arc::new(AtomicBool::new(false));
     let heartbeat_stop = Arc::clone(&stop);
     let heartbeat_url = options.chat_url.clone();
@@ -918,6 +932,17 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     Ok(())
 }
 
+fn run_and_report(options: &ConnectorOptions, connection_id: &str, task: &Value) {
+    if let Err(error) = run_task(options, connection_id, task) {
+        eprintln!("local task failed: {error}");
+        if let Some(task_id) = task["task_id"].as_str() {
+            let _ = post_remote(&options.chat_url, &options.token,
+                &format!("/api/agent/connector/tasks/{task_id}/complete"),
+                json!({"status":"failed", "error":error}));
+        }
+    }
+}
+
 pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
     let _instance = acquire_connector_instance()?;
     fs::create_dir_all(&options.workspace)
@@ -954,6 +979,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             "device_name": options.device_name,
             "capabilities": {
                 "protocol": "mundusx-agent-bridge/v1",
+                "project_browser": true,
                 "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
                 "mutations": false,
                 "agent_runtimes": runtimes,
@@ -973,28 +999,25 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
         "Connected local MundusX agent to {}. Press Ctrl+C to stop.",
         options.chat_url
     );
+    let mut worker: Option<thread::JoinHandle<()>> = None;
     loop {
+        if worker.as_ref().is_some_and(|handle| handle.is_finished()) {
+            if let Some(handle) = worker.take() { let _ = handle.join(); }
+        }
         match post_remote(
             &options.chat_url,
             &options.token,
             "/api/agent/connector/tasks/next",
-            json!({"connection_id": connection_id}),
+            json!({"connection_id": connection_id, "project_requests_only": worker.is_some()}),
         ) {
             Ok(payload) if !payload["task"].is_null() => {
-                if let Err(error) = run_task(&options, &connection_id, &payload["task"]) {
-                    eprintln!("local task failed: {error}");
-                    // Failures during workspace validation happen before
-                    // run_task's normal completion path. Report them so the
-                    // server does not lease and reclaim the same poisoned task
-                    // forever while Chat keeps displaying "working".
-                    if let Some(task_id) = payload["task"]["task_id"].as_str() {
-                        let _ = post_remote(
-                            &options.chat_url,
-                            &options.token,
-                            &format!("/api/agent/connector/tasks/{task_id}/complete"),
-                            json!({"status": "failed", "error": error}),
-                        );
-                    }
+                let task = payload["task"].clone();
+                if task["prompt"].as_str().unwrap_or("").starts_with(project_browser::PREFIX) {
+                    run_and_report(&options, &connection_id, &task);
+                } else {
+                    let task_options = options.clone();
+                    let task_connection = connection_id.clone();
+                    worker = Some(thread::spawn(move || run_and_report(&task_options, &task_connection, &task)));
                 }
             }
             Ok(_) => thread::sleep(Duration::from_secs(2)),
