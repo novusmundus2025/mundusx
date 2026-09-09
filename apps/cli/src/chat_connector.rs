@@ -375,7 +375,7 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
             "model_requested" => json!({"provider": data["provider"], "model": data["model"]}),
             "tool_proposed" => json!({"tool": data["tool"]}),
             "approval_resolved" => json!({"approved": data["approved"]}),
-            "tool_completed" => json!({"is_error": data["is_error"]}),
+            "tool_completed" => json!({"tool": data["tool"], "is_error": data["is_error"]}),
             "context_compacted" => json!({"original_chars": data["original_chars"], "retained_chars": data["retained_chars"]}),
             "skill_loaded" => json!({"name": data["name"]}),
             "task_delegated" => json!({"destination": data["destination"]}),
@@ -385,13 +385,15 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
     }).collect()
 }
 
-fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
+pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
     let raw_type = item["type"].as_str().unwrap_or("agent_progress");
     let event_type = match raw_type {
         "tool_start" | "tool_started" => "tool_started",
         "tool_complete" | "tool_completed" => "tool_completed",
         "model_start" | "model_requested" => "model_requested",
         "model_complete" | "model_completed" => "model_turn_completed",
+        "model_response_received" => "model_turn_completed",
+        "model_failed" => "model_failed",
         "skills_selected" => "skills_selected",
         "skills_unavailable" => "skills_unavailable",
         _ => "agent_progress",
@@ -403,22 +405,41 @@ fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    let activity = item["data"]["activity"].as_str().unwrap_or("");
+    let action = match activity {
+        "build" => "Building the project",
+        "test" => "Running tests",
+        "lint" => "Checking code quality",
+        "dependencies" => "Installing project dependencies",
+        "run" => "Running the program",
+        "write" => "Updating project files",
+        "inspect" => "Inspecting the codebase",
+        "research" => "Looking up information",
+        "command" => "Running a local command",
+        _ => "Running a project tool",
+    };
+    let success = item["data"]["success"].as_bool();
     json!({
         "sequence": sequence,
         "event": {
             "type": event_type,
             "summary": match tool {
+                _ if event_type == "tool_started" && !activity.is_empty() => action.to_string(),
+                _ if event_type == "tool_completed" && !activity.is_empty() => format!("{} — {}", action, match success {Some(true)=>"succeeded",Some(false)=>"failed",None=>"finished; result unconfirmed"}),
                 Some(name) if event_type == "tool_started" => format!("Running {name}"),
-                Some(name) if event_type == "tool_completed" => format!("Completed {name}"),
+                Some(name) if event_type == "tool_completed" => format!("{} — {}", name, if success == Some(false) {"failed"} else {"finished"}),
                 _ if event_type == "skills_selected" && !skills.is_empty() => format!(
                     "Using {}",
                     skills.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
                 ),
                 _ if event_type == "model_requested" => "Asking the model for the next step".to_string(),
-                _ if event_type == "model_turn_completed" => "Model step completed".to_string(),
+                _ if event_type == "model_turn_completed" => "Model response received".to_string(),
+                _ if event_type == "model_failed" => "Model connection failed".to_string(),
                 _ => "Hermes is working".to_string(),
             },
-            "metadata": {"tool": tool, "skills": skills, "source_type": raw_type}
+            "metadata": {"tool": tool, "skills": skills, "source_type": raw_type,
+                "activity": activity, "success": success, "verification": item["data"]["verification"].as_bool(),
+                "call_id": item["data"]["call_id"].as_str()}
         }
     })
 }
@@ -1037,6 +1058,20 @@ mod tests {
         successful_verification, transient_agent_failure, validate_chat_url, workspace_snapshot,
     };
     use std::fs;
+
+    #[test]
+    fn progress_preserves_observed_outcomes_without_command_contents() {
+        let event = structured_hermes_event(&serde_json::json!({"type":"tool_completed","data":{
+            "tool":"terminal", "activity":"test", "verification":true, "success":false,
+            "call_id":"step-a", "command":"secret command", "output":"private output"
+        }}), 4);
+        assert_eq!(event["event"]["metadata"]["success"], false);
+        assert_eq!(event["event"]["metadata"]["verification"], true);
+        assert_eq!(event["event"]["metadata"]["activity"], "test");
+        assert!(event["event"]["summary"].as_str().unwrap().contains("failed"));
+        assert!(!event.to_string().contains("secret command"));
+        assert!(!event.to_string().contains("private output"));
+    }
 
     #[test]
     fn watchdog_allows_normal_requests_and_retries_but_detects_stalls() {

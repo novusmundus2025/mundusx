@@ -33,6 +33,13 @@ impl ProjectModelProxy {
         task_id: &str,
         connection_id: &str,
     ) -> Result<Self, String> {
+        Self::start_with_progress(remote_base, connector_token, task_id, connection_id, None)
+    }
+
+    pub fn start_with_progress(
+        remote_base: &str, connector_token: &str, task_id: &str, connection_id: &str,
+        progress: Option<std::sync::mpsc::Sender<Value>>,
+    ) -> Result<Self, String> {
         let server = Server::http("127.0.0.1:0")
             .map_err(|error| format!("could not start project model proxy: {error}"))?;
         let address = server
@@ -86,6 +93,7 @@ impl ProjectModelProxy {
                         serde_json::from_slice::<Value>(&bytes).map_err(|error| format!("invalid json body: {error}"))
                     })
                     .and_then(|body| {
+                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":"model_requested","data":{}})); }
                         execute_remote_job(
                             &remote,
                             &connector_token,
@@ -97,9 +105,11 @@ impl ProjectModelProxy {
                     });
                 match result {
                     Ok(completion) => {
-                        let _ = request.respond(sse_response(completion));
+                        let delivered = request.respond(sse_response(completion)).is_ok();
+                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":if delivered {"model_response_received"} else {"model_failed"},"data":{}})); }
                     }
                     Err(error) => {
+                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":"model_failed","data":{}})); }
                         let _ = request.respond(json_response(
                             StatusCode(proxy_error_status(&error)),
                             json!({"error":{"message":error}}),
@@ -295,6 +305,48 @@ mod tests {
         assert_eq!(proxy_error_status("connection timed out"), 502);
     }
     use std::io::Read;
+
+    #[test]
+    fn failed_model_requests_emit_progress_without_exposing_response_contents() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let receiver = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            let mut bytes = Vec::new();
+            request.as_reader().read_to_end(&mut bytes).unwrap();
+            assert!(bytes.len() > 1024 * 1024);
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                body["messages"][0]["content"].as_str().unwrap().len(),
+                2 * 1024 * 1024
+            );
+            request
+                .respond(
+                    Response::from_string("provider unavailable")
+                        .with_status_code(500),
+                )
+                .unwrap();
+        });
+        let (progress_sender, progress_receiver) = std::sync::mpsc::channel();
+        let proxy = ProjectModelProxy::start_with_progress(
+            &format!("http://{address}/v1"),
+            "secret",
+            "task",
+            "connection",
+            Some(progress_sender),
+        )
+        .unwrap();
+        let result = ureq::post(&format!("{}/chat/completions", proxy.base_url()))
+            .set("Authorization", &format!("Bearer {}", proxy.credential()))
+            .send_json(json!({"messages":[{"role":"user","content":"x".repeat(2 * 1024 * 1024)}]}));
+        match result {
+            Err(ureq::Error::Status(status, _)) => assert!(status >= 400),
+            _ => panic!("provider failure must remain an HTTP error"),
+        }
+        receiver.join().unwrap();
+        assert_eq!(progress_receiver.recv_timeout(Duration::from_secs(1)).unwrap()["type"], "model_requested");
+        assert_eq!(progress_receiver.recv_timeout(Duration::from_secs(1)).unwrap()["type"], "model_failed");
+    }
 
     #[test]
     fn proxy_binds_only_to_loopback_and_uses_ephemeral_credentials() {

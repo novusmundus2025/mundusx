@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import traceback
 
@@ -53,6 +54,53 @@ def tool_result_succeeded(result):
     return not any(marker in text for marker in ('"success": false', '"exit_code": 1', "traceback (most recent call last)"))
 
 
+def tool_activity(name, arguments):
+    """Report observed tool intent without exposing commands, credentials or output."""
+    name = str(name or "").lower()
+    if name in ("terminal", "execute", "shell"):
+        command = str(arguments.get("command", "") if isinstance(arguments, dict) else "").lower()
+        prefix = r"(?:^|[|;&])\s*"
+        if re.search(prefix + r"(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?build|cargo build)\b", command):
+            return "build"
+        if re.search(prefix + r"(?:pytest|python -m pytest|cargo test|npm test|npm run test|pnpm test|yarn test|mvn test|go test|dotnet test)\b", command):
+            return "test"
+        if re.search(prefix + r"(?:npm run lint|pnpm lint|yarn lint|ruff check)\b", command):
+            return "lint"
+        if re.search(prefix + r"(?:npm install|npm ci|pnpm install|yarn install|pip install)\b", command):
+            return "dependencies"
+        if re.search(prefix + r"(?:node|python|python3)\s", command):
+            return "run"
+        return "command"
+    if name in ("write_file", "patch", "apply_patch", "patch_file", "write"):
+        return "write"
+    if name in ("read_file", "read", "search_files", "grep", "glob", "search", "list_directory"):
+        return "inspect"
+    if name.startswith("browser_") or name in ("web_search", "web_fetch"):
+        return "research"
+    return "tool"
+
+
+def tool_outcome(result):
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(result, dict):
+        return None
+    if result.get("is_error") is True or result.get("success") is False:
+        return False
+    code = result.get("exit_code", result.get("returncode"))
+    if code is not None:
+        try:
+            return int(code) == 0
+        except (ValueError, TypeError):
+            return None
+    if result.get("success") is True or result.get("is_error") is False:
+        return True
+    return None
+
+
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
     sys.path.insert(0, project_root)
@@ -73,6 +121,7 @@ def main():
                     "call_id": call_id,
                     "name": name,
                     "verification": is_verification_command(command),
+                    "activity": tool_activity(name, arguments),
                 },
             },
         )
@@ -87,7 +136,8 @@ def main():
                     "call_id": call_id,
                     "name": name,
                     "verification": is_verification_command(command),
-                    "success": tool_result_succeeded(result),
+                    "success": tool_outcome(result),
+                    "activity": tool_activity(name, arguments),
                 },
             },
         )

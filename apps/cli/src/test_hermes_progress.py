@@ -1,0 +1,21 @@
+import unittest
+from hermes_bridge import tool_activity, tool_outcome
+
+
+class ProgressTests(unittest.TestCase):
+    def test_activity_is_observed_without_copying_arguments(self):
+        for command, activity in [('echo "5" | node "C:/project/menu.js"', "run"), ("npm run build", "build"), ("npm test", "test"), ("npm run lint", "lint"), ("echo npm test", "command")]:
+            self.assertEqual(tool_activity("terminal", {"command": command}), activity)
+        self.assertEqual(tool_activity("terminal", {"command": "curl --token SECRET"}), "command")
+        self.assertEqual(tool_activity("terminal", []), "command")
+
+    def test_outcome_does_not_invent_success(self):
+        self.assertIs(tool_outcome({"exit_code": 0}), True)
+        self.assertIs(tool_outcome({"exit_code": 2}), False)
+        self.assertIs(tool_outcome({"success": False}), False)
+        self.assertIs(tool_outcome('{"exit_code": 1}'), False)
+        self.assertIsNone(tool_outcome("Unstructured command output"))
+
+
+if __name__ == "__main__":
+    unittest.main()

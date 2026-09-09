@@ -145,13 +145,15 @@ pub fn run(
     // cloud provider. This preserves MundusX model ownership without nesting the
     // native MundusX agent loop inside Hermes.
     let mut _model_proxy = None;
+    let (event_sender, event_receiver) = mpsc::channel::<Value>();
     let model_runtime =
         if let Some((base_url, token, project_task_id, connection_id)) = remote_model {
-            let proxy = super::project_model_proxy::ProjectModelProxy::start(
+            let proxy = super::project_model_proxy::ProjectModelProxy::start_with_progress(
                 base_url,
                 token,
                 project_task_id,
                 connection_id,
+                Some(event_sender.clone()),
             )?;
             let runtime = (
                 proxy.base_url(),
@@ -228,7 +230,6 @@ pub fn run(
         .stderr
         .take()
         .ok_or("could not capture Hermes errors")?;
-    let (event_sender, event_receiver) = mpsc::channel::<Value>();
     let stdout_reader = thread::spawn(move || {
         let mut output = String::new();
         let mut reader = BufReader::new(child_stdout);

@@ -307,6 +307,15 @@ fn run_with_runtime(
     };
     eprintln!("session: {session_id}");
     let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
+    let mut progress_step = 0_u64;
+    let mut progress = |event: serde_json::Value| {
+        progress_step += 1;
+        let event = chat_connector::structured_hermes_event(&event, progress_step);
+        let kind = event["event"]["type"].as_str().unwrap_or("");
+        if kind == "agent_progress" { return; }
+        let source = if kind.starts_with("model") { "Model" } else if kind.starts_with("tool") { "Tool" } else { "Harness" };
+        eprintln!("[MundusX · {source} · {progress_step}] {}", event["event"]["summary"].as_str().unwrap_or("Working"));
+    };
     let response = hermes_adapter::run(
         prompt,
         session_id,
@@ -315,7 +324,7 @@ fn run_with_runtime(
         approve_mutations,
         None,
         None,
-        None,
+        Some(&mut progress),
     )?;
     let content = response["choices"][0]["message"]["content"]
         .as_str()
