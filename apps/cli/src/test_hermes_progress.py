@@ -1,8 +1,16 @@
 import unittest
-from hermes_bridge import tool_activity, tool_outcome, AnswerStream
+from hermes_bridge import tool_activity, tool_outcome, AnswerStream, loaded_skill
 
 
 class ProgressTests(unittest.TestCase):
+    def test_skill_progress_requires_actual_success(self):
+        self.assertEqual(loaded_skill("skill_view", '{"success":true,"name":"debugging"}'), "debugging")
+        for result in [{"success": False, "name": "debugging"}, {"name": "debugging"}, {"success": True, "name": "debugging", "error": "failed"}, "bad json"]:
+            self.assertIsNone(loaded_skill("skill_view", result))
+        self.assertIsNone(loaded_skill("skills_list", {"success": True, "name": "debugging"}))
+        self.assertEqual(tool_activity("skills_list", {}), "skill_discovery")
+        self.assertEqual(tool_activity("skill_view", {}), "skill_load")
+
     def test_answer_stream_batches_and_flushes_complete_snapshots(self):
         events, now = [], [1.0]
         stream = AnswerStream(events.append, lambda: now[0])

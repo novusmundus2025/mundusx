@@ -35,24 +35,26 @@ def emit(prefix, value):
     print(prefix + json.dumps(value, ensure_ascii=False, default=str), flush=True)
 
 
-def select_project_skills(prompt):
-    """Choose a small native Hermes skill set for a project request."""
-    text = (prompt or "").lower()
-    selected = ["codebase-inspection"]
+SKILL_DISCOVERY_GUIDANCE = """For this project task, discover relevant installed Hermes skills using skills_list
+when needed, and load applicable instructions with skill_view before using them.
+Use only skills relevant to the task; do not load the entire library or invent missing skills.
+Project instructions and the current user request still apply. A skill does not grant extra permissions.
+"""
 
-    def add(name):
-        if name not in selected:
-            selected.append(name)
 
-    if any(word in text for word in ("bug", "debug", "error", "fail", "fix", "broken")):
-        add("systematic-debugging")
-    if any(word in text for word in ("test", "tests", "tdd", "implement", "create", "build", "code", "app", "add", "function", "index")):
-        add("test-driven-development")
-    if any(word in text for word in ("plan", "design", "architecture", "refactor", "migrate")):
-        add("plan")
-    if any(word in text for word in ("existing", "repository", "repo", "codebase", "inspect", "understand")):
-        add("codebase-inspection")
-    return selected[:3]
+def loaded_skill(name, result):
+    if name != "skill_view":
+        return None
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (ValueError, TypeError):
+            return None
+    if isinstance(result, dict) and result.get("success") is True and not result.get("error"):
+        value = result.get("name")
+        if isinstance(value, str) and value.strip():
+            return value[:160]
+    return None
 
 
 def is_verification_command(command):
@@ -81,6 +83,10 @@ def tool_result_succeeded(result):
 def tool_activity(name, arguments):
     """Report observed tool intent without exposing commands, credentials or output."""
     name = str(name or "").lower()
+    if name == "skills_list":
+        return "skill_discovery"
+    if name == "skill_view":
+        return "skill_load"
     if name in ("terminal", "execute", "shell"):
         command = str(arguments.get("command", "") if isinstance(arguments, dict) else "").lower()
         prefix = r"(?:^|[|;&])\s*"
@@ -139,6 +145,7 @@ def main():
 
     from run_agent import AIAgent
 
+    selected_skills = []
     answer_stream = AnswerStream(lambda event: emit("MUNDUSX_EVENT=", event))
     # Reset a previous attempt's preview when a recovery starts a new run.
     emit("MUNDUSX_EVENT=", {"type": "assistant_snapshot", "data": {"text": "", "truncated": False}})
@@ -164,6 +171,10 @@ def main():
         )
 
     def tool_complete_callback(call_id, name, arguments, result):
+        skill = loaded_skill(name, result)
+        if skill and skill not in selected_skills:
+            selected_skills.append(skill)
+            emit("MUNDUSX_EVENT=", {"type": "skills_selected", "data": {"skills": [skill]}})
         command = arguments.get("command") if isinstance(arguments, dict) else None
         emit(
             "MUNDUSX_EVENT=",
@@ -181,41 +192,13 @@ def main():
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
     user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
-    selected_skills = select_project_skills(user_prompt)
-    if selected_skills:
-        try:
-            from agent.skill_commands import build_preloaded_skills_prompt
-
-            skill_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
-                selected_skills,
-                task_id=os.environ.get("MUNDUSX_HERMES_TASK") or session_id,
-            )
-            selected_skills = loaded_skills
-            if skill_prompt:
-                user_prompt = skill_prompt + "\n\nUser project request:\n" + user_prompt
-            emit(
-                "MUNDUSX_EVENT=",
-                {
-                    "type": "skills_selected",
-                    "data": {"skills": loaded_skills, "missing": missing_skills},
-                },
-            )
-        except Exception as error:
-            # Skill discovery must not prevent the coding harness from running.
-            emit(
-                "MUNDUSX_EVENT=",
-                {"type": "skills_unavailable", "data": {"error": str(error)}},
-            )
-            selected_skills = []
+    user_prompt = SKILL_DISCOVERY_GUIDANCE + "\n\nUser project request:\n" + user_prompt
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],
         provider="openai-api",
         model="mundusx-agnostic",
-        # Relevant SKILL.md content is preloaded above. Enabling Hermes' global
-        # skills toolset here also injects the complete installed skill catalog
-        # into every model turn, which can overflow smaller routed workers.
-        enabled_toolsets=["coding"],
+        enabled_toolsets=["coding", "skills"],
         quiet_mode=True,
         tool_progress_mode="all",
         event_callback=event_callback,

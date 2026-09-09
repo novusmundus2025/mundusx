@@ -408,6 +408,8 @@ pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
         .unwrap_or_default();
     let activity = item["data"]["activity"].as_str().unwrap_or("");
     let action = match activity {
+        "skill_discovery" => "Finding relevant Hermes skills",
+        "skill_load" => "Loading Hermes skill instructions",
         "build" => "Building the project",
         "test" => "Running tests",
         "lint" => "Checking code quality",
