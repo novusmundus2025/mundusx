@@ -145,13 +145,15 @@ pub fn run(
     // cloud provider. This preserves MundusX model ownership without nesting the
     // native MundusX agent loop inside Hermes.
     let mut _model_proxy = None;
+    let (event_sender, event_receiver) = mpsc::channel::<Value>();
     let model_runtime =
         if let Some((base_url, token, project_task_id, connection_id)) = remote_model {
-            let proxy = super::project_model_proxy::ProjectModelProxy::start(
+            let proxy = super::project_model_proxy::ProjectModelProxy::start_with_progress(
                 base_url,
                 token,
                 project_task_id,
                 connection_id,
+                Some(event_sender.clone()),
             )?;
             let runtime = (
                 proxy.base_url(),
@@ -228,7 +230,6 @@ pub fn run(
         .stderr
         .take()
         .ok_or("could not capture Hermes errors")?;
-    let (event_sender, event_receiver) = mpsc::channel::<Value>();
     let stdout_reader = thread::spawn(move || {
         let mut output = String::new();
         let mut reader = BufReader::new(child_stdout);
@@ -238,13 +239,17 @@ pub fn run(
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    output.push_str(&line);
                     if let Some(payload) = line
                         .trim_end()
                         .strip_prefix("MUNDUSX_EVENT=")
                         .and_then(|value| serde_json::from_str::<Value>(value).ok())
                     {
+                        // Snapshots have already been delivered to the UI. Keep
+                        // them out of the final transcript/result evidence.
+                        if payload["type"] != "assistant_snapshot" { output.push_str(&line); }
                         let _ = event_sender.send(payload);
+                    } else {
+                        output.push_str(&line);
                     }
                 }
             }
@@ -420,10 +425,10 @@ mod output_tests {
 
     #[test]
     fn structured_bridge_enables_native_hermes_skills() {
-        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\"]"));
-        assert!(STRUCTURED_BRIDGE.contains("build_preloaded_skills_prompt"));
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\", \"skills\"]"));
+        assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
-        assert!(STRUCTURED_BRIDGE.contains("selected = [\"codebase-inspection\"]"));
+        assert!(!STRUCTURED_BRIDGE.contains("select_project_skills"));
     }
 
     #[test]

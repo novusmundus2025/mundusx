@@ -9,6 +9,20 @@ use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
+const MODEL_CONTEXT_TOKENS: u32 = 131_072;
+const MAX_MODEL_BODY_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(Debug)]
+struct ProxyError {
+    status: u16,
+    message: String,
+}
+
+fn model_catalog() -> Value {
+    json!({"object":"list","data":[{"id":"mundusx-agnostic","object":"model","owned_by":"mundusx",
+        "context_length": MODEL_CONTEXT_TOKENS, "max_model_len": MODEL_CONTEXT_TOKENS}]})
+}
+
 pub struct ProjectModelProxy {
     address: String,
     credential: String,
@@ -22,6 +36,13 @@ impl ProjectModelProxy {
         connector_token: &str,
         task_id: &str,
         connection_id: &str,
+    ) -> Result<Self, String> {
+        Self::start_with_progress(remote_base, connector_token, task_id, connection_id, None)
+    }
+
+    pub fn start_with_progress(
+        remote_base: &str, connector_token: &str, task_id: &str, connection_id: &str,
+        progress: Option<std::sync::mpsc::Sender<Value>>,
     ) -> Result<Self, String> {
         let server = Server::http("127.0.0.1:0")
             .map_err(|error| format!("could not start project model proxy: {error}"))?;
@@ -55,7 +76,7 @@ impl ProjectModelProxy {
                     continue;
                 }
                 if request.method() == &Method::Get && request.url() == "/v1/models" {
-                    let _ = request.respond(json_response(StatusCode(200), json!({"object":"list","data":[{"id":"mundusx-agnostic","object":"model","owned_by":"mundusx"}]})));
+                    let _ = request.respond(json_response(StatusCode(200), model_catalog()));
                     continue;
                 }
                 if request.method() != &Method::Post || request.url() != "/v1/chat/completions" {
@@ -68,12 +89,26 @@ impl ProjectModelProxy {
                 let mut bytes = Vec::new();
                 let result = request
                     .as_reader()
+                    .take(MAX_MODEL_BODY_BYTES + 1)
                     .read_to_end(&mut bytes)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| ProxyError {
+                        status: 400,
+                        message: error.to_string(),
+                    })
                     .and_then(|_| {
-                        serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())
+                        if bytes.len() as u64 > MAX_MODEL_BODY_BYTES {
+                            return Err(ProxyError {
+                                status: 413,
+                                message: "model request exceeds 32 MiB transport limit".into(),
+                            });
+                        }
+                        serde_json::from_slice::<Value>(&bytes).map_err(|error| ProxyError {
+                            status: 400,
+                            message: error.to_string(),
+                        })
                     })
                     .and_then(|body| {
+                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":"model_requested","data":{}})); }
                         open_remote_stream(
                             &remote,
                             &connector_token,
@@ -100,12 +135,14 @@ impl ProjectModelProxy {
                             None,
                             None,
                         );
-                        let _ = request.respond(response);
+                        let delivered = request.respond(response).is_ok();
+                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":if delivered {"model_response_received"} else {"model_failed"},"data":{}})); }
                     }
                     Err(error) => {
+                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":"model_failed","data":{}})); }
                         let _ = request.respond(json_response(
-                            StatusCode(502),
-                            json!({"error":{"message":error}}),
+                            StatusCode(error.status),
+                            json!({"error":{"message":error.message}}),
                         ));
                     }
                 }
@@ -142,7 +179,7 @@ fn open_remote_stream(
     task_id: &str,
     connection_id: &str,
     mut body: Value,
-) -> Result<ureq::Response, String> {
+) -> Result<ureq::Response, ProxyError> {
     // Hermes may reuse its client request id for every model turn in one agent
     // run. The control plane treats request ids as idempotency keys, so forwarding
     // that value caused later tool turns to replay the first model decision. Give
@@ -178,13 +215,19 @@ impl Read for CancellableReader {
     }
 }
 
-fn remote_error(error: ureq::Error) -> String {
+fn remote_error(error: ureq::Error) -> ProxyError {
     match error {
-        ureq::Error::Status(code, response) => format!(
-            "model gateway returned {code}: {}",
-            response.into_string().unwrap_or_default()
-        ),
-        ureq::Error::Transport(error) => format!("model gateway request failed: {error}"),
+        ureq::Error::Status(code, response) => ProxyError {
+            status: code,
+            message: format!(
+                "model gateway returned {code}: {}",
+                response.into_string().unwrap_or_default()
+            ),
+        },
+        ureq::Error::Transport(error) => ProxyError {
+            status: 502,
+            message: format!("model gateway request failed: {error}"),
+        },
     }
 }
 
@@ -198,6 +241,65 @@ fn json_response(status: StatusCode, value: Value) -> Response<std::io::Cursor<V
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn hermes_discovers_the_real_context_window() {
+        let proxy =
+            ProjectModelProxy::start("https://invalid.example/v1", "secret", "task", "connection")
+                .unwrap();
+        let catalog: Value = ureq::get(&format!("{}/models", proxy.base_url()))
+            .set("Authorization", &format!("Bearer {}", proxy.credential()))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(catalog["data"][0]["context_length"], 131_072);
+        assert_eq!(catalog["data"][0]["max_model_len"], 131_072);
+    }
+
+    #[test]
+    fn large_context_passes_through_and_token_errors_are_not_502() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let receiver = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            let mut bytes = Vec::new();
+            request.as_reader().read_to_end(&mut bytes).unwrap();
+            assert!(bytes.len() > 1024 * 1024);
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                body["messages"][0]["content"].as_str().unwrap().len(),
+                2 * 1024 * 1024
+            );
+            request
+                .respond(
+                    Response::from_string("maximum context length is 131072 tokens")
+                        .with_status_code(400),
+                )
+                .unwrap();
+        });
+        let (progress_sender, progress_receiver) = std::sync::mpsc::channel();
+        let proxy = ProjectModelProxy::start_with_progress(
+            &format!("http://{address}/v1"),
+            "secret",
+            "task",
+            "connection",
+            Some(progress_sender),
+        )
+        .unwrap();
+        let result = ureq::post(&format!("{}/chat/completions", proxy.base_url()))
+            .set("Authorization", &format!("Bearer {}", proxy.credential()))
+            .send_json(json!({"messages":[{"role":"user","content":"x".repeat(2 * 1024 * 1024)}]}));
+        match result {
+            Err(ureq::Error::Status(400, response)) => {
+                assert!(response.into_string().unwrap().contains("131072"))
+            }
+            _ => panic!("context error must remain HTTP 400"),
+        }
+        receiver.join().unwrap();
+        assert_eq!(progress_receiver.recv_timeout(Duration::from_secs(1)).unwrap()["type"], "model_requested");
+        assert_eq!(progress_receiver.recv_timeout(Duration::from_secs(1)).unwrap()["type"], "model_failed");
+    }
 
     #[test]
     fn proxy_binds_only_to_loopback_and_uses_ephemeral_credentials() {
