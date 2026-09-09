@@ -5,6 +5,30 @@ import os
 import re
 import sys
 import traceback
+import time
+
+
+class AnswerStream:
+    """Bounded, replaceable previews; replay never appends duplicate text."""
+    def __init__(self, publish, clock=time.monotonic):
+        self.publish, self.clock = publish, clock
+        self.text, self.last, self.dirty, self.truncated = "", 0, False, False
+
+    def delta(self, text):
+        if not isinstance(text, str) or not text:
+            return
+        self.text += text
+        if len(self.text) > 8192:
+            self.text = self.text[-8192:]
+            self.truncated = True
+        self.dirty = True
+        if self.clock() - self.last >= 0.5:
+            self.flush()
+
+    def flush(self):
+        if self.dirty:
+            self.publish({"type": "assistant_snapshot", "data": {"text": self.text, "truncated": self.truncated}})
+            self.last, self.dirty = self.clock(), False
 
 
 def emit(prefix, value):
@@ -115,11 +139,16 @@ def main():
 
     from run_agent import AIAgent
 
+    answer_stream = AnswerStream(lambda event: emit("MUNDUSX_EVENT=", event))
+    # Reset a previous attempt's preview when a recovery starts a new run.
+    emit("MUNDUSX_EVENT=", {"type": "assistant_snapshot", "data": {"text": "", "truncated": False}})
+
     def event_callback(kind, data=None):
         payload = data if isinstance(data, dict) else {"value": data}
         emit("MUNDUSX_EVENT=", {"type": str(kind), "data": payload})
 
     def tool_start_callback(call_id, name, arguments):
+        answer_stream.flush()
         command = arguments.get("command") if isinstance(arguments, dict) else None
         emit(
             "MUNDUSX_EVENT=",
@@ -192,6 +221,7 @@ def main():
         event_callback=event_callback,
         tool_start_callback=tool_start_callback,
         tool_complete_callback=tool_complete_callback,
+        stream_delta_callback=answer_stream.delta,
         session_id=session_id,
         skip_memory=True,
         load_soul_identity=False,
@@ -202,6 +232,7 @@ def main():
             task_id=os.environ.get("MUNDUSX_HERMES_TASK") or session_id,
         )
     except Exception as error:
+        answer_stream.flush()
         emit(
             "MUNDUSX_RESULT=",
             {
@@ -217,6 +248,7 @@ def main():
         )
         traceback.print_exc(file=sys.stderr)
         return 1
+    answer_stream.flush()
     messages = result.get("messages") or []
     tool_calls = []
     for message in messages:

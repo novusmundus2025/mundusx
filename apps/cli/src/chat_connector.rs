@@ -394,6 +394,7 @@ pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
         "model_complete" | "model_completed" => "model_turn_completed",
         "model_response_received" => "model_turn_completed",
         "model_failed" => "model_failed",
+        "assistant_snapshot" => "assistant_snapshot",
         "skills_selected" => "skills_selected",
         "skills_unavailable" => "skills_unavailable",
         _ => "agent_progress",
@@ -425,7 +426,7 @@ pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
             "type": event_type,
             "summary": match tool {
                 _ if event_type == "tool_started" && !activity.is_empty() => action.to_string(),
-                _ if event_type == "tool_completed" && !activity.is_empty() => format!("{} — {}", action, match success {Some(true)=>"succeeded",Some(false)=>"failed",None=>"finished; result unconfirmed"}),
+                _ if event_type == "tool_completed" && !activity.is_empty() => format!("{} — {}", action, match success {Some(true)=>"succeeded",Some(false)=>"failed",None=>"finished"}),
                 Some(name) if event_type == "tool_started" => format!("Running {name}"),
                 Some(name) if event_type == "tool_completed" => format!("{} — {}", name, if success == Some(false) {"failed"} else {"finished"}),
                 _ if event_type == "skills_selected" && !skills.is_empty() => format!(
@@ -439,7 +440,9 @@ pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
             },
             "metadata": {"tool": tool, "skills": skills, "source_type": raw_type,
                 "activity": activity, "success": success, "verification": item["data"]["verification"].as_bool(),
-                "call_id": item["data"]["call_id"].as_str()}
+                "call_id": item["data"]["call_id"].as_str(),
+                "text": if event_type == "assistant_snapshot" { item["data"]["text"].as_str() } else { None },
+                "truncated": event_type == "assistant_snapshot" && item["data"]["truncated"].as_bool().unwrap_or(false)}
         }
     })
 }

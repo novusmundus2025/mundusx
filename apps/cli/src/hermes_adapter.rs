@@ -239,13 +239,17 @@ pub fn run(
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    output.push_str(&line);
                     if let Some(payload) = line
                         .trim_end()
                         .strip_prefix("MUNDUSX_EVENT=")
                         .and_then(|value| serde_json::from_str::<Value>(value).ok())
                     {
+                        // Snapshots have already been delivered to the UI. Keep
+                        // them out of the final transcript/result evidence.
+                        if payload["type"] != "assistant_snapshot" { output.push_str(&line); }
                         let _ = event_sender.send(payload);
+                    } else {
+                        output.push_str(&line);
                     }
                 }
             }

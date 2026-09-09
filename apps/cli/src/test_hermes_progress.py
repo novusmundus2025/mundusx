@@ -1,8 +1,23 @@
 import unittest
-from hermes_bridge import tool_activity, tool_outcome
+from hermes_bridge import tool_activity, tool_outcome, AnswerStream
 
 
 class ProgressTests(unittest.TestCase):
+    def test_answer_stream_batches_and_flushes_complete_snapshots(self):
+        events, now = [], [1.0]
+        stream = AnswerStream(events.append, lambda: now[0])
+        stream.delta("Hello")
+        stream.delta(" world")
+        self.assertEqual(len(events), 1)
+        stream.flush()
+        self.assertEqual(events[-1]["data"]["text"], "Hello world")
+        stream.flush()
+        self.assertEqual(len(events), 2)
+        now[0] += 1
+        stream.delta("x" * 9000)
+        self.assertEqual(len(events[-1]["data"]["text"]), 8192)
+        self.assertTrue(events[-1]["data"]["truncated"])
+
     def test_activity_is_observed_without_copying_arguments(self):
         for command, activity in [('echo "5" | node "C:/project/menu.js"', "run"), ("npm run build", "build"), ("npm test", "test"), ("npm run lint", "lint"), ("echo npm test", "command")]:
             self.assertEqual(tool_activity("terminal", {"command": command}), activity)
