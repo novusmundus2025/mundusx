@@ -1,13 +1,52 @@
 use serde_json::{json, Value};
+#[path = "project_browser.rs"]
+mod project_browser;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const CONNECTOR_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+static CONNECTOR_ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
+
+fn record_connector_activity() {
+    if let Some(activity) = CONNECTOR_ACTIVITY.get() {
+        if let Ok(mut last_activity) = activity.lock() {
+            *last_activity = Instant::now();
+        }
+    }
+}
+
+fn connector_stalled(idle: Duration) -> bool {
+    idle >= CONNECTOR_STALL_TIMEOUT
+}
+
+fn start_connector_watchdog() {
+    start_watchdog(CONNECTOR_STALL_TIMEOUT, Duration::from_secs(5));
+}
+
+fn start_watchdog(timeout: Duration, interval: Duration) {
+    let activity = CONNECTOR_ACTIVITY.get_or_init(|| Mutex::new(Instant::now()));
+    thread::spawn(move || loop {
+        thread::sleep(interval);
+        let stalled = activity
+            .lock()
+            .map(|last| last.elapsed() >= timeout)
+            .unwrap_or(true);
+        if stalled {
+            // Do not log here: blocked console/file output can itself cause the
+            // stall. Exiting lets the tray relaunch with the saved credentials.
+            std::process::exit(75);
+        }
+    });
+}
+
+const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -47,6 +86,7 @@ fn acquire_connector_instance() -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct ConnectorOptions {
     pub chat_url: String,
     pub token: String,
@@ -122,9 +162,9 @@ fn open_browser(url: &str) -> Result<(), String> {
     }
 }
 
-fn bootstrap_token(chat_url: &str, device_name: &str) -> Result<String, String> {
+fn bootstrap_token(chat_url: &str, device_name: &str, device_id: &str) -> Result<String, String> {
     let bootstrap: Value = ureq::post(&format!("{chat_url}/api/agent/bootstrap/sessions"))
-        .send_json(json!({"device_name": device_name}))
+        .send_json(json!({"device_name": device_name, "device_id": device_id}))
         .map_err(|e| format!("could not start browser approval: {e}"))?
         .into_json()
         .map_err(|e| format!("Chat returned invalid approval data: {e}"))?;
@@ -173,6 +213,36 @@ fn connection_file(data_dir: &Path) -> PathBuf {
     data_dir.join("chat-connection.json")
 }
 
+// This installation identity survives credential rotation and account switches.
+// Upgrade in place by adopting the existing connection UUID when available.
+fn persistent_device_id(data_dir: &Path) -> Result<String, String> {
+    let path = connection_file(data_dir);
+    let mut value = fs::read_to_string(&path).ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(id) = value["device_id"].as_str().filter(|id| Uuid::parse_str(id).is_ok()) {
+        return Ok(id.to_string());
+    }
+    let id = value["connection_id"].as_str().filter(|id| Uuid::parse_str(id).is_ok())
+        .map(str::to_string).unwrap_or_else(|| Uuid::new_v4().to_string());
+    value["device_id"] = json!(id);
+    fs::create_dir_all(data_dir).map_err(|error| format!("could not create device directory: {error}"))?;
+    fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|error| format!("could not save device identity: {error}"))?;
+    Ok(id)
+}
+
+fn save_connection_id(data_dir: &Path, id: &str) -> Result<(), String> {
+    Uuid::parse_str(id).map_err(|_| "server returned an invalid connection identity".to_string())?;
+    let path = connection_file(data_dir);
+    let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)
+        .map_err(|e| format!("could not read connection identity: {e}"))?)
+        .map_err(|e| format!("could not parse connection identity: {e}"))?;
+    value["connection_id"] = json!(id);
+    fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|e| format!("could not save connection identity: {e}"))
+}
+
 fn connection_id(data_dir: &Path, regenerate: bool) -> Result<String, String> {
     let path = connection_file(data_dir);
     if !regenerate {
@@ -200,13 +270,18 @@ fn connection_id(data_dir: &Path, regenerate: bool) -> Result<String, String> {
 }
 
 fn post_remote(url: &str, token: &str, path: &str, body: Value) -> Result<Value, String> {
-    ureq::post(&format!("{url}{path}"))
+    record_connector_activity();
+    let result = ureq::post(&format!("{url}{path}"))
         .timeout(Duration::from_secs(30))
         .set("Authorization", &format!("Bearer {token}"))
         .send_json(body)
         .map_err(|error| format!("Chat connector request failed: {error}"))?
         .into_json()
-        .map_err(|error| format!("Chat connector returned invalid JSON: {error}"))
+        .map_err(|error| format!("Chat connector returned invalid JSON: {error}"));
+    // Retryable failures still prove that the loop is responsive. Task
+    // heartbeats use this same path, so long-running work stays alive.
+    record_connector_activity();
+    result
 }
 
 fn transient_agent_failure(error: &str) -> bool {
@@ -237,7 +312,24 @@ fn transient_agent_failure(error: &str) -> bool {
 }
 
 fn requires_project_file_change(prompt: &str) -> bool {
-    let value = prompt.to_ascii_lowercase();
+    let value = prompt.trim().to_ascii_lowercase();
+    let advisory_opening = [
+        "what ", "why ", "how ", "should ", "do i ", "does ", "is ", "are ",
+        "explain ", "compare ", "recommend ", "can i ask", "could i ask", "may i ask",
+        "can i know", "could i know", "may i know",
+    ]
+    .iter()
+    .any(|prefix| value.starts_with(prefix));
+    let advisory_change_question = [
+        "what are the changes", "what changes would", "what changes will", "what changes do",
+        "which changes would", "which files would", "what files would", "what steps would",
+        "what requirements would",
+    ]
+    .iter()
+    .any(|phrase| value.contains(phrase));
+    if advisory_opening || advisory_change_question {
+        return false;
+    }
     [
         "create",
         "make",
@@ -300,7 +392,7 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
             "model_requested" => json!({"provider": data["provider"], "model": data["model"]}),
             "tool_proposed" => json!({"tool": data["tool"]}),
             "approval_resolved" => json!({"approved": data["approved"]}),
-            "tool_completed" => json!({"is_error": data["is_error"]}),
+            "tool_completed" => json!({"tool": data["tool"], "is_error": data["is_error"]}),
             "context_compacted" => json!({"original_chars": data["original_chars"], "retained_chars": data["retained_chars"]}),
             "skill_loaded" => json!({"name": data["name"]}),
             "task_delegated" => json!({"destination": data["destination"]}),
@@ -310,13 +402,16 @@ fn sanitized_events(session_id: &str) -> Vec<Value> {
     }).collect()
 }
 
-fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
+pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
     let raw_type = item["type"].as_str().unwrap_or("agent_progress");
     let event_type = match raw_type {
         "tool_start" | "tool_started" => "tool_started",
         "tool_complete" | "tool_completed" => "tool_completed",
         "model_start" | "model_requested" => "model_requested",
         "model_complete" | "model_completed" => "model_turn_completed",
+        "model_response_received" => "model_turn_completed",
+        "model_failed" => "model_failed",
+        "assistant_snapshot" => "assistant_snapshot",
         "skills_selected" => "skills_selected",
         "skills_unavailable" => "skills_unavailable",
         _ => "agent_progress",
@@ -328,22 +423,45 @@ fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    let activity = item["data"]["activity"].as_str().unwrap_or("");
+    let action = match activity {
+        "skill_discovery" => "Finding relevant Hermes skills",
+        "skill_load" => "Loading Hermes skill instructions",
+        "build" => "Building the project",
+        "test" => "Running tests",
+        "lint" => "Checking code quality",
+        "dependencies" => "Installing project dependencies",
+        "run" => "Running the program",
+        "write" => "Updating project files",
+        "inspect" => "Inspecting the codebase",
+        "research" => "Looking up information",
+        "command" => "Running a local command",
+        _ => "Running a project tool",
+    };
+    let success = item["data"]["success"].as_bool();
     json!({
         "sequence": sequence,
         "event": {
             "type": event_type,
             "summary": match tool {
+                _ if event_type == "tool_started" && !activity.is_empty() => action.to_string(),
+                _ if event_type == "tool_completed" && !activity.is_empty() => format!("{} — {}", action, match success {Some(true)=>"succeeded",Some(false)=>"failed",None=>"finished"}),
                 Some(name) if event_type == "tool_started" => format!("Running {name}"),
-                Some(name) if event_type == "tool_completed" => format!("Completed {name}"),
+                Some(name) if event_type == "tool_completed" => format!("{} — {}", name, if success == Some(false) {"failed"} else {"finished"}),
                 _ if event_type == "skills_selected" && !skills.is_empty() => format!(
                     "Using {}",
                     skills.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
                 ),
                 _ if event_type == "model_requested" => "Asking the model for the next step".to_string(),
-                _ if event_type == "model_turn_completed" => "Model step completed".to_string(),
+                _ if event_type == "model_turn_completed" => "Model response received".to_string(),
+                _ if event_type == "model_failed" => "Model connection failed".to_string(),
                 _ => "Hermes is working".to_string(),
             },
-            "metadata": {"tool": tool, "skills": skills, "source_type": raw_type}
+            "metadata": {"tool": tool, "skills": skills, "source_type": raw_type,
+                "activity": activity, "success": success, "verification": item["data"]["verification"].as_bool(),
+                "call_id": item["data"]["call_id"].as_str(),
+                "text": if event_type == "assistant_snapshot" { item["data"]["text"].as_str() } else { None },
+                "truncated": event_type == "assistant_snapshot" && item["data"]["truncated"].as_bool().unwrap_or(false)}
         }
     })
 }
@@ -559,6 +677,48 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let workspace_relative = task["workspace_relative"].as_str();
     let task_workspace =
         bounded_task_workspace(&options.workspace, workspace_relative, allow_mutations)?;
+
+    if let Some(body) = prompt.strip_prefix(project_browser::PREFIX) {
+        if workspace_relative.is_none() { return Err("Project operations require a project".into()); }
+        let request: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let result = project_browser::execute(&task_workspace, &request, allow_mutations)?;
+        post_remote(&options.chat_url, &options.token,
+            &format!("/api/agent/connector/tasks/{task_id}/complete"),
+            json!({"status": "completed", "result": result}))?;
+        return Ok(());
+    }
+
+    // Project creation is a filesystem operation, not a model turn.  Keeping it
+    // in the connector protocol makes the browser wait for proof that the
+    // directory exists instead of optimistically creating browser-only state.
+    if prompt == PROJECT_INITIALIZE_PROMPT {
+        post_task_events(
+            options,
+            &task_id,
+            vec![json!({
+                "sequence": 1,
+                "event": {
+                    "type": "project_initialized",
+                    "summary": "Project folder created on this computer",
+                    "metadata": {"workspace": task_workspace.display().to_string()}
+                }
+            })],
+        )?;
+        post_remote(
+            &options.chat_url,
+            &options.token,
+            &format!("/api/agent/connector/tasks/{task_id}/complete"),
+            json!({"status": "completed", "result": {
+                "content": "Project folder is ready",
+                "session_id": session_id,
+                "workspace": task_workspace.display().to_string(),
+                "changed_files": [],
+                "skills": [],
+                "verified": true
+            }}),
+        )?;
+        return Ok(());
+    }
     let before_files = workspace_snapshot(&task_workspace);
     post_task_events(
         options,
@@ -593,6 +753,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             }
         })
         .unwrap_or_else(|| prompt.clone());
+    let bounded_prompt = format!("{}\n\n{}", project_browser::guidance(&task_workspace)?, bounded_prompt);
     let stop = Arc::new(AtomicBool::new(false));
     let heartbeat_stop = Arc::clone(&stop);
     let heartbeat_url = options.chat_url.clone();
@@ -631,11 +792,13 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         streamed_event_sequence += 1;
         let _ = post_task_events(options, &task_id, vec![mapped]);
     };
-    let mut response = if runtime == "hermes" {
-        let mut result = Err("Hermes did not start".to_string());
-        for attempt in 0..4 {
-            result = super::hermes_adapter::run(
-                &bounded_prompt,
+    let mut run_hermes_with_recovery = |initial_prompt: &str| {
+        const HARNESS_RECOVERY_ATTEMPTS: usize = 12;
+        let mut resume_prompt = initial_prompt.to_string();
+        let mut last_error = String::new();
+        for attempt in 0..HARNESS_RECOVERY_ATTEMPTS {
+            match super::hermes_adapter::run(
+                &resume_prompt,
                 &session_id,
                 &task_workspace,
                 &super::data_dir(),
@@ -648,30 +811,60 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     connection_id,
                 )),
                 Some(&mut stream_hermes_event),
-            );
-            let retry = result
-                .as_ref()
-                .err()
-                .map(|error| transient_agent_failure(error))
-                .unwrap_or(false);
-            if !retry || attempt == 3 || stop.load(Ordering::Relaxed) {
-                break;
-            }
-            let _ = post_task_events(
-                options,
-                &task_id,
-                vec![json!({
-                    "sequence": 10 + attempt,
-                    "event": {
-                        "type": "model_turn_retrying",
-                        "summary": "The model service was interrupted; Hermes is resuming automatically",
-                        "metadata": {"attempt": attempt + 2}
+            ) {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if super::hermes_adapter::is_retryable_model_failure(&error)
+                        && attempt + 1 < HARNESS_RECOVERY_ATTEMPTS
+                        && !stop.load(Ordering::Relaxed) =>
+                {
+                    // Preserve completed tool turns across transient gateway
+                    // failures. Rebuild only when the provider says the saved
+                    // conversation itself is invalid or over its context limit.
+                    let rebuilding =
+                        super::hermes_adapter::should_rebuild_session_after_failure(&error);
+                    last_error = error;
+                    if rebuilding {
+                        super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
                     }
-                })],
-            );
-            thread::sleep(Duration::from_secs(2 * (attempt + 1) as u64));
+                    let delay_seconds = (2_u64.pow(attempt as u32)).min(30);
+                    let _ = post_task_events(
+                        options,
+                        &task_id,
+                        vec![json!({
+                            "sequence": 10_000 + attempt,
+                            "event": {
+                                "type": "model_turn_recovering",
+                                "summary": if rebuilding {
+                                    format!("EHDA rejected the saved context; Hermes is rebuilding it automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                } else {
+                                    format!("EHDA is temporarily unavailable; Hermes preserved its tool progress and will continue automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                },
+                                "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds, "session_preserved": !rebuilding}
+                            }
+                        })],
+                    );
+                    for _ in 0..delay_seconds {
+                        if stop.load(Ordering::Relaxed) {
+                            return Err("Hermes task was cancelled".to_string());
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                    resume_prompt = if rebuilding {
+                        format!(
+                            "Resume the existing Hermes project task after rebuilding an invalid model context. Continue from the files already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
+                        )
+                    } else {
+                        "Continue the interrupted project task from the preserved Hermes session and existing tool results. Do not restart or repeat completed work.".to_string()
+                    };
+                }
+                Err(error) => return Err(error),
+            }
         }
-        result
+        Err(last_error)
+    };
+    let mut response = if runtime == "hermes" {
+        run_hermes_with_recovery(&bounded_prompt)
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
             Ok(value) => Ok(value),
@@ -712,21 +905,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             let correction = format!(
                 "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
             );
-            response = super::hermes_adapter::run(
-                &correction,
-                &session_id,
-                &task_workspace,
-                &super::data_dir(),
-                true,
-                Some(stop.as_ref()),
-                Some((
-                    &format!("{}/api/agent/model/v1", options.chat_url),
-                    &options.token,
-                    &task_id,
-                    connection_id,
-                )),
-                Some(&mut stream_hermes_event),
-            );
+            response = run_hermes_with_recovery(&correction);
         }
         if response.is_ok() && workspace_snapshot(&task_workspace) == before_files {
             response = Err(
@@ -807,6 +986,17 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     Ok(())
 }
 
+fn run_and_report(options: &ConnectorOptions, connection_id: &str, task: &Value) {
+    if let Err(error) = run_task(options, connection_id, task) {
+        eprintln!("local task failed: {error}");
+        if let Some(task_id) = task["task_id"].as_str() {
+            let _ = post_remote(&options.chat_url, &options.token,
+                &format!("/api/agent/connector/tasks/{task_id}/complete"),
+                json!({"status":"failed", "error":error}));
+        }
+    }
+}
+
 pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
     let _instance = acquire_connector_instance()?;
     fs::create_dir_all(&options.workspace)
@@ -815,14 +1005,16 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
     // Fresh browser approval may intentionally bind this installation to a
     // different account. Rotate the device identity so server-side ownership
     // protection does not mistake that authorized rebind for account theft.
-    let connection_id = connection_id(data_dir, options.reauthorize)?;
+    let device_id = persistent_device_id(data_dir)?;
+    let mut connection_id = connection_id(data_dir, options.reauthorize)?;
     if options.token.trim().is_empty() && !options.reauthorize {
         options.token = saved_token(data_dir, &options.chat_url).unwrap_or_default();
     }
     if options.token.trim().is_empty() {
-        options.token = bootstrap_token(&options.chat_url, &options.device_name)?;
+        options.token = bootstrap_token(&options.chat_url, &options.device_name, &device_id)?;
         save_token(data_dir, &options.chat_url, &options.token)?;
     }
+    start_connector_watchdog();
     let selected = super::selected_agent();
     if matches!(selected, super::AgentSelection::None) {
         return Err("no local agent is selected; choose one with `mundusx agent use native` or `mundusx agent use hermes` before connecting".to_string());
@@ -831,15 +1023,17 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
     if super::hermes_adapter::available() {
         runtimes.push("hermes");
     }
-    post_remote(
+    let registration = post_remote(
         &options.chat_url,
         &options.token,
         "/api/agent/connector/register",
         json!({
             "connection_id": connection_id,
+            "device_id": device_id,
             "device_name": options.device_name,
             "capabilities": {
                 "protocol": "mundusx-agent-bridge/v1",
+                "project_browser": true,
                 "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
                 "mutations": false,
                 "agent_runtimes": runtimes,
@@ -847,6 +1041,10 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             }
         }),
     )?;
+    if let Some(canonical) = registration["connection_id"].as_str() {
+        save_connection_id(data_dir, canonical)?;
+        connection_id = canonical.to_string();
+    }
     if options.authorize_only {
         eprintln!("MundusX Chat connection approved. The background app will keep it online.");
         return Ok(());
@@ -855,16 +1053,25 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
         "Connected local MundusX agent to {}. Press Ctrl+C to stop.",
         options.chat_url
     );
+    let mut worker: Option<thread::JoinHandle<()>> = None;
     loop {
+        if worker.as_ref().is_some_and(|handle| handle.is_finished()) {
+            if let Some(handle) = worker.take() { let _ = handle.join(); }
+        }
         match post_remote(
             &options.chat_url,
             &options.token,
             "/api/agent/connector/tasks/next",
-            json!({"connection_id": connection_id}),
+            json!({"connection_id": connection_id, "project_requests_only": worker.is_some()}),
         ) {
             Ok(payload) if !payload["task"].is_null() => {
-                if let Err(error) = run_task(&options, &connection_id, &payload["task"]) {
-                    eprintln!("local task failed: {error}");
+                let task = payload["task"].clone();
+                if task["prompt"].as_str().unwrap_or("").starts_with(project_browser::PREFIX) {
+                    run_and_report(&options, &connection_id, &task);
+                } else {
+                    let task_options = options.clone();
+                    let task_connection = connection_id.clone();
+                    worker = Some(thread::spawn(move || run_and_report(&task_options, &task_connection, &task)));
                 }
             }
             Ok(_) => thread::sleep(Duration::from_secs(2)),
@@ -884,6 +1091,62 @@ mod tests {
         successful_verification, transient_agent_failure, validate_chat_url, workspace_snapshot,
     };
     use std::fs;
+
+    #[test]
+    fn progress_preserves_observed_outcomes_without_command_contents() {
+        let event = structured_hermes_event(&serde_json::json!({"type":"tool_completed","data":{
+            "tool":"terminal", "activity":"test", "verification":true, "success":false,
+            "call_id":"step-a", "command":"secret command", "output":"private output"
+        }}), 4);
+        assert_eq!(event["event"]["metadata"]["success"], false);
+        assert_eq!(event["event"]["metadata"]["verification"], true);
+        assert_eq!(event["event"]["metadata"]["activity"], "test");
+        assert!(event["event"]["summary"].as_str().unwrap().contains("failed"));
+        assert!(!event.to_string().contains("secret command"));
+        assert!(!event.to_string().contains("private output"));
+    }
+
+    #[test]
+    fn watchdog_allows_normal_requests_and_retries_but_detects_stalls() {
+        assert!(!super::connector_stalled(std::time::Duration::from_secs(
+            35
+        )));
+        assert!(!super::connector_stalled(std::time::Duration::from_secs(
+            179
+        )));
+        assert!(super::connector_stalled(std::time::Duration::from_secs(
+            180
+        )));
+        assert!(super::connector_stalled(std::time::Duration::from_secs(
+            600
+        )));
+    }
+
+    #[test]
+    fn watchdog_exits_stalled_process_but_preserves_active_heartbeats() {
+        const MODE: &str = "MUNDUSX_WATCHDOG_TEST_MODE";
+        if let Ok(mode) = std::env::var(MODE) {
+            super::start_watchdog(
+                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(10),
+            );
+            if mode == "active" {
+                for _ in 0..50 {
+                    super::record_connector_activity();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                std::process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            panic!("stalled connector was not stopped");
+        }
+        for (mode, expected) in [("stalled", 75), ("active", 0)] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "chat_connector::tests::watchdog_exits_stalled_process_but_preserves_active_heartbeats"])
+                .env(MODE, mode).status().unwrap();
+            assert_eq!(status.code(), Some(expected));
+        }
+    }
 
     #[test]
     fn connector_requires_secure_remote_transport() {
@@ -926,6 +1189,25 @@ mod tests {
         assert!(bounded_task_workspace(&root, Some("../escape"), true).is_err());
         assert!(bounded_task_workspace(&root, Some("Bad-Name"), true).is_err());
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn device_identity_survives_reauthorization_and_adopts_existing_installation() {
+        use super::{persistent_device_id, save_token, save_connection_id, saved_token};
+        use uuid::Uuid;
+        let root = std::env::temp_dir().join(format!("mundusx-device-{}", Uuid::new_v4()));
+        let original = connection_id(&root, false).unwrap();
+        let device = persistent_device_id(&root).unwrap();
+        assert_eq!(device, original);
+        save_token(&root, "https://chat.mundusx.ai", "test-only-credential").unwrap();
+        let new_connection = connection_id(&root, true).unwrap();
+        assert_ne!(new_connection, original);
+        assert_eq!(persistent_device_id(&root).unwrap(), device);
+        save_connection_id(&root, &original).unwrap();
+        assert_eq!(connection_id(&root, false).unwrap(), original);
+        assert_eq!(persistent_device_id(&root).unwrap(), device);
+        assert_eq!(saved_token(&root, "https://chat.mundusx.ai").as_deref(), Some("test-only-credential"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
