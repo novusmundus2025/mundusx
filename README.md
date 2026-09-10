@@ -19,6 +19,11 @@ WebUI. See [docs/mundusx-agent.md](docs/mundusx-agent.md).
 
 MundusX exists to make AI more accessible, affordable, and collaborative by allowing individuals, enterprises, and organizations to contribute available compute resources.
 
+## Support
+
+If MundusX helps your work, you can support the public project through
+[Buy Me a Coffee](https://www.buymeacoffee.com/mundusx).
+
 ## What MundusX Provides
 
 - Distributed AI compute orchestration
