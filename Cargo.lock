@@ -967,6 +967,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "hex",
+ "libc",
  "mundusx-agent-core",
  "rand_core",
  "serde",

@@ -46,18 +46,25 @@ jobs:
       - name: Build node agent
         run: cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target ${{ env.TARGET }}
 
+      - name: Build Chat agent server
+        run: cargo build --release --manifest-path apps/agent-server/Cargo.toml --target ${{ env.TARGET }}
+
       - name: Prepare binaries
         shell: bash
         run: |
           cp "target/${TARGET}/release/${EXECUTABLE_NAME}" "${BINARY_NAME}"
           cp "target/${TARGET}/release/${AGENT_EXECUTABLE_NAME}" "${AGENT_BINARY_NAME}"
-          chmod +x "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
+          cp "target/${TARGET}/release/mundusx" "mundusx-${TARGET}"
+          cp "target/${TARGET}/release/mundusx-agent-server" "mundusx-agent-server-${TARGET}"
+          chmod +x "${BINARY_NAME}" "${AGENT_BINARY_NAME}" "mundusx-${TARGET}" "mundusx-agent-server-${TARGET}"
 
       - name: Generate checksums
         shell: bash
         run: |
           shasum -a 256 "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
           shasum -a 256 "${AGENT_BINARY_NAME}" > "${AGENT_BINARY_NAME}.sha256"
+          shasum -a 256 "mundusx-${TARGET}" > "mundusx-${TARGET}.sha256"
+          shasum -a 256 "mundusx-agent-server-${TARGET}" > "mundusx-agent-server-${TARGET}.sha256"
 
       - name: Verify checksums
         shell: bash
@@ -105,6 +112,10 @@ jobs:
             ${{ env.BINARY_NAME }}.sha256
             ${{ env.AGENT_BINARY_NAME }}
             ${{ env.AGENT_BINARY_NAME }}.sha256
+            mundusx-${{ env.TARGET }}
+            mundusx-${{ env.TARGET }}.sha256
+            mundusx-agent-server-${{ env.TARGET }}
+            mundusx-agent-server-${{ env.TARGET }}.sha256
             ${{ env.PKG_NAME }}
             ${{ env.PKG_NAME }}.sha256
             release-manifest.json

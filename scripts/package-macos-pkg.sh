@@ -34,9 +34,14 @@ command -v pkgbuild >/dev/null 2>&1 || die "pkgbuild is required; run this on ma
 binary_path="$artifact_dir/$binary_name"
 agent_binary_path="$artifact_dir/$agent_binary_name"
 pkg_path="$artifact_dir/$pkg_name"
+connector_binary_path="$artifact_dir/mundusx-${binary_name#opengpu-}"
+server_binary_path="$artifact_dir/mundusx-agent-server-${binary_name#opengpu-}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 [ -f "$binary_path" ] || die "missing CLI binary: $binary_path"
 [ -f "$agent_binary_path" ] || die "missing node-agent binary: $agent_binary_path"
+[ -f "$connector_binary_path" ] || die "missing Chat connector: $connector_binary_path"
+[ -f "$server_binary_path" ] || die "missing agent server: $server_binary_path"
 
 work_dir="$(mktemp -d)"
 cleanup() {
@@ -51,7 +56,11 @@ mkdir -p "$install_bin_dir" "$scripts_dir"
 
 cp "$binary_path" "$install_bin_dir/opengpu"
 cp "$agent_binary_path" "$install_bin_dir/opengpu-node-agent"
-chmod 0755 "$install_bin_dir/opengpu" "$install_bin_dir/opengpu-node-agent"
+cp "$connector_binary_path" "$install_bin_dir/mundusx"
+cp "$server_binary_path" "$install_bin_dir/mundusx-agent-server"
+chmod 0755 "$install_bin_dir/"*
+mkdir -p "$payload_dir/usr/local/lib/mundusx"
+cp "$repo_root/install.sh" "$payload_dir/usr/local/lib/mundusx/install-chat-service.sh"
 
 cat > "$scripts_dir/postinstall" <<'POSTINSTALL'
 #!/usr/bin/env bash
@@ -85,6 +94,10 @@ if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && [ "$(uname -m 2>/dev/null
   fi
 fi
 
+# Run service registration in the signed-in user's GUI domain, never as root.
+console_uid="$(id -u "$console_user")"
+launchctl asuser "$console_uid" sudo -H -u "$console_user" env INSTALL_DIR=/usr/local/bin \
+  /bin/bash /usr/local/lib/mundusx/install-chat-service.sh --configure-chat-service
 exit 0
 POSTINSTALL
 chmod 0755 "$scripts_dir/postinstall"
