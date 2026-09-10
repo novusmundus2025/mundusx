@@ -12,7 +12,9 @@ mod windows_tray {
         os::windows::{ffi::OsStrExt, process::CommandExt},
         path::PathBuf,
         process::{Child, Command, Stdio},
-        ptr, thread,
+        ptr,
+        sync::atomic::{AtomicBool, Ordering},
+        thread,
     };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
@@ -25,8 +27,8 @@ mod windows_tray {
             },
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-                DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW,
-                GetWindowLongPtrW, LoadIconW, LoadImageW, MoveWindow, PostMessageW,
+                DestroyWindow, DispatchMessageW, FindWindowW, GetClientRect, GetCursorPos,
+                GetMessageW, GetWindowLongPtrW, LoadIconW, LoadImageW, MoveWindow, PostMessageW,
                 PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
                 SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, CREATESTRUCTW,
                 CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA,
@@ -43,6 +45,8 @@ mod windows_tray {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const TRAY_MESSAGE: u32 = WM_APP + 1;
     const DASHBOARD_RESULT_MESSAGE: u32 = WM_APP + 2;
+    const RECONNECT_MESSAGE: u32 = WM_APP + 3;
+    static RECONNECT_REQUESTED: AtomicBool = AtomicBool::new(false);
     static mut DASHBOARD_HWND: HWND = ptr::null_mut();
     const OUTPUT_CLOSE: usize = 2001;
     const DASH_REFRESH: usize = 3001;
@@ -147,6 +151,10 @@ mod windows_tray {
         thread::spawn(|| {
             let mut child: Option<Child> = None;
             loop {
+                // Reconnect means ensure the saved connection is running. Never
+                // kill a live connector: it may own an active Hermes task. The
+                // connector retries network failures and has its own stall watchdog.
+                let _reconnect = RECONNECT_REQUESTED.swap(false, Ordering::SeqCst);
                 let configured = chat_connector_is_configured();
                 if configured {
                     let stopped = match child.as_mut() {
@@ -1318,6 +1326,10 @@ mod windows_tray {
         lparam: LPARAM,
     ) -> LRESULT {
         match message {
+            RECONNECT_MESSAGE => {
+                RECONNECT_REQUESTED.store(true, Ordering::SeqCst);
+                0
+            }
             WM_CREATE => {
                 let create = lparam as *const CREATESTRUCTW;
                 if !create.is_null() {
@@ -1404,6 +1416,17 @@ mod windows_tray {
     }
 
     pub fn run() -> Result<(), String> {
+        let arguments: Vec<String> = std::env::args().skip(1).collect();
+        let reconnect = reconnect_request(&arguments)?;
+        unsafe {
+            let existing = FindWindowW(wide("MundusXContributorTrayWindow").as_ptr(), ptr::null());
+            if !existing.is_null() {
+                if reconnect {
+                    PostMessageW(existing, RECONNECT_MESSAGE, 0, 0);
+                }
+                return Ok(());
+            }
+        }
         supervise_chat_connector();
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
@@ -1453,9 +1476,44 @@ mod windows_tray {
         }
     }
 
+    fn reconnect_request(arguments: &[String]) -> Result<bool, String> {
+        if arguments.is_empty() {
+            return Ok(false);
+        }
+        if arguments.len() == 2
+            && arguments[0] == "--reconnect"
+            && matches!(
+                arguments[1].to_ascii_lowercase().as_str(),
+                "mundusx://reconnect" | "mundusx://reconnect/"
+            )
+        {
+            return Ok(true);
+        }
+        Err("Unsupported MundusX app action".to_string())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::powershell_cli_command;
+
+        #[test]
+        fn reconnect_only_accepts_the_fixed_app_action() {
+            assert_eq!(super::reconnect_request(&[]), Ok(false));
+            for uri in ["mundusx://reconnect", "mundusx://reconnect/"] {
+                assert_eq!(
+                    super::reconnect_request(&["--reconnect".into(), uri.into()]),
+                    Ok(true)
+                );
+            }
+            for uri in [
+                "https://chat.mundusx.ai",
+                "mundusx://reconnect?command=run",
+                "mundusx://run",
+                "mundusx://reconnect/other",
+            ] {
+                assert!(super::reconnect_request(&["--reconnect".into(), uri.into()]).is_err());
+            }
+        }
 
         #[test]
         fn powershell_command_keeps_multi_arg_cli_commands() {
