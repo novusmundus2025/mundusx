@@ -151,12 +151,10 @@ mod windows_tray {
         thread::spawn(|| {
             let mut child: Option<Child> = None;
             loop {
-                if RECONNECT_REQUESTED.swap(false, Ordering::SeqCst) {
-                    if let Some(mut process) = child.take() {
-                        let _ = process.kill();
-                        let _ = process.wait();
-                    }
-                }
+                // Reconnect means ensure the saved connection is running. Never
+                // kill a live connector: it may own an active Hermes task. The
+                // connector retries network failures and has its own stall watchdog.
+                let _reconnect = RECONNECT_REQUESTED.swap(false, Ordering::SeqCst);
                 let configured = chat_connector_is_configured();
                 if configured {
                     let stopped = match child.as_mut() {
