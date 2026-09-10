@@ -1,0 +1,15 @@
+name: MundusX Chat
+version: 1.0.0
+schema: v1
+models:
+  - name: mundusx-agnostic
+    provider: openai
+    model: mundusx-agnostic
+    apiBase: https://chat.mundusx.ai/v1
+    useResponsesApi: false
+    roles:
+      - chat
+      - edit
+      - apply
+    defaultCompletionOptions:
+      contextLength: 131072
