@@ -60,7 +60,7 @@ impl Drop for ConnectorInstance {
 }
 
 #[cfg(windows)]
-fn acquire_connector_instance() -> Result<ConnectorInstance, String> {
+fn acquire_connector_instance(_data_dir: &Path) -> Result<ConnectorInstance, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
         Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
@@ -81,9 +81,18 @@ fn acquire_connector_instance() -> Result<ConnectorInstance, String> {
     Ok(ConnectorInstance(handle))
 }
 
-#[cfg(not(windows))]
-fn acquire_connector_instance() -> Result<(), String> {
-    Ok(())
+#[cfg(unix)]
+fn acquire_connector_instance(data_dir: &Path) -> Result<fs::File, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::create_dir_all(data_dir).map_err(|e| format!("could not create connector directory: {e}"))?;
+    let file = fs::OpenOptions::new().read(true).write(true).create(true).mode(0o600)
+        .open(data_dir.join("connector.lock")).map_err(|e| format!("could not open connector lock: {e}"))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("the MundusX Chat connector is already running or its lock is unavailable".into());
+    }
+    // The OS releases the advisory lock on exit, including crashes. Never unlink it.
+    Ok(file)
 }
 
 #[derive(Clone)]
@@ -970,7 +979,7 @@ fn run_and_report(options: &ConnectorOptions, connection_id: &str, task: &Value)
 }
 
 pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), String> {
-    let _instance = acquire_connector_instance()?;
+    let _instance = acquire_connector_instance(data_dir)?;
     fs::create_dir_all(&options.workspace)
         .map_err(|error| format!("could not create connector workspace: {error}"))?;
     save_workspace(data_dir, &options.workspace)?;
@@ -1118,6 +1127,18 @@ mod tests {
                 .env(MODE, mode).status().unwrap();
             assert_eq!(status.code(), Some(expected));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connector_lock_prevents_duplicates_and_releases_on_exit() {
+        let dir = std::env::temp_dir().join(format!("mx-lock-{}", uuid::Uuid::new_v4()));
+        let first = super::acquire_connector_instance(&dir).unwrap();
+        assert!(super::acquire_connector_instance(&dir).is_err());
+        drop(first);
+        let second = super::acquire_connector_instance(&dir).unwrap();
+        drop(second);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

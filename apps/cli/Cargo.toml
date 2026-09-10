@@ -34,3 +34,6 @@ windows-sys = { version = "0.59", features = [
   "Win32_Security_Cryptography",
   "Win32_System_Threading",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
