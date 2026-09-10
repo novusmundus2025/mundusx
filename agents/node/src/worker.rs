@@ -1,3 +1,5 @@
+#[path = "native_stream.rs"]
+mod native_stream;
 use crate::contracts::{
     Backend, ModelCapability, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
     WorkerPolicyReport,
@@ -2124,7 +2126,8 @@ fn run_native_openai_tool_turn(
     let mut payload: serde_json::Value = serde_json::from_str(raw)
         .map_err(|error| format!("native OpenAI tool turn is invalid JSON: {error}"))?;
     payload["model"] = serde_json::Value::String(model.to_string());
-    payload["stream"] = serde_json::Value::Bool(false);
+    let streaming = live_delta_enabled();
+    payload["stream"] = serde_json::Value::Bool(streaming);
     let response = ureq::post(&format!(
         "{}/v1/chat/completions",
         url.trim_end_matches('/')
@@ -2132,10 +2135,51 @@ fn run_native_openai_tool_turn(
     .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
     .send_json(payload)
     .map_err(|error| format!("native OpenAI tool completion failed: {error}"))?;
+    if streaming {
+        return parse_native_openai_stream(BufReader::new(response.into_reader()));
+    }
     let value = response
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("native OpenAI tool completion returned invalid JSON: {error}"))?;
     normalize_native_openai_tool_response(&value)
+}
+
+fn parse_native_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
+    let mut assembled = native_stream::NativeStream::default();
+    let mut reason = None;
+    let mut done = false;
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("native stream read failed: {e}"))?;
+        let Some(data) = line.strip_prefix("data:") else { continue; };
+        let data = data.trim();
+        if data == "[DONE]" { done = true; break; }
+        if data.is_empty() { continue; }
+        let chunk: serde_json::Value = serde_json::from_str(data).map_err(|e| format!("invalid native stream JSON: {e}"))?;
+        if let Some(error) = chunk.get("error") { return Err(format!("native stream error: {error}")); }
+        if let Some(finish) = chunk.pointer("/choices/0/finish_reason").and_then(|v| v.as_str()) { reason = Some(finish.to_owned()); }
+        if let Some(raw) = chunk.pointer("/choices/0/delta") {
+            // Forward only public assistant fields, excluding reasoning and runtime metadata.
+            let mut delta = serde_json::json!({});
+            for key in ["role", "content", "tool_calls"] {
+                if let Some(value) = raw.get(key).filter(|v| !v.is_null()) { delta[key] = value.clone(); }
+            }
+            assembled.push(&delta)?;
+            if delta != serde_json::json!({}) { emit_stream_delta(&delta.to_string()); }
+        }
+    }
+    if !done || reason.is_none() { return Err("native stream ended before terminal event".into()); }
+    let message = assembled.message();
+    if let Some(calls) = message["tool_calls"].as_array() {
+        if reason.as_deref() == Some("length") { return Err("native tool call exceeded generation limit".into()); }
+        for call in calls {
+            if call["id"].as_str().unwrap_or_default().is_empty() || call["function"]["name"].as_str().unwrap_or_default().is_empty() {
+                return Err("native tool call is missing its id or name".into());
+            }
+            serde_json::from_str::<serde_json::Value>(call["function"]["arguments"].as_str().unwrap_or_default())
+                .map_err(|e| format!("native tool arguments are incomplete: {e}"))?;
+        }
+    }
+    normalize_native_openai_tool_response(&serde_json::json!({"choices":[{"message":message,"finish_reason":reason.unwrap()}]}))
 }
 
 fn normalize_native_openai_tool_response(value: &serde_json::Value) -> Result<String, String> {
@@ -5158,5 +5202,50 @@ mod tests {
 
             assert!(error.contains("pinned runtime path must be absolute"));
         });
+    }
+}
+
+#[cfg(test)]
+mod native_delta_tests {
+    use super::*;
+    #[test]
+    fn native_parser_forwards_fragments_and_returns_complete_envelope() {
+        let frames = [
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"text\":\""}}]}}]}),
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hello\"}"}}]},"finish_reason":"tool_calls"}]})
+        ];
+        let wire = frames.iter().map(|v| format!("data: {v}\n\n")).collect::<String>() + "data: [DONE]\n\n";
+        let (tx, rx) = mpsc::channel();
+        let result = with_stream_delta_sender(Some(tx), || parse_native_openai_stream(std::io::Cursor::new(wire))).unwrap();
+        let fragments: Vec<_> = rx.try_iter().collect();
+        assert_eq!(fragments.len(), 2);
+        assert!(fragments[1].contains("hello"));
+        let final_value: serde_json::Value = serde_json::from_str(result.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap()).unwrap();
+        assert_eq!(final_value["message"]["tool_calls"][0]["function"]["arguments"], "{\"text\":\"hello\"}");
+    }
+    #[test]
+    fn native_fragment_arrives_before_model_finishes() {
+        struct Gate { release: mpsc::Receiver<()>, tail: std::io::Cursor<Vec<u8>>, opened: bool }
+        impl std::io::Read for Gate {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                if !self.opened { self.release.recv_timeout(Duration::from_secs(5)).unwrap(); self.opened = true; }
+                self.tail.read(out)
+            }
+        }
+        let first = std::io::Cursor::new(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n".to_vec());
+        let tail = std::io::Cursor::new(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_vec());
+        let (release, gate) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || with_stream_delta_sender(Some(tx), ||
+            parse_native_openai_stream(BufReader::new(first.chain(Gate { release:gate, tail, opened:false })))));
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().contains("Hello"));
+        assert!(!worker.is_finished());
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_ok());
+    }
+    #[test]
+    fn native_parser_rejects_truncated_and_failed_streams() {
+        assert!(parse_native_openai_stream(std::io::Cursor::new("data: {\"choices\":[]}\n\n")).is_err());
+        assert!(parse_native_openai_stream(std::io::Cursor::new("data: {\"error\":{\"message\":\"failed\"}}\n\n")).is_err());
     }
 }
