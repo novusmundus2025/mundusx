@@ -1043,6 +1043,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             "capabilities": {
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
+                "project_git": true,
                 "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
                 "mutations": false,
                 "agent_runtimes": runtimes,
