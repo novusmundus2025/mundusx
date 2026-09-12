@@ -317,7 +317,7 @@ fi
 download_to() {
   local source="$1"
   local output="$2"
-  local label="$3"
+  local label="${3:-$(basename "$output")}"
   local started_at
   local finished_at
   local elapsed
