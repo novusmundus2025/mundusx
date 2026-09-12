@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const RELEASES_API_URL: &str = "https://api.github.com/repos/mundusx/releases/releases?per_page=50";
+const PRODUCTION_RELEASE_BASE_URL: &str =
+    "https://github.com/mundusx/releases/releases/download/opengpu-prod";
 
 struct StagedBinary {
     path: PathBuf,
@@ -72,19 +74,53 @@ fn resolve_release_assets(target: &str) -> Result<ReleaseAssets, String> {
     let cli_name = format!("opengpu-{target}");
     let agent_name = format!("opengpu-node-agent-{target}");
     if let Ok(base_url) = env::var("OPENGPU_RELEASE_BASE_URL") {
-        let base = base_url.trim_end_matches('/');
-        return Ok(ReleaseAssets {
-            tag: "custom".to_string(),
-            cli_url: format!("{base}/{cli_name}"),
-            cli_checksum_url: format!("{base}/{cli_name}.sha256"),
-            agent_url: format!("{base}/{agent_name}"),
-            agent_checksum_url: format!("{base}/{agent_name}.sha256"),
-        });
+        if !base_url.trim().is_empty() {
+            return Ok(release_assets_from_base(
+                &base_url,
+                "custom",
+                &cli_name,
+                &agent_name,
+            ));
+        }
     }
 
-    let releases = String::from_utf8(download(RELEASES_API_URL)?)
-        .map_err(|_| "GitHub releases API returned invalid UTF-8".to_string())?;
-    parse_linux_release_assets(&releases, &cli_name, &agent_name)
+    let discovered = download(RELEASES_API_URL)
+        .and_then(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|_| "GitHub releases API returned invalid UTF-8".to_string())
+        })
+        .and_then(|releases| parse_linux_release_assets(&releases, &cli_name, &agent_name));
+
+    match discovered {
+        Ok(assets) => Ok(assets),
+        Err(error) => {
+            eprintln!(
+                "updateNotice: release discovery failed ({error}); using the verified production channel"
+            );
+            Ok(release_assets_from_base(
+                PRODUCTION_RELEASE_BASE_URL,
+                "opengpu-prod",
+                &cli_name,
+                &agent_name,
+            ))
+        }
+    }
+}
+
+fn release_assets_from_base(
+    base_url: &str,
+    tag: &str,
+    cli_name: &str,
+    agent_name: &str,
+) -> ReleaseAssets {
+    let base = base_url.trim().trim_end_matches('/');
+    ReleaseAssets {
+        tag: tag.to_string(),
+        cli_url: format!("{base}/{cli_name}"),
+        cli_checksum_url: format!("{base}/{cli_name}.sha256"),
+        agent_url: format!("{base}/{agent_name}"),
+        agent_checksum_url: format!("{base}/{agent_name}.sha256"),
+    }
 }
 
 fn parse_linux_release_assets(
@@ -244,7 +280,10 @@ fn set_executable(_path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_linux_release_assets, release_target, verify_checksum};
+    use super::{
+        parse_linux_release_assets, release_assets_from_base, release_target, verify_checksum,
+        PRODUCTION_RELEASE_BASE_URL,
+    };
     use sha2::{Digest, Sha256};
 
     #[test]
@@ -259,6 +298,25 @@ mod tests {
         );
         assert!(release_target("linux", "riscv64").is_err());
         assert!(release_target("macos", "aarch64").is_err());
+    }
+
+    #[test]
+    fn production_fallback_uses_stable_architecture_specific_assets() {
+        let assets = release_assets_from_base(
+            PRODUCTION_RELEASE_BASE_URL,
+            "opengpu-prod",
+            "opengpu-x86_64-unknown-linux-gnu",
+            "opengpu-node-agent-x86_64-unknown-linux-gnu",
+        );
+        assert_eq!(assets.tag, "opengpu-prod");
+        assert_eq!(
+            assets.cli_url,
+            "https://github.com/mundusx/releases/releases/download/opengpu-prod/opengpu-x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            assets.agent_checksum_url,
+            "https://github.com/mundusx/releases/releases/download/opengpu-prod/opengpu-node-agent-x86_64-unknown-linux-gnu.sha256"
+        );
     }
 
     #[test]
