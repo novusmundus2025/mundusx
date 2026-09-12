@@ -110,6 +110,27 @@ pub fn signed_post_json_body<T: Serialize, R: DeserializeOwned>(
     parse_json_body(&response)
 }
 
+pub fn signed_post_json_body_with_agent<T: Serialize, R: DeserializeOwned>(
+    agent: &ureq::Agent,
+    control_plane_url: &str,
+    path: &str,
+    node_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<R, String> {
+    let response = signed_request_with_agent(
+        agent,
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        payload,
+    )?;
+    parse_json_body(&response)
+}
+
 pub fn signed_runner_get_json<T: DeserializeOwned>(
     control_plane_url: &str,
     path: &str,
@@ -156,6 +177,29 @@ fn signed_request<T: Serialize>(
     identity: &DeviceIdentity,
     payload: &T,
 ) -> Result<String, String> {
+    let agent = request_agent();
+    signed_request_with_agent(
+        &agent,
+        control_plane_url,
+        method,
+        path,
+        identity_header,
+        identity_id,
+        identity,
+        payload,
+    )
+}
+
+fn signed_request_with_agent<T: Serialize>(
+    agent: &ureq::Agent,
+    control_plane_url: &str,
+    method: &str,
+    path: &str,
+    identity_header: &str,
+    identity_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<String, String> {
     let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let body = if method == "GET" {
         String::new()
@@ -174,7 +218,7 @@ fn signed_request<T: Serialize>(
         ("X-MundusX-Signature", signature),
     ];
     let payload = if method == "GET" { None } else { Some(body) };
-    send_request(method, &endpoint.url, headers, payload)
+    send_request_with_agent(agent, method, &endpoint.url, headers, payload)
 }
 
 fn unix_seconds_string() -> String {
@@ -202,6 +246,10 @@ fn request_timeout() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(5))
 }
 
+pub fn request_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout(request_timeout()).build()
+}
+
 fn control_plane_error(error: ureq::Error) -> String {
     match error {
         ureq::Error::Status(code, response) => {
@@ -226,8 +274,17 @@ fn send_request(
     headers: Vec<(&str, String)>,
     body: Option<String>,
 ) -> Result<String, String> {
-    let timeout = request_timeout();
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = request_agent();
+    send_request_with_agent(&agent, method, url, headers, body)
+}
+
+fn send_request_with_agent(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &str,
+    headers: Vec<(&str, String)>,
+    body: Option<String>,
+) -> Result<String, String> {
     let mut request = match method {
         "GET" => agent.get(url),
         "POST" => agent.post(url),

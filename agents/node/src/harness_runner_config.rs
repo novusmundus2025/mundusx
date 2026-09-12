@@ -90,7 +90,7 @@ impl Default for RunnerConfig {
             device_id: format!("runner-device-{}", &suffix[..16]),
             owner_user_id: String::new(),
             tenant_ids: vec!["owner:any".to_string()],
-            control_plane_url: "https://uat.mundusx.ai".to_string(),
+            control_plane_url: "https://mundusx.ai".to_string(),
             inference_model: default_inference_model(),
             parallel_slots: default_runner_slots(),
             usable_memory_mb: default_usable_memory_mb(),

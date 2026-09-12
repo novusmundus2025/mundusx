@@ -382,15 +382,79 @@ pub fn detect_running_clusters() -> Vec<DetectedCluster> {
     if detection_disabled() {
         return Vec::new();
     }
-    detect_with_text(configured_base_urls(), http_get_json, http_get_text)
+    let mut clusters = detect_with_text(configured_base_urls(), http_get_json, http_get_text);
+    actively_verify_native_tools(&mut clusters);
+    clusters
 }
 
 /// Probe a single endpoint the contributor named explicitly.
 pub fn probe_cluster(base_url: &str) -> Option<DetectedCluster> {
     let base_url = normalize_base_url(base_url)?;
-    detect_with_text(vec![base_url], http_get_json, http_get_text)
-        .into_iter()
-        .next()
+    let mut clusters = detect_with_text(vec![base_url], http_get_json, http_get_text);
+    actively_verify_native_tools(&mut clusters);
+    clusters.into_iter().next()
+}
+
+fn actively_verify_native_tools(clusters: &mut [DetectedCluster]) {
+    for cluster in clusters {
+        if cluster.supports_tool_calls || cluster.kind == ClusterKind::Ollama {
+            continue;
+        }
+        let Some(model) = cluster.largest_model().map(|model| model.name.clone()) else {
+            continue;
+        };
+        cluster.supports_tool_calls = probe_native_tool_calls(&cluster.base_url, &model);
+    }
+}
+
+/// Capability metadata and Prometheus metrics are inconsistent across vLLM
+/// versions. A tiny, side-effect-free request is the authoritative check: the
+/// endpoint is tool capable only when it emits a native OpenAI tool call.
+fn probe_native_tool_calls(base_url: &str, model: &str) -> bool {
+    let payload = serde_json::json!({
+        "model": model,
+        "stream": false,
+        "max_tokens": 32,
+        "messages": [{
+            "role": "user",
+            "content": "Call mundusx_capability_probe exactly once with an empty object."
+        }],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "mundusx_capability_probe",
+                "description": "A side-effect-free runtime capability probe.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }
+            }
+        }],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "mundusx_capability_probe"}
+        }
+    });
+    ureq::post(&format!("{base_url}/v1/chat/completions"))
+        .timeout(Duration::from_secs(15))
+        .send_json(payload)
+        .ok()
+        .filter(|response| response.status() < 400)
+        .and_then(|response| response.into_json::<serde_json::Value>().ok())
+        .is_some_and(|body| native_tool_response_supported(&body))
+}
+
+fn native_tool_response_supported(body: &serde_json::Value) -> bool {
+    body.pointer("/choices/0/message/tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("mundusx_capability_probe")
+            })
+        })
 }
 
 /// Detection core with an injectable fetcher so the probe order and parsing can
@@ -786,6 +850,31 @@ pub fn preferred_cluster(clusters: &[DetectedCluster]) -> Option<&DetectedCluste
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn accepts_only_a_genuine_native_capability_probe_tool_call() {
+        assert!(native_tool_response_supported(&json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_probe",
+                        "type": "function",
+                        "function": {"name": "mundusx_capability_probe", "arguments": "{}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })));
+    }
+
+    #[test]
+    fn rejects_plain_text_that_only_looks_like_a_tool_call() {
+        assert!(!native_tool_response_supported(&json!({
+            "choices": [{"message": {"role": "assistant", "content":
+                "{\"name\":\"mundusx_capability_probe\",\"arguments\":{}}"}}]
+        })));
+    }
 
     fn fetcher(
         responses: Vec<(&'static str, serde_json::Value)>,

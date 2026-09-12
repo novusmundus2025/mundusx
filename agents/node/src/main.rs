@@ -12,7 +12,7 @@ use contracts::{
     NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
     WorkerPolicyReport,
 };
-use http::{signed_get_json, signed_post_json_body};
+use http::{signed_get_json, signed_post_json_body, signed_post_json_body_with_agent};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 #[cfg(unix)]
@@ -515,6 +515,7 @@ fn enrich_model_capability(
     }
     if declared("tool") {
         tasks.push("tool_use".to_string());
+        tasks.push("native_tool_calls_v1".to_string());
         roles.push(NodeRole::ToolUse);
     }
     if declared("vision") {
@@ -701,6 +702,7 @@ fn build_scheduler_capabilities(
     let mut supported_tools = capabilities.supported_tools.clone();
     if supports_tools {
         supported_tools.push("tool_use".to_string());
+        supported_tools.push("native_tool_calls_v1".to_string());
     }
     if roles.contains(&NodeRole::Coding) {
         supported_tools.push("repository".to_string());
@@ -1462,6 +1464,45 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
     }
 }
 
+const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
+
+fn retryable_stream_delta_error(error: &str) -> bool {
+    error.starts_with("transport failed:")
+        || [
+            "HTTP 408", "HTTP 425", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504",
+        ]
+        .iter()
+        .any(|status| error.starts_with(status))
+}
+
+fn post_stream_delta(
+    agent: &ureq::Agent,
+    config: &AgentConfig,
+    identity: &DeviceIdentity,
+    payload: &JobStreamDelta,
+) -> Result<JobStreamAck, String> {
+    for attempt in 1..=STREAM_DELTA_RELAY_ATTEMPTS {
+        match signed_post_json_body_with_agent::<_, JobStreamAck>(
+            agent,
+            &config.control_plane_url,
+            "/v1/jobs/delta",
+            &config.device_id,
+            identity,
+            payload,
+        ) {
+            Ok(ack) => return Ok(ack),
+            Err(error)
+                if attempt < STREAM_DELTA_RELAY_ATTEMPTS
+                    && retryable_stream_delta_error(&error) =>
+            {
+                thread::sleep(Duration::from_millis(50 * attempt as u64));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("stream delta relay attempt loop always returns")
+}
+
 fn relay_job_deltas(
     config: AgentConfig,
     identity: DeviceIdentity,
@@ -1470,6 +1511,10 @@ fn relay_job_deltas(
     deltas: mpsc::Receiver<String>,
 ) {
     let mut sequence = 1u64;
+    // Reuse one HTTP client for the complete stream and retry transient delivery
+    // failures. A single dropped fragment must not disable live output until the
+    // final completion fallback arrives.
+    let agent = http::request_agent();
     while let Ok(delta) = deltas.recv() {
         let payload = JobStreamDelta {
             job_id: job_id.clone(),
@@ -1478,13 +1523,7 @@ fn relay_job_deltas(
             sequence,
             delta,
         };
-        match signed_post_json_body::<_, JobStreamAck>(
-            &config.control_plane_url,
-            "/v1/jobs/delta",
-            &config.device_id,
-            &identity,
-            &payload,
-        ) {
+        match post_stream_delta(&agent, &config, &identity, &payload) {
             Ok(ack) if ack.accepted || ack.duplicate => sequence += 1,
             Ok(_) => {
                 eprintln!("controlPlaneStream: delta {sequence} was not accepted; using final completion fallback");
@@ -1822,8 +1861,81 @@ fn clear_runtime_environment() {
     std::env::remove_var("OPENGPU_VLLM_URL");
 }
 
+/// Verify native OpenAI tool calling against the contributed runtime itself.
+/// Runtime metrics are only a hint: some vLLM versions do not expose their
+/// tool-parser metric until after the first tool request has been served.
+fn refresh_contributed_tool_capability(config: &mut AgentConfig) -> bool {
+    let Some(cluster) = config.contributed_cluster.as_mut() else {
+        return false;
+    };
+    let Some(model) = cluster
+        .model
+        .clone()
+        .or_else(|| cluster.models.first().cloned())
+    else {
+        return false;
+    };
+    let payload = serde_json::json!({
+        "model": model,
+        "stream": false,
+        "max_tokens": 32,
+        "messages": [{
+            "role": "user",
+            "content": "Call mundusx_capability_probe exactly once with an empty object."
+        }],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "mundusx_capability_probe",
+                "description": "A side-effect-free runtime capability probe.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }
+            }
+        }],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "mundusx_capability_probe"}
+        }
+    });
+    let supported = ureq::post(&format!("{}/v1/chat/completions", cluster.base_url))
+        .timeout(Duration::from_secs(15))
+        .send_json(payload)
+        .ok()
+        .filter(|response| response.status() < 400)
+        .and_then(|response| response.into_json::<serde_json::Value>().ok())
+        .is_some_and(|body| native_tool_response_supported(&body));
+    // A startup timeout is not proof that a capability disappeared. Preserve a
+    // previous successful verification and only promote newly verified support.
+    if supported && !cluster.supports_tool_calls {
+        cluster.supports_tool_calls = true;
+        true
+    } else {
+        false
+    }
+}
+
+fn native_tool_response_supported(body: &serde_json::Value) -> bool {
+    body.pointer("/choices/0/message/tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("mundusx_capability_probe")
+            })
+        })
+}
+
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
-    let config = load_config_or_exit();
+    let mut config = load_config_or_exit();
+    if refresh_contributed_tool_capability(&mut config) {
+        if let Err(error) = save_agent_config(&config) {
+            eprintln!("failed to persist contributed tool capability: {error}");
+        }
+    }
     let identity = load_identity_or_exit();
     let runtime_parallel_slots = worker_readiness(&config).0.parallel_slots;
     let mut persistent_runtime = if json || !should_keep_runtime_warm(&config) {
@@ -2136,6 +2248,26 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn retries_only_transient_stream_delta_failures() {
+        for error in [
+            "transport failed: connection reset",
+            "HTTP 408",
+            "HTTP 429: busy",
+            "HTTP 502: upstream unavailable",
+            "HTTP 504",
+        ] {
+            assert!(retryable_stream_delta_error(error), "{error}");
+        }
+        for error in [
+            "HTTP 400: invalid delta",
+            "HTTP 401",
+            "HTTP 409: stale assignment",
+        ] {
+            assert!(!retryable_stream_delta_error(error), "{error}");
+        }
+    }
 
     #[test]
     fn reaps_finished_jobs_without_waiting_for_active_workers() {
@@ -3054,5 +3186,37 @@ mod tests {
             Some("no active model is configured")
         );
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn native_tool_probe_accepts_a_real_openai_tool_call() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {
+                            "name": "mundusx_capability_probe",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        assert!(native_tool_response_supported(&body));
+    }
+
+    #[test]
+    fn native_tool_probe_rejects_tool_shaped_plain_text() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "{\"name\":\"mundusx_capability_probe\",\"arguments\":{}}"
+                }
+            }]
+        });
+
+        assert!(!native_tool_response_supported(&body));
     }
 }

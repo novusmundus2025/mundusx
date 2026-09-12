@@ -89,6 +89,26 @@ Configure the private source repository Actions secret `MUNDUSX_PUBLIC_RELEASES_
 fine-grained token granting Contents read/write access only to `mundusx/releases`. The release
 workflow retains an internal prerelease in the source repository as an audit copy.
 
+When GitHub Actions is unavailable, build and publish the Windows x64 assets locally without using
+hosted runner minutes:
+
+```powershell
+# Build and inspect the files locally. This does not upload anything.
+.\scripts\release-harness-windows.ps1
+
+# Display the next version without building or publishing.
+.\scripts\release-harness-windows.ps1 -NextTagOnly
+
+# Publish directly. The script finds and increments the latest UAT build number.
+.\scripts\release-harness-windows.ps1 -SkipBuild -Publish
+```
+
+Publishing requires an authenticated GitHub CLI account with write access to `mundusx/releases`.
+By default, the script finds the highest `harness-runner-vX.Y.Z-uat.N` release and selects `N + 1`.
+Pass `-Tag` to override that selection. Pass `-ReplaceAssets` only when intentionally replacing the
+files on an existing tag. A Windows host builds Windows assets only; Linux and macOS assets still
+require their matching host builds.
+
 ```text
 mundusx-harness-runner status
 mundusx-harness-runner run --once

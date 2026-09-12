@@ -421,14 +421,9 @@ fn validate_and_normalize_speakai_output(output: &str) -> Result<String, String>
     let topic = required_json_string(&value, "topic")?;
     let summary = required_json_string(&value, "summary")?;
     let lower_summary = summary.to_ascii_lowercase();
-    if [
-        "the speaker ",
-        "the user ",
-        "the person ",
-        "the utterance ",
-    ]
-    .iter()
-    .any(|prefix| lower_summary.starts_with(prefix))
+    if ["the speaker ", "the user ", "the person ", "the utterance "]
+        .iter()
+        .any(|prefix| lower_summary.starts_with(prefix))
     {
         return Err(
             "SpeakAI summary must directly translate the utterance, not explain it".to_string(),
@@ -3230,6 +3225,20 @@ fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespons
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "vLLM jobs require an explicit model".to_string())?;
+    if is_native_openai_tool_turn(request) {
+        let generated = run_native_openai_tool_turn(&url, model, request)?;
+        return Ok(WorkerLaunchResponse {
+            job_id: request.job_id.clone(),
+            worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
+            status: "completed".to_string(),
+            output: format!("vLLM mode=native-openai-tools; model={model}; response={generated}"),
+            error: None,
+            backend: Backend::Vllm,
+            node_id: request.node_id.clone(),
+            model: Some(model.to_string()),
+            runtime_mode: Some("vllm-native-openai-tools".to_string()),
+        });
+    }
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
     let temperature = request.temperature.unwrap_or(0.2).max(0.0);
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
@@ -4113,9 +4122,8 @@ mod tests {
 
     #[test]
     fn speakai_prompt_requires_a_direct_utterance_translation() {
-        assert!(SPEAKAI_SYSTEM_PROMPT.contains(
-            "summary must be only a direct, natural English translation"
-        ));
+        assert!(SPEAKAI_SYSTEM_PROMPT
+            .contains("summary must be only a direct, natural English translation"));
         assert!(SPEAKAI_SYSTEM_PROMPT.contains("never an explanation"));
     }
 
@@ -4834,6 +4842,35 @@ mod tests {
         assert_eq!(
             empty_completion_error(&unknown),
             "response did not include choices[0].message.content"
+        );
+    }
+
+    #[test]
+    fn native_openai_tool_response_preserves_assistant_tool_call() {
+        let response = serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search_files", "arguments": "{\"pattern\":\"*.java\"}"}
+                    }]
+                }
+            }]
+        });
+        let normalized =
+            normalize_native_openai_tool_response(&response).expect("native tool call");
+        assert!(normalized.starts_with(OPENAI_TOOL_RESULT_PREFIX));
+        let payload: serde_json::Value =
+            serde_json::from_str(normalized.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap())
+                .unwrap();
+        assert_eq!(payload["finish_reason"], "tool_calls");
+        assert_eq!(
+            payload["message"]["tool_calls"][0]["function"]["name"],
+            "search_files"
         );
     }
 
