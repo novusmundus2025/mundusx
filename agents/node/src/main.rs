@@ -1465,6 +1465,7 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
 }
 
 const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
+const STREAM_DELTA_BATCH_MAX_BYTES: usize = 4 * 1024;
 
 fn retryable_stream_delta_error(error: &str) -> bool {
     error.starts_with("transport failed:")
@@ -1503,6 +1504,17 @@ fn post_stream_delta(
     unreachable!("stream delta relay attempt loop always returns")
 }
 
+fn coalesce_stream_deltas(first: String, deltas: &mpsc::Receiver<String>) -> String {
+    let mut batch = first;
+    while batch.len() < STREAM_DELTA_BATCH_MAX_BYTES {
+        match deltas.try_recv() {
+            Ok(next) => batch.push_str(&next),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
+    batch
+}
+
 fn relay_job_deltas(
     config: AgentConfig,
     identity: DeviceIdentity,
@@ -1515,7 +1527,8 @@ fn relay_job_deltas(
     // failures. A single dropped fragment must not disable live output until the
     // final completion fallback arrives.
     let agent = http::request_agent();
-    while let Ok(delta) = deltas.recv() {
+    while let Ok(first_delta) = deltas.recv() {
+        let delta = coalesce_stream_deltas(first_delta, &deltas);
         let payload = JobStreamDelta {
             job_id: job_id.clone(),
             node_id: config.device_id.clone(),
@@ -2023,7 +2036,8 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     }
 
     send_registration(&config, &identity, &registration, verbose);
-    let control_plane_status = send_heartbeat(&config, &identity, &heartbeat, verbose);
+    let mut control_plane_status = send_heartbeat(&config, &identity, &heartbeat, verbose);
+    let mut last_heartbeat_sent = Instant::now();
     print_capability_summary_with_control_plane(
         &registration.capabilities,
         control_plane_status.as_ref(),
@@ -2048,7 +2062,10 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     }
 
     loop {
-        thread::sleep(Duration::from_secs(interval));
+        // Job claims should not wait for the five-second heartbeat cadence.
+        // Keep presence traffic at its normal rate while checking for work once
+        // per second so an idle, warm node starts streaming promptly.
+        thread::sleep(Duration::from_secs(1));
         let latest_config = match load_agent_config() {
             Ok(Some(config)) => config,
             Ok(None) => {
@@ -2081,18 +2098,21 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             break;
         }
 
-        let heartbeat = build_heartbeat(&latest_config);
-        if let Err(error) = save_agent_state(&heartbeat) {
-            eprintln!("failed to save agent state: {error}");
-            break;
-        }
-        if let Err(error) = save_heartbeat(&heartbeat) {
-            eprintln!("failed to save heartbeat: {error}");
-            break;
-        }
-        let control_plane_status = send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
-        if verbose {
-            println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
+        if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
+            let heartbeat = build_heartbeat(&latest_config);
+            if let Err(error) = save_agent_state(&heartbeat) {
+                eprintln!("failed to save agent state: {error}");
+                break;
+            }
+            if let Err(error) = save_heartbeat(&heartbeat) {
+                eprintln!("failed to save heartbeat: {error}");
+                break;
+            }
+            control_plane_status = send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+            last_heartbeat_sent = Instant::now();
+            if verbose {
+                println!("heartbeat {} {}", heartbeat.node_id, heartbeat.updated_at);
+            }
         }
         if control_plane_blocks_jobs(control_plane_status.as_ref()).is_none() {
             process_pending_jobs(&latest_config, json, verbose, true, slot_pool.clone());
@@ -2267,6 +2287,19 @@ mod tests {
         ] {
             assert!(!retryable_stream_delta_error(error), "{error}");
         }
+    }
+
+    #[test]
+    fn coalesces_queued_stream_fragments_into_one_relay_request() {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(" two".to_string()).unwrap();
+        sender.send(" three".to_string()).unwrap();
+        drop(sender);
+
+        assert_eq!(
+            coalesce_stream_deltas("one".to_string(), &receiver),
+            "one two three"
+        );
     }
 
     #[test]
