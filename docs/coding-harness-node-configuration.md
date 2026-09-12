@@ -96,14 +96,18 @@ hosted runner minutes:
 # Build and inspect the files locally. This does not upload anything.
 .\scripts\release-harness-windows.ps1
 
-# Publish the staged files directly to the public release repository.
-.\scripts\release-harness-windows.ps1 -SkipBuild -Publish -Tag harness-runner-v0.1.0-uat.5
+# Display the next version without building or publishing.
+.\scripts\release-harness-windows.ps1 -NextTagOnly
+
+# Publish directly. The script finds and increments the latest UAT build number.
+.\scripts\release-harness-windows.ps1 -SkipBuild -Publish
 ```
 
 Publishing requires an authenticated GitHub CLI account with write access to `mundusx/releases`.
-Use a new tag for each release. Pass `-ReplaceAssets` only when intentionally replacing the files
-on an existing tag. A Windows host builds Windows assets only; Linux and macOS assets still require
-their matching host builds.
+By default, the script finds the highest `harness-runner-vX.Y.Z-uat.N` release and selects `N + 1`.
+Pass `-Tag` to override that selection. Pass `-ReplaceAssets` only when intentionally replacing the
+files on an existing tag. A Windows host builds Windows assets only; Linux and macOS assets still
+require their matching host builds.
 
 ```text
 mundusx-harness-runner status

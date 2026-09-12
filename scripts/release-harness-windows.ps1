@@ -12,10 +12,10 @@ repository with the GitHub CLI.
 .\scripts\release-harness-windows.ps1
 
 .EXAMPLE
-.\scripts\release-harness-windows.ps1 -Publish -Tag harness-runner-v0.1.0-uat.5
+.\scripts\release-harness-windows.ps1 -Publish
 
 .EXAMPLE
-.\scripts\release-harness-windows.ps1 -SkipBuild -Publish -Tag harness-runner-v0.1.0-uat.5
+.\scripts\release-harness-windows.ps1 -NextTagOnly
 #>
 
 [CmdletBinding()]
@@ -26,7 +26,8 @@ param(
   [string]$OutputDirectory,
   [switch]$SkipBuild,
   [switch]$ReplaceAssets,
-  [switch]$Prerelease
+  [switch]$Prerelease,
+  [switch]$NextTagOnly
 )
 
 Set-StrictMode -Version Latest
@@ -62,14 +63,62 @@ function Write-Checksum {
   Set-Content -NoNewline -Encoding ascii -LiteralPath "$Path.sha256" -Value "$hash  $name"
 }
 
+function Get-NextHarnessTag {
+  param([Parameter(Mandatory = $true)][string]$ReleaseRepository)
+
+  if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+    throw "GitHub CLI is required to determine the next release tag."
+  }
+
+  $releaseJson = & gh release list --repo $ReleaseRepository --limit 1000 --json tagName
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not read releases from $ReleaseRepository with the current GitHub login."
+  }
+
+  $candidates = @()
+  foreach ($release in @($releaseJson | ConvertFrom-Json)) {
+    if ($release.tagName -match '^harness-runner-v(?<version>\d+\.\d+\.\d+)-uat\.(?<build>\d+)$') {
+      $candidates += [PSCustomObject]@{
+        Version = [Version]$Matches.version
+        Build = [int]$Matches.build
+      }
+    }
+  }
+
+  if ($candidates.Count -eq 0) {
+    return "harness-runner-v0.1.0-uat.1"
+  }
+
+  $latest = $candidates |
+    Sort-Object -Property @{ Expression = "Version"; Descending = $true }, @{ Expression = "Build"; Descending = $true } |
+    Select-Object -First 1
+  return "harness-runner-v$($latest.Version)-uat.$($latest.Build + 1)"
+}
+
 if (-not [Environment]::Is64BitOperatingSystem) {
   throw "The Windows Harness release requires a 64-bit Windows host."
 }
-if ($Publish -and $Tag -notmatch '^harness-runner-v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?$') {
+if ($Tag -and $Tag -notmatch '^harness-runner-v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?$') {
   throw "-Tag must use the harness-runner-v<version> format, for example harness-runner-v0.1.0-uat.5."
 }
-if (-not $Publish -and $Tag) {
-  Write-Warning "-Tag is only used with -Publish. The local build will still be staged."
+
+$selectedTag = $Tag
+if (-not $selectedTag) {
+  try {
+    $selectedTag = Get-NextHarnessTag -ReleaseRepository $Repository
+  } catch {
+    if ($Publish -or $NextTagOnly) {
+      throw
+    }
+    Write-Warning "The next release tag could not be determined: $($_.Exception.Message)"
+  }
+}
+if ($selectedTag) {
+  Write-Host "Selected release tag: $selectedTag" -ForegroundColor Cyan
+}
+if ($NextTagOnly) {
+  Write-Output $selectedTag
+  exit 0
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
@@ -128,7 +177,7 @@ foreach ($path in $uploadPaths) {
 
 if (-not $Publish) {
   Write-Host "Build complete. Nothing was uploaded." -ForegroundColor Yellow
-  Write-Host "To publish: .\scripts\release-harness-windows.ps1 -SkipBuild -Publish -Tag harness-runner-v0.1.0-uat.5"
+  Write-Host "To publish with the automatically selected next tag: .\scripts\release-harness-windows.ps1 -SkipBuild -Publish"
   exit 0
 }
 
@@ -145,26 +194,26 @@ if ($permission -notin @("ADMIN", "MAINTAIN", "WRITE")) {
   throw "The current GitHub login has $permission permission on $Repository; WRITE or ADMIN is required."
 }
 
-& gh release view $Tag --repo $Repository *> $null
+& gh release view $selectedTag --repo $Repository *> $null
 $releaseExists = $LASTEXITCODE -eq 0
 if ($releaseExists -and -not $ReplaceAssets) {
-  throw "Release $Tag already exists in $Repository. Choose a new tag or pass -ReplaceAssets."
+  throw "Release $selectedTag already exists in $Repository. Choose a new tag or pass -ReplaceAssets."
 }
 
 if ($releaseExists) {
-  Write-Host "Replacing assets on existing release $Tag..." -ForegroundColor Cyan
-  Invoke-CheckedCommand gh release upload $Tag @uploadPaths --repo $Repository --clobber
+  Write-Host "Replacing assets on existing release $selectedTag..." -ForegroundColor Cyan
+  Invoke-CheckedCommand gh release upload $selectedTag @uploadPaths --repo $Repository --clobber
   if (-not $Prerelease) {
-    Invoke-CheckedCommand gh release edit $Tag --repo $Repository --latest --prerelease=false
+    Invoke-CheckedCommand gh release edit $selectedTag --repo $Repository --latest --prerelease=false
   }
 } else {
-  Write-Host "Creating public release $Tag..." -ForegroundColor Cyan
+  Write-Host "Creating public release $selectedTag..." -ForegroundColor Cyan
   $releaseArguments = @(
-    "release", "create", $Tag
+    "release", "create", $selectedTag
   ) + $uploadPaths + @(
     "--repo", $Repository,
     "--target", "main",
-    "--title", "MundusX Harness runner $Tag",
+    "--title", "MundusX Harness runner $selectedTag",
     "--notes", "Windows x64 Harness runner and one-click setup, built locally from the MundusX source repository. SHA-256 checksum files are included."
   )
   if ($Prerelease) {
@@ -175,7 +224,7 @@ if ($releaseExists) {
   Invoke-CheckedCommand gh @releaseArguments
 }
 
-$releaseUrl = (& gh release view $Tag --repo $Repository --json url --jq '.url').Trim()
+$releaseUrl = (& gh release view $selectedTag --repo $Repository --json url --jq '.url').Trim()
 if ($LASTEXITCODE -ne 0 -or -not $releaseUrl) {
   throw "The upload finished, but the release URL could not be read."
 }
