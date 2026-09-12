@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const LEGACY_CONTROL_PLANE_URL: &str = "https://mundusx.ai";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunnerConfig {
     pub version: u32,
@@ -90,7 +93,7 @@ impl Default for RunnerConfig {
             device_id: format!("runner-device-{}", &suffix[..16]),
             owner_user_id: String::new(),
             tenant_ids: vec!["owner:any".to_string()],
-            control_plane_url: "https://mundusx.ai".to_string(),
+            control_plane_url: PUBLIC_CONTROL_PLANE_URL.to_string(),
             inference_model: default_inference_model(),
             parallel_slots: default_runner_slots(),
             usable_memory_mb: default_usable_memory_mb(),
@@ -105,6 +108,15 @@ impl Default for RunnerConfig {
             sandbox_runtime: None,
             sandbox_image_digest: None,
         }
+    }
+}
+
+fn migrate_control_plane_url(url: &mut String) -> bool {
+    if url.trim_end_matches('/') == LEGACY_CONTROL_PLANE_URL {
+        *url = PUBLIC_CONTROL_PLANE_URL.to_string();
+        true
+    } else {
+        false
     }
 }
 
@@ -217,9 +229,10 @@ pub fn load_config() -> std::io::Result<Option<RunnerConfig>> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(path)?;
+    let raw = fs::read_to_string(&path)?;
     let mut config: RunnerConfig = serde_json::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let migrated_control_plane = migrate_control_plane_url(&mut config.control_plane_url);
     add_maven_profile(
         &mut config.validation_profiles,
         find_executable(&["mvn.cmd", "mvn"]),
@@ -237,6 +250,9 @@ pub fn load_config() -> std::io::Result<Option<RunnerConfig>> {
             .insert(0, "local-project:".to_string());
     }
     config.version = config.version.max(2);
+    if migrated_control_plane {
+        write_private_json(&path, &config)?;
+    }
     Ok(Some(config))
 }
 
@@ -258,6 +274,16 @@ fn write_private_json(path: &Path, value: &impl Serialize) -> std::io::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrates_only_the_retired_public_origin() {
+        let mut legacy = LEGACY_CONTROL_PLANE_URL.to_string();
+        assert!(migrate_control_plane_url(&mut legacy));
+        assert_eq!(legacy, PUBLIC_CONTROL_PLANE_URL);
+
+        let mut custom = "https://private.example.com".to_string();
+        assert!(!migrate_control_plane_url(&mut custom));
+    }
 
     #[test]
     fn maven_profile_uses_fixed_test_arguments_and_bounded_resources() {
