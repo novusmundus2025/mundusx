@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const LEGACY_CONTROL_PLANE_URL: &str = "https://mundusx.ai";
+
 /// A local LLM cluster the contributor already runs and has agreed to
 /// contribute. When this is set the node serves work from that endpoint instead
 /// of provisioning a MundusX runtime and downloading its own weights.
@@ -107,7 +110,7 @@ impl Default for Config {
             paused: false,
             backend_preference: Backend::Auto,
             contribution_percent: 0,
-            control_plane_url: "https://mundusx.ai".to_string(),
+            control_plane_url: PUBLIC_CONTROL_PLANE_URL.to_string(),
             active_model: None,
             models: vec![],
             model_dir: None,
@@ -118,6 +121,15 @@ impl Default for Config {
             cluster_prompt_declined: false,
             max_jobs: None,
         }
+    }
+}
+
+fn migrate_control_plane_url(url: &mut String) -> bool {
+    if url.trim_end_matches('/') == LEGACY_CONTROL_PLANE_URL {
+        *url = PUBLIC_CONTROL_PLANE_URL.to_string();
+        true
+    } else {
+        false
     }
 }
 
@@ -172,8 +184,11 @@ pub fn load_config() -> std::io::Result<Option<Config>> {
     }
 
     let raw = fs::read_to_string(path)?;
-    let config = serde_json::from_str(&raw)
+    let mut config: Config = serde_json::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if migrate_control_plane_url(&mut config.control_plane_url) {
+        save_config(&config)?;
+    }
     Ok(Some(config))
 }
 
@@ -244,5 +259,21 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod control_plane_url_tests {
+    use super::*;
+
+    #[test]
+    fn migrates_only_the_retired_public_origin() {
+        let mut legacy = LEGACY_CONTROL_PLANE_URL.to_string();
+        assert!(migrate_control_plane_url(&mut legacy));
+        assert_eq!(legacy, PUBLIC_CONTROL_PLANE_URL);
+
+        let mut custom = "https://private.example.com".to_string();
+        assert!(!migrate_control_plane_url(&mut custom));
+        assert_eq!(custom, "https://private.example.com");
     }
 }
