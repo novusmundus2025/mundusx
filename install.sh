@@ -240,6 +240,14 @@ case "$os" in
   *) echo "unsupported operating system: $os" >&2; exit 1 ;;
 esac
 
+is_local_release_source() {
+  [ -n "$local_assets" ] && return 0
+  case "$RELEASE_BASE_URL" in
+    http://127.0.0.1:*|http://localhost:*|file://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if [ "$without_vllm" -eq 0 ] \
   && [ "$with_vllm" -eq 0 ] \
   && [ "$os" = "linux" ] \
@@ -255,7 +263,7 @@ case "$arch" in
     target="aarch64-${platform}"
     ;;
   x86_64|amd64)
-    if [ "$os" = "darwin" ]; then
+    if [ "$os" = "darwin" ] && ! is_local_release_source; then
       echo "current Mac release channel is Apple Silicon only; please use an M-series Mac or build from source" >&2
       exit 1
     fi
@@ -494,11 +502,11 @@ if [ "$runtime_only" -eq 0 ]; then
   verify_checksum "$tmp_agent_checksum"
 
   echo "Fetching MundusX agent..."
-  download_to "$mundusx_url" "$tmp_mundusx"
-  download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum"
+  download_to "$mundusx_url" "$tmp_mundusx" "MundusX agent"
+  download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum" "MundusX agent checksum"
   verify_checksum "$tmp_mundusx_checksum"
-  download_to "$agent_server_url" "$tmp_agent_server"
-  download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum"
+  download_to "$agent_server_url" "$tmp_agent_server" "MundusX agent server"
+  download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum" "MundusX agent server checksum"
   verify_checksum "$tmp_agent_server_checksum"
 
   chmod +x "$tmp_bin"

@@ -18,7 +18,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 const MODEL_ID: &str = "mundusx-agent";
 
 #[derive(Parser)]
-#[command(name = "mundusx-agent-server", about = "Local MundusX agent API")]
+#[command(name = "mundusx-agent-server", version, about = "Local MundusX agent API")]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:11436")]
     bind: String,

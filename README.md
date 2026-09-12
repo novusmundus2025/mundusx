@@ -52,6 +52,38 @@ Rust workspace:
 - `Cargo.toml` at the repo root
 - `apps/cli` is the first compiled Rust crate
 
+## Local Development
+
+For local development, install Rust through `rustup`, install pnpm, then build
+the Rust workspace and docs preview:
+
+```bash
+cargo build --workspace
+npm run build:docs-site
+```
+
+Run the CLI directly from source:
+
+```bash
+cargo run -p opengpu --bin opengpu -- --help
+cargo run -p opengpu --bin mundusx -- --help
+```
+
+Preview the static docs/install site after `npm run build:docs-site`:
+
+```bash
+python3 -m http.server 3002 --bind 127.0.0.1 --directory dist/public-docs-site
+```
+
+For the full local release-preview smoke without a private control plane:
+
+```bash
+SMOKE_SKIP_CONTROL_PLANE=1 npm run smoke:local
+```
+
+See [docs/local-development.md](docs/local-development.md) for the full local
+runbook, including the local agent API and isolated config directories.
+
 ## One-Click Install
 
 Users should install the CLI from the localhost release preview and never need Rust locally:

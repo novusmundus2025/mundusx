@@ -44,12 +44,7 @@ target_triplet() {
 
   case "$arch" in
     arm64|aarch64) printf 'aarch64-%s\n' "$platform" ;;
-    x86_64|amd64)
-      if [ "$os" = "darwin" ]; then
-        die "current Mac release channel is Apple Silicon only; please use an M-series Mac or build from source"
-      fi
-      printf 'x86_64-%s\n' "$platform"
-      ;;
+    x86_64|amd64) printf 'x86_64-%s\n' "$platform" ;;
     *) die "unsupported architecture: $arch" ;;
   esac
 }
@@ -70,27 +65,26 @@ preview_url() {
 }
 
 build_preview() {
-  local target asset_name binary_source binary_path checksum_path formula_path index_path checksum release_url
+  local target asset_name agent_asset_name mundusx_asset_name agent_server_asset_name formula_path index_path release_url
   target="$(target_triplet)"
   asset_name="${bin_name}-${target}"
-  binary_source="$repo_root/target/release/$bin_name"
-  binary_path="$asset_dir/$asset_name"
-  checksum_path="$binary_path.sha256"
+  agent_asset_name="opengpu-node-agent-${target}"
+  mundusx_asset_name="mundusx-${target}"
+  agent_server_asset_name="mundusx-agent-server-${target}"
   formula_path="$asset_dir/homebrew/opengpu.rb"
   index_path="$asset_dir/index.html"
   release_url="$(preview_url)"
 
   mkdir -p "$asset_dir"
 
-  echo "Building $bin_name release binary..."
-  cargo build --release --manifest-path "$repo_root/apps/cli/Cargo.toml" >/dev/null
+  echo "Building local release binaries..."
+  cargo build --release -p opengpu -p opengpu-node-agent -p mundusx-agent-server >/dev/null
 
-  [ -f "$binary_source" ] || die "missing built binary: $binary_source"
-  cp "$binary_source" "$binary_path"
-  chmod +x "$binary_path"
+  stage_binary "$repo_root/target/release/opengpu" "$asset_name"
+  stage_binary "$repo_root/target/release/opengpu-node-agent" "$agent_asset_name"
+  stage_binary "$repo_root/target/release/mundusx" "$mundusx_asset_name"
+  stage_binary "$repo_root/target/release/mundusx-agent-server" "$agent_server_asset_name"
 
-  checksum="$(checksum_for "$binary_path")"
-  printf '%s  %s\n' "$checksum" "$(basename "$binary_path")" > "$checksum_path"
   OPENGPU_RELEASE_SIGNING_ALLOW_GENERATED_KEYS=1 \
     "$repo_root/scripts/release-signing.sh" prepare "$asset_dir" "$asset_name" "local-preview" "0.1.0"
   node "$repo_root/scripts/render-homebrew-formula.mjs" \
@@ -377,10 +371,25 @@ EOF
   echo "  url:   $(preview_url)"
 }
 
+stage_binary() {
+  local source_path="$1"
+  local asset_name="$2"
+  local output_path="$asset_dir/$asset_name"
+  local checksum
+
+  [ -f "$source_path" ] || die "missing built binary: $source_path"
+  cp "$source_path" "$output_path"
+  chmod +x "$output_path"
+
+  checksum="$(checksum_for "$output_path")"
+  printf '%s  %s\n' "$checksum" "$asset_name" > "$output_path.sha256"
+}
+
 verify_preview() {
-  local target asset_name binary_path checksum_path index_path
+  local target asset_name agent_asset_name binary_path checksum_path index_path
   target="$(target_triplet)"
   asset_name="${bin_name}-${target}"
+  agent_asset_name="opengpu-node-agent-${target}"
   binary_path="$asset_dir/$asset_name"
   checksum_path="$binary_path.sha256"
   index_path="$asset_dir/index.html"
@@ -391,7 +400,7 @@ verify_preview() {
   [ -f "$index_path" ] || die "missing release landing page: $index_path"
   [ -f "$asset_dir/release-manifest.json" ] || die "missing release manifest: $asset_dir/release-manifest.json"
 
-  "$repo_root/scripts/verify-release-packaging.sh" "$asset_dir" "$asset_name"
+  "$repo_root/scripts/verify-release-packaging.sh" "$asset_dir" "$asset_name" "$agent_asset_name"
   "$repo_root/scripts/release-signing.sh" verify "$asset_dir" "$asset_name"
   "$repo_root/scripts/release-monitor-report.sh" "$asset_dir" "$asset_name" >/dev/null
 

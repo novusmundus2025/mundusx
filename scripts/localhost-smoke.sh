@@ -124,6 +124,24 @@ parse_http_host_port() {
   printf '%s %s\n' "$host" "$port"
 }
 
+release_target_triplet() {
+  local os arch platform
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+
+  case "$os" in
+    darwin) platform="apple-darwin" ;;
+    linux) platform="unknown-linux-gnu" ;;
+    *) echo "unsupported operating system: $os" >&2; exit 1 ;;
+  esac
+
+  case "$arch" in
+    arm64|aarch64) printf 'aarch64-%s\n' "$platform" ;;
+    x86_64|amd64) printf 'x86_64-%s\n' "$platform" ;;
+    *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+  esac
+}
+
 ensure_dashboard_preview() {
   local host port server_log_file
 
@@ -164,7 +182,7 @@ ensure_dashboard_preview() {
 
 echo "Checking dashboard pages..."
 ensure_dashboard_preview
-check_dashboard_contains "${dashboard_url}/install" "Install MundusX on your Mac" "install page hero"
+check_dashboard_contains "${dashboard_url}/install" "Install MundusX" "install page hero"
 check_dashboard_contains "${dashboard_url}/install" "Fetching ./install.json" "install manifest loading state" "Fetching ../install.json"
 check_dashboard_contains "${dashboard_url}/install" "./install.json" "install manifest endpoint reference" "../install.json"
 check_dashboard_contains "${dashboard_url}/install.json" "\"kind\": \"install-manifest\"" "install manifest kind"
@@ -173,12 +191,12 @@ check_dashboard_contains \
   "\"install_command\": \"RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh\"" \
   "install manifest command" \
   "\"release_base_url\": \"https://github.com/mundusx/mundusx/releases/latest/download\""
-check_dashboard_contains "${dashboard_url}/public/install" "Install MundusX on your Mac" "public install mirror hero"
+check_dashboard_contains "${dashboard_url}/public/install" "Install MundusX" "public install mirror hero"
 check_dashboard_contains "${dashboard_url}/public/install" "Fetching ../install.json" "public install mirror loading state"
 check_dashboard_contains "${dashboard_url}/public/install.json" "\"kind\": \"install-manifest\"" "public install mirror manifest kind"
 check_dashboard_contains "${dashboard_url}/docs" "MundusX Docs" "docs home"
 check_dashboard_contains "${dashboard_url}/public/docs" "MundusX Docs" "public docs mirror home"
-check_dashboard_contains "${dashboard_url}/public/docs" "local layout" "public docs mirror badge" "Public Endpoint Mirror"
+check_dashboard_contains "${dashboard_url}/public/docs" "Public Endpoint Mirror" "public docs mirror badge"
 check_dashboard_contains "${dashboard_url}/public/docs/install" "Canonical command" "public docs mirror install page"
 
 echo "Checking control-plane root..."
@@ -198,18 +216,20 @@ fi
 echo "Preparing local release preview..."
 "$local_release_preview_helper" up
 "$local_release_preview_helper" verify
+release_target="$(release_target_triplet)"
+release_asset="opengpu-${release_target}"
 
 echo "Checking release source..."
 check_contains "${release_base_url}/" "MundusX Local Release Preview" "release landing page"
 check_contains "${release_base_url}/" "localhost only" "release landing page badge"
 check_contains "${release_base_url}/" "Manifest loaded from /release-manifest.json" "release landing page manifest state"
 check_contains "${release_base_url}/release-manifest.json" "\"artifact_kind\": \"release-binary\"" "release manifest kind"
-check_contains "${release_base_url}/opengpu-aarch64-apple-darwin.sha256" "opengpu-aarch64-apple-darwin" "release checksum"
+check_contains "${release_base_url}/${release_asset}.sha256" "$release_asset" "release checksum"
 
 echo "Checking release monitor report..."
 report="$("$repo_root/scripts/release-monitor-report.sh" \
   "$repo_root/.opengpu/local-release-preview/releases/latest/download" \
-  "opengpu-aarch64-apple-darwin")"
+  "$release_asset")"
 python3 - <<'PY' "$report"
 import json
 import sys
