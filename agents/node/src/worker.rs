@@ -2194,14 +2194,13 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
     if !saw_done && finish_reason.is_empty() {
         return Err("OpenAI-compatible stream ended before a terminal event".to_string());
     }
-    let safe_chars = content
-        .chars()
-        .count()
-        .saturating_sub(STREAM_TAIL_HOLD_CHARS);
-    if safe_chars > emitted_chars {
+    // The terminal event confirms the full response. Flush the validation tail
+    // through the live channel before job completion so clients do not freeze
+    // while the relay drains its pending HTTP requests.
+    let content_chars = content.chars().count();
+    if content_chars > emitted_chars {
         let start = char_prefix_bytes(content, emitted_chars);
-        let end = char_prefix_bytes(content, safe_chars);
-        emit_stream_delta(&content[start..end]);
+        emit_stream_delta(&content[start..]);
     }
     if finish_reason == "length" {
         Ok(format!("[truncated: hit the generation limit] {content}"))
@@ -3679,7 +3678,7 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     #[test]
-    fn parses_openai_sse_and_relays_safe_progressive_prefix() {
+    fn parses_openai_sse_and_relays_complete_content_after_terminal_event() {
         let content =
             "Streaming sends several useful pieces while retaining a small validation tail.";
         let first = &content[..24];
@@ -3702,9 +3701,7 @@ mod tests {
         let relayed = receiver.try_iter().collect::<String>();
 
         assert_eq!(parsed, content);
-        assert!(!relayed.is_empty());
-        assert!(content.starts_with(&relayed));
-        assert!(content.chars().count() - relayed.chars().count() >= STREAM_TAIL_HOLD_CHARS);
+        assert_eq!(relayed, content);
     }
 
     #[test]
