@@ -15,6 +15,9 @@ repository with the GitHub CLI.
 .\scripts\release-harness-windows.ps1 -Publish
 
 .EXAMPLE
+.\scripts\release-harness-windows.ps1 -SkipBuild -Publish -MarkLatest
+
+.EXAMPLE
 .\scripts\release-harness-windows.ps1 -NextTagOnly
 #>
 
@@ -27,6 +30,7 @@ param(
   [switch]$SkipBuild,
   [switch]$ReplaceAssets,
   [switch]$Prerelease,
+  [switch]$MarkLatest,
   [switch]$NextTagOnly
 )
 
@@ -97,6 +101,9 @@ function Get-NextHarnessTag {
 
 if (-not [Environment]::Is64BitOperatingSystem) {
   throw "The Windows Harness release requires a 64-bit Windows host."
+}
+if ($Prerelease -and $MarkLatest) {
+  throw "-Prerelease and -MarkLatest cannot be used together."
 }
 if ($Tag -and $Tag -notmatch '^harness-runner-v\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?$') {
   throw "-Tag must use the harness-runner-v<version> format, for example harness-runner-v0.1.0-uat.5."
@@ -203,8 +210,10 @@ if ($releaseExists -and -not $ReplaceAssets) {
 if ($releaseExists) {
   Write-Host "Replacing assets on existing release $selectedTag..." -ForegroundColor Cyan
   Invoke-CheckedCommand gh release upload $selectedTag @uploadPaths --repo $Repository --clobber
-  if (-not $Prerelease) {
+  if ($MarkLatest) {
     Invoke-CheckedCommand gh release edit $selectedTag --repo $Repository --latest --prerelease=false
+  } else {
+    Invoke-CheckedCommand gh release edit $selectedTag --repo $Repository --latest=false --prerelease
   }
 } else {
   Write-Host "Creating public release $selectedTag..." -ForegroundColor Cyan
@@ -216,10 +225,10 @@ if ($releaseExists) {
     "--title", "MundusX Harness runner $selectedTag",
     "--notes", "Windows x64 Harness runner and one-click setup, built locally from the MundusX source repository. SHA-256 checksum files are included."
   )
-  if ($Prerelease) {
-    $releaseArguments += "--prerelease"
-  } else {
+  if ($MarkLatest) {
     $releaseArguments += "--latest"
+  } else {
+    $releaseArguments += @("--prerelease", "--latest=false")
   }
   Invoke-CheckedCommand gh @releaseArguments
 }
