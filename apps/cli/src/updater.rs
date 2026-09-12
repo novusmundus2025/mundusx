@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const RELEASES_API_URL: &str = "https://api.github.com/repos/mundusx/mundusx/releases?per_page=50";
+const RELEASES_API_URL: &str = "https://api.github.com/repos/mundusx/releases/releases?per_page=50";
 
 struct StagedBinary {
     path: PathBuf,

@@ -82,6 +82,8 @@ assert_contains "$linux_workflow" 'mv release-manifest.json "release-manifest-${
 assert_contains "$linux_workflow" "name: MundusX Linux CLI \${{ env.RELEASE_TAG }}"
 assert_contains "$linux_workflow" "verify-release-manifest-assets.py"
 assert_contains "$linux_workflow" "install.sh"
+assert_contains "$linux_workflow" "Preserve native assets for manual release assembly"
+assert_contains "$linux_workflow" "manual-\${{ env.BINARY_NAME }}"
 
 assert_legacy_contains "MundusX-OpenGPU-Apple-Silicon.pkg"
 assert_legacy_contains "verify-release-manifest-assets.py"
