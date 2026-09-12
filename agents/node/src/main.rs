@@ -12,7 +12,7 @@ use contracts::{
     NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
     WorkerPolicyReport,
 };
-use http::{signed_get_json, signed_post_json_body};
+use http::{signed_get_json, signed_post_json_body, signed_post_json_body_with_agent};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 #[cfg(unix)]
@@ -1464,6 +1464,45 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
     }
 }
 
+const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
+
+fn retryable_stream_delta_error(error: &str) -> bool {
+    error.starts_with("transport failed:")
+        || [
+            "HTTP 408", "HTTP 425", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504",
+        ]
+        .iter()
+        .any(|status| error.starts_with(status))
+}
+
+fn post_stream_delta(
+    agent: &ureq::Agent,
+    config: &AgentConfig,
+    identity: &DeviceIdentity,
+    payload: &JobStreamDelta,
+) -> Result<JobStreamAck, String> {
+    for attempt in 1..=STREAM_DELTA_RELAY_ATTEMPTS {
+        match signed_post_json_body_with_agent::<_, JobStreamAck>(
+            agent,
+            &config.control_plane_url,
+            "/v1/jobs/delta",
+            &config.device_id,
+            identity,
+            payload,
+        ) {
+            Ok(ack) => return Ok(ack),
+            Err(error)
+                if attempt < STREAM_DELTA_RELAY_ATTEMPTS
+                    && retryable_stream_delta_error(&error) =>
+            {
+                thread::sleep(Duration::from_millis(50 * attempt as u64));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("stream delta relay attempt loop always returns")
+}
+
 fn relay_job_deltas(
     config: AgentConfig,
     identity: DeviceIdentity,
@@ -1472,6 +1511,10 @@ fn relay_job_deltas(
     deltas: mpsc::Receiver<String>,
 ) {
     let mut sequence = 1u64;
+    // Reuse one HTTP client for the complete stream and retry transient delivery
+    // failures. A single dropped fragment must not disable live output until the
+    // final completion fallback arrives.
+    let agent = http::request_agent();
     while let Ok(delta) = deltas.recv() {
         let payload = JobStreamDelta {
             job_id: job_id.clone(),
@@ -1480,13 +1523,7 @@ fn relay_job_deltas(
             sequence,
             delta,
         };
-        match signed_post_json_body::<_, JobStreamAck>(
-            &config.control_plane_url,
-            "/v1/jobs/delta",
-            &config.device_id,
-            &identity,
-            &payload,
-        ) {
+        match post_stream_delta(&agent, &config, &identity, &payload) {
             Ok(ack) if ack.accepted || ack.duplicate => sequence += 1,
             Ok(_) => {
                 eprintln!("controlPlaneStream: delta {sequence} was not accepted; using final completion fallback");
@@ -2211,6 +2248,26 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn retries_only_transient_stream_delta_failures() {
+        for error in [
+            "transport failed: connection reset",
+            "HTTP 408",
+            "HTTP 429: busy",
+            "HTTP 502: upstream unavailable",
+            "HTTP 504",
+        ] {
+            assert!(retryable_stream_delta_error(error), "{error}");
+        }
+        for error in [
+            "HTTP 400: invalid delta",
+            "HTTP 401",
+            "HTTP 409: stale assignment",
+        ] {
+            assert!(!retryable_stream_delta_error(error), "{error}");
+        }
+    }
 
     #[test]
     fn reaps_finished_jobs_without_waiting_for_active_workers() {
