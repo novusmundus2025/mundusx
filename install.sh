@@ -181,7 +181,7 @@ fi
 download_to() {
   local source="$1"
   local output="$2"
-  local label="$3"
+  local label="${3:-$(basename "$output")}"
   local started_at
   local finished_at
   local elapsed
@@ -366,11 +366,11 @@ if [ "$runtime_only" -eq 0 ]; then
   verify_checksum "$tmp_agent_checksum"
 
   echo "Fetching MundusX agent..."
-  download_to "$mundusx_url" "$tmp_mundusx"
-  download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum"
+  download_to "$mundusx_url" "$tmp_mundusx" "MundusX CLI"
+  download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum" "MundusX CLI checksum"
   verify_checksum "$tmp_mundusx_checksum"
-  download_to "$agent_server_url" "$tmp_agent_server"
-  download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum"
+  download_to "$agent_server_url" "$tmp_agent_server" "MundusX agent server"
+  download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum" "MundusX agent-server checksum"
   verify_checksum "$tmp_agent_server_checksum"
 
   chmod +x "$tmp_bin"
