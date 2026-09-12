@@ -65,7 +65,7 @@ use model_catalog::{
     selection_for, ModelOption,
 };
 
-const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -4642,7 +4642,10 @@ fn prompt_cluster_pick(clusters: &[&cluster::DetectedCluster]) -> ClusterPickOut
 
 fn prompt_control_plane_choice() -> ControlPlaneChoice {
     const OPTIONS: [(&str, &str); 2] = [
-        ("Public MundusX", "use the hosted mundusx.ai control plane"),
+        (
+            "Public MundusX",
+            "use the hosted control.mundusx.ai control plane",
+        ),
         ("Private / custom", "enter your own control-plane URL"),
     ];
 
@@ -4683,7 +4686,9 @@ fn read_private_control_plane_url() -> String {
         if is_valid_control_plane_url(url) {
             return url.to_string();
         }
-        println!("Enter a full URL, for example http://127.0.0.1:8787 or https://uat.mundusx.ai");
+        println!(
+            "Enter a full URL, for example http://127.0.0.1:8787 or https://control.mundusx.ai"
+        );
     }
 }
 
