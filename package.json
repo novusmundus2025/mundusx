@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build:docs-site": "node scripts/build-public-docs-site.mjs dist/public-docs-site",
+    "serve:docs-site": "node scripts/serve-docs-site.mjs dist/public-docs-site",
     "lint": "echo \"lint not configured yet\"",
     "test": "echo \"test not configured yet\"",
     "test:automation-policy": "bash tests/automation-policy.sh",
