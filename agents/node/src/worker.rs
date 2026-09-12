@@ -2074,8 +2074,19 @@ fn run_vllm_completion(
     if structured {
         payload["response_format"] = speakai_response_format();
     }
-    let response = ureq::post(&format!("{url}/v1/chat/completions"))
-        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
+    let mut request = ureq::post(&format!("{url}/v1/chat/completions"))
+        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)));
+    if live_stream {
+        // ureq advertises gzip by default. Compressing an SSE response makes
+        // runtimes and proxies accumulate many small token events before a
+        // compressed block is emitted, which turns a live response into
+        // visible bursts. SSE must remain uncompressed end to end.
+        request = request
+            .set("Accept", "text/event-stream")
+            .set("Accept-Encoding", "identity")
+            .set("Cache-Control", "no-cache");
+    }
+    let response = request
         .send_json(payload)
         .map_err(|error| format!("OpenAI-compatible completion failed: {error}"))?;
     if live_stream {
@@ -3838,6 +3849,83 @@ mod tests {
         assert!(!relayed.is_empty());
         assert!(content.starts_with(&relayed));
         assert!(content.chars().count() - relayed.chars().count() >= STREAM_TAIL_HOLD_CHARS);
+    }
+
+    #[test]
+    fn live_runtime_request_disables_sse_compression() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock streaming server");
+        let addr = listener.local_addr().expect("mock streaming server addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept streaming request");
+            let mut request = Vec::new();
+            let mut header_end = None;
+            let mut content_length = 0usize;
+            loop {
+                let mut buffer = [0u8; 2048];
+                let size = stream.read(&mut buffer).expect("read streaming request");
+                request.extend_from_slice(&buffer[..size]);
+                if header_end.is_none() {
+                    header_end = request
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .map(|index| index + 4);
+                    if let Some(end) = header_end {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or_default();
+                    }
+                }
+                if size == 0
+                    || header_end.is_some_and(|end| request.len() >= end + content_length)
+                {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            assert!(request.contains("accept: text/event-stream\r\n"));
+            assert!(request.contains("accept-encoding: identity\r\n"));
+            assert!(request.contains("cache-control: no-cache\r\n"));
+
+            let content = "Streaming remains progressive when compression is disabled.";
+            let event = serde_json::json!({
+                "choices": [{"delta": {"content": content}, "finish_reason": "stop"}]
+            });
+            let body = format!("data: {event}\n\ndata: [DONE]\n\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write streaming response");
+        });
+
+        let output = with_stream_delta_sender(Some(mpsc::channel().0), || {
+            run_vllm_completion(
+                &format!("http://{addr}"),
+                "test-model",
+                "",
+                "hello",
+                32,
+                0.2,
+                0.9,
+                42,
+                false,
+            )
+            .expect("streaming completion")
+        });
+        assert_eq!(
+            output,
+            "Streaming remains progressive when compression is disabled."
+        );
+        server.join().expect("streaming mock server");
     }
 
     #[test]
