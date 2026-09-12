@@ -78,6 +78,13 @@ assert_contains "$linux_workflow" "target: aarch64-unknown-linux-gnu"
 assert_contains "$linux_workflow" "runner: ubuntu-24.04-arm"
 assert_contains "$linux_workflow" "BINARY_NAME: opengpu-\${{ matrix.target }}"
 assert_contains "$linux_workflow" "AGENT_BINARY_NAME: opengpu-node-agent-\${{ matrix.target }}"
+assert_contains "$linux_workflow" "MUNDUSX_BINARY_NAME: mundusx-\${{ matrix.target }}"
+assert_contains "$linux_workflow" "AGENT_SERVER_BINARY_NAME: mundusx-agent-server-\${{ matrix.target }}"
+assert_contains "$linux_workflow" 'cargo build --release --manifest-path apps/agent-server/Cargo.toml --target "${TARGET}"'
+assert_contains "$linux_workflow" 'cp "target/${TARGET}/release/mundusx" "${MUNDUSX_BINARY_NAME}"'
+assert_contains "$linux_workflow" 'cp "target/${TARGET}/release/mundusx-agent-server" "${AGENT_SERVER_BINARY_NAME}"'
+assert_contains "$linux_workflow" '${{ env.MUNDUSX_BINARY_NAME }}.sha256'
+assert_contains "$linux_workflow" '${{ env.AGENT_SERVER_BINARY_NAME }}.sha256'
 assert_contains "$linux_workflow" 'mv release-manifest.json "release-manifest-${TARGET}.json"'
 assert_contains "$linux_workflow" "name: MundusX Linux CLI \${{ env.RELEASE_TAG }}"
 assert_contains "$linux_workflow" "verify-release-manifest-assets.py"
