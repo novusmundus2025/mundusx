@@ -67,6 +67,17 @@ jobs:
       - name: Verify packaging
         run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
 
+      - name: Preserve native assets for manual release assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-${{ env.BINARY_NAME }}
+          path: |
+            ${{ env.BINARY_NAME }}
+            ${{ env.BINARY_NAME }}.sha256
+            ${{ env.AGENT_BINARY_NAME }}
+            ${{ env.AGENT_BINARY_NAME }}.sha256
+            install.sh
+
       - name: Prepare signed manifest
         env:
           OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.OPENGPU_RELEASE_SIGNING_PRIVATE_KEY_PEM_B64 }}
