@@ -37,6 +37,8 @@ jobs:
       TARGET: ${{ matrix.target }}
       BINARY_NAME: opengpu-${{ matrix.target }}
       AGENT_BINARY_NAME: opengpu-node-agent-${{ matrix.target }}
+      MUNDUSX_BINARY_NAME: mundusx-${{ matrix.target }}
+      AGENT_SERVER_BINARY_NAME: mundusx-agent-server-${{ matrix.target }}
 
     steps:
       - name: Checkout
@@ -49,20 +51,27 @@ jobs:
         with:
           targets: ${{ env.TARGET }}
 
-      - name: Build CLI and node agent
+      - name: Build CLIs and agents
         run: |
           cargo build --release --manifest-path apps/cli/Cargo.toml --target "${TARGET}"
+          cargo build --release --manifest-path apps/agent-server/Cargo.toml --target "${TARGET}"
           cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target "${TARGET}"
 
       - name: Prepare binaries and checksums
         run: |
           cp "target/${TARGET}/release/opengpu" "${BINARY_NAME}"
           cp "target/${TARGET}/release/opengpu-node-agent" "${AGENT_BINARY_NAME}"
-          chmod +x "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
+          cp "target/${TARGET}/release/mundusx" "${MUNDUSX_BINARY_NAME}"
+          cp "target/${TARGET}/release/mundusx-agent-server" "${AGENT_SERVER_BINARY_NAME}"
+          chmod +x "${BINARY_NAME}" "${AGENT_BINARY_NAME}" "${MUNDUSX_BINARY_NAME}" "${AGENT_SERVER_BINARY_NAME}"
           sha256sum "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
           sha256sum "${AGENT_BINARY_NAME}" > "${AGENT_BINARY_NAME}.sha256"
+          sha256sum "${MUNDUSX_BINARY_NAME}" > "${MUNDUSX_BINARY_NAME}.sha256"
+          sha256sum "${AGENT_SERVER_BINARY_NAME}" > "${AGENT_SERVER_BINARY_NAME}.sha256"
           sha256sum -c "${BINARY_NAME}.sha256"
           sha256sum -c "${AGENT_BINARY_NAME}.sha256"
+          sha256sum -c "${MUNDUSX_BINARY_NAME}.sha256"
+          sha256sum -c "${AGENT_SERVER_BINARY_NAME}.sha256"
 
       - name: Verify packaging
         run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
@@ -76,6 +85,10 @@ jobs:
             ${{ env.BINARY_NAME }}.sha256
             ${{ env.AGENT_BINARY_NAME }}
             ${{ env.AGENT_BINARY_NAME }}.sha256
+            ${{ env.MUNDUSX_BINARY_NAME }}
+            ${{ env.MUNDUSX_BINARY_NAME }}.sha256
+            ${{ env.AGENT_SERVER_BINARY_NAME }}
+            ${{ env.AGENT_SERVER_BINARY_NAME }}.sha256
             install.sh
 
       - name: Prepare signed manifest
@@ -97,6 +110,10 @@ jobs:
             ${{ env.BINARY_NAME }}.sha256
             ${{ env.AGENT_BINARY_NAME }}
             ${{ env.AGENT_BINARY_NAME }}.sha256
+            ${{ env.MUNDUSX_BINARY_NAME }}
+            ${{ env.MUNDUSX_BINARY_NAME }}.sha256
+            ${{ env.AGENT_SERVER_BINARY_NAME }}
+            ${{ env.AGENT_SERVER_BINARY_NAME }}.sha256
             release-manifest-${{ env.TARGET }}.json
             release-manifest-${{ env.TARGET }}.json.sig
             install.sh
