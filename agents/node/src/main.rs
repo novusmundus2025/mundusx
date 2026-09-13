@@ -12,10 +12,10 @@ use contracts::{
     NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
     WorkerPolicyReport,
 };
+use fs2::FileExt;
 use http::{signed_get_json, signed_post_json_body, signed_post_json_body_with_agent};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
-#[cfg(unix)]
 use std::fs;
 use std::io::{self, Write};
 use std::sync::{mpsc, Arc};
@@ -25,6 +25,46 @@ use storage::{
     agent_state_path, config_path, heartbeat_log_path, load_agent_config, load_last_heartbeat,
     save_agent_config, save_agent_state, save_heartbeat, AgentConfig,
 };
+
+struct AgentRunLock {
+    _file: fs::File,
+}
+
+fn acquire_agent_run_lock_at(path: &std::path::Path) -> Result<AgentRunLock, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create node agent lock directory `{}`: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "failed to open node agent lock `{}`: {error}",
+                path.display()
+            )
+        })?;
+    file.try_lock_exclusive().map_err(|error| {
+        format!(
+            "another node agent is already running for this installation (`{}`): {error}",
+            path.display()
+        )
+    })?;
+    file.set_len(0)
+        .and_then(|_| write!(file, "{}", std::process::id()))
+        .map_err(|error| format!("failed to record node agent owner: {error}"))?;
+    Ok(AgentRunLock { _file: file })
+}
+
+fn acquire_agent_run_lock() -> Result<AgentRunLock, String> {
+    acquire_agent_run_lock_at(&storage::config_dir().join("node-agent.run.lock"))
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -1950,6 +1990,13 @@ fn native_tool_response_supported(body: &serde_json::Value) -> bool {
 }
 
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
+    let _run_lock = match acquire_agent_run_lock() {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("agentStart: {error}");
+            std::process::exit(3);
+        }
+    };
     let mut config = load_config_or_exit();
     if refresh_contributed_tool_capability(&mut config) {
         if let Err(error) = save_agent_config(&config) {
@@ -3273,5 +3320,22 @@ mod tests {
         });
 
         assert!(!native_tool_response_supported(&body));
+    }
+
+    #[test]
+    fn agent_run_lock_rejects_a_second_process_owner() {
+        let temp =
+            std::env::temp_dir().join(format!("opengpu-agent-lock-test-{}", uuid::Uuid::new_v4()));
+        let path = temp.join("node-agent.run.lock");
+        let first = acquire_agent_run_lock_at(&path).expect("first lock");
+
+        let second = acquire_agent_run_lock_at(&path);
+        assert!(second.is_err());
+        let error = second.err().expect("second lock should fail");
+        assert!(error.contains("another node agent is already running"));
+
+        drop(first);
+        acquire_agent_run_lock_at(&path).expect("lock after owner exits");
+        let _ = fs::remove_dir_all(temp);
     }
 }
