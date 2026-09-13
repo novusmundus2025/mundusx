@@ -2070,6 +2070,10 @@ fn run_vllm_completion(
     if live_stream {
         payload["stream"] = serde_json::Value::Bool(true);
         payload["stream_options"] = serde_json::json!({"include_usage": true});
+        if model.to_ascii_lowercase().contains("qwen3") {
+            payload["chat_template_kwargs"] =
+                serde_json::json!({"enable_thinking": false});
+        }
     }
     if structured {
         payload["response_format"] = speakai_response_format();
@@ -3895,6 +3899,7 @@ mod tests {
             assert!(request_headers.contains("cache-control: no-cache\r\n"));
             assert_eq!(payload["max_tokens"], 32);
             assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
+            assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
 
             let content = "Streaming remains progressive when compression is disabled.";
             let event = serde_json::json!({
@@ -3913,7 +3918,7 @@ mod tests {
         let output = with_stream_delta_sender(Some(mpsc::channel().0), || {
             run_vllm_completion(
                 &format!("http://{addr}"),
-                "test-model",
+                "qwen3-coder",
                 "",
                 "hello",
                 32,
