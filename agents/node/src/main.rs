@@ -1464,6 +1464,7 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
 
 const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
 const STREAM_DELTA_BATCH_MAX_BYTES: usize = 4 * 1024;
+const STREAM_DELTA_BATCH_WINDOW: Duration = Duration::from_millis(100);
 
 fn retryable_stream_delta_error(error: &str) -> bool {
     error.starts_with("transport failed:")
@@ -1504,10 +1505,14 @@ fn post_stream_delta(
 
 fn coalesce_stream_deltas(first: String, deltas: &mpsc::Receiver<String>) -> String {
     let mut batch = first;
+    let deadline = Instant::now() + STREAM_DELTA_BATCH_WINDOW;
     while batch.len() < STREAM_DELTA_BATCH_MAX_BYTES {
-        match deltas.try_recv() {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        match deltas.recv_timeout(remaining) {
             Ok(next) => batch.push_str(&next),
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     batch
@@ -2225,6 +2230,21 @@ mod tests {
             coalesce_stream_deltas("one".to_string(), &receiver),
             "one two three"
         );
+    }
+
+    #[test]
+    fn coalesces_fragments_that_arrive_during_the_short_batch_window() {
+        let (sender, receiver) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            sender.send(" two".to_string()).unwrap();
+        });
+
+        assert_eq!(
+            coalesce_stream_deltas("one".to_string(), &receiver),
+            "one two"
+        );
+        producer.join().unwrap();
     }
 
     #[test]
