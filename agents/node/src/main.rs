@@ -1794,14 +1794,20 @@ fn process_pending_jobs(
     verbose: bool,
     continuously_refill_slots: bool,
     slot_pool: Arc<local_api::SlotPool>,
+    policy_allowed: bool,
+    policy_reason: Option<&str>,
 ) {
     let identity = load_identity_or_exit();
-    let (_, policy) = worker_readiness(config);
-    if !policy.allowed {
+    // Health probing can invoke slow external programs such as nvidia-smi and
+    // contact a contributed runtime. The heartbeat path already performs those
+    // probes and refreshes this policy. Re-probing before every one-second job
+    // claim can hold an otherwise idle node for nearly a minute before it sees
+    // queued work.
+    if !policy_allowed {
         if verbose {
             println!(
                 "jobPoll: skipped ({})",
-                policy.reason.as_deref().unwrap_or("policy denied launch")
+                policy_reason.unwrap_or("policy denied launch")
             );
         }
         let policy_heartbeat = build_heartbeat_with_state(config, AgentState::Paused);
@@ -1989,6 +1995,8 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     };
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
+    let mut claim_policy_allowed = heartbeat.policy_allowed;
+    let mut claim_policy_reason = heartbeat.policy_reason.clone();
     let state = resolved_state(&config);
     let interval = if config.paused {
         interval_seconds.max(30)
@@ -2051,7 +2059,15 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         eprintln_error_field("persistentRuntime", "stopped");
         std::process::exit(2);
     } else {
-        process_pending_jobs(&config, json, verbose, !once, slot_pool.clone());
+        process_pending_jobs(
+            &config,
+            json,
+            verbose,
+            !once,
+            slot_pool.clone(),
+            claim_policy_allowed,
+            claim_policy_reason.as_deref(),
+        );
     }
 
     println!("{}", green(format!("connected {}", config.device_id)));
@@ -2100,6 +2116,8 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
 
         if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
             let heartbeat = build_heartbeat(&latest_config);
+            claim_policy_allowed = heartbeat.policy_allowed;
+            claim_policy_reason = heartbeat.policy_reason.clone();
             if let Err(error) = save_agent_state(&heartbeat) {
                 eprintln!("failed to save agent state: {error}");
                 break;
@@ -2115,7 +2133,15 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             }
         }
         if control_plane_blocks_jobs(control_plane_status.as_ref()).is_none() {
-            process_pending_jobs(&latest_config, json, verbose, true, slot_pool.clone());
+            process_pending_jobs(
+                &latest_config,
+                json,
+                verbose,
+                true,
+                slot_pool.clone(),
+                claim_policy_allowed,
+                claim_policy_reason.as_deref(),
+            );
         }
         let _ = io::stdout().flush();
     }
