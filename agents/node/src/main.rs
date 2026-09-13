@@ -12,7 +12,7 @@ use contracts::{
     NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
     WorkerPolicyReport,
 };
-use http::{signed_get_json, signed_post_json_body};
+use http::{signed_get_json, signed_post_json_body, signed_post_json_body_with_agent};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 #[cfg(unix)]
@@ -1467,6 +1467,8 @@ fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &Jo
 const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
 const STREAM_DELTA_BATCH_MAX_BYTES: usize = 4 * 1024;
 const STREAM_DELTA_BATCH_WINDOW: Duration = Duration::from_millis(100);
+const STREAM_DELTA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const STREAM_DELTA_IO_TIMEOUT: Duration = Duration::from_millis(600);
 
 fn retryable_stream_delta_error(error: &str) -> bool {
     error.starts_with("transport failed:")
@@ -1478,15 +1480,14 @@ fn retryable_stream_delta_error(error: &str) -> bool {
 }
 
 fn post_stream_delta(
+    agent: &ureq::Agent,
     config: &AgentConfig,
     identity: &DeviceIdentity,
     payload: &JobStreamDelta,
 ) -> Result<JobStreamAck, String> {
     for attempt in 1..=STREAM_DELTA_RELAY_ATTEMPTS {
-        // The control-plane response closes its backend connection after each
-        // acknowledgement. Start each relay attempt with a fresh client so a
-        // stale pooled connection cannot hold visible output before retrying.
-        match signed_post_json_body::<_, JobStreamAck>(
+        match signed_post_json_body_with_agent::<_, JobStreamAck>(
+            agent,
             &config.control_plane_url,
             "/v1/jobs/delta",
             &config.device_id,
@@ -1528,6 +1529,10 @@ fn relay_job_deltas(
     assignment_id: String,
     deltas: mpsc::Receiver<String>,
 ) {
+    let agent = http::request_agent_with_timeouts(
+        STREAM_DELTA_CONNECT_TIMEOUT,
+        STREAM_DELTA_IO_TIMEOUT,
+    );
     let mut sequence = 1u64;
     while let Ok(first_delta) = deltas.recv() {
         let delta = coalesce_stream_deltas(first_delta, &deltas);
@@ -1538,7 +1543,7 @@ fn relay_job_deltas(
             sequence,
             delta,
         };
-        match post_stream_delta(&config, &identity, &payload) {
+        match post_stream_delta(&agent, &config, &identity, &payload) {
             Ok(ack) if ack.accepted || ack.duplicate => sequence += 1,
             Ok(_) => {
                 eprintln!("controlPlaneStream: delta {sequence} was not accepted; using final completion fallback");
