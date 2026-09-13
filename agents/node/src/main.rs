@@ -243,16 +243,6 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
     (health, policy)
 }
 
-fn operational_state(config: &AgentConfig) -> AgentState {
-    let (health, policy) = worker_readiness(config);
-    let capabilities = build_capabilities(config, &health, policy.allowed);
-    if !capabilities.ready_for_jobs {
-        AgentState::Paused
-    } else {
-        resolved_state(config)
-    }
-}
-
 fn cap_applied_vram_mb(physical_vram_mb: Option<u32>, contribution_percent: u8) -> Option<u32> {
     physical_vram_mb.map(|vram| {
         vram.saturating_mul(contribution_percent as u32)
@@ -980,7 +970,30 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
 }
 
 fn build_heartbeat(config: &AgentConfig) -> Heartbeat {
-    build_heartbeat_with_state(config, operational_state(config))
+    let mut heartbeat = build_heartbeat_with_state(config, resolved_state(config));
+    if !heartbeat.capabilities.ready_for_jobs {
+        heartbeat.agent_state = AgentState::Paused;
+    }
+    heartbeat
+}
+
+fn heartbeat_from_snapshot(
+    snapshot: &Heartbeat,
+    config: &AgentConfig,
+    agent_state: AgentState,
+) -> Heartbeat {
+    let mut heartbeat = snapshot.clone();
+    heartbeat.agent_state =
+        if agent_state == AgentState::Ready && !heartbeat.capabilities.ready_for_jobs {
+            AgentState::Paused
+        } else {
+            agent_state
+        };
+    heartbeat.available_memory_mb = detect_available_memory_mb();
+    heartbeat.available_gpu_percent = detect_available_gpu_percent(config);
+    heartbeat.updated_at = now_unix_seconds();
+    heartbeat.contribution_percent = config.contribution_percent;
+    heartbeat
 }
 
 fn effective_ready_for_jobs(
@@ -1238,13 +1251,23 @@ fn launch_worker_process(
     json: bool,
     delta_sender: Option<mpsc::Sender<String>>,
 ) -> Result<contracts::WorkerLaunchResponse, String> {
-    let model_dir = config.effective_model_dir();
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
         return Err(policy
             .reason
             .unwrap_or_else(|| "worker policy denied launch".to_string()));
     }
+
+    launch_admitted_worker_process(config, request, json, delta_sender)
+}
+
+fn launch_admitted_worker_process(
+    config: &AgentConfig,
+    request: WorkerLaunchRequest,
+    json: bool,
+    delta_sender: Option<mpsc::Sender<String>>,
+) -> Result<contracts::WorkerLaunchResponse, String> {
+    let model_dir = config.effective_model_dir();
 
     match worker::launch_worker_with_stream(&request, &model_dir, delta_sender) {
         Ok(response) => {
@@ -1590,10 +1613,8 @@ fn relay_job_deltas(
     assignment_id: String,
     deltas: mpsc::Receiver<String>,
 ) {
-    let agent = http::request_agent_with_timeouts(
-        STREAM_DELTA_CONNECT_TIMEOUT,
-        STREAM_DELTA_IO_TIMEOUT,
-    );
+    let agent =
+        http::request_agent_with_timeouts(STREAM_DELTA_CONNECT_TIMEOUT, STREAM_DELTA_IO_TIMEOUT);
     let mut sequence = 1u64;
     while let Ok(first_delta) = deltas.recv() {
         let delta = coalesce_stream_deltas(first_delta, &deltas);
@@ -1674,6 +1695,7 @@ fn build_worker_error_completion(
 fn start_busy_heartbeat_supervisor(
     config: AgentConfig,
     identity: DeviceIdentity,
+    heartbeat_snapshot: Heartbeat,
     interval: Duration,
 ) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
     let (stop_tx, stop_rx) = mpsc::channel();
@@ -1681,7 +1703,8 @@ fn start_busy_heartbeat_supervisor(
         match stop_rx.recv_timeout(interval) {
             Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                let heartbeat = build_heartbeat_with_state(&config, AgentState::Busy);
+                let heartbeat =
+                    heartbeat_from_snapshot(&heartbeat_snapshot, &config, AgentState::Busy);
                 let _ = save_agent_state(&heartbeat);
                 let _ = save_heartbeat(&heartbeat);
                 send_heartbeat(&config, &identity, &heartbeat, false);
@@ -1742,7 +1765,10 @@ fn execute_claimed_job(
         (None, None)
     };
     let started_at = Instant::now();
-    let worker_result = launch_worker_process(&config, request, json, delta_sender);
+    // Admission was already checked from the latest health snapshot before the
+    // job was claimed. Re-running the full health probe here delays the first
+    // response token even though the node is already admitted and ready.
+    let worker_result = launch_admitted_worker_process(&config, request, json, delta_sender);
     if let Some(handle) = relay_handle {
         let _ = handle.join();
     }
@@ -1796,8 +1822,7 @@ fn process_pending_jobs(
     verbose: bool,
     continuously_refill_slots: bool,
     slot_pool: Arc<local_api::SlotPool>,
-    policy_allowed: bool,
-    policy_reason: Option<&str>,
+    heartbeat_snapshot: &Heartbeat,
 ) {
     let identity = load_identity_or_exit();
     // Health probing can invoke slow external programs such as nvidia-smi and
@@ -1805,14 +1830,18 @@ fn process_pending_jobs(
     // probes and refreshes this policy. Re-probing before every one-second job
     // claim can hold an otherwise idle node for nearly a minute before it sees
     // queued work.
-    if !policy_allowed {
+    if !heartbeat_snapshot.policy_allowed {
         if verbose {
             println!(
                 "jobPoll: skipped ({})",
-                policy_reason.unwrap_or("policy denied launch")
+                heartbeat_snapshot
+                    .policy_reason
+                    .as_deref()
+                    .unwrap_or("policy denied launch")
             );
         }
-        let policy_heartbeat = build_heartbeat_with_state(config, AgentState::Paused);
+        let policy_heartbeat =
+            heartbeat_from_snapshot(heartbeat_snapshot, config, AgentState::Paused);
         let _ = save_agent_state(&policy_heartbeat);
         let _ = save_heartbeat(&policy_heartbeat);
         send_heartbeat(config, &identity, &policy_heartbeat, verbose);
@@ -1841,12 +1870,16 @@ fn process_pending_jobs(
         return;
     }
 
-    let busy_heartbeat = build_heartbeat_with_state(config, AgentState::Busy);
+    let busy_heartbeat = heartbeat_from_snapshot(heartbeat_snapshot, config, AgentState::Busy);
     let _ = save_agent_state(&busy_heartbeat);
     let _ = save_heartbeat(&busy_heartbeat);
     send_heartbeat(config, &identity, &busy_heartbeat, verbose);
-    let (stop_busy_heartbeat, busy_heartbeat_handle) =
-        start_busy_heartbeat_supervisor(config.clone(), identity.clone(), Duration::from_secs(5));
+    let (stop_busy_heartbeat, busy_heartbeat_handle) = start_busy_heartbeat_supervisor(
+        config.clone(),
+        identity.clone(),
+        heartbeat_snapshot.clone(),
+        Duration::from_secs(5),
+    );
 
     if continuously_refill_slots {
         while !handles.is_empty() {
@@ -1888,7 +1921,8 @@ fn process_pending_jobs(
     }
     stop_busy_heartbeat_supervisor(stop_busy_heartbeat, busy_heartbeat_handle);
 
-    let ready_heartbeat = build_heartbeat_with_state(config, resolved_state(config));
+    let ready_heartbeat =
+        heartbeat_from_snapshot(heartbeat_snapshot, config, resolved_state(config));
     let _ = save_agent_state(&ready_heartbeat);
     let _ = save_heartbeat(&ready_heartbeat);
     send_heartbeat(config, &identity, &ready_heartbeat, verbose);
@@ -2070,8 +2104,10 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     };
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
-    let mut claim_policy_allowed = heartbeat.policy_allowed;
-    let mut claim_policy_reason = heartbeat.policy_reason.clone();
+    let mut heartbeat_snapshot = heartbeat.clone();
+    let (health_refresh_tx, health_refresh_rx) = mpsc::channel::<Heartbeat>();
+    let mut health_refresh_in_flight = false;
+    let mut last_health_refresh_started = Instant::now();
     let state = resolved_state(&config);
     let interval = if config.paused {
         interval_seconds.max(30)
@@ -2140,8 +2176,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             verbose,
             !once,
             slot_pool.clone(),
-            claim_policy_allowed,
-            claim_policy_reason.as_deref(),
+            &heartbeat_snapshot,
         );
     }
 
@@ -2175,7 +2210,11 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             }
         };
         if !should_agent_run(&latest_config) {
-            let heartbeat = build_heartbeat(&latest_config);
+            let heartbeat = heartbeat_from_snapshot(
+                &heartbeat_snapshot,
+                &latest_config,
+                resolved_state(&latest_config),
+            );
             let _ = save_agent_state(&heartbeat);
             let _ = save_heartbeat(&heartbeat);
             send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
@@ -2189,10 +2228,32 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             break;
         }
 
+        while let Ok(refreshed) = health_refresh_rx.try_recv() {
+            heartbeat_snapshot = refreshed;
+            health_refresh_in_flight = false;
+        }
+
+        // Full health probing may take tens of seconds on contributed clusters.
+        // Refresh it in the background so job claiming and response streaming
+        // remain responsive while retaining current scheduler health data.
+        if !health_refresh_in_flight
+            && last_health_refresh_started.elapsed() >= Duration::from_secs(30)
+        {
+            let refresh_config = latest_config.clone();
+            let refresh_tx = health_refresh_tx.clone();
+            thread::spawn(move || {
+                let _ = refresh_tx.send(build_heartbeat(&refresh_config));
+            });
+            health_refresh_in_flight = true;
+            last_health_refresh_started = Instant::now();
+        }
+
         if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
-            let heartbeat = build_heartbeat(&latest_config);
-            claim_policy_allowed = heartbeat.policy_allowed;
-            claim_policy_reason = heartbeat.policy_reason.clone();
+            let heartbeat = heartbeat_from_snapshot(
+                &heartbeat_snapshot,
+                &latest_config,
+                resolved_state(&latest_config),
+            );
             if let Err(error) = save_agent_state(&heartbeat) {
                 eprintln!("failed to save agent state: {error}");
                 break;
@@ -2214,8 +2275,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                 verbose,
                 true,
                 slot_pool.clone(),
-                claim_policy_allowed,
-                claim_policy_reason.as_deref(),
+                &heartbeat_snapshot,
             );
         }
         let _ = io::stdout().flush();
