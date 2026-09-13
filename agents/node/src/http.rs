@@ -110,6 +110,27 @@ pub fn signed_post_json_body<T: Serialize, R: DeserializeOwned>(
     parse_json_body(&response)
 }
 
+pub fn signed_post_json_body_with_agent<T: Serialize, R: DeserializeOwned>(
+    agent: &ureq::Agent,
+    control_plane_url: &str,
+    path: &str,
+    node_id: &str,
+    identity: &DeviceIdentity,
+    payload: &T,
+) -> Result<R, String> {
+    let response = signed_request_with_agent(
+        agent,
+        control_plane_url,
+        "POST",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        payload,
+    )?;
+    parse_json_body(&response)
+}
+
 pub fn signed_runner_get_json<T: DeserializeOwned>(
     control_plane_url: &str,
     path: &str,
@@ -227,6 +248,14 @@ fn request_timeout() -> Duration {
 
 pub fn request_agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(request_timeout()).build()
+}
+
+pub fn request_agent_with_timeouts(connect: Duration, io: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(connect)
+        .timeout_read(io)
+        .timeout_write(io)
+        .build()
 }
 
 fn control_plane_error(error: ureq::Error) -> String {
