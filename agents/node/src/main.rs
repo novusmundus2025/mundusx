@@ -13,7 +13,7 @@ use contracts::{
     WorkerPolicyReport,
 };
 use fs2::FileExt;
-use http::{signed_get_json, signed_post_json_body, signed_post_json_body_with_agent};
+use http::{signed_get_json, signed_post_json_body_with_agent};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 use std::fs;
@@ -1492,25 +1492,46 @@ fn control_plane_completion_message(record: &JobRecord, completion: &JobCompleti
 }
 
 fn complete_job(config: &AgentConfig, identity: &DeviceIdentity, completion: &JobCompletion) {
-    match signed_post_json_body::<_, JobRecord>(
-        &config.control_plane_url,
-        "/v1/jobs/complete",
-        &config.device_id,
-        identity,
-        completion,
-    ) {
-        Ok(record) => println!("{}", control_plane_completion_message(&record, completion)),
-        Err(error) => eprintln!("controlPlaneComplete: {error}"),
+    let agent =
+        http::request_agent_with_timeouts(COMPLETION_CONNECT_TIMEOUT, COMPLETION_IO_TIMEOUT);
+    for attempt in 1..=COMPLETION_DELIVERY_ATTEMPTS {
+        match signed_post_json_body_with_agent::<_, JobRecord>(
+            &agent,
+            &config.control_plane_url,
+            "/v1/jobs/complete",
+            &config.device_id,
+            identity,
+            completion,
+        ) {
+            Ok(record) => {
+                println!("{}", control_plane_completion_message(&record, completion));
+                return;
+            }
+            Err(error)
+                if attempt < COMPLETION_DELIVERY_ATTEMPTS
+                    && retryable_control_plane_error(&error) =>
+            {
+                eprintln!("controlPlaneComplete: attempt {attempt} failed; retrying: {error}");
+                thread::sleep(Duration::from_millis(250 * attempt as u64));
+            }
+            Err(error) => {
+                eprintln!("controlPlaneComplete: {error}");
+                return;
+            }
+        }
     }
 }
 
+const COMPLETION_DELIVERY_ATTEMPTS: usize = 3;
+const COMPLETION_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const COMPLETION_IO_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
 const STREAM_DELTA_BATCH_MAX_BYTES: usize = 4 * 1024;
 const STREAM_DELTA_BATCH_WINDOW: Duration = Duration::from_millis(100);
 const STREAM_DELTA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const STREAM_DELTA_IO_TIMEOUT: Duration = Duration::from_millis(600);
 
-fn retryable_stream_delta_error(error: &str) -> bool {
+fn retryable_control_plane_error(error: &str) -> bool {
     error.starts_with("transport failed:")
         || [
             "HTTP 408", "HTTP 425", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504",
@@ -1537,7 +1558,7 @@ fn post_stream_delta(
             Ok(ack) => return Ok(ack),
             Err(error)
                 if attempt < STREAM_DELTA_RELAY_ATTEMPTS
-                    && retryable_stream_delta_error(&error) =>
+                    && retryable_control_plane_error(&error) =>
             {
                 thread::sleep(Duration::from_millis(50 * attempt as u64));
             }
@@ -2324,7 +2345,7 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn retries_only_transient_stream_delta_failures() {
+    fn retries_only_transient_control_plane_failures() {
         for error in [
             "transport failed: connection reset",
             "HTTP 408",
@@ -2332,14 +2353,14 @@ mod tests {
             "HTTP 502: upstream unavailable",
             "HTTP 504",
         ] {
-            assert!(retryable_stream_delta_error(error), "{error}");
+            assert!(retryable_control_plane_error(error), "{error}");
         }
         for error in [
             "HTTP 400: invalid delta",
             "HTTP 401",
             "HTTP 409: stale assignment",
         ] {
-            assert!(!retryable_stream_delta_error(error), "{error}");
+            assert!(!retryable_control_plane_error(error), "{error}");
         }
     }
 
