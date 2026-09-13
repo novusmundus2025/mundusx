@@ -2507,6 +2507,19 @@ fn parse_openai_stream<R: BufRead>(
             partial: raw_content.clone(),
             emitted_chars,
         })?;
+        // SSE comments and blank heartbeat lines keep the TCP socket active but
+        // are not answer progress. Check the deadline for every received line,
+        // before filtering protocol-only events.
+        if last_progress.elapsed() >= progress_timeout {
+            return Err(OpenAiAttemptError::Recoverable {
+                message: format!(
+                    "OpenAI-compatible stream produced no answer content for {}s",
+                    progress_timeout.as_secs()
+                ),
+                partial: raw_content,
+                emitted_chars,
+            });
+        }
         let Some(data) = line.strip_prefix("data:") else {
             continue;
         };
@@ -2517,16 +2530,6 @@ fn parse_openai_stream<R: BufRead>(
         }
         if data.is_empty() {
             continue;
-        }
-        if last_progress.elapsed() >= progress_timeout {
-            return Err(OpenAiAttemptError::Recoverable {
-                message: format!(
-                    "OpenAI-compatible stream produced no answer content for {}s",
-                    progress_timeout.as_secs()
-                ),
-                partial: raw_content,
-                emitted_chars,
-            });
         }
         let value: serde_json::Value = serde_json::from_str(data).map_err(|error| {
             OpenAiAttemptError::Fatal(format!(
@@ -4132,6 +4135,18 @@ mod tests {
         assert_eq!(parsed.content, content);
         assert_eq!(parsed.finish_reason, "stop");
         assert_eq!(relayed, content);
+    }
+
+    #[test]
+    fn sse_heartbeats_do_not_count_as_answer_progress() {
+        let error = parse_openai_stream(Cursor::new(": keepalive\n\n"), Duration::ZERO)
+            .expect_err("heartbeat-only stream must hit the answer-progress deadline");
+
+        assert!(matches!(
+            error,
+            OpenAiAttemptError::Recoverable { message, partial, emitted_chars: 0 }
+                if message.contains("no answer content") && partial.is_empty()
+        ));
     }
 
     #[test]
