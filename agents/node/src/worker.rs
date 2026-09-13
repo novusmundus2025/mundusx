@@ -20,6 +20,15 @@ use std::time::{Duration, Instant};
 
 const STREAM_DELTA_PREFIX: &str = "MUNDUSX_STREAM_DELTA:";
 const STREAM_TAIL_HOLD_CHARS: usize = 32;
+const MAX_ADAPTIVE_OUTPUT_TOKENS: u32 = 16 * 1024;
+const MAX_CONTINUATION_SEGMENTS: usize = 4;
+const CONTINUATION_PROMPT: &str = "Continue the previous response exactly where it stopped. Do not repeat any text, restart the answer, or add a new introduction. Finish every incomplete code block, list, table, and explanation.";
+
+#[derive(Debug, PartialEq, Eq)]
+struct OpenAiCompletionSegment {
+    content: String,
+    finish_reason: String,
+}
 
 thread_local! {
     static STREAM_DELTA_SENDER: RefCell<Option<mpsc::Sender<String>>> = const { RefCell::new(None) };
@@ -2050,75 +2059,141 @@ fn run_vllm_completion(
     seed: u64,
     structured: bool,
 ) -> Result<String, String> {
-    let mut messages = Vec::new();
-    if !system_prompt.is_empty() {
-        messages.push(serde_json::json!({
-            "role": "system",
-            "content": system_prompt,
-        }));
-    }
-    messages.push(serde_json::json!({
-        "role": "user",
-        "content": user_prompt,
-    }));
-    let mut payload = serde_json::json!({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "seed": seed,
-    });
     let live_stream = live_delta_enabled() && !structured;
-    if live_stream {
-        payload["stream"] = serde_json::Value::Bool(true);
-        payload["stream_options"] = serde_json::json!({"include_usage": true});
+    let output_ceiling = max_tokens.max(MAX_ADAPTIVE_OUTPUT_TOKENS);
+    let mut combined = String::new();
+    let mut segment_budget = max_tokens.max(1);
+    let mut allocated_tokens = 0u32;
+    let mut last_value = None;
+
+    for segment_index in 0..MAX_CONTINUATION_SEGMENTS {
+        let remaining = output_ceiling.saturating_sub(allocated_tokens);
+        if remaining == 0 {
+            break;
+        }
+        segment_budget = segment_budget.min(remaining).max(1);
+        allocated_tokens = allocated_tokens.saturating_add(segment_budget);
+
+        let mut messages = Vec::new();
+        if !system_prompt.is_empty() {
+            messages.push(serde_json::json!({
+                "role": "system",
+                "content": system_prompt,
+            }));
+        }
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": user_prompt,
+        }));
+        if !combined.is_empty() {
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": combined,
+            }));
+            messages.push(serde_json::json!({
+                "role": "user",
+                "content": CONTINUATION_PROMPT,
+            }));
+        }
+
+        let mut payload = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": segment_budget,
+            "temperature": temperature,
+            "top_p": top_p,
+            "seed": seed.saturating_add(segment_index as u64),
+        });
+        if live_stream {
+            payload["stream"] = serde_json::Value::Bool(true);
+            payload["stream_options"] = serde_json::json!({"include_usage": true});
+        }
+        if structured {
+            payload["response_format"] = speakai_response_format();
+        }
+        let mut request = ureq::post(&format!("{url}/v1/chat/completions"))
+            .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)));
+        if live_stream {
+            // ureq advertises gzip by default. Compressing an SSE response makes
+            // runtimes and proxies accumulate many small token events before a
+            // compressed block is emitted, which turns a live response into
+            // visible bursts. SSE must remain uncompressed end to end.
+            request = request
+                .set("Accept", "text/event-stream")
+                .set("Accept-Encoding", "identity")
+                .set("Cache-Control", "no-cache");
+        }
+        let response = request
+            .send_json(payload)
+            .map_err(|error| format!("OpenAI-compatible completion failed: {error}"))?;
+        let segment = if live_stream {
+            parse_openai_stream(BufReader::new(response.into_reader()))?
+        } else {
+            let value = response.into_json::<serde_json::Value>().map_err(|error| {
+                format!("OpenAI-compatible runtime returned invalid json: {error}")
+            })?;
+            let segment = parse_openai_completion_segment(&value);
+            last_value = Some(value);
+            segment?
+        };
+
+        combined.push_str(&segment.content);
+        if segment.finish_reason != "length" {
+            if combined.trim().is_empty() {
+                return last_value
+                    .as_ref()
+                    .map(empty_completion_error)
+                    .map(Err)
+                    .unwrap_or_else(|| {
+                        Err("OpenAI-compatible stream did not include content".to_string())
+                    });
+            }
+            return Ok(combined.trim().to_string());
+        }
+        if structured {
+            break;
+        }
+        segment_budget = segment_budget.saturating_mul(2).max(1);
     }
-    if structured {
-        payload["response_format"] = speakai_response_format();
+
+    if combined.trim().is_empty() {
+        return last_value
+            .as_ref()
+            .map(empty_completion_error)
+            .map(Err)
+            .unwrap_or_else(|| {
+                Err(
+                    "model exhausted the adaptive generation budget without producing content"
+                        .to_string(),
+                )
+            });
     }
-    let mut request = ureq::post(&format!("{url}/v1/chat/completions"))
-        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)));
-    if live_stream {
-        // ureq advertises gzip by default. Compressing an SSE response makes
-        // runtimes and proxies accumulate many small token events before a
-        // compressed block is emitted, which turns a live response into
-        // visible bursts. SSE must remain uncompressed end to end.
-        request = request
-            .set("Accept", "text/event-stream")
-            .set("Accept-Encoding", "identity")
-            .set("Cache-Control", "no-cache");
-    }
-    let response = request
-        .send_json(payload)
-        .map_err(|error| format!("OpenAI-compatible completion failed: {error}"))?;
-    if live_stream {
-        return parse_openai_stream(BufReader::new(response.into_reader()));
-    }
-    let value = response
-        .into_json::<serde_json::Value>()
-        .map_err(|error| format!("OpenAI-compatible runtime returned invalid json: {error}"))?;
+    Ok(format!(
+        "[truncated: hit the adaptive generation ceiling] {}",
+        combined.trim()
+    ))
+}
+
+fn parse_openai_completion_segment(
+    value: &serde_json::Value,
+) -> Result<OpenAiCompletionSegment, String> {
     let finish_reason = value
         .pointer("/choices/0/finish_reason")
-        .and_then(|value| value.as_str())
+        .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .to_string();
-
-    if let Some(content) = value
+    let content = value
         .pointer("/choices/0/message/content")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        // A generation cut off by the token or context limit must never be
-        // presented as a finished answer, so say so alongside the text.
-        if finish_reason == "length" {
-            return Ok(format!("[truncated: hit the generation limit] {content}"));
-        }
-        return Ok(content.to_string());
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if content.trim().is_empty() && finish_reason != "length" {
+        return Err(empty_completion_error(value));
     }
-
-    Err(empty_completion_error(&value))
+    Ok(OpenAiCompletionSegment {
+        content,
+        finish_reason,
+    })
 }
 
 fn char_prefix_bytes(value: &str, chars: usize) -> usize {
@@ -2129,7 +2204,7 @@ fn char_prefix_bytes(value: &str, chars: usize) -> usize {
         .unwrap_or(value.len())
 }
 
-fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
+fn parse_openai_stream<R: BufRead>(reader: R) -> Result<OpenAiCompletionSegment, String> {
     let mut raw_content = String::new();
     let mut emitted_chars = 0usize;
     let mut finish_reason = String::new();
@@ -2169,7 +2244,7 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
             .and_then(serde_json::Value::as_str)
         {
             raw_content.push_str(delta);
-            let normalized = raw_content.trim_start();
+            let normalized = raw_content.as_str();
             let safe_chars = normalized
                 .chars()
                 .count()
@@ -2187,8 +2262,8 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
         }
     }
 
-    let content = raw_content.trim();
-    if content.is_empty() {
+    let content = raw_content.as_str();
+    if content.trim().is_empty() && finish_reason != "length" {
         return Err("OpenAI-compatible stream did not include content".to_string());
     }
     if !saw_done && finish_reason.is_empty() {
@@ -2202,11 +2277,10 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
         let start = char_prefix_bytes(content, emitted_chars);
         emit_stream_delta(&content[start..]);
     }
-    if finish_reason == "length" {
-        Ok(format!("[truncated: hit the generation limit] {content}"))
-    } else {
-        Ok(content.to_string())
-    }
+    Ok(OpenAiCompletionSegment {
+        content: content.to_string(),
+        finish_reason,
+    })
 }
 
 fn structured_output_option_unsupported(error: &str) -> bool {
@@ -3700,8 +3774,103 @@ mod tests {
         });
         let relayed = receiver.try_iter().collect::<String>();
 
-        assert_eq!(parsed, content);
+        assert_eq!(parsed.content, content);
+        assert_eq!(parsed.finish_reason, "stop");
         assert_eq!(relayed, content);
+    }
+
+    #[test]
+    fn continues_a_length_limited_stream_with_a_larger_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind continuation server");
+        let addr = listener.local_addr().expect("continuation server addr");
+        let first = "contract KYCRegistry {";
+        let second = "\n    function complete() external {}\n}";
+        let server = thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept continuation request");
+                let mut request = Vec::new();
+                let mut header_end = None;
+                let mut content_length = 0usize;
+                loop {
+                    let mut buffer = [0u8; 2048];
+                    let size = stream.read(&mut buffer).expect("read continuation request");
+                    request.extend_from_slice(&buffer[..size]);
+                    if header_end.is_none() {
+                        header_end = request
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|position| position + 4);
+                        if let Some(end) = header_end {
+                            let headers = String::from_utf8_lossy(&request[..end]);
+                            content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or_default();
+                        }
+                    }
+                    if size == 0
+                        || header_end.is_some_and(|end| request.len() >= end + content_length)
+                    {
+                        break;
+                    }
+                }
+                let end = header_end.expect("request headers");
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&request[end..]).expect("completion payload");
+                if index == 0 {
+                    assert_eq!(payload["max_tokens"], 32);
+                    assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
+                } else {
+                    assert_eq!(payload["max_tokens"], 64);
+                    assert_eq!(payload["messages"][1]["role"], "assistant");
+                    assert_eq!(payload["messages"][1]["content"], first);
+                    assert_eq!(payload["messages"][2]["content"], CONTINUATION_PROMPT);
+                }
+
+                let (content, finish_reason) = if index == 0 {
+                    (first, "length")
+                } else {
+                    (second, "stop")
+                };
+                let event = serde_json::json!({
+                    "choices": [{"delta": {"content": content}, "finish_reason": finish_reason}]
+                });
+                let body = format!("data: {event}\n\ndata: [DONE]\n\n");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write continuation response");
+            }
+        });
+
+        let (sender, receiver) = mpsc::channel();
+        let output = with_stream_delta_sender(Some(sender), || {
+            run_vllm_completion(
+                &format!("http://{addr}"),
+                "test-model",
+                "",
+                "write the contract",
+                32,
+                0.2,
+                0.9,
+                42,
+                false,
+            )
+            .expect("continued completion")
+        });
+        let relayed = receiver.try_iter().collect::<String>();
+
+        assert_eq!(output, format!("{first}{second}"));
+        assert_eq!(relayed, output);
+        server.join().expect("continuation server");
     }
 
     #[test]
