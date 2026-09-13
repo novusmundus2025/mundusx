@@ -1548,7 +1548,6 @@ const COMPLETION_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const COMPLETION_IO_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
 const STREAM_DELTA_BATCH_MAX_BYTES: usize = 4 * 1024;
-const STREAM_DELTA_BATCH_WINDOW: Duration = Duration::from_millis(100);
 const STREAM_DELTA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const STREAM_DELTA_IO_TIMEOUT: Duration = Duration::from_millis(600);
 
@@ -1591,14 +1590,10 @@ fn post_stream_delta(
 
 fn coalesce_stream_deltas(first: String, deltas: &mpsc::Receiver<String>) -> String {
     let mut batch = first;
-    let deadline = Instant::now() + STREAM_DELTA_BATCH_WINDOW;
     while batch.len() < STREAM_DELTA_BATCH_MAX_BYTES {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            break;
-        };
-        match deltas.recv_timeout(remaining) {
+        match deltas.try_recv() {
             Ok(next) => batch.push_str(&next),
-            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
         }
     }
     batch
@@ -2389,18 +2384,16 @@ mod tests {
     }
 
     #[test]
-    fn coalesces_fragments_that_arrive_during_the_short_batch_window() {
+    fn sends_the_first_delta_without_waiting_for_later_fragments() {
         let (sender, receiver) = mpsc::channel();
         let producer = thread::spawn(move || {
             thread::sleep(Duration::from_millis(20));
             sender.send(" two".to_string()).unwrap();
         });
 
-        assert_eq!(
-            coalesce_stream_deltas("one".to_string(), &receiver),
-            "one two"
-        );
+        assert_eq!(coalesce_stream_deltas("one".to_string(), &receiver), "one");
         producer.join().unwrap();
+        assert_eq!(receiver.try_recv().unwrap(), " two");
     }
 
     #[test]
