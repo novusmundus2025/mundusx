@@ -12,7 +12,7 @@ use contracts::{
     NodeCapabilityProfile, NodeRole, WorkerHealthReport, WorkerLaunchRequest, WorkerLaunchResponse,
     WorkerPolicyReport,
 };
-use http::{signed_get_json, signed_post_json_body, signed_post_json_body_with_agent};
+use http::{signed_get_json, signed_post_json_body};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 #[cfg(unix)]
@@ -1476,14 +1476,15 @@ fn retryable_stream_delta_error(error: &str) -> bool {
 }
 
 fn post_stream_delta(
-    agent: &ureq::Agent,
     config: &AgentConfig,
     identity: &DeviceIdentity,
     payload: &JobStreamDelta,
 ) -> Result<JobStreamAck, String> {
     for attempt in 1..=STREAM_DELTA_RELAY_ATTEMPTS {
-        match signed_post_json_body_with_agent::<_, JobStreamAck>(
-            agent,
+        // The control-plane response closes its backend connection after each
+        // acknowledgement. Start each relay attempt with a fresh client so a
+        // stale pooled connection cannot hold visible output before retrying.
+        match signed_post_json_body::<_, JobStreamAck>(
             &config.control_plane_url,
             "/v1/jobs/delta",
             &config.device_id,
@@ -1526,10 +1527,6 @@ fn relay_job_deltas(
     deltas: mpsc::Receiver<String>,
 ) {
     let mut sequence = 1u64;
-    // Reuse one HTTP client for the complete stream and retry transient delivery
-    // failures. A single dropped fragment must not disable live output until the
-    // final completion fallback arrives.
-    let agent = http::request_agent();
     while let Ok(first_delta) = deltas.recv() {
         let delta = coalesce_stream_deltas(first_delta, &deltas);
         let payload = JobStreamDelta {
@@ -1539,7 +1536,7 @@ fn relay_job_deltas(
             sequence,
             delta,
         };
-        match post_stream_delta(&agent, &config, &identity, &payload) {
+        match post_stream_delta(&config, &identity, &payload) {
             Ok(ack) if ack.accepted || ack.duplicate => sequence += 1,
             Ok(_) => {
                 eprintln!("controlPlaneStream: delta {sequence} was not accepted; using final completion fallback");
