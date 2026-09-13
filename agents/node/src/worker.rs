@@ -16,7 +16,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,12 +24,25 @@ const STREAM_DELTA_PREFIX: &str = "MUNDUSX_STREAM_DELTA:";
 const STREAM_TAIL_HOLD_CHARS: usize = 32;
 const MAX_ADAPTIVE_OUTPUT_TOKENS: u32 = 16 * 1024;
 const MAX_CONTINUATION_SEGMENTS: usize = 4;
+const DEFAULT_STREAM_PROGRESS_TIMEOUT_SECONDS: u64 = 45;
 const CONTINUATION_PROMPT: &str = "Continue the previous response exactly where it stopped. Do not repeat any text, restart the answer, or add a new introduction. Finish every incomplete code block, list, table, and explanation.";
+
+static VLLM_RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, PartialEq, Eq)]
 struct OpenAiCompletionSegment {
     content: String,
     finish_reason: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OpenAiAttemptError {
+    Recoverable {
+        message: String,
+        partial: String,
+        emitted_chars: usize,
+    },
+    Fatal(String),
 }
 
 thread_local! {
@@ -1165,6 +1178,96 @@ fn vllm_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn stream_progress_timeout() -> Duration {
+    Duration::from_secs(
+        env::var("OPENGPU_STREAM_PROGRESS_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(DEFAULT_STREAM_PROGRESS_TIMEOUT_SECONDS),
+    )
+}
+
+fn vllm_inference_ready(url: &str, model: &str) -> bool {
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply OK."}],
+        "max_tokens": 1,
+        "temperature": 0,
+        "stream": false,
+    });
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(15))
+        .timeout_write(Duration::from_secs(15))
+        .build()
+        .post(&format!(
+            "{}/v1/chat/completions",
+            url.trim_end_matches('/')
+        ))
+        .send_json(payload)
+        .map(|response| response.status() < 400)
+        .unwrap_or(false)
+}
+
+fn recover_owned_vllm_runtime(url: &str, model: &str) -> Result<bool, String> {
+    let Some(state) = read_persistent_runtime_state()? else {
+        return Ok(false);
+    };
+    if state.url.trim_end_matches('/') != url.trim_end_matches('/')
+        || state.environment_variable != "OPENGPU_VLLM_URL"
+    {
+        return Ok(false);
+    }
+    let Some(container_name) = state.container_name.as_deref() else {
+        return Ok(false);
+    };
+
+    let lock = VLLM_RECOVERY_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| "vLLM recovery lock is poisoned".to_string())?;
+
+    // A concurrent request may already have recovered the shared runtime.
+    if vllm_inference_ready(url, model) {
+        return Ok(true);
+    }
+
+    let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
+    let status = Command::new(docker)
+        .args(["restart", "--timeout", "10", container_name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("failed to restart managed vLLM container: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "managed vLLM container restart failed with status {}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+
+    let timeout_seconds = vllm_setting(
+        "OPENGPU_VLLM_START_TIMEOUT_SECONDS",
+        "VLLM_START_TIMEOUT_SECONDS",
+        "1800",
+    )
+    .parse::<u64>()
+    .ok()
+    .filter(|seconds| *seconds > 0)
+    .unwrap_or(1800);
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    while Instant::now() < deadline {
+        if vllm_health_ok(url) && vllm_inference_ready(url, model) {
+            return Ok(true);
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    Err(format!(
+        "managed vLLM runtime did not pass an inference probe within {timeout_seconds}s"
+    ))
+}
+
 pub struct PersistentRuntimeHandle {
     child: Child,
     url: String,
@@ -2056,14 +2159,43 @@ fn run_vllm_completion(
     seed: u64,
     structured: bool,
 ) -> Result<String, String> {
+    run_vllm_completion_with_recovery(
+        url,
+        model,
+        system_prompt,
+        user_prompt,
+        max_tokens,
+        temperature,
+        top_p,
+        seed,
+        structured,
+        || recover_owned_vllm_runtime(url, model),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_vllm_completion_with_recovery(
+    url: &str,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    seed: u64,
+    structured: bool,
+    mut recover: impl FnMut() -> Result<bool, String>,
+) -> Result<String, String> {
     let live_stream = live_delta_enabled() && !structured;
     let output_ceiling = max_tokens.max(MAX_ADAPTIVE_OUTPUT_TOKENS);
     let mut combined = String::new();
     let mut segment_budget = max_tokens.max(1);
     let mut allocated_tokens = 0u32;
     let mut last_value = None;
+    let mut recovery_used = false;
+    let mut segment_index = 0usize;
 
-    for segment_index in 0..MAX_CONTINUATION_SEGMENTS {
+    'segments: while segment_index < MAX_CONTINUATION_SEGMENTS {
         let remaining = output_ceiling.saturating_sub(allocated_tokens);
         if remaining == 0 {
             break;
@@ -2071,67 +2203,114 @@ fn run_vllm_completion(
         segment_budget = segment_budget.min(remaining).max(1);
         allocated_tokens = allocated_tokens.saturating_add(segment_budget);
 
-        let mut messages = Vec::new();
-        if !system_prompt.is_empty() {
-            messages.push(serde_json::json!({
-                "role": "system",
-                "content": system_prompt,
-            }));
-        }
-        messages.push(serde_json::json!({
-            "role": "user",
-            "content": user_prompt,
-        }));
-        if !combined.is_empty() {
-            messages.push(serde_json::json!({
-                "role": "assistant",
-                "content": combined,
-            }));
+        let segment = loop {
+            let mut messages = Vec::new();
+            if !system_prompt.is_empty() {
+                messages.push(serde_json::json!({
+                    "role": "system",
+                    "content": system_prompt,
+                }));
+            }
             messages.push(serde_json::json!({
                 "role": "user",
-                "content": CONTINUATION_PROMPT,
+                "content": user_prompt,
             }));
-        }
+            if !combined.is_empty() {
+                messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": combined,
+                }));
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": CONTINUATION_PROMPT,
+                }));
+            }
 
-        let mut payload = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "max_tokens": segment_budget,
-            "temperature": temperature,
-            "top_p": top_p,
-            "seed": seed.saturating_add(segment_index as u64),
-        });
-        if live_stream {
-            payload["stream"] = serde_json::Value::Bool(true);
-            payload["stream_options"] = serde_json::json!({"include_usage": true});
-        }
-        if structured {
-            payload["response_format"] = speakai_response_format();
-        }
-        let mut request = ureq::post(&format!("{url}/v1/chat/completions"))
-            .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)));
-        if live_stream {
-            // ureq advertises gzip by default. Compressing an SSE response makes
-            // runtimes and proxies accumulate many small token events before a
-            // compressed block is emitted, which turns a live response into
-            // visible bursts. SSE must remain uncompressed end to end.
-            request = request
-                .set("Accept", "text/event-stream")
-                .set("Accept-Encoding", "identity")
-                .set("Cache-Control", "no-cache");
-        }
-        let response = request
-            .send_json(payload)
-            .map_err(|error| format!("OpenAI-compatible completion failed: {error}"))?;
-        let segment = if live_stream {
-            parse_openai_stream(BufReader::new(response.into_reader()))?
-        } else {
-            let value = response.into_json::<serde_json::Value>().map_err(|error| {
-                format!("OpenAI-compatible runtime returned invalid json: {error}")
-            })?;
-            let segment = parse_openai_completion_segment(&value);
-            last_value = Some(value);
-            segment?
+            let mut payload = serde_json::json!({
+                "model": model,
+                "messages": messages,
+                "max_tokens": segment_budget,
+                "temperature": temperature,
+                "top_p": top_p,
+                "seed": seed.saturating_add(segment_index as u64),
+            });
+            if live_stream {
+                payload["stream"] = serde_json::Value::Bool(true);
+                payload["stream_options"] = serde_json::json!({"include_usage": true});
+            }
+            if structured {
+                payload["response_format"] = speakai_response_format();
+            }
+
+            let progress_timeout = stream_progress_timeout();
+            let agent = ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(5))
+                .timeout_read(progress_timeout)
+                .timeout_write(Duration::from_secs(30))
+                .build();
+            let mut request = agent.post(&format!("{url}/v1/chat/completions"));
+            if live_stream {
+                // ureq advertises gzip by default. Compressing an SSE response makes
+                // runtimes and proxies accumulate many small token events before a
+                // compressed block is emitted, which turns a live response into
+                // visible bursts. SSE must remain uncompressed end to end.
+                request = request
+                    .set("Accept", "text/event-stream")
+                    .set("Accept-Encoding", "identity")
+                    .set("Cache-Control", "no-cache");
+            }
+            let attempt = match request.send_json(payload) {
+                Ok(response) if live_stream => {
+                    parse_openai_stream(BufReader::new(response.into_reader()), progress_timeout)
+                }
+                Ok(response) => match response.into_json::<serde_json::Value>() {
+                    Ok(value) => {
+                        let segment = parse_openai_completion_segment(&value)
+                            .map_err(OpenAiAttemptError::Fatal);
+                        last_value = Some(value);
+                        segment
+                    }
+                    Err(error) => Err(OpenAiAttemptError::Recoverable {
+                        message: format!("OpenAI-compatible runtime response read failed: {error}"),
+                        partial: String::new(),
+                        emitted_chars: 0,
+                    }),
+                },
+                Err(error) => Err(OpenAiAttemptError::Recoverable {
+                    message: format!("OpenAI-compatible completion failed: {error}"),
+                    partial: String::new(),
+                    emitted_chars: 0,
+                }),
+            };
+
+            match attempt {
+                Ok(segment) => break segment,
+                Err(OpenAiAttemptError::Fatal(error)) => return Err(error),
+                Err(OpenAiAttemptError::Recoverable {
+                    message,
+                    partial,
+                    emitted_chars,
+                }) => {
+                    if recovery_used {
+                        return Err(format!(
+                            "{message}; managed runtime recovery was already attempted"
+                        ));
+                    }
+                    let recovered = recover()?;
+                    if !recovered {
+                        return Err(message);
+                    }
+                    recovery_used = true;
+                    if !partial.is_empty() {
+                        let start = char_prefix_bytes(&partial, emitted_chars);
+                        emit_stream_delta(&partial[start..]);
+                        combined.push_str(&partial);
+                        segment_budget = segment_budget.saturating_mul(2).max(1);
+                        segment_index += 1;
+                        continue 'segments;
+                    }
+                }
+            }
         };
 
         combined.push_str(&segment.content);
@@ -2151,6 +2330,7 @@ fn run_vllm_completion(
             break;
         }
         segment_budget = segment_budget.saturating_mul(2).max(1);
+        segment_index += 1;
     }
 
     if combined.trim().is_empty() {
@@ -2310,16 +2490,23 @@ fn char_prefix_bytes(value: &str, chars: usize) -> usize {
         .unwrap_or(value.len())
 }
 
-fn parse_openai_stream<R: BufRead>(reader: R) -> Result<OpenAiCompletionSegment, String> {
+fn parse_openai_stream<R: BufRead>(
+    reader: R,
+    progress_timeout: Duration,
+) -> Result<OpenAiCompletionSegment, OpenAiAttemptError> {
     let mut raw_content = String::new();
     let mut emitted_chars = 0usize;
     let mut finish_reason = String::new();
     let mut saw_done = false;
     let mut last_emit = Instant::now();
+    let mut last_progress = Instant::now();
 
     for line in reader.lines() {
-        let line =
-            line.map_err(|error| format!("OpenAI-compatible stream read failed: {error}"))?;
+        let line = line.map_err(|error| OpenAiAttemptError::Recoverable {
+            message: format!("OpenAI-compatible stream read failed: {error}"),
+            partial: raw_content.clone(),
+            emitted_chars,
+        })?;
         let Some(data) = line.strip_prefix("data:") else {
             continue;
         };
@@ -2331,13 +2518,28 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<OpenAiCompletionSegment,
         if data.is_empty() {
             continue;
         }
-        let value: serde_json::Value = serde_json::from_str(data)
-            .map_err(|error| format!("OpenAI-compatible stream returned invalid json: {error}"))?;
+        if last_progress.elapsed() >= progress_timeout {
+            return Err(OpenAiAttemptError::Recoverable {
+                message: format!(
+                    "OpenAI-compatible stream produced no answer content for {}s",
+                    progress_timeout.as_secs()
+                ),
+                partial: raw_content,
+                emitted_chars,
+            });
+        }
+        let value: serde_json::Value = serde_json::from_str(data).map_err(|error| {
+            OpenAiAttemptError::Fatal(format!(
+                "OpenAI-compatible stream returned invalid json: {error}"
+            ))
+        })?;
         if let Some(message) = value
             .pointer("/error/message")
             .and_then(serde_json::Value::as_str)
         {
-            return Err(format!("runtime returned an error: {message}"));
+            return Err(OpenAiAttemptError::Fatal(format!(
+                "runtime returned an error: {message}"
+            )));
         }
         if let Some(reason) = value
             .pointer("/choices/0/finish_reason")
@@ -2350,6 +2552,9 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<OpenAiCompletionSegment,
             .and_then(serde_json::Value::as_str)
         {
             raw_content.push_str(delta);
+            if !delta.is_empty() {
+                last_progress = Instant::now();
+            }
             let normalized = raw_content.as_str();
             let safe_chars = normalized
                 .chars()
@@ -2369,11 +2574,17 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<OpenAiCompletionSegment,
     }
 
     let content = raw_content.as_str();
-    if content.trim().is_empty() && finish_reason != "length" {
-        return Err("OpenAI-compatible stream did not include content".to_string());
-    }
     if !saw_done && finish_reason.is_empty() {
-        return Err("OpenAI-compatible stream ended before a terminal event".to_string());
+        return Err(OpenAiAttemptError::Recoverable {
+            message: "OpenAI-compatible stream ended before a terminal event".to_string(),
+            partial: raw_content,
+            emitted_chars,
+        });
+    }
+    if content.trim().is_empty() && finish_reason != "length" {
+        return Err(OpenAiAttemptError::Fatal(
+            "OpenAI-compatible stream did not include content".to_string(),
+        ));
     }
     // The terminal event confirms the full response. Flush the validation tail
     // through the live channel before job completion so clients do not freeze
@@ -3914,7 +4125,7 @@ mod tests {
         );
         let (sender, receiver) = mpsc::channel();
         let parsed = with_stream_delta_sender(Some(sender), || {
-            parse_openai_stream(Cursor::new(body)).expect("stream parses")
+            parse_openai_stream(Cursor::new(body), Duration::from_secs(5)).expect("stream parses")
         });
         let relayed = receiver.try_iter().collect::<String>();
 
@@ -4018,6 +4229,109 @@ mod tests {
     }
 
     #[test]
+    fn recovers_once_and_continues_an_interrupted_partial_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind recovery server");
+        let addr = listener.local_addr().expect("recovery server addr");
+        let first = "contract KYCRegistry {";
+        let second = "\n    function complete() external {}\n}";
+        let server = thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept recovery request");
+                let mut request = Vec::new();
+                let mut header_end = None;
+                let mut content_length = 0usize;
+                loop {
+                    let mut buffer = [0u8; 2048];
+                    let size = stream.read(&mut buffer).expect("read recovery request");
+                    request.extend_from_slice(&buffer[..size]);
+                    if header_end.is_none() {
+                        header_end = request
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|position| position + 4);
+                        if let Some(end) = header_end {
+                            let headers = String::from_utf8_lossy(&request[..end]);
+                            content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or_default();
+                        }
+                    }
+                    if size == 0
+                        || header_end.is_some_and(|end| request.len() >= end + content_length)
+                    {
+                        break;
+                    }
+                }
+                let end = header_end.expect("request headers");
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&request[end..]).expect("completion payload");
+                if index == 0 {
+                    assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
+                } else {
+                    assert_eq!(payload["messages"][1]["role"], "assistant");
+                    assert_eq!(payload["messages"][1]["content"], first);
+                    assert_eq!(payload["messages"][2]["content"], CONTINUATION_PROMPT);
+                }
+
+                let content = if index == 0 { first } else { second };
+                let finish_reason = if index == 0 {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!("stop")
+                };
+                let event = serde_json::json!({
+                    "choices": [{"delta": {"content": content}, "finish_reason": finish_reason}]
+                });
+                let body = if index == 0 {
+                    format!("data: {event}\n\n")
+                } else {
+                    format!("data: {event}\n\ndata: [DONE]\n\n")
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write recovery response");
+            }
+        });
+
+        let mut recovery_calls = 0;
+        let (sender, receiver) = mpsc::channel();
+        let output = with_stream_delta_sender(Some(sender), || {
+            run_vllm_completion_with_recovery(
+                &format!("http://{addr}"),
+                "test-model",
+                "",
+                "write the contract",
+                32,
+                0.2,
+                0.9,
+                42,
+                false,
+                || {
+                    recovery_calls += 1;
+                    Ok(true)
+                },
+            )
+            .expect("recovered completion")
+        });
+        let relayed = receiver.try_iter().collect::<String>();
+
+        assert_eq!(recovery_calls, 1);
+        assert_eq!(output, format!("{first}{second}"));
+        assert_eq!(relayed, output);
+        server.join().expect("recovery server");
+    }
+
+    #[test]
     fn live_runtime_request_disables_sse_compression() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock streaming server");
         let addr = listener.local_addr().expect("mock streaming server addr");
@@ -4048,8 +4362,7 @@ mod tests {
                             .unwrap_or_default();
                     }
                 }
-                if size == 0
-                    || header_end.is_some_and(|end| request.len() >= end + content_length)
+                if size == 0 || header_end.is_some_and(|end| request.len() >= end + content_length)
                 {
                     break;
                 }
