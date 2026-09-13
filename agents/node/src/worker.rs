@@ -20,7 +20,6 @@ use std::time::{Duration, Instant};
 
 const STREAM_DELTA_PREFIX: &str = "MUNDUSX_STREAM_DELTA:";
 const STREAM_TAIL_HOLD_CHARS: usize = 32;
-const MIN_DIRECT_CHAT_OUTPUT_TOKENS: u32 = 16 * 1024;
 
 thread_local! {
     static STREAM_DELTA_SENDER: RefCell<Option<mpsc::Sender<String>>> = const { RefCell::new(None) };
@@ -2051,16 +2050,6 @@ fn run_vllm_completion(
     seed: u64,
     structured: bool,
 ) -> Result<String, String> {
-    // Keep a chat answer in one generation. Splitting a length-limited answer
-    // across fresh model calls can restart or invert Markdown fences, leaving
-    // headings inside code blocks and source code outside them. A larger direct
-    // allowance lets the runtime stop naturally while preserving one coherent
-    // token stream and one Markdown state.
-    let request_max_tokens = if structured {
-        max_tokens
-    } else {
-        max_tokens.max(MIN_DIRECT_CHAT_OUTPUT_TOKENS)
-    };
     let mut messages = Vec::new();
     if !system_prompt.is_empty() {
         messages.push(serde_json::json!({
@@ -2075,7 +2064,7 @@ fn run_vllm_completion(
     let mut payload = serde_json::json!({
         "model": model,
         "messages": messages,
-        "max_tokens": request_max_tokens,
+        "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
         "seed": seed,
@@ -3760,7 +3749,7 @@ mod tests {
             assert!(request_headers.contains("accept: text/event-stream\r\n"));
             assert!(request_headers.contains("accept-encoding: identity\r\n"));
             assert!(request_headers.contains("cache-control: no-cache\r\n"));
-            assert_eq!(payload["max_tokens"], MIN_DIRECT_CHAT_OUTPUT_TOKENS);
+            assert_eq!(payload["max_tokens"], 32);
             assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
 
             let content = "Streaming remains progressive when compression is disabled.";
