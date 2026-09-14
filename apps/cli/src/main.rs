@@ -483,10 +483,7 @@ fn identity_metadata_fingerprint() -> Option<String> {
 }
 
 fn run_nvidia_smi_query(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("nvidia-smi")
-        .args(args)
-        .output()
-        .map_err(|error| format!("nvidia-smi unavailable: {error}"))?;
+    let output = command_output_with_timeout("nvidia-smi", args, Duration::from_secs(2))?;
 
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).to_string());
@@ -498,6 +495,46 @@ fn run_nvidia_smi_query(args: &[&str]) -> Result<String, String> {
         output.status,
         stderr.trim()
     ))
+}
+
+fn command_output_with_timeout(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{program} unavailable: {error}"))?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("failed to collect {program} output: {error}"));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{program} timed out after {}ms",
+                    timeout.as_millis()
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("failed to inspect {program}: {error}"));
+            }
+        }
+    }
 }
 
 fn first_nvidia_smi_value(stdout: &str) -> Option<String> {
@@ -2921,19 +2958,6 @@ fn local_readiness(
     }
 }
 
-fn provider_count(
-    config: &Config,
-    power: &PowerState,
-    active_model: Option<&str>,
-    identity_ready: bool,
-) -> usize {
-    if local_readiness(config, power, active_model, identity_ready).ready_for_jobs {
-        1
-    } else {
-        0
-    }
-}
-
 fn latest_agent_state(config: &Config) -> Option<Heartbeat> {
     let path = config::config_dir().join("agent-state.json");
     let text = std::fs::read_to_string(path).ok()?;
@@ -2958,7 +2982,9 @@ fn live_readiness_from_agent(agent: &Heartbeat) -> Option<LocalReadiness> {
     })
 }
 
-fn print_config_summary(config: &Config, path: &std::path::Path) {
+fn print_config_summary(config: &Config, path: &std::path::Path) -> usize {
+    theme::section("Node status");
+    theme::field("configPath", path.display());
     let detected_backend = resolved_backend(config);
     let power = probe_power_state();
     let active_model = effective_active_model(config);
@@ -2980,8 +3006,6 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
             local_readiness(config, &power, active_model.as_deref(), identity_ready)
         });
     let provider_count = if readiness.ready_for_jobs { 1 } else { 0 };
-    theme::section("Node status");
-    theme::field("configPath", path.display());
     theme::field("deviceId", &config.device_id);
     theme::field("publicKey", display_public_key_hex(config));
     theme::field(
@@ -3072,6 +3096,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
             "no"
         },
     );
+    provider_count
 }
 
 fn print_startup_summary(config: &Config, path: &std::path::Path) {
@@ -3946,11 +3971,8 @@ fn detect_backend() -> Backend {
 
     if env::var_os("NVIDIA_VISIBLE_DEVICES").is_some()
         || env::var_os("CUDA_VISIBLE_DEVICES").is_some()
-        || Command::new("nvidia-smi")
-            .arg("--query-gpu=name")
-            .arg("--format=csv,noheader")
-            .output()
-            .map(|output| output.status.success() && !output.stdout.is_empty())
+        || run_nvidia_smi_query(&["--query-gpu=name", "--format=csv,noheader"])
+            .map(|output| !output.trim().is_empty())
             .unwrap_or(false)
     {
         return Backend::Cuda;
@@ -6848,6 +6870,16 @@ fn main() {
         }
         Commands::Status { json } => {
             let config = current_config_or_default();
+            if !json {
+                let provider_count = print_config_summary(&config, &resolved_config_path());
+                println!("routingMode: local-only");
+                println!(
+                    "selectedProvider: {}",
+                    if provider_count == 1 { "self" } else { "none" }
+                );
+                return;
+            }
+
             let preferred_backend = resolved_backend(&config);
             let power = probe_power_state();
             let active_model = effective_active_model(&config);
@@ -6856,50 +6888,39 @@ fn main() {
                 policy_allowed(&config, &power, active_model.as_deref(), identity_ready);
             let readiness =
                 local_readiness(&config, &power, active_model.as_deref(), identity_ready);
-            let provider_count =
-                provider_count(&config, &power, active_model.as_deref(), identity_ready);
+            let provider_count = if readiness.ready_for_jobs { 1 } else { 0 };
 
-            if json {
-                let payload = serde_json::json!({
-                    "config": config,
-                    "detected_backend": preferred_backend,
-                    "provider_count": provider_count,
-                    "routing_mode": "local-only",
-                    "selected_provider": if provider_count == 1 { "self" } else { "none" },
-                    "power_state": {
-                        "source": power.source,
-                        "on_battery": power.on_battery,
-                        "battery_percent": power.battery_percent,
-                    },
-                    "identity_ready": identity_ready,
-                    "identity_trust_path": identity::trust_path(),
-                    "policy_allowed": policy_allowed,
-                    "policy_reason": policy_reason(
-                        &config,
-                        &power,
-                        active_model.as_deref(),
-                        identity_ready
-                    ),
-                    "ready_for_jobs": readiness.ready_for_jobs,
-                    "readiness_reason": readiness.readiness_reason,
-                    "active_model": active_model,
-                    "contributed_cluster": config.contributed_cluster,
-                    "active_model_compatibility": readiness.model_compatibility,
-                    "active_model_compatibility_reason": readiness.model_compatibility_reason,
-                });
-                if let Err(error) = print_json(&payload) {
-                    eprintln!("failed to print json: {error}");
-                    std::process::exit(1);
-                }
-                return;
+            let payload = serde_json::json!({
+                "config": config,
+                "detected_backend": preferred_backend,
+                "provider_count": provider_count,
+                "routing_mode": "local-only",
+                "selected_provider": if provider_count == 1 { "self" } else { "none" },
+                "power_state": {
+                    "source": power.source,
+                    "on_battery": power.on_battery,
+                    "battery_percent": power.battery_percent,
+                },
+                "identity_ready": identity_ready,
+                "identity_trust_path": identity::trust_path(),
+                "policy_allowed": policy_allowed,
+                "policy_reason": policy_reason(
+                    &config,
+                    &power,
+                    active_model.as_deref(),
+                    identity_ready
+                ),
+                "ready_for_jobs": readiness.ready_for_jobs,
+                "readiness_reason": readiness.readiness_reason,
+                "active_model": active_model,
+                "contributed_cluster": config.contributed_cluster,
+                "active_model_compatibility": readiness.model_compatibility,
+                "active_model_compatibility_reason": readiness.model_compatibility_reason,
+            });
+            if let Err(error) = print_json(&payload) {
+                eprintln!("failed to print json: {error}");
+                std::process::exit(1);
             }
-
-            print_config_summary(&config, &resolved_config_path());
-            println!("routingMode: local-only");
-            println!(
-                "selectedProvider: {}",
-                if provider_count == 1 { "self" } else { "none" }
-            );
         }
         Commands::Doctor { json } => {
             let config = current_config_or_default();
