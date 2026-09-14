@@ -925,7 +925,11 @@ fn detect_available_memory_mb() -> u32 {
 }
 
 fn supported_tools_for(capabilities: &NodeCapabilityProfile) -> Vec<String> {
-    let mut tools = Vec::new();
+    // Preserve protocol-level capabilities discovered from the runtime. The
+    // scheduler-facing advertisement previously rebuilt this list from two
+    // generic flags and silently dropped `native_tool_calls_v1`, even though
+    // worker health correctly contained it.
+    let mut tools = capabilities.supported_tools.clone();
     if capabilities.supports_tools {
         tools.push("tool_use".to_string());
     }
@@ -2913,6 +2917,7 @@ mod tests {
         assert!(profile
             .supported_tools
             .contains(&"native_tool_calls_v1".to_string()));
+        assert!(supported_tools_for(&profile).contains(&"native_tool_calls_v1".to_string()));
     }
 
     #[test]
