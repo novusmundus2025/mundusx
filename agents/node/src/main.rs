@@ -13,7 +13,7 @@ use contracts::{
     WorkerPolicyReport,
 };
 use fs2::FileExt;
-use http::{signed_get_json, signed_post_json_body_with_agent};
+use http::{signed_get_json_with_agent, signed_post_json_body_with_agent};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 use std::fs;
@@ -1473,7 +1473,12 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
 
 fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<JobRecord> {
     let path = format!("/v1/jobs/next?node_id={}", config.device_id);
-    match signed_get_json::<JobClaimResponse>(
+    // Hermes tool turns carry the conversation and tool schemas in the claim
+    // response. A remote cluster needs more than the generic five-second HTTP
+    // timeout to receive that larger payload after the server reserves it.
+    let agent = http::request_agent_with_timeouts(CLAIM_CONNECT_TIMEOUT, CLAIM_RESPONSE_TIMEOUT);
+    match signed_get_json_with_agent::<JobClaimResponse>(
+        &agent,
         &config.control_plane_url,
         &path,
         &config.device_id,
@@ -1486,7 +1491,8 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
                 eprintln!("controlPlaneClaim: re-registering missing node");
                 let registration = build_registration(config, identity);
                 if send_registration(config, identity, &registration, false) {
-                    match signed_get_json::<JobClaimResponse>(
+                    match signed_get_json_with_agent::<JobClaimResponse>(
+                        &agent,
                         &config.control_plane_url,
                         &path,
                         &config.device_id,
@@ -1501,6 +1507,9 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
         }
     }
 }
+
+const CLAIM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CLAIM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn job_status_label(status: contracts::JobStatus) -> &'static str {
     match status {
