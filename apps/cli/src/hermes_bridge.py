@@ -9,7 +9,7 @@ import time
 
 
 class AnswerStream:
-    """Bounded, replaceable previews; replay never appends duplicate text."""
+    """Bounded preview of the current model turn, not the full tool transcript."""
     def __init__(self, publish, clock=time.monotonic):
         self.publish, self.clock = publish, clock
         self.text, self.last, self.dirty, self.truncated = "", 0, False, False
@@ -18,8 +18,8 @@ class AnswerStream:
         if not isinstance(text, str) or not text:
             return
         self.text += text
-        if len(self.text) > 8192:
-            self.text = self.text[-8192:]
+        if len(self.text) > 32768:
+            self.text = self.text[-32768:]
             self.truncated = True
         self.dirty = True
         if self.clock() - self.last >= 0.5:
@@ -30,6 +30,12 @@ class AnswerStream:
             self.publish({"type": "assistant_snapshot", "data": {"text": self.text, "truncated": self.truncated}})
             self.last, self.dirty = self.clock(), False
 
+    def reset(self):
+        """Clear narration once its tool starts so later turns cannot accumulate."""
+        self.text, self.dirty, self.truncated = "", False, False
+        self.last = self.clock()
+        self.publish({"type": "assistant_snapshot", "data": {"text": "", "truncated": False}})
+
 
 def emit(prefix, value):
     print(prefix + json.dumps(value, ensure_ascii=False, default=str), flush=True)
@@ -39,6 +45,12 @@ SKILL_DISCOVERY_GUIDANCE = """For this project task, discover relevant installed
 when needed, and load applicable instructions with skill_view before using them.
 Use only skills relevant to the task; do not load the entire library or invent missing skills.
 Project instructions and the current user request still apply. A skill does not grant extra permissions.
+"""
+
+EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical.
+Do not narrate each intended read, edit, or command before calling a tool.
+Inspect each unchanged file only once, batch related operations when practical, and do not repeat a completed step.
+Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
 """
 
 
@@ -171,6 +183,7 @@ def main():
 
     def tool_start_callback(call_id, name, arguments):
         answer_stream.flush()
+        answer_stream.reset()
         command = arguments.get("command") if isinstance(arguments, dict) else None
         emit(
             "MUNDUSX_EVENT=",
@@ -207,7 +220,13 @@ def main():
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
     user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
-    user_prompt = SKILL_DISCOVERY_GUIDANCE + "\n\nUser project request:\n" + user_prompt
+    user_prompt = (
+        SKILL_DISCOVERY_GUIDANCE
+        + "\n"
+        + EXECUTION_EFFICIENCY_GUIDANCE
+        + "\nUser project request:\n"
+        + user_prompt
+    )
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],

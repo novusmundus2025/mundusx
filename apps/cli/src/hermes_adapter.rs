@@ -428,6 +428,8 @@ mod output_tests {
     fn structured_bridge_enables_native_hermes_skills() {
         assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\", \"skills\"]"));
         assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
+        assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
+        assert!(STRUCTURED_BRIDGE.contains("answer_stream.reset()"));
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
         assert!(STRUCTURED_BRIDGE.contains("MUNDUSX_HERMES_WORKSPACE"));
         assert!(STRUCTURED_BRIDGE
