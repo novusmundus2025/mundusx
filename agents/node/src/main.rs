@@ -497,6 +497,7 @@ fn enrich_model_capability(
     node_capacity_class: &str,
     cluster_capabilities: &[String],
     cluster_context_tokens: Option<u32>,
+    cluster_supports_tools: bool,
 ) -> contracts::ModelCapability {
     let name = model.name.to_ascii_lowercase();
     model.capacity_class = model_capacity_class(&model, node_capacity_class);
@@ -546,7 +547,8 @@ fn enrich_model_capability(
         tasks.extend(["large_coding".to_string(), "synthesizer".to_string()]);
         roles.push(NodeRole::Synthesizer);
     }
-    if declared("tool") {
+    model.supports_tools |= cluster_supports_tools || declared("tool");
+    if model.supports_tools {
         tasks.push("tool_use".to_string());
         roles.push(NodeRole::ToolUse);
     }
@@ -633,6 +635,13 @@ fn build_scheduler_capabilities(
     let cluster_capabilities = cluster
         .map(|entry| entry.model_capabilities.as_slice())
         .unwrap_or_default();
+    let cluster_supports_tools = cluster.is_some_and(|entry| {
+        entry.supports_tool_calls
+            || entry
+                .model_capabilities
+                .iter()
+                .any(|value| value.to_ascii_lowercase().contains("tool"))
+    });
     let mut models = if let Some(cluster) = cluster {
         let mut names = cluster.models.clone();
         if let Some(name) = cluster.model.clone() {
@@ -680,6 +689,7 @@ fn build_scheduler_capabilities(
             &capabilities.capacity_class,
             cluster_capabilities,
             cluster.and_then(|entry| entry.model_context_tokens),
+            cluster_supports_tools,
         );
     }
     let context_tokens = models.iter().filter_map(|entry| entry.context_tokens).max();
@@ -2997,6 +3007,7 @@ mod tests {
         let profile = build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
 
         assert!(profile.supports_tools);
+        assert!(profile.models.iter().any(|model| model.supports_tools));
         assert!(profile.supported_tools.contains(&"tool_use".to_string()));
         assert!(profile
             .supported_tools
@@ -3042,6 +3053,12 @@ mod tests {
         refresh_snapshot_capabilities(&mut snapshot, &config);
 
         assert!(snapshot.worker_health.capabilities.supports_tools);
+        assert!(snapshot
+            .worker_health
+            .capabilities
+            .models
+            .iter()
+            .any(|model| model.supports_tools));
         assert!(snapshot
             .capabilities
             .supported_tools
