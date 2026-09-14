@@ -102,7 +102,15 @@ def tool_result_succeeded(result):
 
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
-    workspace = child_workspace_path(os.path.realpath(os.getcwd()))
+    workspace = child_workspace_path(
+        os.path.realpath(os.environ.get("MUNDUSX_HERMES_WORKSPACE", os.getcwd()))
+    )
+    if not os.path.isdir(workspace):
+        raise RuntimeError("MundusX project workspace is unavailable")
+    # The embedded bridge bypasses Hermes' CLI bootstrap, which normally pins
+    # terminal and file tools to the launch directory. Pin the project here so
+    # a saved Hermes config (for example terminal.cwd = the user's home) cannot
+    # redirect project writes outside the selected MundusX project.
     os.chdir(workspace)
     os.environ["TERMINAL_CWD"] = workspace
     sys.path.insert(0, project_root)

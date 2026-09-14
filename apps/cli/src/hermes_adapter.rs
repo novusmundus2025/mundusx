@@ -261,6 +261,7 @@ pub fn run(
         command
             .arg(bridge_path)
             .env("MUNDUSX_HERMES_PROJECT_ROOT", project)
+            .env("MUNDUSX_HERMES_WORKSPACE", workspace)
             .env("MUNDUSX_HERMES_PROMPT", prompt)
             .env("MUNDUSX_HERMES_TASK", mundusx_session_id)
             .env("OPENAI_BASE_URL", base_url)
@@ -508,6 +509,9 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("answer_stream.reset()"));
         assert!(STRUCTURED_BRIDGE.contains("child_workspace_path"));
+        assert!(
+            STRUCTURED_BRIDGE.contains("os.environ.get(\"MUNDUSX_HERMES_WORKSPACE\", os.getcwd())")
+        );
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
         assert!(STRUCTURED_BRIDGE.contains("selected = [\"codebase-inspection\"]"));
     }
