@@ -27,6 +27,7 @@ use storage::{
 };
 
 const TOOL_CAPABILITY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const TOOL_CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 struct AgentRunLock {
     _file: fs::File,
@@ -2036,7 +2037,10 @@ fn probe_contributed_tool_capability(config: &AgentConfig) -> bool {
         }
     });
     ureq::post(&format!("{}/v1/chat/completions", cluster.base_url))
-        .timeout(Duration::from_secs(15))
+        // A contributed runtime may already be serving a long generation. The
+        // probe runs on a background thread, so let it wait for the same model
+        // queue instead of repeatedly timing out just before a normal response.
+        .timeout(TOOL_CAPABILITY_PROBE_TIMEOUT)
         .send_json(payload)
         .ok()
         .filter(|response| response.status() < 400)
@@ -2054,6 +2058,23 @@ fn native_tool_response_supported(body: &serde_json::Value) -> bool {
                     == Some("mundusx_capability_probe")
             })
         })
+}
+
+/// Rebuild the cheap scheduler projection immediately after a native-tool
+/// probe succeeds. Full hardware/runtime health remains on its background
+/// cadence, but the next heartbeat must not keep publishing the stale
+/// `supports_tools: false` snapshot for another refresh cycle.
+fn refresh_snapshot_capabilities(snapshot: &mut Heartbeat, config: &AgentConfig) {
+    snapshot.worker_health.capabilities = build_scheduler_capabilities(
+        config,
+        &snapshot.worker_health,
+        &snapshot.capabilities,
+        snapshot.available_memory_mb,
+        snapshot.available_gpu_percent,
+    );
+    snapshot.capabilities.supported_roles = snapshot.worker_health.capabilities.roles.clone();
+    snapshot.capabilities.supported_tools =
+        supported_tools_for(&snapshot.worker_health.capabilities);
 }
 
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
@@ -2220,8 +2241,21 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                 if let Some(cluster) = latest_config.contributed_cluster.as_mut() {
                     if !cluster.supports_tool_calls {
                         cluster.supports_tool_calls = true;
+                        if !cluster
+                            .model_capabilities
+                            .iter()
+                            .any(|value| value.eq_ignore_ascii_case("tools"))
+                        {
+                            cluster.model_capabilities.push("tools".to_string());
+                        }
                         match save_agent_config(&latest_config) {
-                            Ok(_) => println!("nativeToolCapability: verified"),
+                            Ok(_) => {
+                                refresh_snapshot_capabilities(
+                                    &mut heartbeat_snapshot,
+                                    &latest_config,
+                                );
+                                println!("nativeToolCapability: verified");
+                            }
                             Err(error) => {
                                 eprintln!("failed to persist contributed tool capability: {error}")
                             }
@@ -2268,7 +2302,11 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             break;
         }
 
-        while let Ok(refreshed) = health_refresh_rx.try_recv() {
+        while let Ok(mut refreshed) = health_refresh_rx.try_recv() {
+            // The health probe may have started before a native-tool probe
+            // updated the config. Re-project it through the latest config so
+            // an older background result cannot restore a stale advertisement.
+            refresh_snapshot_capabilities(&mut refreshed, &latest_config);
             heartbeat_snapshot = refreshed;
             health_refresh_in_flight = false;
         }
@@ -2945,6 +2983,54 @@ mod tests {
             .supported_tools
             .contains(&"native_tool_calls_v1".to_string()));
         assert!(supported_tools_for(&profile).contains(&"native_tool_calls_v1".to_string()));
+    }
+
+    #[test]
+    fn successful_tool_probe_updates_the_current_heartbeat_snapshot() {
+        let mut config = cluster_config("qwen3-coder", Some(80_000_000_000), None);
+        let mut health = cluster_health("qwen3-coder");
+        let mut capabilities = build_capabilities(&config, &health, true);
+        health.capabilities =
+            build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
+        capabilities.supported_roles = health.capabilities.roles.clone();
+        capabilities.supported_tools = supported_tools_for(&health.capabilities);
+        let mut snapshot = Heartbeat {
+            node_id: config.device_id.clone(),
+            backend: Backend::Cuda,
+            agent_state: AgentState::Ready,
+            available_memory_mb: 8_192,
+            available_gpu_percent: 100,
+            updated_at: now_unix_seconds(),
+            contribution_percent: config.contribution_percent,
+            hostname: "gx10-test".to_string(),
+            identity_trust_path: "test".to_string(),
+            power_source: "ac".to_string(),
+            on_battery: false,
+            battery_percent: None,
+            policy_allowed: true,
+            policy_reason: None,
+            worker_health: health,
+            capabilities,
+        };
+        assert!(!snapshot.worker_health.capabilities.supports_tools);
+
+        let cluster = config
+            .contributed_cluster
+            .as_mut()
+            .expect("contributed cluster");
+        cluster.supports_tool_calls = true;
+        cluster.model_capabilities.push("tools".to_string());
+        refresh_snapshot_capabilities(&mut snapshot, &config);
+
+        assert!(snapshot.worker_health.capabilities.supports_tools);
+        assert!(snapshot
+            .capabilities
+            .supported_tools
+            .contains(&"native_tool_calls_v1".to_string()));
+        assert!(snapshot
+            .capabilities
+            .supported_roles
+            .contains(&NodeRole::ToolUse));
     }
 
     #[test]
