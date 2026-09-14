@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex, OnceLock,
+    mpsc, Arc, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -84,6 +84,7 @@ fn acquire_connector_instance() -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct ConnectorOptions {
     pub chat_url: String,
     pub token: String,
@@ -473,6 +474,63 @@ fn post_task_events(
     .map(|_| ())
 }
 
+const PROGRESS_EVENT_BATCH_MAX: usize = 16;
+const PROGRESS_EVENT_BATCH_WINDOW: Duration = Duration::from_millis(250);
+
+fn drain_progress_events(first: Value, receiver: &mpsc::Receiver<Value>) -> Vec<Value> {
+    let mut events = vec![first];
+    while events.len() < PROGRESS_EVENT_BATCH_MAX {
+        match receiver.try_recv() {
+            Ok(event) => events.push(event),
+            Err(_) => break,
+        }
+    }
+    events
+}
+
+struct TaskEventBatcher {
+    sender: Option<mpsc::Sender<Value>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl TaskEventBatcher {
+    fn start(options: ConnectorOptions, task_id: String) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            while let Ok(first) = receiver.recv() {
+                let mut events = drain_progress_events(first, &receiver);
+                let deadline = Instant::now() + PROGRESS_EVENT_BATCH_WINDOW;
+                while events.len() < PROGRESS_EVENT_BATCH_MAX {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    match receiver.recv_timeout(remaining) {
+                        Ok(event) => events.push(event),
+                        Err(mpsc::RecvTimeoutError::Timeout) => break,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                let _ = post_task_events(&options, &task_id, events);
+            }
+        });
+        Self { sender: Some(sender), worker: Some(worker) }
+    }
+
+    fn push(&self, event: Value) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(event);
+        }
+    }
+
+    fn finish(mut self) {
+        self.sender.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 fn workspace_snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)> {
     fn visit(
         root: &Path,
@@ -708,11 +766,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         }
     });
 
+    let event_batcher = TaskEventBatcher::start(options.clone(), task_id.clone());
     let mut streamed_event_sequence = 1_000_u64;
     let mut stream_hermes_event = |event: Value| {
         let mapped = structured_hermes_event(&event, streamed_event_sequence);
         streamed_event_sequence += 1;
-        let _ = post_task_events(options, &task_id, vec![mapped]);
+        event_batcher.push(mapped);
     };
     let mut run_hermes_with_recovery = |initial_prompt: &str| {
         const HARNESS_RECOVERY_ATTEMPTS: usize = 6;
@@ -836,6 +895,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             );
         }
     }
+    drop(run_hermes_with_recovery);
+    drop(stream_hermes_event);
+    event_batcher.finish();
     stop.store(true, Ordering::Relaxed);
     let _ = heartbeat.join();
 
@@ -951,7 +1013,10 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
             &options.chat_url,
             &options.token,
             "/api/agent/connector/tasks/next",
-            json!({"connection_id": connection_id}),
+            json!({
+                "connection_id": connection_id,
+                "wait_ms": 25_000
+            }),
         ) {
             Ok(payload) if !payload["task"].is_null() => {
                 if let Err(error) = run_task(&options, &connection_id, &payload["task"]) {
@@ -970,7 +1035,11 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                     }
                 }
             }
-            Ok(_) => thread::sleep(Duration::from_secs(2)),
+            Ok(payload) => {
+                if payload["wait_supported"].as_bool() != Some(true) {
+                    thread::sleep(Duration::from_secs(2));
+                }
+            }
             Err(error) => {
                 eprintln!("connection interrupted: {error}; retrying");
                 thread::sleep(Duration::from_secs(5));
@@ -982,12 +1051,25 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_task_workspace, changed_file_events, connection_id, harness_completion_content,
+        bounded_task_workspace, changed_file_events, connection_id, drain_progress_events,
+        harness_completion_content,
         project_execution_directive, request_requires_verification, requires_project_file_change,
         structured_hermes_event, successful_verification, transient_agent_failure,
         validate_chat_url, workspace_snapshot,
     };
     use std::fs;
+
+    #[test]
+    fn progress_events_are_collected_into_one_bounded_batch() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(serde_json::json!({"sequence": 1})).unwrap();
+        sender.send(serde_json::json!({"sequence": 2})).unwrap();
+        let first = receiver.recv().unwrap();
+        let batch = drain_progress_events(first, &receiver);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0]["sequence"], 1);
+        assert_eq!(batch[1]["sequence"], 2);
+    }
 
     #[test]
     fn watchdog_allows_normal_requests_and_retries_but_detects_stalls() {
