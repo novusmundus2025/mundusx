@@ -9,7 +9,11 @@ use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
-const MODEL_CONTEXT_TOKENS: u32 = 131_072;
+// Keep project-agent turns below the model's physical maximum so Hermes
+// compacts before repeatedly sending a very large tool history. Hermes uses a
+// 50% compression threshold by default, so this 64K operating window compacts
+// near 32K while the contributed runtime retains its larger emergency headroom.
+const MODEL_CONTEXT_TOKENS: u32 = 65_536;
 const MAX_MODEL_BODY_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -243,7 +247,7 @@ mod tests {
     use std::io::Read;
 
     #[test]
-    fn hermes_discovers_the_real_context_window() {
+    fn hermes_discovers_the_project_operating_context_window() {
         let proxy =
             ProjectModelProxy::start("https://invalid.example/v1", "secret", "task", "connection")
                 .unwrap();
@@ -253,8 +257,8 @@ mod tests {
             .unwrap()
             .into_json()
             .unwrap();
-        assert_eq!(catalog["data"][0]["context_length"], 131_072);
-        assert_eq!(catalog["data"][0]["max_model_len"], 131_072);
+        assert_eq!(catalog["data"][0]["context_length"], 65_536);
+        assert_eq!(catalog["data"][0]["max_model_len"], 65_536);
     }
 
     #[test]
