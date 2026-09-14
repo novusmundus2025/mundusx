@@ -733,6 +733,7 @@ fn build_scheduler_capabilities(
     let mut supported_tools = capabilities.supported_tools.clone();
     if supports_tools {
         supported_tools.push("tool_use".to_string());
+        supported_tools.push("native_tool_calls_v1".to_string());
     }
     if roles.contains(&NodeRole::Coding) {
         supported_tools.push("repository".to_string());
@@ -2909,6 +2910,9 @@ mod tests {
 
         assert!(profile.supports_tools);
         assert!(profile.supported_tools.contains(&"tool_use".to_string()));
+        assert!(profile
+            .supported_tools
+            .contains(&"native_tool_calls_v1".to_string()));
     }
 
     #[test]
