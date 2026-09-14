@@ -261,6 +261,7 @@ pub fn run(
         command
             .arg(bridge_path)
             .env("MUNDUSX_HERMES_PROJECT_ROOT", project)
+            .env("MUNDUSX_HERMES_WORKSPACE", workspace)
             .env("MUNDUSX_HERMES_PROMPT", prompt)
             .env("MUNDUSX_HERMES_TASK", mundusx_session_id)
             .env("OPENAI_BASE_URL", base_url)
