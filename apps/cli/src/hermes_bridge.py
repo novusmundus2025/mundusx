@@ -4,6 +4,35 @@ import json
 import os
 import sys
 import traceback
+import time
+
+
+class AnswerStream:
+    """Bounded preview of the current model turn, not the full tool transcript."""
+    def __init__(self, publish, clock=time.monotonic):
+        self.publish, self.clock = publish, clock
+        self.text, self.last, self.dirty, self.truncated = "", 0, False, False
+
+    def delta(self, text):
+        if not isinstance(text, str) or not text:
+            return
+        self.text += text
+        if len(self.text) > 32768:
+            self.text = self.text[-32768:]
+            self.truncated = True
+        self.dirty = True
+        if self.clock() - self.last >= 0.5:
+            self.flush()
+
+    def flush(self):
+        if self.dirty:
+            self.publish({"type": "assistant_snapshot", "data": {"text": self.text, "truncated": self.truncated}})
+            self.last, self.dirty = self.clock(), False
+
+    def reset(self):
+        self.text, self.dirty, self.truncated = "", False, False
+        self.last = self.clock()
+        self.publish({"type": "assistant_snapshot", "data": {"text": "", "truncated": False}})
 
 
 def emit(prefix, value):
@@ -28,6 +57,13 @@ def select_project_skills(prompt):
     if any(word in text for word in ("existing", "repository", "repo", "codebase", "inspect", "understand")):
         add("codebase-inspection")
     return selected[:3]
+
+
+EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical.
+Do not narrate each intended read, edit, or command before calling a tool.
+Inspect each unchanged file only once, batch related operations when practical, and do not repeat a completed step.
+Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
+"""
 
 
 def is_verification_command(command):
@@ -59,11 +95,16 @@ def main():
 
     from run_agent import AIAgent
 
+    answer_stream = AnswerStream(lambda event: emit("MUNDUSX_EVENT=", event))
+    emit("MUNDUSX_EVENT=", {"type": "assistant_snapshot", "data": {"text": "", "truncated": False}})
+
     def event_callback(kind, data=None):
         payload = data if isinstance(data, dict) else {"value": data}
         emit("MUNDUSX_EVENT=", {"type": str(kind), "data": payload})
 
     def tool_start_callback(call_id, name, arguments):
+        answer_stream.flush()
+        answer_stream.reset()
         command = arguments.get("command") if isinstance(arguments, dict) else None
         emit(
             "MUNDUSX_EVENT=",
@@ -120,6 +161,7 @@ def main():
                 {"type": "skills_unavailable", "data": {"error": str(error)}},
             )
             selected_skills = []
+    user_prompt = EXECUTION_EFFICIENCY_GUIDANCE + "\n\n" + user_prompt
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],
@@ -134,6 +176,7 @@ def main():
         event_callback=event_callback,
         tool_start_callback=tool_start_callback,
         tool_complete_callback=tool_complete_callback,
+        stream_delta_callback=answer_stream.delta,
         session_id=session_id,
         skip_memory=True,
         load_soul_identity=False,
@@ -144,6 +187,7 @@ def main():
             task_id=os.environ.get("MUNDUSX_HERMES_TASK") or session_id,
         )
     except Exception as error:
+        answer_stream.flush()
         emit(
             "MUNDUSX_RESULT=",
             {
@@ -159,6 +203,7 @@ def main():
         )
         traceback.print_exc(file=sys.stderr)
         return 1
+    answer_stream.flush()
     messages = result.get("messages") or []
     tool_calls = []
     for message in messages:
