@@ -384,6 +384,8 @@ pub struct ModelCapability {
     #[serde(default)]
     pub specialties: Vec<String>,
     #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default)]
     pub supports_structured_output: bool,
 }
 
