@@ -7120,12 +7120,23 @@ fn main() {
             ClusterCommands::Forget => run_cluster_forget(),
         },
         Commands::Update => {
+            let restart_background_agent = read_node_agent_pid()
+                .ok()
+                .flatten()
+                .is_some_and(is_process_alive);
             if let Err(error) = updater::update_installed_binaries() {
                 eprintln!("update failed: {error}");
                 eprintln!(
                     "updateHint: set OPENGPU_RELEASE_BASE_URL to a trusted release mirror if needed"
                 );
                 std::process::exit(1);
+            }
+            if restart_background_agent {
+                println!("updateStage: restarting the background node agent");
+                if let Err(error) = launch_node_agent(AgentLaunchMode::Background) {
+                    eprintln!("update failed to restart the node agent: {error}");
+                    std::process::exit(1);
+                }
             }
         }
         Commands::Run {
