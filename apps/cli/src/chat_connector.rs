@@ -368,6 +368,14 @@ fn requires_project_file_change(prompt: &str) -> bool {
     })
 }
 
+fn project_execution_directive(allow_mutations: bool, prompt: &str) -> &'static str {
+    if allow_mutations && requires_project_file_change(prompt) {
+        "Full project mutation authority has already been granted for this task. Plan internally if useful, then execute the plan immediately with the available file and terminal tools. Do not stop after creating a plan, do not ask whether to proceed, and do not treat files under .hermes as requested project deliverables. Continue until the requested project files exist and the applicable verification has run."
+    } else {
+        ""
+    }
+}
+
 fn local_request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
     let base = super::agent_url();
     let mut request = match method {
@@ -570,7 +578,7 @@ fn workspace_snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, Option<std::time::
             let name = entry.file_name();
             if matches!(
                 name.to_str(),
-                Some(".git" | "node_modules" | "target" | ".venv")
+                Some(".git" | ".hermes" | "node_modules" | "target" | ".venv")
             ) {
                 continue;
             }
@@ -751,11 +759,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             }),
         ],
     )?;
+    let execution_directive = project_execution_directive(allow_mutations, &prompt);
     let bounded_prompt = workspace_relative
         .map(|relative| {
             if runtime == "hermes" {
                 format!(
-                    "The current directory is the complete project boundary. Treat every explicit user requirement as an acceptance criterion. Before giving a final response, inspect the resulting files and run the applicable tests or executable command. Never claim success for a check you did not run.\n\n{prompt}"
+                    "The current directory is the complete project boundary. Treat every explicit user requirement as an acceptance criterion. Before giving a final response, inspect the resulting files and run the applicable tests or executable command. Never claim success for a check you did not run.\n\n{execution_directive}\n\n{prompt}"
                 )
             } else {
                 format!("Work only within project directory `{relative}` beneath the connector workspace.\n\n{prompt}")
@@ -912,7 +921,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 })],
             );
             let correction = format!(
-                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. Use the available coding tools to implement the requested files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
+                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Use the available coding tools to implement the requested project files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
             );
             response = run_hermes_with_recovery(&correction);
         }
@@ -1097,8 +1106,9 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 mod tests {
     use super::{
         bounded_task_workspace, changed_file_events, connection_id, harness_completion_content,
-        request_requires_verification, requires_project_file_change, structured_hermes_event,
-        successful_verification, transient_agent_failure, validate_chat_url, workspace_snapshot,
+        project_execution_directive, request_requires_verification, requires_project_file_change,
+        structured_hermes_event, successful_verification, transient_agent_failure,
+        validate_chat_url, workspace_snapshot,
     };
     use std::fs;
 
@@ -1203,6 +1213,15 @@ mod tests {
     }
 
     #[test]
+    fn mutating_project_requests_require_execution_without_another_permission_prompt() {
+        let directive = project_execution_directive(true, "create a complete CRUD student API");
+        assert!(directive.contains("execute the plan immediately"));
+        assert!(directive.contains("do not ask whether to proceed"));
+        assert!(project_execution_directive(false, "create an API").is_empty());
+        assert!(project_execution_directive(true, "explain this API").is_empty());
+    }
+
+    #[test]
     fn task_workspace_cannot_escape_connector_root() {
         let root = std::env::temp_dir().join(format!("mundusx-boundary-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).expect("test root");
@@ -1258,6 +1277,20 @@ mod tests {
         assert_eq!(events[0]["event"]["type"], "file_changed");
         assert_eq!(events[0]["event"]["metadata"]["path"], "main.rs");
         assert_eq!(events[0]["event"]["metadata"]["action"], "created");
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn project_progress_ignores_internal_hermes_plan_files() {
+        let root = std::env::temp_dir().join(format!("mundusx-progress-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join(".hermes/plans")).expect("Hermes plan directory");
+        let before = workspace_snapshot(&root);
+        fs::write(root.join(".hermes/plans/task.md"), "internal plan\n").expect("plan file");
+        assert_eq!(workspace_snapshot(&root), before);
+        fs::write(root.join("server.js"), "console.log('ready');\n").expect("project file");
+        let events = changed_file_events(&before, &workspace_snapshot(&root));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event"]["metadata"]["path"], "server.js");
         fs::remove_dir_all(root).expect("remove test root");
     }
 
