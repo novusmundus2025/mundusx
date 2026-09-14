@@ -66,6 +66,17 @@ Use the structured tool progress events for status. Reserve prose for a concise 
 """
 
 
+def child_workspace_path(path, platform=os.name):
+    """Remove Windows verbatim prefixes that Git Bash cannot translate."""
+    if platform != "nt":
+        return path
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
 def is_verification_command(command):
     value = " " + str(command or "").lower().strip() + " "
     checks = (
@@ -91,6 +102,9 @@ def tool_result_succeeded(result):
 
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
+    workspace = child_workspace_path(os.path.realpath(os.getcwd()))
+    os.chdir(workspace)
+    os.environ["TERMINAL_CWD"] = workspace
     sys.path.insert(0, project_root)
 
     from run_agent import AIAgent

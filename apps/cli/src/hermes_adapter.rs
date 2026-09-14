@@ -413,6 +413,7 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("build_preloaded_skills_prompt"));
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("answer_stream.reset()"));
+        assert!(STRUCTURED_BRIDGE.contains("child_workspace_path"));
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
         assert!(STRUCTURED_BRIDGE.contains("selected = [\"codebase-inspection\"]"));
     }
