@@ -12,6 +12,89 @@ use uuid::Uuid;
 
 const STRUCTURED_BRIDGE: &str = include_str!("hermes_bridge.py");
 
+fn configure_task_process(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    let _ = command;
+}
+
+struct TaskProcessGroup {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl TaskProcessGroup {
+    fn attach(child: &std::process::Child) -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            return Ok(Self { pid: child.id() });
+        }
+        #[cfg(windows)]
+        {
+            use std::mem::{size_of, zeroed};
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
+
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if job.is_null() {
+                return Err("could not create the Hermes task process group".to_string());
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const core::ffi::c_void,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            let assigned = unsafe {
+                AssignProcessToJobObject(
+                    job,
+                    child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+                )
+            };
+            if configured == 0 || assigned == 0 {
+                unsafe { CloseHandle(job) };
+                return Err("could not isolate the Hermes task process tree".to_string());
+            }
+            Ok(Self { job })
+        }
+    }
+
+    fn terminate(&self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TaskProcessGroup {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.job);
+        }
+    }
+}
+
 fn executable() -> PathBuf {
     if let Some(path) = std::env::var_os("MUNDUSX_HERMES_BIN").map(PathBuf::from) {
         return path;
@@ -216,10 +299,16 @@ pub fn run(
             command.arg("--yolo");
         }
     }
+    configure_task_process(&mut command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start Hermes: {error}"))?;
+    let process_group = TaskProcessGroup::attach(&child).map_err(|error| {
+        let _ = child.kill();
+        let _ = child.wait();
+        error
+    })?;
     let child_stdout = child
         .stdout
         .take()
@@ -266,6 +355,7 @@ pub fn run(
             .map(|flag| flag.load(Ordering::Relaxed))
             .unwrap_or(false)
         {
+            process_group.terminate();
             let _ = child.kill();
             let _ = child.wait();
             let _ = fs::remove_file(&usage_path);
@@ -279,6 +369,10 @@ pub fn run(
         }
         thread::sleep(Duration::from_millis(200));
     };
+    // Hermes may start application servers in the background while validating a
+    // project. End every descendant owned by this task before reading the final
+    // result so completed, failed, and cancelled tasks all release their ports.
+    process_group.terminate();
     while let Ok(event) = event_receiver.try_recv() {
         if let Some(callback) = event_callback.as_mut() {
             callback(event);
@@ -403,8 +497,8 @@ pub fn is_retryable_model_failure(message: &str) -> bool {
 #[cfg(test)]
 mod output_tests {
     use super::{
-        clear_session, hermes_output_reports_model_failure, is_retryable_model_failure, save_session,
-        session_map, STRUCTURED_BRIDGE,
+        clear_session, hermes_output_reports_model_failure, is_retryable_model_failure,
+        save_session, session_map, STRUCTURED_BRIDGE,
     };
 
     #[test]
@@ -434,14 +528,19 @@ mod output_tests {
         assert!(is_retryable_model_failure(
             "HTTP 502: model gateway returned 502: Application failed to respond"
         ));
-        assert!(is_retryable_model_failure("MundusX model turn did not respond within 3 minutes"));
-        assert!(!is_retryable_model_failure("Hermes runtime is not installed"));
+        assert!(is_retryable_model_failure(
+            "MundusX model turn did not respond within 3 minutes"
+        ));
+        assert!(!is_retryable_model_failure(
+            "Hermes runtime is not installed"
+        ));
         assert!(!is_retryable_model_failure("permission denied"));
     }
 
     #[test]
     fn recovery_discards_only_the_failed_hermes_session() {
-        let data_dir = std::env::temp_dir().join(format!("mundusx-hermes-test-{}", uuid::Uuid::new_v4()));
+        let data_dir =
+            std::env::temp_dir().join(format!("mundusx-hermes-test-{}", uuid::Uuid::new_v4()));
         save_session(&data_dir, "failed-task", "poisoned-session").expect("save failed task");
         save_session(&data_dir, "healthy-task", "healthy-session").expect("save healthy task");
 
@@ -449,7 +548,10 @@ mod output_tests {
 
         let sessions = session_map(&data_dir);
         assert!(!sessions.contains_key("failed-task"));
-        assert_eq!(sessions.get("healthy-task").map(String::as_str), Some("healthy-session"));
+        assert_eq!(
+            sessions.get("healthy-task").map(String::as_str),
+            Some("healthy-session")
+        );
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }
