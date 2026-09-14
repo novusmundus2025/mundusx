@@ -13,7 +13,7 @@ use contracts::{
     WorkerPolicyReport,
 };
 use fs2::FileExt;
-use http::{signed_get_json, signed_post_json_body_with_agent};
+use http::{signed_get_json_with_agent, signed_post_json_body_with_agent};
 use identity::{load_identity, DeviceIdentity};
 use serde::Serialize;
 use std::fs;
@@ -25,6 +25,9 @@ use storage::{
     agent_state_path, config_path, heartbeat_log_path, load_agent_config, load_last_heartbeat,
     save_agent_config, save_agent_state, save_heartbeat, AgentConfig,
 };
+
+const TOOL_CAPABILITY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const TOOL_CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 struct AgentRunLock {
     _file: fs::File,
@@ -545,7 +548,6 @@ fn enrich_model_capability(
     }
     if declared("tool") {
         tasks.push("tool_use".to_string());
-        tasks.push("native_tool_calls_v1".to_string());
         roles.push(NodeRole::ToolUse);
     }
     if declared("vision") {
@@ -924,7 +926,11 @@ fn detect_available_memory_mb() -> u32 {
 }
 
 fn supported_tools_for(capabilities: &NodeCapabilityProfile) -> Vec<String> {
-    let mut tools = Vec::new();
+    // Preserve protocol-level capabilities discovered from the runtime. The
+    // scheduler-facing advertisement previously rebuilt this list from two
+    // generic flags and silently dropped `native_tool_calls_v1`, even though
+    // worker health correctly contained it.
+    let mut tools = capabilities.supported_tools.clone();
     if capabilities.supports_tools {
         tools.push("tool_use".to_string());
     }
@@ -1468,7 +1474,12 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
 
 fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<JobRecord> {
     let path = format!("/v1/jobs/next?node_id={}", config.device_id);
-    match signed_get_json::<JobClaimResponse>(
+    // Hermes tool turns carry the conversation and tool schemas in the claim
+    // response. A remote cluster needs more than the generic five-second HTTP
+    // timeout to receive that larger payload after the server reserves it.
+    let agent = http::request_agent_with_timeouts(CLAIM_CONNECT_TIMEOUT, CLAIM_RESPONSE_TIMEOUT);
+    match signed_get_json_with_agent::<JobClaimResponse>(
+        &agent,
         &config.control_plane_url,
         &path,
         &config.device_id,
@@ -1481,7 +1492,8 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
                 eprintln!("controlPlaneClaim: re-registering missing node");
                 let registration = build_registration(config, identity);
                 if send_registration(config, identity, &registration, false) {
-                    match signed_get_json::<JobClaimResponse>(
+                    match signed_get_json_with_agent::<JobClaimResponse>(
+                        &agent,
                         &config.control_plane_url,
                         &path,
                         &config.device_id,
@@ -1496,6 +1508,9 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
         }
     }
 }
+
+const CLAIM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CLAIM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn job_status_label(status: contracts::JobStatus) -> &'static str {
     match status {
@@ -1591,6 +1606,12 @@ fn post_stream_delta(
 }
 
 fn coalesce_stream_deltas(first: String, deltas: &mpsc::Receiver<String>) -> String {
+    // Native OpenAI tool streams encode each delta as a complete JSON object.
+    // Concatenating adjacent objects produces invalid JSON at the control plane.
+    // Ordinary assistant text remains safe to batch for lower relay overhead.
+    if serde_json::from_str::<serde_json::Value>(&first).is_ok() {
+        return first;
+    }
     let mut batch = first;
     while batch.len() < STREAM_DELTA_BATCH_MAX_BYTES {
         match deltas.try_recv() {
@@ -1978,17 +1999,16 @@ fn clear_runtime_environment() {
 }
 
 /// Verify native OpenAI tool calling against the contributed runtime itself.
-/// Runtime metrics are only a hint: some vLLM versions do not expose their
-/// tool-parser metric until after the first tool request has been served.
-fn refresh_contributed_tool_capability(config: &mut AgentConfig) -> bool {
-    let Some(cluster) = config.contributed_cluster.as_mut() else {
+/// This is intentionally run outside the job-claim loop because a busy model
+/// may take several seconds to answer the probe.
+fn probe_contributed_tool_capability(config: &AgentConfig) -> bool {
+    let Some(cluster) = config.contributed_cluster.as_ref() else {
         return false;
     };
-    let Some(model) = cluster
-        .model
-        .clone()
-        .or_else(|| cluster.models.first().cloned())
-    else {
+    if cluster.supports_tool_calls {
+        return true;
+    }
+    let Some(model) = cluster.model.as_ref().or_else(|| cluster.models.first()) else {
         return false;
     };
     let payload = serde_json::json!({
@@ -2016,21 +2036,16 @@ fn refresh_contributed_tool_capability(config: &mut AgentConfig) -> bool {
             "function": {"name": "mundusx_capability_probe"}
         }
     });
-    let supported = ureq::post(&format!("{}/v1/chat/completions", cluster.base_url))
-        .timeout(Duration::from_secs(15))
+    ureq::post(&format!("{}/v1/chat/completions", cluster.base_url))
+        // A contributed runtime may already be serving a long generation. The
+        // probe runs on a background thread, so let it wait for the same model
+        // queue instead of repeatedly timing out just before a normal response.
+        .timeout(TOOL_CAPABILITY_PROBE_TIMEOUT)
         .send_json(payload)
         .ok()
         .filter(|response| response.status() < 400)
         .and_then(|response| response.into_json::<serde_json::Value>().ok())
-        .is_some_and(|body| native_tool_response_supported(&body));
-    // A startup timeout is not proof that a capability disappeared. Preserve a
-    // previous successful verification and only promote newly verified support.
-    if supported && !cluster.supports_tool_calls {
-        cluster.supports_tool_calls = true;
-        true
-    } else {
-        false
-    }
+        .is_some_and(|body| native_tool_response_supported(&body))
 }
 
 fn native_tool_response_supported(body: &serde_json::Value) -> bool {
@@ -2045,6 +2060,23 @@ fn native_tool_response_supported(body: &serde_json::Value) -> bool {
         })
 }
 
+/// Rebuild the cheap scheduler projection immediately after a native-tool
+/// probe succeeds. Full hardware/runtime health remains on its background
+/// cadence, but the next heartbeat must not keep publishing the stale
+/// `supports_tools: false` snapshot for another refresh cycle.
+fn refresh_snapshot_capabilities(snapshot: &mut Heartbeat, config: &AgentConfig) {
+    snapshot.worker_health.capabilities = build_scheduler_capabilities(
+        config,
+        &snapshot.worker_health,
+        &snapshot.capabilities,
+        snapshot.available_memory_mb,
+        snapshot.available_gpu_percent,
+    );
+    snapshot.capabilities.supported_roles = snapshot.worker_health.capabilities.roles.clone();
+    snapshot.capabilities.supported_tools =
+        supported_tools_for(&snapshot.worker_health.capabilities);
+}
+
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let _run_lock = match acquire_agent_run_lock() {
         Ok(lock) => lock,
@@ -2053,12 +2085,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             std::process::exit(3);
         }
     };
-    let mut config = load_config_or_exit();
-    if refresh_contributed_tool_capability(&mut config) {
-        if let Err(error) = save_agent_config(&config) {
-            eprintln!("failed to persist contributed tool capability: {error}");
-        }
-    }
+    let config = load_config_or_exit();
     let identity = load_identity_or_exit();
     let runtime_parallel_slots = worker_readiness(&config).0.parallel_slots;
     let mut persistent_runtime = if json || !should_keep_runtime_warm(&config) {
@@ -2103,6 +2130,9 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let (health_refresh_tx, health_refresh_rx) = mpsc::channel::<Heartbeat>();
     let mut health_refresh_in_flight = false;
     let mut last_health_refresh_started = Instant::now();
+    let (tool_refresh_tx, tool_refresh_rx) = mpsc::channel::<bool>();
+    let mut tool_refresh_in_flight = false;
+    let mut last_tool_refresh_started = Instant::now() - TOOL_CAPABILITY_REFRESH_INTERVAL;
     let state = resolved_state(&config);
     let interval = if config.paused {
         interval_seconds.max(30)
@@ -2187,7 +2217,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         // Keep presence traffic at its normal rate while checking for work once
         // per second so an idle, warm node starts streaming promptly.
         thread::sleep(Duration::from_secs(1));
-        let latest_config = match load_agent_config() {
+        let mut latest_config = match load_agent_config() {
             Ok(Some(config)) => config,
             Ok(None) => {
                 eprintln!("agentStop: config missing; cooling persistent runtime");
@@ -2204,6 +2234,55 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                 break;
             }
         };
+
+        while let Ok(supported) = tool_refresh_rx.try_recv() {
+            tool_refresh_in_flight = false;
+            if supported {
+                if let Some(cluster) = latest_config.contributed_cluster.as_mut() {
+                    if !cluster.supports_tool_calls {
+                        cluster.supports_tool_calls = true;
+                        if !cluster
+                            .model_capabilities
+                            .iter()
+                            .any(|value| value.eq_ignore_ascii_case("tools"))
+                        {
+                            cluster.model_capabilities.push("tools".to_string());
+                        }
+                        match save_agent_config(&latest_config) {
+                            Ok(_) => {
+                                refresh_snapshot_capabilities(
+                                    &mut heartbeat_snapshot,
+                                    &latest_config,
+                                );
+                                println!("nativeToolCapability: verified");
+                            }
+                            Err(error) => {
+                                eprintln!("failed to persist contributed tool capability: {error}")
+                            }
+                        }
+                    }
+                }
+            } else if verbose {
+                println!("nativeToolCapability: probe pending; retrying later");
+            }
+        }
+
+        let needs_tool_probe = latest_config
+            .contributed_cluster
+            .as_ref()
+            .is_some_and(|cluster| !cluster.supports_tool_calls);
+        if needs_tool_probe
+            && !tool_refresh_in_flight
+            && last_tool_refresh_started.elapsed() >= TOOL_CAPABILITY_REFRESH_INTERVAL
+        {
+            let refresh_config = latest_config.clone();
+            let refresh_tx = tool_refresh_tx.clone();
+            thread::spawn(move || {
+                let _ = refresh_tx.send(probe_contributed_tool_capability(&refresh_config));
+            });
+            tool_refresh_in_flight = true;
+            last_tool_refresh_started = Instant::now();
+        }
         if !should_agent_run(&latest_config) {
             let heartbeat = heartbeat_from_snapshot(
                 &heartbeat_snapshot,
@@ -2223,7 +2302,11 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             break;
         }
 
-        while let Ok(refreshed) = health_refresh_rx.try_recv() {
+        while let Ok(mut refreshed) = health_refresh_rx.try_recv() {
+            // The health probe may have started before a native-tool probe
+            // updated the config. Re-project it through the latest config so
+            // an older background result cannot restore a stale advertisement.
+            refresh_snapshot_capabilities(&mut refreshed, &latest_config);
             heartbeat_snapshot = refreshed;
             health_refresh_in_flight = false;
         }
@@ -2426,6 +2509,26 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn native_tool_probe_requires_the_expected_openai_tool_call() {
+        assert!(native_tool_response_supported(&serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {
+                            "name": "mundusx_capability_probe",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        })));
+        assert!(!native_tool_response_supported(&serde_json::json!({
+            "choices": [{"message": {"content": "mundusx_capability_probe"}}]
+        })));
+    }
+
+    #[test]
     fn retries_only_transient_control_plane_failures() {
         for error in [
             "transport failed: connection reset",
@@ -2469,6 +2572,18 @@ mod tests {
         assert_eq!(coalesce_stream_deltas("one".to_string(), &receiver), "one");
         producer.join().unwrap();
         assert_eq!(receiver.try_recv().unwrap(), " two");
+    }
+
+    #[test]
+    fn keeps_native_json_deltas_as_separate_relay_requests() {
+        let first = serde_json::json!({"tool_calls":[{"index":0,"function":{"name":"write","arguments":"{\"path\":"}}]}).to_string();
+        let second = serde_json::json!({"tool_calls":[{"index":0,"function":{"arguments":"\"src/main.rs\"}"}}]}).to_string();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(second.clone()).unwrap();
+        drop(sender);
+
+        assert_eq!(coalesce_stream_deltas(first.clone(), &receiver), first);
+        assert_eq!(receiver.try_recv().unwrap(), second);
     }
 
     #[test]
@@ -2864,6 +2979,58 @@ mod tests {
 
         assert!(profile.supports_tools);
         assert!(profile.supported_tools.contains(&"tool_use".to_string()));
+        assert!(profile
+            .supported_tools
+            .contains(&"native_tool_calls_v1".to_string()));
+        assert!(supported_tools_for(&profile).contains(&"native_tool_calls_v1".to_string()));
+    }
+
+    #[test]
+    fn successful_tool_probe_updates_the_current_heartbeat_snapshot() {
+        let mut config = cluster_config("qwen3-coder", Some(80_000_000_000), None);
+        let mut health = cluster_health("qwen3-coder");
+        let mut capabilities = build_capabilities(&config, &health, true);
+        health.capabilities =
+            build_scheduler_capabilities(&config, &health, &capabilities, 8_192, 100);
+        capabilities.supported_roles = health.capabilities.roles.clone();
+        capabilities.supported_tools = supported_tools_for(&health.capabilities);
+        let mut snapshot = Heartbeat {
+            node_id: config.device_id.clone(),
+            backend: Backend::Cuda,
+            agent_state: AgentState::Ready,
+            available_memory_mb: 8_192,
+            available_gpu_percent: 100,
+            updated_at: now_unix_seconds(),
+            contribution_percent: config.contribution_percent,
+            hostname: "gx10-test".to_string(),
+            identity_trust_path: "test".to_string(),
+            power_source: "ac".to_string(),
+            on_battery: false,
+            battery_percent: None,
+            policy_allowed: true,
+            policy_reason: None,
+            worker_health: health,
+            capabilities,
+        };
+        assert!(!snapshot.worker_health.capabilities.supports_tools);
+
+        let cluster = config
+            .contributed_cluster
+            .as_mut()
+            .expect("contributed cluster");
+        cluster.supports_tool_calls = true;
+        cluster.model_capabilities.push("tools".to_string());
+        refresh_snapshot_capabilities(&mut snapshot, &config);
+
+        assert!(snapshot.worker_health.capabilities.supports_tools);
+        assert!(snapshot
+            .capabilities
+            .supported_tools
+            .contains(&"native_tool_calls_v1".to_string()));
+        assert!(snapshot
+            .capabilities
+            .supported_roles
+            .contains(&NodeRole::ToolUse));
     }
 
     #[test]
@@ -3389,39 +3556,6 @@ mod tests {
         );
         let _ = fs::remove_dir_all(temp);
     }
-
-    #[test]
-    fn native_tool_probe_accepts_a_real_openai_tool_call() {
-        let body = serde_json::json!({
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "type": "function",
-                        "function": {
-                            "name": "mundusx_capability_probe",
-                            "arguments": "{}"
-                        }
-                    }]
-                }
-            }]
-        });
-
-        assert!(native_tool_response_supported(&body));
-    }
-
-    #[test]
-    fn native_tool_probe_rejects_tool_shaped_plain_text() {
-        let body = serde_json::json!({
-            "choices": [{
-                "message": {
-                    "content": "{\"name\":\"mundusx_capability_probe\",\"arguments\":{}}"
-                }
-            }]
-        });
-
-        assert!(!native_tool_response_supported(&body));
-    }
-
     #[test]
     fn agent_run_lock_rejects_a_second_process_owner() {
         let temp =

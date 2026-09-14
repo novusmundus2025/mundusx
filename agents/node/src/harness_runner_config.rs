@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 const LEGACY_CONTROL_PLANE_URL: &str = "https://mundusx.ai";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

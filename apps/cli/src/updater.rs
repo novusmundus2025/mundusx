@@ -66,7 +66,7 @@ pub fn update_installed_binaries() -> Result<(), String> {
     println!("updateStage: complete");
     println!("updated: {}", cli.target.display());
     println!("updatedAgent: {}", agent.target.display());
-    println!("updateHint: restart the node agent to use the new version");
+    println!("updateHint: a running background node agent will restart automatically");
     Ok(())
 }
 
