@@ -1,6 +1,6 @@
 [package]
 name = "opengpu"
-version = "0.1.83"
+version = "0.1.84"
 edition = "2021"
 description = "MundusX CLI"
 license = "Apache-2.0"
@@ -32,5 +32,6 @@ mundusx-agent-core = { path = "../../packages/agent-core" }
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security_Cryptography",
+  "Win32_System_JobObjects",
   "Win32_System_Threading",
 ] }
