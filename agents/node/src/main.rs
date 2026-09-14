@@ -26,6 +26,8 @@ use storage::{
     save_agent_config, save_agent_state, save_heartbeat, AgentConfig,
 };
 
+const TOOL_CAPABILITY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
 struct AgentRunLock {
     _file: fs::File,
 }
@@ -1975,6 +1977,65 @@ fn clear_runtime_environment() {
     std::env::remove_var("OPENGPU_VLLM_URL");
 }
 
+/// Verify native OpenAI tool calling against the contributed runtime itself.
+/// This is intentionally run outside the job-claim loop because a busy model
+/// may take several seconds to answer the probe.
+fn probe_contributed_tool_capability(config: &AgentConfig) -> bool {
+    let Some(cluster) = config.contributed_cluster.as_ref() else {
+        return false;
+    };
+    if cluster.supports_tool_calls {
+        return true;
+    }
+    let Some(model) = cluster.model.as_ref().or_else(|| cluster.models.first()) else {
+        return false;
+    };
+    let payload = serde_json::json!({
+        "model": model,
+        "stream": false,
+        "max_tokens": 32,
+        "messages": [{
+            "role": "user",
+            "content": "Call mundusx_capability_probe exactly once with an empty object."
+        }],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "mundusx_capability_probe",
+                "description": "A side-effect-free runtime capability probe.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }
+            }
+        }],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "mundusx_capability_probe"}
+        }
+    });
+    ureq::post(&format!("{}/v1/chat/completions", cluster.base_url))
+        .timeout(Duration::from_secs(15))
+        .send_json(payload)
+        .ok()
+        .filter(|response| response.status() < 400)
+        .and_then(|response| response.into_json::<serde_json::Value>().ok())
+        .is_some_and(|body| native_tool_response_supported(&body))
+}
+
+fn native_tool_response_supported(body: &serde_json::Value) -> bool {
+    body.pointer("/choices/0/message/tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("mundusx_capability_probe")
+            })
+        })
+}
+
 fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let _run_lock = match acquire_agent_run_lock() {
         Ok(lock) => lock,
@@ -2028,6 +2089,9 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let (health_refresh_tx, health_refresh_rx) = mpsc::channel::<Heartbeat>();
     let mut health_refresh_in_flight = false;
     let mut last_health_refresh_started = Instant::now();
+    let (tool_refresh_tx, tool_refresh_rx) = mpsc::channel::<bool>();
+    let mut tool_refresh_in_flight = false;
+    let mut last_tool_refresh_started = Instant::now() - TOOL_CAPABILITY_REFRESH_INTERVAL;
     let state = resolved_state(&config);
     let interval = if config.paused {
         interval_seconds.max(30)
@@ -2112,7 +2176,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         // Keep presence traffic at its normal rate while checking for work once
         // per second so an idle, warm node starts streaming promptly.
         thread::sleep(Duration::from_secs(1));
-        let latest_config = match load_agent_config() {
+        let mut latest_config = match load_agent_config() {
             Ok(Some(config)) => config,
             Ok(None) => {
                 eprintln!("agentStop: config missing; cooling persistent runtime");
@@ -2129,6 +2193,42 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                 break;
             }
         };
+
+        while let Ok(supported) = tool_refresh_rx.try_recv() {
+            tool_refresh_in_flight = false;
+            if supported {
+                if let Some(cluster) = latest_config.contributed_cluster.as_mut() {
+                    if !cluster.supports_tool_calls {
+                        cluster.supports_tool_calls = true;
+                        match save_agent_config(&latest_config) {
+                            Ok(_) => println!("nativeToolCapability: verified"),
+                            Err(error) => {
+                                eprintln!("failed to persist contributed tool capability: {error}")
+                            }
+                        }
+                    }
+                }
+            } else if verbose {
+                println!("nativeToolCapability: probe pending; retrying later");
+            }
+        }
+
+        let needs_tool_probe = latest_config
+            .contributed_cluster
+            .as_ref()
+            .is_some_and(|cluster| !cluster.supports_tool_calls);
+        if needs_tool_probe
+            && !tool_refresh_in_flight
+            && last_tool_refresh_started.elapsed() >= TOOL_CAPABILITY_REFRESH_INTERVAL
+        {
+            let refresh_config = latest_config.clone();
+            let refresh_tx = tool_refresh_tx.clone();
+            thread::spawn(move || {
+                let _ = refresh_tx.send(probe_contributed_tool_capability(&refresh_config));
+            });
+            tool_refresh_in_flight = true;
+            last_tool_refresh_started = Instant::now();
+        }
         if !should_agent_run(&latest_config) {
             let heartbeat = heartbeat_from_snapshot(
                 &heartbeat_snapshot,
@@ -2349,6 +2449,26 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn native_tool_probe_requires_the_expected_openai_tool_call() {
+        assert!(native_tool_response_supported(&serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {
+                            "name": "mundusx_capability_probe",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        })));
+        assert!(!native_tool_response_supported(&serde_json::json!({
+            "choices": [{"message": {"content": "mundusx_capability_probe"}}]
+        })));
+    }
 
     #[test]
     fn retries_only_transient_control_plane_failures() {
