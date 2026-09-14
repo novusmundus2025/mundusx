@@ -2060,6 +2060,26 @@ fn native_tool_response_supported(body: &serde_json::Value) -> bool {
         })
 }
 
+/// Bring configs written by earlier agents up to the model-scoped capability
+/// contract. Some 0.1.48 nodes persisted the runtime-level boolean without the
+/// matching model capability, which left the gateway unable to select that
+/// otherwise healthy model for Hermes turns.
+fn normalize_verified_tool_capability(config: &mut AgentConfig) -> bool {
+    let Some(cluster) = config.contributed_cluster.as_mut() else {
+        return false;
+    };
+    if !cluster.supports_tool_calls
+        || cluster
+            .model_capabilities
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case("tools"))
+    {
+        return false;
+    }
+    cluster.model_capabilities.push("tools".to_string());
+    true
+}
+
 /// Rebuild the cheap scheduler projection immediately after a native-tool
 /// probe succeeds. Full hardware/runtime health remains on its background
 /// cadence, but the next heartbeat must not keep publishing the stale
@@ -2085,7 +2105,12 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             std::process::exit(3);
         }
     };
-    let config = load_config_or_exit();
+    let mut config = load_config_or_exit();
+    if normalize_verified_tool_capability(&mut config) {
+        if let Err(error) = save_agent_config(&config) {
+            eprintln!("failed to normalize contributed tool capability: {error}");
+        }
+    }
     let identity = load_identity_or_exit();
     let runtime_parallel_slots = worker_readiness(&config).0.parallel_slots;
     let mut persistent_runtime = if json || !should_keep_runtime_warm(&config) {
@@ -2241,13 +2266,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                 if let Some(cluster) = latest_config.contributed_cluster.as_mut() {
                     if !cluster.supports_tool_calls {
                         cluster.supports_tool_calls = true;
-                        if !cluster
-                            .model_capabilities
-                            .iter()
-                            .any(|value| value.eq_ignore_ascii_case("tools"))
-                        {
-                            cluster.model_capabilities.push("tools".to_string());
-                        }
+                        let _ = normalize_verified_tool_capability(&mut latest_config);
                         match save_agent_config(&latest_config) {
                             Ok(_) => {
                                 refresh_snapshot_capabilities(
@@ -3031,6 +3050,28 @@ mod tests {
             .capabilities
             .supported_roles
             .contains(&NodeRole::ToolUse));
+    }
+
+    #[test]
+    fn existing_runtime_tool_flag_is_migrated_to_the_model_scope() {
+        let mut config = cluster_config("qwen3-coder", Some(80_000_000_000), None);
+        let cluster = config
+            .contributed_cluster
+            .as_mut()
+            .expect("contributed cluster");
+        cluster.supports_tool_calls = true;
+        cluster.model_capabilities.clear();
+
+        assert!(normalize_verified_tool_capability(&mut config));
+        assert!(!normalize_verified_tool_capability(&mut config));
+        assert_eq!(
+            config
+                .contributed_cluster
+                .as_ref()
+                .expect("contributed cluster")
+                .model_capabilities,
+            vec!["tools".to_string()]
+        );
     }
 
     #[test]
