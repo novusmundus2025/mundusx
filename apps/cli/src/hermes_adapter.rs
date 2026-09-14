@@ -12,6 +12,89 @@ use uuid::Uuid;
 
 const STRUCTURED_BRIDGE: &str = include_str!("hermes_bridge.py");
 
+fn configure_task_process(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    let _ = command;
+}
+
+struct TaskProcessGroup {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl TaskProcessGroup {
+    fn attach(child: &std::process::Child) -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            return Ok(Self { pid: child.id() });
+        }
+        #[cfg(windows)]
+        {
+            use std::mem::{size_of, zeroed};
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
+
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if job.is_null() {
+                return Err("could not create the Hermes task process group".to_string());
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const core::ffi::c_void,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            let assigned = unsafe {
+                AssignProcessToJobObject(
+                    job,
+                    child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+                )
+            };
+            if configured == 0 || assigned == 0 {
+                unsafe { CloseHandle(job) };
+                return Err("could not isolate the Hermes task process tree".to_string());
+            }
+            Ok(Self { job })
+        }
+    }
+
+    fn terminate(&self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TaskProcessGroup {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.job);
+        }
+    }
+}
+
 fn executable() -> PathBuf {
     if let Some(path) = std::env::var_os("MUNDUSX_HERMES_BIN").map(PathBuf::from) {
         return path;
@@ -218,10 +301,16 @@ pub fn run(
             command.arg("--yolo");
         }
     }
+    configure_task_process(&mut command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start Hermes: {error}"))?;
+    let process_group = TaskProcessGroup::attach(&child).map_err(|error| {
+        let _ = child.kill();
+        let _ = child.wait();
+        error
+    })?;
     let child_stdout = child
         .stdout
         .take()
@@ -246,7 +335,9 @@ pub fn run(
                     {
                         // Snapshots have already been delivered to the UI. Keep
                         // them out of the final transcript/result evidence.
-                        if payload["type"] != "assistant_snapshot" { output.push_str(&line); }
+                        if payload["type"] != "assistant_snapshot" {
+                            output.push_str(&line);
+                        }
                         let _ = event_sender.send(payload);
                     } else {
                         output.push_str(&line);
@@ -271,6 +362,7 @@ pub fn run(
             .map(|flag| flag.load(Ordering::Relaxed))
             .unwrap_or(false)
         {
+            process_group.terminate();
             let _ = child.kill();
             let _ = child.wait();
             let _ = fs::remove_file(&usage_path);
@@ -284,6 +376,10 @@ pub fn run(
         }
         thread::sleep(Duration::from_millis(200));
     };
+    // Hermes may start application servers in the background while validating a
+    // project. End every descendant owned by this task before reading the final
+    // result so completed, failed, and cancelled tasks all release their ports.
+    process_group.terminate();
     while let Ok(event) = event_receiver.try_recv() {
         if let Some(callback) = event_callback.as_mut() {
             callback(event);
