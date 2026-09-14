@@ -2071,8 +2071,7 @@ fn run_vllm_completion(
         payload["stream"] = serde_json::Value::Bool(true);
         payload["stream_options"] = serde_json::json!({"include_usage": true});
         if model.to_ascii_lowercase().contains("qwen3") {
-            payload["chat_template_kwargs"] =
-                serde_json::json!({"enable_thinking": false});
+            payload["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
         }
     }
     if structured {
@@ -2165,36 +2164,68 @@ fn parse_native_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
     let mut done = false;
     for line in reader.lines() {
         let line = line.map_err(|e| format!("native stream read failed: {e}"))?;
-        let Some(data) = line.strip_prefix("data:") else { continue; };
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
         let data = data.trim();
-        if data == "[DONE]" { done = true; break; }
-        if data.is_empty() { continue; }
-        let chunk: serde_json::Value = serde_json::from_str(data).map_err(|e| format!("invalid native stream JSON: {e}"))?;
-        if let Some(error) = chunk.get("error") { return Err(format!("native stream error: {error}")); }
-        if let Some(finish) = chunk.pointer("/choices/0/finish_reason").and_then(|v| v.as_str()) { reason = Some(finish.to_owned()); }
+        if data == "[DONE]" {
+            done = true;
+            break;
+        }
+        if data.is_empty() {
+            continue;
+        }
+        let chunk: serde_json::Value =
+            serde_json::from_str(data).map_err(|e| format!("invalid native stream JSON: {e}"))?;
+        if let Some(error) = chunk.get("error") {
+            return Err(format!("native stream error: {error}"));
+        }
+        if let Some(finish) = chunk
+            .pointer("/choices/0/finish_reason")
+            .and_then(|v| v.as_str())
+        {
+            reason = Some(finish.to_owned());
+        }
         if let Some(raw) = chunk.pointer("/choices/0/delta") {
             // Forward only public assistant fields, excluding reasoning and runtime metadata.
             let mut delta = serde_json::json!({});
             for key in ["role", "content", "tool_calls"] {
-                if let Some(value) = raw.get(key).filter(|v| !v.is_null()) { delta[key] = value.clone(); }
+                if let Some(value) = raw.get(key).filter(|v| !v.is_null()) {
+                    delta[key] = value.clone();
+                }
             }
             assembled.push(&delta)?;
-            if delta != serde_json::json!({}) { emit_stream_delta(&delta.to_string()); }
+            if delta != serde_json::json!({}) {
+                emit_stream_delta(&delta.to_string());
+            }
         }
     }
-    if !done || reason.is_none() { return Err("native stream ended before terminal event".into()); }
+    if !done || reason.is_none() {
+        return Err("native stream ended before terminal event".into());
+    }
     let message = assembled.message();
     if let Some(calls) = message["tool_calls"].as_array() {
-        if reason.as_deref() == Some("length") { return Err("native tool call exceeded generation limit".into()); }
+        if reason.as_deref() == Some("length") {
+            return Err("native tool call exceeded generation limit".into());
+        }
         for call in calls {
-            if call["id"].as_str().unwrap_or_default().is_empty() || call["function"]["name"].as_str().unwrap_or_default().is_empty() {
+            if call["id"].as_str().unwrap_or_default().is_empty()
+                || call["function"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .is_empty()
+            {
                 return Err("native tool call is missing its id or name".into());
             }
-            serde_json::from_str::<serde_json::Value>(call["function"]["arguments"].as_str().unwrap_or_default())
-                .map_err(|e| format!("native tool arguments are incomplete: {e}"))?;
+            serde_json::from_str::<serde_json::Value>(
+                call["function"]["arguments"].as_str().unwrap_or_default(),
+            )
+            .map_err(|e| format!("native tool arguments are incomplete: {e}"))?;
         }
     }
-    normalize_native_openai_tool_response(&serde_json::json!({"choices":[{"message":message,"finish_reason":reason.unwrap()}]}))
+    normalize_native_openai_tool_response(
+        &serde_json::json!({"choices":[{"message":message,"finish_reason":reason.unwrap()}]}),
+    )
 }
 
 fn normalize_native_openai_tool_response(value: &serde_json::Value) -> Result<String, String> {
@@ -3239,20 +3270,6 @@ fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespons
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "vLLM jobs require an explicit model".to_string())?;
-    if is_native_openai_tool_turn(request) {
-        let generated = run_native_openai_tool_turn(&url, model, request)?;
-        return Ok(WorkerLaunchResponse {
-            job_id: request.job_id.clone(),
-            worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
-            status: "completed".to_string(),
-            output: format!("vLLM mode=native-openai-tools; model={model}; response={generated}"),
-            error: None,
-            backend: Backend::Vllm,
-            node_id: request.node_id.clone(),
-            model: Some(model.to_string()),
-            runtime_mode: Some("vllm-native-openai-tools".to_string()),
-        });
-    }
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
     let temperature = request.temperature.unwrap_or(0.2).max(0.0);
     let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
@@ -3883,8 +3900,7 @@ mod tests {
                             .unwrap_or_default();
                     }
                 }
-                if size == 0
-                    || header_end.is_some_and(|end| request.len() >= end + content_length)
+                if size == 0 || header_end.is_some_and(|end| request.len() >= end + content_length)
                 {
                     break;
                 }
@@ -4942,35 +4958,6 @@ mod tests {
     }
 
     #[test]
-    fn native_openai_tool_response_preserves_assistant_tool_call() {
-        let response = serde_json::json!({
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "search_files", "arguments": "{\"pattern\":\"*.java\"}"}
-                    }]
-                }
-            }]
-        });
-        let normalized =
-            normalize_native_openai_tool_response(&response).expect("native tool call");
-        assert!(normalized.starts_with(OPENAI_TOOL_RESULT_PREFIX));
-        let payload: serde_json::Value =
-            serde_json::from_str(normalized.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap())
-                .unwrap();
-        assert_eq!(payload["finish_reason"], "tool_calls");
-        assert_eq!(
-            payload["message"]["tool_calls"][0]["function"]["name"],
-            "search_files"
-        );
-    }
-
-    #[test]
     fn vllm_worker_uses_openai_compatible_endpoint() {
         with_temp_runtime_home(|_| {
             let url = start_mock_llama_server("hello from vllm", 2);
@@ -5308,40 +5295,78 @@ mod native_delta_tests {
     fn native_parser_forwards_fragments_and_returns_complete_envelope() {
         let frames = [
             serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"text\":\""}}]}}]}),
-            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hello\"}"}}]},"finish_reason":"tool_calls"}]})
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hello\"}"}}]},"finish_reason":"tool_calls"}]}),
         ];
-        let wire = frames.iter().map(|v| format!("data: {v}\n\n")).collect::<String>() + "data: [DONE]\n\n";
+        let wire = frames
+            .iter()
+            .map(|v| format!("data: {v}\n\n"))
+            .collect::<String>()
+            + "data: [DONE]\n\n";
         let (tx, rx) = mpsc::channel();
-        let result = with_stream_delta_sender(Some(tx), || parse_native_openai_stream(std::io::Cursor::new(wire))).unwrap();
+        let result = with_stream_delta_sender(Some(tx), || {
+            parse_native_openai_stream(std::io::Cursor::new(wire))
+        })
+        .unwrap();
         let fragments: Vec<_> = rx.try_iter().collect();
         assert_eq!(fragments.len(), 2);
         assert!(fragments[1].contains("hello"));
-        let final_value: serde_json::Value = serde_json::from_str(result.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap()).unwrap();
-        assert_eq!(final_value["message"]["tool_calls"][0]["function"]["arguments"], "{\"text\":\"hello\"}");
+        let final_value: serde_json::Value =
+            serde_json::from_str(result.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap()).unwrap();
+        assert_eq!(
+            final_value["message"]["tool_calls"][0]["function"]["arguments"],
+            "{\"text\":\"hello\"}"
+        );
     }
     #[test]
     fn native_fragment_arrives_before_model_finishes() {
-        struct Gate { release: mpsc::Receiver<()>, tail: std::io::Cursor<Vec<u8>>, opened: bool }
+        struct Gate {
+            release: mpsc::Receiver<()>,
+            tail: std::io::Cursor<Vec<u8>>,
+            opened: bool,
+        }
         impl std::io::Read for Gate {
             fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-                if !self.opened { self.release.recv_timeout(Duration::from_secs(5)).unwrap(); self.opened = true; }
+                if !self.opened {
+                    self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+                    self.opened = true;
+                }
                 self.tail.read(out)
             }
         }
-        let first = std::io::Cursor::new(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n".to_vec());
-        let tail = std::io::Cursor::new(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_vec());
+        let first = std::io::Cursor::new(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n".to_vec(),
+        );
+        let tail = std::io::Cursor::new(
+            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                .to_vec(),
+        );
         let (release, gate) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || with_stream_delta_sender(Some(tx), ||
-            parse_native_openai_stream(BufReader::new(first.chain(Gate { release:gate, tail, opened:false })))));
-        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().contains("Hello"));
+        let worker = std::thread::spawn(move || {
+            with_stream_delta_sender(Some(tx), || {
+                parse_native_openai_stream(BufReader::new(first.chain(Gate {
+                    release: gate,
+                    tail,
+                    opened: false,
+                })))
+            })
+        });
+        assert!(rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .contains("Hello"));
         assert!(!worker.is_finished());
         release.send(()).unwrap();
         assert!(worker.join().unwrap().is_ok());
     }
     #[test]
     fn native_parser_rejects_truncated_and_failed_streams() {
-        assert!(parse_native_openai_stream(std::io::Cursor::new("data: {\"choices\":[]}\n\n")).is_err());
-        assert!(parse_native_openai_stream(std::io::Cursor::new("data: {\"error\":{\"message\":\"failed\"}}\n\n")).is_err());
+        assert!(
+            parse_native_openai_stream(std::io::Cursor::new("data: {\"choices\":[]}\n\n")).is_err()
+        );
+        assert!(parse_native_openai_stream(std::io::Cursor::new(
+            "data: {\"error\":{\"message\":\"failed\"}}\n\n"
+        ))
+        .is_err());
     }
 }

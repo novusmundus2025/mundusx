@@ -91,6 +91,26 @@ pub fn signed_get_json<T: DeserializeOwned>(
     parse_json_body(&response)
 }
 
+pub fn signed_get_json_with_agent<T: DeserializeOwned>(
+    agent: &ureq::Agent,
+    control_plane_url: &str,
+    path: &str,
+    node_id: &str,
+    identity: &DeviceIdentity,
+) -> Result<T, String> {
+    let response = signed_request_with_agent(
+        agent,
+        control_plane_url,
+        "GET",
+        path,
+        "X-MundusX-Node-Id",
+        node_id,
+        identity,
+        &serde_json::json!({}),
+    )?;
+    parse_json_body(&response)
+}
+
 pub fn signed_post_json_body<T: Serialize, R: DeserializeOwned>(
     control_plane_url: &str,
     path: &str,
