@@ -1605,6 +1605,12 @@ fn post_stream_delta(
 }
 
 fn coalesce_stream_deltas(first: String, deltas: &mpsc::Receiver<String>) -> String {
+    // Native OpenAI tool streams encode each delta as a complete JSON object.
+    // Concatenating adjacent objects produces invalid JSON at the control plane.
+    // Ordinary assistant text remains safe to batch for lower relay overhead.
+    if serde_json::from_str::<serde_json::Value>(&first).is_ok() {
+        return first;
+    }
     let mut batch = first;
     while batch.len() < STREAM_DELTA_BATCH_MAX_BYTES {
         match deltas.try_recv() {
@@ -2528,6 +2534,18 @@ mod tests {
         assert_eq!(coalesce_stream_deltas("one".to_string(), &receiver), "one");
         producer.join().unwrap();
         assert_eq!(receiver.try_recv().unwrap(), " two");
+    }
+
+    #[test]
+    fn keeps_native_json_deltas_as_separate_relay_requests() {
+        let first = serde_json::json!({"tool_calls":[{"index":0,"function":{"name":"write","arguments":"{\"path\":"}}]}).to_string();
+        let second = serde_json::json!({"tool_calls":[{"index":0,"function":{"arguments":"\"src/main.rs\"}"}}]}).to_string();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(second.clone()).unwrap();
+        drop(sender);
+
+        assert_eq!(coalesce_stream_deltas(first.clone(), &receiver), first);
+        assert_eq!(receiver.try_recv().unwrap(), second);
     }
 
     #[test]
