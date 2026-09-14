@@ -54,6 +54,17 @@ Use the structured tool progress events for status. Reserve prose for a concise 
 """
 
 
+def child_workspace_path(path, platform=os.name):
+    """Remove Windows verbatim prefixes that Git Bash cannot translate."""
+    if platform != "nt":
+        return path
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
 def loaded_skill(name, result):
     if name != "skill_view":
         return None
@@ -153,6 +164,17 @@ def tool_outcome(result, name=None):
 
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
+    workspace = child_workspace_path(
+        os.path.realpath(os.environ["MUNDUSX_HERMES_WORKSPACE"])
+    )
+    if not os.path.isdir(workspace):
+        raise RuntimeError("MundusX project workspace is unavailable")
+    # The embedded bridge bypasses Hermes' CLI bootstrap, which normally pins
+    # terminal and file tools to the launch directory. Pin the project here so
+    # a saved Hermes config (for example terminal.cwd = the user's home) cannot
+    # redirect project writes outside the selected MundusX project.
+    os.chdir(workspace)
+    os.environ["TERMINAL_CWD"] = workspace
     sys.path.insert(0, project_root)
 
     from run_agent import AIAgent

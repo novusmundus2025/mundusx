@@ -429,6 +429,7 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("answer_stream.reset()"));
+        assert!(STRUCTURED_BRIDGE.contains("child_workspace_path"));
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
         assert!(!STRUCTURED_BRIDGE.contains("select_project_skills"));
     }
