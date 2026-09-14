@@ -3036,14 +3036,7 @@ fn print_config_summary(config: &Config, path: &std::path::Path) {
         "activeModel",
         active_model.clone().unwrap_or_else(|| "unset".to_string()),
     );
-    theme::field(
-        "contributionPercent",
-        if config.contribution_percent == 0 {
-            "unset".to_string()
-        } else {
-            format!("{}%", config.contribution_percent)
-        },
-    );
+    theme::field("contributionPercent", contribution_cap_display(config));
     theme::field("controlPlaneUrl", &config.control_plane_url);
     theme::field("powerSource", &power.source);
     theme::field("onBattery", theme::boolean(power.on_battery, "yes", "no"));
@@ -3131,14 +3124,7 @@ fn print_startup_summary(config: &Config, path: &std::path::Path) {
         "activeModel",
         active_model.clone().unwrap_or_else(|| "unset".to_string()),
     );
-    theme::field(
-        "contributionPercent",
-        if config.contribution_percent == 0 {
-            "unset".to_string()
-        } else {
-            format!("{}%", config.contribution_percent)
-        },
-    );
+    theme::field("contributionPercent", contribution_cap_display(config));
     theme::field(
         "connected",
         colored_state(config.connected, Color::Green, "yes", "no"),
@@ -3794,14 +3780,7 @@ fn print_onboarding_checklist(config: &Config, path: &std::path::Path, completed
             "active model: {}",
             active_model.clone().unwrap_or_else(|| "unset".to_string())
         ),
-        format!(
-            "contribution cap: {}",
-            if config.contribution_percent == 0 {
-                "unset".to_string()
-            } else {
-                format!("{}%", config.contribution_percent)
-            }
-        ),
+        format!("contribution cap: {}", contribution_cap_display(config)),
         format!("policy: {}", if allowed { "allowed" } else { "blocked" }),
         format!("credits: /v1/credits"),
         format!("dashboard: http://127.0.0.1:3001"),
@@ -3946,6 +3925,17 @@ fn default_contribution_percent(backend: Backend) -> u8 {
         Backend::Vllm => 30,
         Backend::M => 30,
         Backend::Auto => 20,
+    }
+}
+
+fn contribution_cap_display(config: &Config) -> String {
+    if config.contributed_cluster.is_some() {
+        return "automatic (cluster-managed)".to_string();
+    }
+    if config.contribution_percent == 0 {
+        "unset".to_string()
+    } else {
+        format!("{}%", config.contribution_percent)
     }
 }
 
@@ -4944,6 +4934,30 @@ fn cap_label(percent: u8) -> &'static str {
 }
 
 fn print_contribution_cap(config: &Config, selected: Option<u8>, completed: bool) {
+    if config.contributed_cluster.is_some() {
+        let body = vec![
+            "current cap: automatic (cluster-managed)".to_string(),
+            "meaning: the contributed runtime advertises its own capacity".to_string(),
+            format!(
+                "scheduler limit: {}",
+                config
+                    .max_jobs
+                    .map(|value| format!("{value} concurrent jobs"))
+                    .unwrap_or_else(|| "automatic".to_string())
+            ),
+            "change capacity with `opengpu cluster use ... --max-jobs <count>`".to_string(),
+            "the saved percentage is used only if this cluster is disconnected".to_string(),
+            format!("state: {}", if completed { "saved" } else { "active" }),
+        ];
+        print_retro_panel(
+            "CONTRIBUTION CAP",
+            "capacity is managed by the contributed cluster",
+            &body,
+            Color::Green,
+        );
+        return;
+    }
+
     let current = selected
         .or_else(|| (config.contribution_percent > 0).then_some(config.contribution_percent))
         .unwrap_or(0);
@@ -5539,6 +5553,7 @@ fn print_cluster_adopted_panel(cluster: &ContributedCluster) {
             cluster.model.as_deref().unwrap_or("none advertised")
         ),
         format!("models available: {}", cluster.models.len()),
+        "contribution cap: automatic (cluster-managed)".to_string(),
         "MundusX will serve work from this cluster instead of downloading its own model"
             .to_string(),
         "run `opengpu cluster forget` to stop contributing it".to_string(),
@@ -5999,6 +6014,8 @@ fn run_install(
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let mut contributed_from_menu = false;
 
+    let cluster_uses_automatic_cap = config.contributed_cluster.is_some()
+        || (cluster_choice == Some(true) && !ranked_clusters.is_empty());
     let selected_cap = if let Some(value) = cap_percent {
         match normalize_contribution_percent(u16::from(value)) {
             Ok(value) => Some(value),
@@ -6007,6 +6024,8 @@ fn run_install(
                 std::process::exit(2);
             }
         }
+    } else if cluster_uses_automatic_cap {
+        (config.contribution_percent == 0).then(|| default_contribution_percent(detected))
     } else if interactive {
         theme::note(format!(
             "Choose how much of this {} machine MundusX may use",
@@ -6030,7 +6049,7 @@ fn run_install(
                         // A contributed cluster is not gated by the cap, but the
                         // node still needs one saved to pass local policy.
                         theme::note(format!(
-                            "The cap does not gate a contributed cluster; saved {default_percent}% for local policy"
+                            "Cluster contribution is automatic; saved {default_percent}% only as the local fallback policy"
                         ));
                         break Some(default_percent);
                     }
@@ -6124,14 +6143,7 @@ fn run_install(
                     "fallback runtime: {}",
                     config.fallback_runtime.as_deref().unwrap_or("none")
                 ),
-                format!(
-                    "contribution cap: {}",
-                    if config.contribution_percent == 0 {
-                        "unset".to_string()
-                    } else {
-                        format!("{}%", config.contribution_percent)
-                    }
-                ),
+                format!("contribution cap: {}", contribution_cap_display(&config)),
                 format!(
                     "contributed cluster: {}",
                     config
@@ -6428,7 +6440,14 @@ fn run_start_or_connect(
             false
         }
     };
-    if config.contribution_percent == 0 && io::stdin().is_terminal() && io::stdout().is_terminal() {
+    if config.contributed_cluster.is_some() && config.contribution_percent == 0 {
+        // Cluster capacity comes from the runtime and scheduler. Keep a local
+        // fallback value only so older policy readers still admit the node.
+        config.contribution_percent = default_contribution_percent(resolved_backend(&config));
+    } else if config.contribution_percent == 0
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+    {
         let detected = resolved_backend(&config);
         theme::note(format!(
             "Choose how much of this {} machine MundusX may use",
@@ -6501,7 +6520,13 @@ fn run_start_or_connect(
     match save_config(&config) {
         Ok(_) => {
             print_startup_summary(&config, &resolved_config_path());
-            theme::note(contribution_semantics(config.backend_preference));
+            if config.contributed_cluster.is_some() {
+                theme::note(
+                    "Contribution capacity is automatic and managed by the contributed cluster",
+                );
+            } else {
+                theme::note(contribution_semantics(config.backend_preference));
+            }
             if config.contribution_percent == 0 {
                 theme::note("Run `opengpu cap` to choose the contribution budget");
             }
@@ -6730,7 +6755,11 @@ fn main() {
             }
 
             let mut config = current_config_or_default();
-            let selected = if reset {
+            let selected = if reset && config.contributed_cluster.is_some() {
+                config.contribution_percent =
+                    default_contribution_percent(resolved_backend(&config));
+                None
+            } else if reset {
                 config.contribution_percent = 0;
                 None
             } else if let Some(value) = value.or(percent) {
@@ -6743,7 +6772,7 @@ fn main() {
                 };
                 config.contribution_percent = value;
                 Some(value)
-            } else {
+            } else if config.contributed_cluster.is_none() {
                 match prompt_contribution_percent(
                     if config.contribution_percent == 0 {
                         30
@@ -6762,6 +6791,8 @@ fn main() {
                         std::process::exit(130);
                     }
                 }
+            } else {
+                None
             };
 
             if let Err(error) = save_config(&config) {
@@ -6770,17 +6801,12 @@ fn main() {
             }
 
             print_contribution_cap(&config, selected, !reset && selected.is_some());
-            println!(
-                "contributionPercent: {}",
-                if config.contribution_percent == 0 {
-                    "unset".to_string()
-                } else {
-                    format!("{}%", config.contribution_percent)
-                }
-            );
+            println!("contributionPercent: {}", contribution_cap_display(&config));
             println!(
                 "capHint: {}",
-                if config.contribution_percent == 0 {
+                if config.contributed_cluster.is_some() {
+                    "cluster capacity is managed automatically; use `opengpu cluster use ... --max-jobs <count>` to set concurrency".to_string()
+                } else if config.contribution_percent == 0 {
                     "rerun `opengpu cap` to choose one".to_string()
                 } else {
                     "run `opengpu start` to bring the node online".to_string()
@@ -9024,6 +9050,26 @@ mod tests {
         assert_eq!(super::default_contribution_percent(Backend::Vllm), 30);
         assert_eq!(super::default_contribution_percent(Backend::M), 30);
         assert_eq!(super::default_contribution_percent(Backend::Auto), 20);
+    }
+
+    #[test]
+    fn contribution_cap_display_uses_percent_for_a_local_runtime() {
+        let mut config = Config::default();
+        config.contribution_percent = 30;
+
+        assert_eq!(super::contribution_cap_display(&config), "30%");
+    }
+
+    #[test]
+    fn contribution_cap_display_is_cluster_managed_for_a_contributed_runtime() {
+        let mut config = Config::default();
+        config.contribution_percent = 30;
+        config.contributed_cluster = Some(recorded_cluster("qwen3-coder"));
+
+        assert_eq!(
+            super::contribution_cap_display(&config),
+            "automatic (cluster-managed)"
+        );
     }
 
     #[test]
