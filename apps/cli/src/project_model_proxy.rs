@@ -9,6 +9,11 @@ use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 use std::io::Read;
 
+// Keep project-agent turns below the model's physical maximum so Hermes
+// compacts before repeatedly sending a very large tool history. Hermes uses a
+// 50% compression threshold by default, so this 64K operating window compacts
+// near 32K while the contributed runtime retains its larger emergency headroom.
+const MODEL_CONTEXT_TOKENS: u32 = 65_536;
 const MAX_MODEL_BODY_BYTES: u64 = 32 * 1024 * 1024;
 
 fn proxy_error_status(error: &str) -> u16 {
@@ -65,7 +70,7 @@ impl ProjectModelProxy {
                     continue;
                 }
                 if request.method() == &Method::Get && request.url() == "/v1/models" {
-                    let _ = request.respond(json_response(StatusCode(200), json!({"object":"list","data":[{"id":"mundusx-agnostic","object":"model","owned_by":"mundusx","context_length":131072,"max_model_len":131072}]})));
+                    let _ = request.respond(json_response(StatusCode(200), json!({"object":"list","data":[{"id":"mundusx-agnostic","object":"model","owned_by":"mundusx","context_length":MODEL_CONTEXT_TOKENS,"max_model_len":MODEL_CONTEXT_TOKENS}]})));
                     continue;
                 }
                 if request.method() != &Method::Post || request.url() != "/v1/chat/completions" {
@@ -293,6 +298,25 @@ mod tests {
         assert_eq!(proxy_error_status("maximum context length is 131072"), 400);
         assert_eq!(proxy_error_status("model gateway returned 422: invalid request"), 422);
         assert_eq!(proxy_error_status("connection timed out"), 502);
+    }
+
+    #[test]
+    fn hermes_discovers_the_project_operating_context_window() {
+        let proxy = ProjectModelProxy::start(
+            "https://invalid.example/v1",
+            "secret",
+            &Uuid::new_v4().to_string(),
+            &Uuid::new_v4().to_string(),
+        )
+        .unwrap();
+        let catalog: Value = ureq::get(&format!("{}/models", proxy.base_url()))
+            .set("Authorization", &format!("Bearer {}", proxy.credential()))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(catalog["data"][0]["context_length"], 65_536);
+        assert_eq!(catalog["data"][0]["max_model_len"], 65_536);
     }
     use std::io::Read;
 
