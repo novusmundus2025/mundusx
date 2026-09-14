@@ -165,7 +165,7 @@ def tool_outcome(result, name=None):
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
     workspace = child_workspace_path(
-        os.path.realpath(os.environ["MUNDUSX_HERMES_WORKSPACE"])
+        os.path.realpath(os.environ.get("MUNDUSX_HERMES_WORKSPACE", os.getcwd()))
     )
     if not os.path.isdir(workspace):
         raise RuntimeError("MundusX project workspace is unavailable")

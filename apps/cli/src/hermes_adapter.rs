@@ -527,6 +527,9 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("answer_stream.reset()"));
         assert!(STRUCTURED_BRIDGE.contains("child_workspace_path"));
+        assert!(
+            STRUCTURED_BRIDGE.contains("os.environ.get(\"MUNDUSX_HERMES_WORKSPACE\", os.getcwd())")
+        );
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
         assert!(STRUCTURED_BRIDGE.contains("MUNDUSX_HERMES_WORKSPACE"));
         assert!(STRUCTURED_BRIDGE
