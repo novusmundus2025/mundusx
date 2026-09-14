@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 const HEARTBEAT_LOG_TTL_SECONDS: i64 = 30 * 60;
-const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 const LEGACY_CONTROL_PLANE_URL: &str = "https://mundusx.ai";
 
 /// Mirror of the CLI's `ContributedCluster` so rewriting `config.json` from the
