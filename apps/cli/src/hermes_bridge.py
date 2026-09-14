@@ -141,9 +141,24 @@ def tool_outcome(result, name=None):
 
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
+    workspace = os.path.realpath(os.environ["MUNDUSX_HERMES_WORKSPACE"])
+    if not os.path.isdir(workspace):
+        raise RuntimeError("MundusX project workspace is unavailable")
+    # The embedded bridge bypasses Hermes' CLI bootstrap, which normally pins
+    # terminal and file tools to the launch directory. Pin the project here so
+    # a saved Hermes config (for example terminal.cwd = the user's home) cannot
+    # redirect project writes outside the selected MundusX project.
+    os.chdir(workspace)
+    os.environ["TERMINAL_CWD"] = workspace
     sys.path.insert(0, project_root)
 
     from run_agent import AIAgent
+    from agent.runtime_cwd import set_session_cwd
+    from tools.terminal_tool import register_task_env_overrides
+
+    task_id = os.environ.get("MUNDUSX_HERMES_TASK") or "default"
+    set_session_cwd(workspace)
+    register_task_env_overrides(task_id, {"cwd": workspace})
 
     selected_skills = []
     answer_stream = AnswerStream(lambda event: emit("MUNDUSX_EVENT=", event))
@@ -212,7 +227,7 @@ def main():
     try:
         result = agent.run_conversation(
             user_message=user_prompt,
-            task_id=os.environ.get("MUNDUSX_HERMES_TASK") or session_id,
+            task_id=task_id,
         )
     except Exception as error:
         answer_stream.flush()

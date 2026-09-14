@@ -180,6 +180,7 @@ pub fn run(
         command
             .arg(bridge_path)
             .env("MUNDUSX_HERMES_PROJECT_ROOT", project)
+            .env("MUNDUSX_HERMES_WORKSPACE", workspace)
             .env("MUNDUSX_HERMES_PROMPT", prompt)
             .env("MUNDUSX_HERMES_TASK", mundusx_session_id)
             .env("OPENAI_BASE_URL", base_url)
@@ -428,6 +429,9 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\", \"skills\"]"));
         assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
+        assert!(STRUCTURED_BRIDGE.contains("MUNDUSX_HERMES_WORKSPACE"));
+        assert!(STRUCTURED_BRIDGE
+            .contains("register_task_env_overrides(task_id, {\"cwd\": workspace})"));
         assert!(!STRUCTURED_BRIDGE.contains("select_project_skills"));
     }
 
