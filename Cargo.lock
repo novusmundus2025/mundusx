@@ -970,7 +970,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "opengpu"
-version = "0.1.91"
+version = "0.1.92"
 dependencies = [
  "clap",
  "crossterm",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "opengpu-node-agent"
-version = "0.1.91"
+version = "0.1.92"
 dependencies = [
  "clap",
  "dirs",

@@ -1,9 +1,12 @@
+import json
+import tempfile
 import unittest
 from hermes_bridge import (
     AnswerStream,
     EXECUTION_EFFICIENCY_GUIDANCE,
     FRONTEND_MAX_ITERATIONS,
     PROJECT_COMPACTION_TOKENS,
+    RecoveryCheckpoint,
     STANDARD_MAX_ITERATIONS,
     browser_verification,
     configure_project_compaction,
@@ -14,6 +17,24 @@ from hermes_bridge import (
 
 
 class ProgressTests(unittest.TestCase):
+    def test_recovery_checkpoint_is_bounded_atomic_and_recovery_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            checkpoint = RecoveryCheckpoint(root, "task/unsafe")
+            self.assertEqual(checkpoint.recovery_note(), "")
+            checkpoint.start()
+            checkpoint.record("write_file", {"path": "src/app.js"}, {"bytes_written": 12})
+            resumed = RecoveryCheckpoint(root, "task/unsafe")
+            note = resumed.recovery_note()
+            self.assertIn("src/app.js", note)
+            self.assertNotIn("bytes_written", note)
+            resumed.events = [{"tool": str(index)} for index in range(80)]
+            resumed.finish(True)
+            with open(resumed.path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            self.assertEqual(payload["state"], "completed")
+            self.assertEqual(len(payload["events"]), 48)
+            self.assertEqual(RecoveryCheckpoint(root, "task/unsafe").recovery_note(), "")
+
     def test_project_turns_are_bounded_and_escape_aware(self):
         self.assertEqual(STANDARD_MAX_ITERATIONS, 12)
         self.assertEqual(FRONTEND_MAX_ITERATIONS, 16)
