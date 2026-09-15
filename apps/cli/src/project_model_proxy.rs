@@ -9,11 +9,10 @@ use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
-// Keep project-agent turns well below the model's physical maximum so Hermes
-// compacts before a tool-heavy project session dominates latency. Hermes uses
-// a 50% compression threshold by default, so this 32K operating window starts
-// compaction near 16K while the contributed runtime retains emergency headroom.
-const MODEL_CONTEXT_TOKENS: u32 = 32_768;
+// Hermes requires an advertised window of at least 64K. Earlier project
+// compaction is configured inside the bridge, where Hermes can preflight the
+// actual prompt and reserve output headroom without falsifying model metadata.
+const MODEL_CONTEXT_TOKENS: u32 = 65_536;
 const MAX_MODEL_BODY_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -257,8 +256,8 @@ mod tests {
             .unwrap()
             .into_json()
             .unwrap();
-        assert_eq!(catalog["data"][0]["context_length"], 32_768);
-        assert_eq!(catalog["data"][0]["max_model_len"], 32_768);
+        assert_eq!(catalog["data"][0]["context_length"], 65_536);
+        assert_eq!(catalog["data"][0]["max_model_len"], 65_536);
     }
 
     #[test]
