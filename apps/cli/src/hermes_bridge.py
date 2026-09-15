@@ -58,6 +58,86 @@ After the requested change and required build, lint, test, or browser acceptance
 STANDARD_MAX_ITERATIONS = 12
 FRONTEND_MAX_ITERATIONS = 16
 PROJECT_COMPACTION_TOKENS = 16_384
+CHECKPOINT_EVENT_LIMIT = 48
+
+
+class RecoveryCheckpoint:
+    """Small durable task journal; never copied into ordinary model turns."""
+
+    def __init__(self, workspace, task_id):
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_id or "project-task")[:96]
+        self.path = os.path.join(workspace, ".hermes", "checkpoints", safe_id + ".json")
+        self.previous = self._load()
+        self.events = list((self.previous or {}).get("events") or [])
+
+    def _load(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def recovery_note(self):
+        if not self.previous or self.previous.get("state") != "active":
+            return ""
+        events = self.previous.get("events") or []
+        compact = [
+            {
+                "tool": event.get("tool"),
+                "activity": event.get("activity"),
+                "success": event.get("success"),
+                "target": event.get("target"),
+            }
+            for event in events[-12:]
+        ]
+        return (
+            "Recovery checkpoint from an interrupted run. Reconcile these completed "
+            "boundaries with the workspace and continue without repeating them: "
+            + json.dumps(compact, separators=(",", ":"))
+        )
+
+    def _write(self, state):
+        directory = os.path.dirname(self.path)
+        os.makedirs(directory, exist_ok=True)
+        payload = {
+            "schema_version": 1,
+            "state": state,
+            "updated_unix_ms": int(time.time() * 1000),
+            "events": self.events[-CHECKPOINT_EVENT_LIMIT:],
+        }
+        temporary = self.path + ".tmp-" + str(os.getpid())
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.path)
+
+    def start(self):
+        self._write("active")
+
+    def record(self, name, arguments, result):
+        target = None
+        if isinstance(arguments, dict):
+            for key in ("path", "file_path", "filename"):
+                value = arguments.get(key)
+                if isinstance(value, str) and value:
+                    target = value[-512:]
+                    break
+        command = arguments.get("command") if isinstance(arguments, dict) else None
+        self.events.append(
+            {
+                "tool": name,
+                "activity": tool_activity(name, arguments),
+                "success": tool_outcome(result, name),
+                "verification": is_verification_command(command),
+                "target": target,
+            }
+        )
+        self._write("active")
+
+    def finish(self, succeeded):
+        self._write("completed" if succeeded else "active")
 
 
 def configure_project_compaction(agent):
@@ -210,6 +290,11 @@ def main():
     os.environ["TERMINAL_CWD"] = workspace
     sys.path.insert(0, project_root)
 
+    task_id = os.environ.get("MUNDUSX_HERMES_TASK") or os.environ.get("MUNDUSX_HERMES_SESSION") or "project-task"
+    checkpoint = RecoveryCheckpoint(workspace, task_id)
+    recovery_note = checkpoint.recovery_note()
+    checkpoint.start()
+
     from run_agent import AIAgent
 
     selected_skills = []
@@ -244,6 +329,7 @@ def main():
             selected_skills.append(skill)
             emit("MUNDUSX_EVENT=", {"type": "skills_selected", "data": {"skills": [skill]}})
         command = arguments.get("command") if isinstance(arguments, dict) else None
+        checkpoint.record(name, arguments, result)
         emit(
             "MUNDUSX_EVENT=",
             {
@@ -261,6 +347,8 @@ def main():
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
     user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
+    if recovery_note:
+        user_prompt = recovery_note + "\n\n" + user_prompt
     user_prompt = (
         SKILL_DISCOVERY_GUIDANCE
         + "\n"
@@ -297,7 +385,7 @@ def main():
     try:
         result = agent.run_conversation(
             user_message=user_prompt,
-            task_id=os.environ.get("MUNDUSX_HERMES_TASK") or session_id,
+            task_id=task_id,
         )
     except Exception as error:
         answer_stream.flush()
@@ -336,6 +424,9 @@ def main():
             "turn_count": len(messages),
             "skills": selected_skills,
         },
+    )
+    checkpoint.finish(
+        not result.get("failed") and not result.get("interrupted")
     )
     return 1 if result.get("failed") and not result.get("final_response") else 0
 
