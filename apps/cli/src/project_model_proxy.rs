@@ -9,11 +9,11 @@ use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
-// Keep project-agent turns below the model's physical maximum so Hermes
-// compacts before repeatedly sending a very large tool history. Hermes uses a
-// 50% compression threshold by default, so this 64K operating window compacts
-// near 32K while the contributed runtime retains its larger emergency headroom.
-const MODEL_CONTEXT_TOKENS: u32 = 65_536;
+// Keep project-agent turns well below the model's physical maximum so Hermes
+// compacts before a tool-heavy project session dominates latency. Hermes uses
+// a 50% compression threshold by default, so this 32K operating window starts
+// compaction near 16K while the contributed runtime retains emergency headroom.
+const MODEL_CONTEXT_TOKENS: u32 = 32_768;
 const MAX_MODEL_BODY_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -257,8 +257,8 @@ mod tests {
             .unwrap()
             .into_json()
             .unwrap();
-        assert_eq!(catalog["data"][0]["context_length"], 65_536);
-        assert_eq!(catalog["data"][0]["max_model_len"], 65_536);
+        assert_eq!(catalog["data"][0]["context_length"], 32_768);
+        assert_eq!(catalog["data"][0]["max_model_len"], 32_768);
     }
 
     #[test]
