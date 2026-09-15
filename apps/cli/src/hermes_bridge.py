@@ -51,7 +51,12 @@ EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical
 Do not narrate each intended read, edit, or command before calling a tool.
 Inspect each unchanged file only once, batch related operations when practical, and do not repeat a completed step.
 Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
+Tool results and JSON representations escape real newline characters as \\n. Do not treat that display escaping as proof that a source file contains literal backslash-n text. If syntax is uncertain, run the project build or parser once and trust the result; do not repeatedly inspect the same bytes after a successful build.
+After the requested change and required build, lint, test, or browser acceptance checks succeed, return the final response immediately. Do not start another inspection cycle or add unrelated improvements.
 """
+
+STANDARD_MAX_ITERATIONS = 12
+FRONTEND_MAX_ITERATIONS = 16
 
 
 def child_workspace_path(path, platform=os.name):
@@ -259,11 +264,17 @@ def main():
     enabled_toolsets = ["coding", "skills"]
     if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
         enabled_toolsets.extend(["browser", "browser-use"])
+    max_iterations = (
+        FRONTEND_MAX_ITERATIONS
+        if FRONTEND_ACCEPTANCE_MARKER in user_prompt
+        else STANDARD_MAX_ITERATIONS
+    )
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],
         provider="openai-api",
         model="mundusx-agnostic",
+        max_iterations=max_iterations,
         enabled_toolsets=enabled_toolsets,
         quiet_mode=True,
         tool_progress_mode="all",

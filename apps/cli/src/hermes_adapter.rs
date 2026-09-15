@@ -528,6 +528,8 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets.extend([\"browser\", \"browser-use\"])"));
         assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
+        assert!(STRUCTURED_BRIDGE.contains("max_iterations=max_iterations"));
+        assert!(STRUCTURED_BRIDGE.contains("FRONTEND_MAX_ITERATIONS = 16"));
         assert!(STRUCTURED_BRIDGE.contains("answer_stream.reset()"));
         assert!(STRUCTURED_BRIDGE.contains("child_workspace_path"));
         assert!(
