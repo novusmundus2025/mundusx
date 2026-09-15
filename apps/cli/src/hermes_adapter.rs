@@ -279,7 +279,9 @@ pub fn run(
             .arg(prompt)
             // Match the embedded bridge: project tasks need both the coding
             // tools and Hermes' native SKILL.md discovery/loading tools.
-            .args(["-t", "coding,skills", "--usage-file"])
+            .args(["-t", if prompt.contains("MUNDUSX_FRONTEND_ACCEPTANCE_V1") {
+                "coding,skills,browser,browser-use"
+            } else { "coding,skills" }, "--usage-file"])
             .arg(&usage_path);
         if let Some((base_url, token, model)) = model_runtime.as_ref() {
             command
@@ -522,7 +524,8 @@ mod output_tests {
 
     #[test]
     fn structured_bridge_enables_native_hermes_skills() {
-        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets=[\"coding\", \"skills\"]"));
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets = [\"coding\", \"skills\"]"));
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets.extend([\"browser\", \"browser-use\"])"));
         assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("answer_stream.reset()"));
