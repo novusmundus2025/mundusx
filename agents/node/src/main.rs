@@ -1576,7 +1576,12 @@ const COMPLETION_IO_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_DELTA_RELAY_ATTEMPTS: usize = 3;
 const STREAM_DELTA_BATCH_MAX_BYTES: usize = 4 * 1024;
 const STREAM_DELTA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const STREAM_DELTA_IO_TIMEOUT: Duration = Duration::from_millis(600);
+// Delta acknowledgements cross the public control-plane edge. A sub-second
+// timeout lets the first fragment through and then abandons the relay during
+// ordinary TLS or service jitter, leaving Chat apparently frozen until the
+// terminal response is reconciled. Sequence IDs make retries idempotent, so a
+// short multi-second bound is safe and keeps the live channel intact.
+const STREAM_DELTA_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn retryable_control_plane_error(error: &str) -> bool {
     error.starts_with("transport failed:")
