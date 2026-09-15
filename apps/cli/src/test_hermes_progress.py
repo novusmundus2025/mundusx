@@ -1,8 +1,23 @@
 import unittest
-from hermes_bridge import browser_verification, tool_activity, tool_outcome, AnswerStream, loaded_skill
+from hermes_bridge import (
+    AnswerStream,
+    EXECUTION_EFFICIENCY_GUIDANCE,
+    FRONTEND_MAX_ITERATIONS,
+    STANDARD_MAX_ITERATIONS,
+    browser_verification,
+    loaded_skill,
+    tool_activity,
+    tool_outcome,
+)
 
 
 class ProgressTests(unittest.TestCase):
+    def test_project_turns_are_bounded_and_escape_aware(self):
+        self.assertEqual(STANDARD_MAX_ITERATIONS, 12)
+        self.assertEqual(FRONTEND_MAX_ITERATIONS, 16)
+        self.assertIn("Do not treat that display escaping", EXECUTION_EFFICIENCY_GUIDANCE)
+        self.assertIn("return the final response immediately", EXECUTION_EFFICIENCY_GUIDANCE)
+
     def test_skill_progress_requires_actual_success(self):
         self.assertEqual(loaded_skill("skill_view", '{"success":true,"name":"debugging"}'), "debugging")
         for result in [{"success": False, "name": "debugging"}, {"name": "debugging"}, {"success": True, "name": "debugging", "error": "failed"}, "bad json"]:
