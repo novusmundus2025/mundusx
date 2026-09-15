@@ -57,6 +57,19 @@ After the requested change and required build, lint, test, or browser acceptance
 
 STANDARD_MAX_ITERATIONS = 12
 FRONTEND_MAX_ITERATIONS = 16
+PROJECT_COMPACTION_TOKENS = 16_384
+
+
+def configure_project_compaction(agent):
+    """Cap Hermes' token-aware preflight without falsifying model metadata."""
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return False
+    compressor.threshold_tokens_cap = PROJECT_COMPACTION_TOKENS
+    compressor.threshold_tokens = min(
+        int(compressor.threshold_tokens), PROJECT_COMPACTION_TOKENS
+    )
+    return True
 
 
 def child_workspace_path(path, platform=os.name):
@@ -286,6 +299,7 @@ def main():
         skip_memory=True,
         load_soul_identity=False,
     )
+    configure_project_compaction(agent)
     try:
         result = agent.run_conversation(
             user_message=user_prompt,

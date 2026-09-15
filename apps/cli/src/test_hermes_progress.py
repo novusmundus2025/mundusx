@@ -3,8 +3,10 @@ from hermes_bridge import (
     AnswerStream,
     EXECUTION_EFFICIENCY_GUIDANCE,
     FRONTEND_MAX_ITERATIONS,
+    PROJECT_COMPACTION_TOKENS,
     STANDARD_MAX_ITERATIONS,
     browser_verification,
+    configure_project_compaction,
     loaded_skill,
     tool_activity,
     tool_outcome,
@@ -17,6 +19,19 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(FRONTEND_MAX_ITERATIONS, 16)
         self.assertIn("Do not treat that display escaping", EXECUTION_EFFICIENCY_GUIDANCE)
         self.assertIn("return the final response immediately", EXECUTION_EFFICIENCY_GUIDANCE)
+
+    def test_project_compaction_uses_token_preflight_cap(self):
+        class Compressor:
+            threshold_tokens = 48_000
+            threshold_tokens_cap = None
+
+        class Agent:
+            context_compressor = Compressor()
+
+        self.assertTrue(configure_project_compaction(Agent()))
+        self.assertEqual(Agent.context_compressor.threshold_tokens_cap, PROJECT_COMPACTION_TOKENS)
+        self.assertEqual(Agent.context_compressor.threshold_tokens, PROJECT_COMPACTION_TOKENS)
+        self.assertFalse(configure_project_compaction(object()))
 
     def test_skill_progress_requires_actual_success(self):
         self.assertEqual(loaded_skill("skill_view", '{"success":true,"name":"debugging"}'), "debugging")
