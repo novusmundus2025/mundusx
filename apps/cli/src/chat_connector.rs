@@ -47,6 +47,7 @@ fn start_watchdog(timeout: Duration, interval: Duration) {
 }
 
 const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
+const FRONTEND_ACCEPTANCE_MARKER: &str = "MUNDUSX_FRONTEND_ACCEPTANCE_V1";
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -476,6 +477,7 @@ pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
             },
             "metadata": {"tool": tool, "skills": skills, "source_type": raw_type,
                 "activity": activity, "success": success, "verification": item["data"]["verification"].as_bool(),
+                "browser_verification": item["data"]["browser_verification"].as_str(),
                 "call_id": item["data"]["call_id"].as_str(),
                 "text": if event_type == "assistant_snapshot" { item["data"]["text"].as_str() } else { None },
                 "truncated": event_type == "assistant_snapshot" && item["data"]["truncated"].as_bool().unwrap_or(false)}
@@ -510,11 +512,39 @@ fn successful_verification(response: &Value) -> bool {
         })
 }
 
+fn request_requires_browser_verification(prompt: &str, workspace: &Path) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    if ["frontend", "front-end", "react", "vue", "svelte", "angular", "website",
+        "webpage", "web app", "user interface", "ui ux", "responsive", "material design"]
+        .iter().any(|marker| lower.contains(marker)) { return true; }
+    std::iter::once(workspace.join("package.json")).chain(
+        fs::read_dir(workspace).ok().into_iter().flatten().filter_map(Result::ok)
+            .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+            .map(|entry| entry.path().join("package.json")))
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .any(|package| ["\"react\"", "\"react-dom\"", "\"vue\"", "\"svelte\"", "\"@angular/core\"", "\"vite\""]
+            .iter().any(|marker| package.contains(marker)))
+}
+
+fn successful_browser_verification(response: &Value) -> bool {
+    let (mut render, mut snapshot, mut console, mut suite) = (false, false, false, false);
+    for event in response["events"].as_array().into_iter().flatten() {
+        if !matches!(event["type"].as_str(), Some("tool_complete" | "tool_completed"))
+            || event["data"]["success"].as_bool() != Some(true) { continue; }
+        match event["data"]["browser_verification"].as_str() {
+            Some("render") => render = true, Some("snapshot") => snapshot = true,
+            Some("console") => console = true, Some("suite") => suite = true, _ => {}
+        }
+    }
+    suite || (render && snapshot && console)
+}
+
 fn harness_completion_content(
     content: &str,
     changed_files: &[String],
     skills: &[Value],
     verified: bool,
+    browser_verified: bool,
 ) -> String {
     let mut sections = vec![content.trim().to_string()];
     let skill_names = skills.iter().filter_map(Value::as_str).collect::<Vec<_>>();
@@ -533,6 +563,9 @@ fn harness_completion_content(
     }
     if verified {
         sections.push("Verification: passed".to_string());
+    }
+    if browser_verified {
+        sections.push("Browser acceptance: passed (desktop and narrow viewport)".to_string());
     }
     sections
         .into_iter()
@@ -817,12 +850,18 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         ],
     )?;
     let execution_directive = project_execution_directive(allow_mutations, &prompt);
+    let frontend_verification_required = workspace_relative.is_some() && allow_mutations
+        && request_requires_browser_verification(&prompt, &task_workspace);
     let bounded_prompt = workspace_relative
         .map(|relative| {
             if runtime == "hermes" {
-                format!(
+                let mut instructions = format!(
                     "The current directory is the complete project boundary. Treat every explicit user requirement as an acceptance criterion. Before giving a final response, inspect the resulting files and run the applicable tests or executable command. Never claim success for a check you did not run.\n\n{execution_directive}\n\n{prompt}"
-                )
+                );
+                if frontend_verification_required { instructions.push_str(&format!(
+                    "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Completion requires browser proof after the final file change. Start the required local services and use the available browser automation tool. With browser_exec, perform the full acceptance suite in one or more calls. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the browser checks. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
+                )); }
+                instructions
             } else {
                 format!("Work only within project directory `{relative}` beneath the connector workspace.\n\n{prompt}")
             }
@@ -965,7 +1004,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         let changed_workspace = workspace_snapshot(&task_workspace) != before_files;
         let verification_required = request_requires_verification(&prompt);
         let verified = response.as_ref().ok().is_some_and(successful_verification);
-        if !used_tools || !changed_workspace || (verification_required && !verified) {
+        let browser_verified = response.as_ref().ok().is_some_and(successful_browser_verification);
+        if !used_tools || !changed_workspace || (verification_required && !verified)
+            || (frontend_verification_required && !browser_verified) {
             let _ = post_task_events(
                 options,
                 &task_id,
@@ -973,13 +1014,16 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "sequence": 50,
                     "event": {
                         "type": "acceptance_retrying",
-                        "summary": "Hermes returned without changing the project; continuing with tool execution",
-                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified}
+                        "summary": "Hermes has not completed all project acceptance checks; continuing",
+                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified, "browser_verification_required": frontend_verification_required, "browser_verified": browser_verified}
                     }
                 })],
             );
+            let frontend_clause = if frontend_verification_required { format!(
+                " For frontend work, complete the {FRONTEND_ACCEPTANCE_MARKER} browser checks after the final change: render the application, inspect meaningful visible content, browser errors and DOM/layout at desktop and narrow widths, fix failures, repeat the checks, then stop services you started."
+            ) } else { String::new() };
             let correction = format!(
-                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Use the available coding tools to implement the requested project files, inspect them, and run the applicable tests, build, or lint command successfully. Do not return source code only in chat and do not claim a check passed unless its command exited successfully.\n\nOriginal request:\n{prompt}"
+                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Use the available coding tools to implement the requested project files, inspect them, and run the applicable tests, build, or lint command successfully.{frontend_clause} Do not return source code only in chat and do not claim a check passed unless its command or browser check succeeded.\n\nOriginal request:\n{prompt}"
             );
             response = run_hermes_with_recovery(&correction);
         }
@@ -999,6 +1043,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 "Hermes changed project files but did not complete the requested verification successfully"
                     .to_string(),
             );
+        }
+        if frontend_verification_required && response.as_ref().ok()
+            .is_some_and(|value| !successful_browser_verification(value)) {
+            response = Err("Hermes changed project files but did not complete browser acceptance successfully".to_string());
         }
     }
     drop(run_hermes_with_recovery);
@@ -1035,7 +1083,14 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 .ok_or("local agent response did not contain assistant content")?;
             let skills = value["skills"].as_array().cloned().unwrap_or_default();
             let verified = successful_verification(&value);
-            let content = harness_completion_content(content, &changed_files, &skills, verified);
+            let browser_verified = successful_browser_verification(&value);
+            let content = harness_completion_content(
+                content,
+                &changed_files,
+                &skills,
+                verified,
+                browser_verified,
+            );
             post_remote(
                 &options.chat_url,
                 &options.token,
@@ -1046,6 +1101,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "changed_files": changed_files,
                     "skills": skills,
                     "verified": verified,
+                    "browser_verification_required": frontend_verification_required,
+                    "browser_verified": browser_verified,
                 }}),
             )?;
         }
@@ -1176,8 +1233,9 @@ mod tests {
     use super::{
         bounded_task_workspace, changed_file_events, connection_id, drain_progress_events,
         harness_completion_content,
-        project_execution_directive, request_requires_verification, requires_project_file_change,
-        structured_hermes_event, successful_verification, transient_agent_failure,
+        project_execution_directive, request_requires_browser_verification,
+        request_requires_verification, requires_project_file_change, structured_hermes_event,
+        successful_browser_verification, successful_verification, transient_agent_failure,
         validate_chat_url, workspace_snapshot,
     };
     use std::fs;
@@ -1410,15 +1468,39 @@ mod tests {
     }
 
     #[test]
+    fn frontend_projects_require_complete_browser_acceptance_evidence() {
+        let root = std::env::temp_dir().join(format!("mundusx-frontend-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("react-app")).unwrap();
+        fs::write(root.join("react-app/package.json"), r#"{"dependencies":{"react":"latest"}}"#).unwrap();
+        assert!(request_requires_browser_verification("fix this", &root));
+        assert!(request_requires_browser_verification("create a responsive UI", &root.join("missing")));
+        assert!(successful_browser_verification(&serde_json::json!({"events":[
+            {"type":"tool_completed","data":{"success":true,"browser_verification":"render"}},
+            {"type":"tool_completed","data":{"success":true,"browser_verification":"snapshot"}},
+            {"type":"tool_completed","data":{"success":true,"browser_verification":"console"}}
+        ]})));
+        assert!(successful_browser_verification(&serde_json::json!({"events":[
+            {"type":"tool_completed","data":{"success":true,"browser_verification":"suite"}}
+        ]})));
+        assert!(!successful_browser_verification(&serde_json::json!({"events":[
+            {"type":"tool_completed","data":{"success":true,"browser_verification":"render"}},
+            {"type":"tool_completed","data":{"success":true,"browser_verification":"snapshot"}}
+        ]})));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn completed_harness_response_summarizes_evidence_without_file_contents() {
         let summary = harness_completion_content(
             "Implemented the CLI.",
             &["index.js".to_string(), "test.js".to_string()],
             &[serde_json::json!("test-driven-development")],
             true,
+            true,
         );
         assert!(summary.contains("Skills used: test-driven-development"));
         assert!(summary.contains("- index.js"));
         assert!(summary.contains("Verification: passed"));
+        assert!(summary.contains("Browser acceptance: passed"));
     }
 }

@@ -1,5 +1,5 @@
 import unittest
-from hermes_bridge import tool_activity, tool_outcome, AnswerStream, loaded_skill
+from hermes_bridge import browser_verification, tool_activity, tool_outcome, AnswerStream, loaded_skill
 
 
 class ProgressTests(unittest.TestCase):
@@ -22,8 +22,8 @@ class ProgressTests(unittest.TestCase):
         stream.flush()
         self.assertEqual(len(events), 2)
         now[0] += 1
-        stream.delta("x" * 9000)
-        self.assertEqual(len(events[-1]["data"]["text"]), 8192)
+        stream.delta("x" * 40000)
+        self.assertEqual(len(events[-1]["data"]["text"]), 32768)
         self.assertTrue(events[-1]["data"]["truncated"])
 
     def test_activity_is_observed_without_copying_arguments(self):
@@ -38,6 +38,12 @@ class ProgressTests(unittest.TestCase):
         self.assertIs(tool_outcome({"success": False}), False)
         self.assertIs(tool_outcome('{"exit_code": 1}'), False)
         self.assertIsNone(tool_outcome("Unstructured command output"))
+
+    def test_browser_tools_report_real_success(self):
+        self.assertIs(tool_outcome('{"success":true,"title":"Enrollment System"}', "browser_navigate"), True)
+        self.assertIs(tool_outcome('{"success":false,"error":"page crashed"}', "browser_console"), False)
+        self.assertEqual(browser_verification("browser_exec", {"success": True}), "suite")
+        self.assertIsNone(browser_verification("browser_exec", {"success": False}))
 
     def test_hermes_file_results(self):
         self.assertIs(tool_outcome({"content": "", "total_lines": 0}, "read_file"), True)

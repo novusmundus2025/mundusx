@@ -65,6 +65,9 @@ def child_workspace_path(path, platform=os.name):
     return path
 
 
+FRONTEND_ACCEPTANCE_MARKER = "MUNDUSX_FRONTEND_ACCEPTANCE_V1"
+
+
 def loaded_skill(name, result):
     if name != "skill_view":
         return None
@@ -162,6 +165,18 @@ def tool_outcome(result, name=None):
     return None
 
 
+def browser_verification(name, result):
+    if tool_outcome(result, name) is not True:
+        return None
+    return {
+        "browser_navigate": "render",
+        "browser_snapshot": "snapshot",
+        "browser_vision": "snapshot",
+        "browser_console": "console",
+        "browser_exec": "suite",
+    }.get(name)
+
+
 def main():
     project_root = os.environ["MUNDUSX_HERMES_PROJECT_ROOT"]
     workspace = child_workspace_path(
@@ -219,6 +234,7 @@ def main():
                     "call_id": call_id,
                     "name": name,
                     "verification": is_verification_command(command),
+                    "browser_verification": browser_verification(name, result),
                     "success": tool_outcome(result, name),
                     "activity": tool_activity(name, arguments),
                 },
@@ -234,12 +250,15 @@ def main():
         + "\nUser project request:\n"
         + user_prompt
     )
+    enabled_toolsets = ["coding", "skills"]
+    if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
+        enabled_toolsets.extend(["browser", "browser-use"])
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],
         provider="openai-api",
         model="mundusx-agnostic",
-        enabled_toolsets=["coding", "skills"],
+        enabled_toolsets=enabled_toolsets,
         quiet_mode=True,
         tool_progress_mode="all",
         event_callback=event_callback,
