@@ -26,6 +26,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use types::{Backend, Heartbeat};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ControlPlaneTokenHeader {
+    Bearer,
+    CoderSessionToken,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum ExecutionMode {
     Single,
     Auto,
@@ -138,10 +144,13 @@ enum Commands {
     Pause,
     /// Resume contribution in the background
     Resume,
-    /// Store local operator auth state
+    /// Store a token for the configured control plane
     Login {
         #[arg(long)]
         token: Option<String>,
+        /// Authentication header used by the private endpoint
+        #[arg(long, value_enum, default_value = "bearer")]
+        token_header: ControlPlaneTokenHeader,
     },
     /// Clear local operator auth state
     Logout,
@@ -2431,10 +2440,10 @@ fn http_post_json(
 
     let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let agent = ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout(Duration::from_secs(10))
         .build();
-    let response = agent
-        .post(&endpoint)
+    let response = mundusx_control_plane_auth::apply(agent.post(&endpoint))?
         .set("Content-Type", "application/json")
         .send_json(payload)
         .map_err(control_plane_error)?;
@@ -2788,13 +2797,16 @@ fn operator_get_json(
 
     let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let agent = ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout(Duration::from_secs(10))
         .build();
     let mut request = agent.get(&endpoint);
     if let Some(token) = auth_token.filter(|token| !token.is_empty()) {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }
-    let response = request.call().map_err(control_plane_error)?;
+    let response = mundusx_control_plane_auth::apply(request)?
+        .call()
+        .map_err(control_plane_error)?;
     read_control_plane_response(response)
 }
 fn colored_state(
@@ -6649,7 +6661,10 @@ fn main() {
             }
         }
         Commands::Resume => run_start_or_connect(AgentLaunchMode::Background, None, None, None),
-        Commands::Login { token } => {
+        Commands::Login {
+            token,
+            token_header,
+        } => {
             let mut config = current_config_or_default();
             let token = match token {
                 Some(token) => token.trim().to_string(),
@@ -6664,39 +6679,37 @@ fn main() {
                 std::process::exit(1);
             }
 
-            #[cfg(windows)]
-            {
-                if let Err(error) = auth_token::store_operator_token(&token) {
-                    eprintln!("failed to store protected auth token: {error}");
+            let header = match token_header {
+                ControlPlaneTokenHeader::Bearer => mundusx_control_plane_auth::TokenHeader::Bearer,
+                ControlPlaneTokenHeader::CoderSessionToken => {
+                    mundusx_control_plane_auth::TokenHeader::CoderSessionToken
+                }
+            };
+            let path = mundusx_control_plane_auth::store(&config.control_plane_url, &token, header)
+                .unwrap_or_else(|error| {
+                    eprintln!("failed to save control-plane token: {error}");
                     std::process::exit(1);
-                }
-                config.auth_token = None;
+                });
+            // Replace legacy unscoped auth so a Coder token is never also sent as Bearer.
+            if let Err(error) = auth_token::clear_operator_token() {
+                eprintln!("failed to clear legacy auth token: {error}");
+                std::process::exit(1);
             }
-            #[cfg(not(windows))]
-            {
-                config.auth_token = Some(token);
+            config.auth_token = None;
+            if let Err(error) = save_config(&config) {
+                eprintln!("failed to save config: {error}");
+                std::process::exit(1);
             }
-            match save_config(&config) {
-                Ok(path) => {
-                    #[cfg(windows)]
-                    let _ = &path;
-                    println!("authenticated: yes");
-                    #[cfg(windows)]
-                    println!(
-                        "authTokenPath: {}",
-                        auth_token::protected_token_path().display()
-                    );
-                    #[cfg(not(windows))]
-                    println!("authTokenPath: {}", path.display());
-                }
-                Err(error) => {
-                    eprintln!("failed to save auth token: {error}");
-                    std::process::exit(1);
-                }
-            }
+            println!("tokenSaved: yes");
+            println!("controlPlaneUrl: {}", config.control_plane_url);
+            println!("authTokenPath: {}", path.display());
         }
         Commands::Logout => {
             let mut config = current_config_or_default();
+            if let Err(error) = mundusx_control_plane_auth::clear() {
+                eprintln!("failed to clear control-plane token: {error}");
+                std::process::exit(1);
+            }
             if let Err(error) = auth_token::clear_operator_token() {
                 eprintln!("failed to clear protected auth token: {error}");
                 std::process::exit(1);
@@ -7410,6 +7423,35 @@ mod tests {
             active_model: Some("Qwen/Qwen2.5-1.5B-Instruct".to_string()),
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn login_selects_coder_header_and_defaults_to_bearer() {
+        let coder = Cli::try_parse_from([
+            "opengpu",
+            "login",
+            "--token-header",
+            "coder-session-token",
+            "--token",
+            "test-token",
+        ])
+        .unwrap();
+        assert!(matches!(
+            coder.command,
+            Commands::Login {
+                token_header: super::ControlPlaneTokenHeader::CoderSessionToken,
+                ..
+            }
+        ));
+        let bearer = Cli::try_parse_from(["opengpu", "login"]).unwrap();
+        assert!(matches!(
+            bearer.command,
+            Commands::Login {
+                token_header: super::ControlPlaneTokenHeader::Bearer,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["opengpu", "login", "--token-header", "unknown"]).is_err());
     }
 
     #[test]

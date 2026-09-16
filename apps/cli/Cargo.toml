@@ -14,6 +14,7 @@ name = "mundusx"
 path = "src/mundusx_main.rs"
 
 [dependencies]
+mundusx-control-plane-auth = { path = "../../packages/control-plane-auth" }
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.28"
 dirs = "5.0"
