@@ -888,6 +888,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mundusx-control-plane-auth"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "ureq",
+ "url",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "mundusx-tray"
 version = "0.1.65"
 dependencies = [
@@ -970,7 +982,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "opengpu"
-version = "0.1.92"
+version = "0.1.93"
 dependencies = [
  "clap",
  "crossterm",
@@ -979,6 +991,7 @@ dependencies = [
  "hex",
  "libc",
  "mundusx-agent-core",
+ "mundusx-control-plane-auth",
  "rand_core",
  "serde",
  "serde_json",
@@ -991,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "opengpu-node-agent"
-version = "0.1.92"
+version = "0.1.93"
 dependencies = [
  "clap",
  "dirs",
@@ -999,6 +1012,7 @@ dependencies = [
  "fs2",
  "hex",
  "libc",
+ "mundusx-control-plane-auth",
  "rand_core",
  "serde",
  "serde_json",
