@@ -2142,24 +2142,140 @@ fn run_native_openai_tool_turn(
     payload["model"] = serde_json::Value::String(model.to_string());
     let streaming = live_delta_enabled();
     payload["stream"] = serde_json::Value::Bool(streaming);
-    let response = ureq::post(&format!(
-        "{}/v1/chat/completions",
-        url.trim_end_matches('/')
-    ))
-    .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
-    .send_json(payload)
-    .map_err(|error| format!("native OpenAI tool completion failed: {error}"))?;
-    if streaming {
-        return parse_native_openai_stream(BufReader::new(response.into_reader()));
-    }
-    let value = response
-        .into_json::<serde_json::Value>()
-        .map_err(|error| format!("native OpenAI tool completion returned invalid JSON: {error}"))?;
-    normalize_native_openai_tool_response(&value)
+    run_native_tool_attempts(payload, |payload, output, retry| {
+        let response = ureq::post(&format!(
+            "{}/v1/chat/completions",
+            url.trim_end_matches('/')
+        ))
+        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
+        .send_json(payload)
+        .map_err(|error| format!("native OpenAI tool completion failed: {error}"))?;
+        if streaming {
+            return parse_native_openai_stream_with_output(
+                BufReader::new(response.into_reader()),
+                output,
+                retry,
+            );
+        }
+        let value = response.into_json::<serde_json::Value>().map_err(|error| {
+            format!("native OpenAI tool completion returned invalid JSON: {error}")
+        })?;
+        validate_native_tool_message(
+            &value["choices"][0]["message"],
+            value["choices"][0]["finish_reason"].as_str(),
+        )?;
+        if retry
+            && value["choices"][0]["message"]["tool_calls"]
+                .as_array()
+                .is_none_or(|calls| calls.is_empty())
+        {
+            return Err("native tool recovery returned no tool call".into());
+        }
+        normalize_native_openai_tool_response(&value)
+    })
 }
 
+// Only retry rejected, unexecuted tool calls. Never replay transport failures or
+// repair JSON by inventing missing file contents.
+fn run_native_tool_attempts(
+    mut payload: serde_json::Value,
+    mut attempt: impl FnMut(&serde_json::Value, &mut String, bool) -> Result<String, String>,
+) -> Result<String, String> {
+    let mut output = String::new();
+    match attempt(&payload, &mut output, false) {
+        Ok(result) => Ok(result),
+        Err(error)
+            if error.starts_with("native tool arguments are incomplete:")
+                || error.starts_with("native tool call exceeded generation limit")
+                || error.starts_with("native edit tool arguments exceed safe patch size:") =>
+        {
+            let messages = payload["messages"]
+                .as_array_mut()
+                .ok_or_else(|| error.clone())?;
+            messages.push(serde_json::json!({"role":"system", "content":
+                "Your previous tool-call generation was rejected before any tool was executed because its JSON arguments were incomplete. Generate a fresh valid tool call for the original task. For file edits, use one small targeted patch (prefer under 2000 characters of changed text) instead of rewriting a whole file; continue remaining edits in subsequent tool turns. Preserve all required tool arguments and use only the available tools. Do not claim the task is complete. No introductory prose is needed."}));
+            attempt(&payload, &mut output, true).map_err(|retry_error| {
+                format!("native tool recovery failed after one retry: {retry_error}")
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_native_tool_message(
+    message: &serde_json::Value,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    if let Some(calls) = message["tool_calls"]
+        .as_array()
+        .filter(|calls| !calls.is_empty())
+    {
+        if reason == Some("length") {
+            let argument_chars = calls
+                .iter()
+                .map(|call| {
+                    call["function"]["arguments"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .chars()
+                        .count()
+                })
+                .sum::<usize>();
+            return Err(format!(
+                "native tool call exceeded generation limit: calls={}; argument_chars={argument_chars}",
+                calls.len()
+            ));
+        }
+        for call in calls {
+            if call["id"].as_str().unwrap_or_default().is_empty()
+                || call["function"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .is_empty()
+            {
+                return Err("native tool call is missing its id or name".into());
+            }
+            let tool_name = call["function"]["name"].as_str().unwrap_or_default();
+            let raw_arguments = call["function"]["arguments"]
+                .as_str()
+                .unwrap_or_default();
+            let argument_chars = raw_arguments.chars().count();
+            let args = serde_json::from_str::<serde_json::Value>(raw_arguments).map_err(|e| {
+                format!(
+                    "native tool arguments are incomplete: tool={tool_name}; argument_chars={argument_chars}; finish_reason={}; {e}",
+                    reason.unwrap_or("missing")
+                )
+            })?;
+            if !args.is_object() {
+                return Err("native tool arguments must be a JSON object".into());
+            }
+            let normalized_name = tool_name.to_ascii_lowercase();
+            if argument_chars > 16_384
+                && ["edit", "replace", "patch"]
+                    .iter()
+                    .any(|operation| normalized_name.contains(operation))
+            {
+                return Err(format!(
+                    "native edit tool arguments exceed safe patch size: tool={tool_name}; argument_chars={argument_chars}; limit=16384"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn parse_native_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
+    parse_native_openai_stream_with_output(reader, &mut String::new(), false)
+}
+
+fn parse_native_openai_stream_with_output<R: BufRead>(
+    reader: R,
+    output: &mut String,
+    retry: bool,
+) -> Result<String, String> {
     let mut assembled = native_stream::NativeStream::default();
+    let mut pending_tools = Vec::new();
     let mut reason = None;
     let mut done = false;
     for line in reader.lines() {
@@ -2195,33 +2311,36 @@ fn parse_native_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
                 }
             }
             assembled.push(&delta)?;
-            if delta != serde_json::json!({}) {
-                emit_stream_delta(&delta.to_string());
+            if delta.get("tool_calls").is_some() {
+                pending_tools.push(serde_json::json!({"tool_calls":delta["tool_calls"]}));
+            }
+            // Tool arguments remain private until the entire batch is valid.
+            // Prose still streams immediately; recovery must not duplicate it.
+            if !retry {
+                if let Some(content) = delta["content"].as_str() {
+                    output.push_str(content);
+                    emit_stream_delta(&serde_json::json!({"content":content}).to_string());
+                }
             }
         }
     }
     if !done || reason.is_none() {
         return Err("native stream ended before terminal event".into());
     }
-    let message = assembled.message();
-    if let Some(calls) = message["tool_calls"].as_array() {
-        if reason.as_deref() == Some("length") {
-            return Err("native tool call exceeded generation limit".into());
-        }
-        for call in calls {
-            if call["id"].as_str().unwrap_or_default().is_empty()
-                || call["function"]["name"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .is_empty()
-            {
-                return Err("native tool call is missing its id or name".into());
-            }
-            serde_json::from_str::<serde_json::Value>(
-                call["function"]["arguments"].as_str().unwrap_or_default(),
-            )
-            .map_err(|e| format!("native tool arguments are incomplete: {e}"))?;
-        }
+    let mut message = assembled.message();
+    validate_native_tool_message(&message, reason.as_deref())?;
+    if retry
+        && message["tool_calls"]
+            .as_array()
+            .is_none_or(|calls| calls.is_empty())
+    {
+        return Err("native tool recovery returned no tool call".into());
+    }
+    message["content"] = output.clone().into();
+    // Preserve the provider's fragment sizes instead of creating one oversized
+    // relay event for a large file. Every fragment is validated before release.
+    for delta in pending_tools {
+        emit_stream_delta(&delta.to_string());
     }
     normalize_native_openai_tool_response(
         &serde_json::json!({"choices":[{"message":message,"finish_reason":reason.unwrap()}]}),
@@ -5292,7 +5411,7 @@ mod tests {
 mod native_delta_tests {
     use super::*;
     #[test]
-    fn native_parser_forwards_fragments_and_returns_complete_envelope() {
+    fn native_parser_releases_only_validated_tools_and_returns_complete_envelope() {
         let frames = [
             serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"text\":\""}}]}}]}),
             serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hello\"}"}}]},"finish_reason":"tool_calls"}]}),
@@ -5368,5 +5487,248 @@ mod native_delta_tests {
             "data: {\"error\":{\"message\":\"failed\"}}\n\n"
         ))
         .is_err());
+    }
+
+    fn tool_wire(arguments: &str, reason: &str, prose: &str) -> String {
+        let frame = serde_json::json!({"choices":[{"delta":{"content":prose,"tool_calls":[{
+            "index":0,"id":"call_edit","type":"function","function":{"name":"edit_file","arguments":arguments}
+        }]},"finish_reason":reason}]});
+        format!("data: {frame}\n\ndata: [DONE]\n\n")
+    }
+
+    #[test]
+    fn incomplete_long_edit_never_leaks_and_recovers_once() {
+        let args = format!("{{\"contents\":\"{}", "x".repeat(17181));
+        let good = r#"{"path":"menu.js","old":"old","new":"new"}"#;
+        let wires = [
+            tool_wire(&args, "stop", "Editing now."),
+            tool_wire(good, "tool_calls", "Repeated prose."),
+        ];
+        let (tx, rx) = mpsc::channel();
+        let mut count = 0;
+        let payload = serde_json::json!({"messages":[{"role":"user","content":"Improve menu"}],"tools":[{"type":"function"}],"max_tokens":8192});
+        let result = with_stream_delta_sender(Some(tx), || {
+            run_native_tool_attempts(payload.clone(), |sent, output, retry| {
+                assert_eq!(sent["tools"], payload["tools"]);
+                assert_eq!(sent["max_tokens"], 8192);
+                if retry {
+                    assert!(sent["messages"][1]["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("small targeted patch"));
+                }
+                let wire = &wires[count];
+                count += 1;
+                parse_native_openai_stream_with_output(std::io::Cursor::new(wire), output, retry)
+            })
+        })
+        .unwrap();
+        assert_eq!(count, 2);
+        let events: Vec<serde_json::Value> = rx
+            .try_iter()
+            .map(|s| serde_json::from_str(&s).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["content"], "Editing now.");
+        assert_eq!(events[1]["tool_calls"][0]["function"]["arguments"], good);
+        let final_value: serde_json::Value =
+            serde_json::from_str(result.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap()).unwrap();
+        assert_eq!(final_value["message"]["content"], "Editing now.");
+        assert_eq!(
+            final_value["message"]["tool_calls"][0]["function"]["arguments"],
+            good
+        );
+    }
+
+    #[test]
+    fn valid_whole_file_edit_is_replanned_as_a_bounded_patch() {
+        let oversized = serde_json::json!({
+            "path":"index.html",
+            "changes":"x".repeat(17_000)
+        })
+        .to_string();
+        let bounded = r#"{"path":"index.html","old":"before","new":"after"}"#;
+        let wires = [
+            tool_wire(&oversized, "tool_calls", "Applying the change."),
+            tool_wire(bounded, "tool_calls", ""),
+        ];
+        let (tx, rx) = mpsc::channel();
+        let mut count = 0;
+        let result = with_stream_delta_sender(Some(tx), || {
+            run_native_tool_attempts(
+                serde_json::json!({"messages":[],"tools":[{"type":"function"}]}),
+                |_, output, retry| {
+                    assert_eq!(retry, count == 1);
+                    let wire = &wires[count];
+                    count += 1;
+                    parse_native_openai_stream_with_output(
+                        std::io::Cursor::new(wire),
+                        output,
+                        retry,
+                    )
+                },
+            )
+        })
+        .unwrap();
+
+        assert_eq!(count, 2);
+        let delivered = rx
+            .try_iter()
+            .map(|delta| serde_json::from_str::<serde_json::Value>(&delta).unwrap())
+            .collect::<Vec<_>>();
+        assert!(delivered.iter().all(|delta| !delta.to_string().contains(&oversized)));
+        assert!(delivered.iter().any(|delta| {
+            delta["tool_calls"][0]["function"]["arguments"] == bounded
+        }));
+        let final_value: serde_json::Value =
+            serde_json::from_str(result.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap()).unwrap();
+        assert_eq!(
+            final_value["message"]["tool_calls"][0]["function"]["arguments"],
+            bounded
+        );
+    }
+
+    #[test]
+    fn failed_recovery_is_bounded_and_never_releases_tools() {
+        let wire = tool_wire("{\"text\":\"unfinished", "stop", "");
+        let (tx, rx) = mpsc::channel();
+        let mut count = 0;
+        let error = with_stream_delta_sender(Some(tx), || {
+            run_native_tool_attempts(serde_json::json!({"messages":[]}), |_, output, retry| {
+                count += 1;
+                parse_native_openai_stream_with_output(std::io::Cursor::new(&wire), output, retry)
+            })
+        })
+        .unwrap_err();
+        assert_eq!(count, 2);
+        assert!(error.contains("after one retry"));
+        assert!(rx.try_iter().all(|s| !s.contains("tool_calls")));
+    }
+
+    #[test]
+    fn lost_transport_is_not_retried_and_length_is() {
+        let mut count = 0;
+        let error = run_native_tool_attempts(serde_json::json!({"messages":[]}), |_, _, _| {
+            count += 1;
+            Err("native stream ended before terminal event".into())
+        })
+        .unwrap_err();
+        assert_eq!(count, 1);
+        assert!(error.contains("terminal event"));
+        let mut count = 0;
+        let result = run_native_tool_attempts(serde_json::json!({"messages":[]}), |_, _, retry| {
+            count += 1;
+            if retry {
+                Ok("recovered".into())
+            } else {
+                Err("native tool call exceeded generation limit".into())
+            }
+        })
+        .unwrap();
+        assert_eq!(result, "recovered");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn invalid_second_tool_rejects_entire_batch() {
+        let frame = serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"a","function":{"name":"edit","arguments":"{}"}},
+            {"index":1,"id":"b","function":{"name":"edit","arguments":"{"}}
+        ]},"finish_reason":"tool_calls"}]});
+        let (tx, rx) = mpsc::channel();
+        assert!(
+            with_stream_delta_sender(Some(tx), || parse_native_openai_stream(
+                std::io::Cursor::new(format!("data: {frame}\n\ndata: [DONE]\n\n"))
+            ))
+            .is_err()
+        );
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn native_http_recovery_delivers_an_executable_edit() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", server.server_addr());
+        let good_args = serde_json::json!({"path":"menu.js","old":"console.log('old');","new":"console.log('Menu ✓');"}).to_string();
+        let expected_args = good_args.clone();
+        let backend = thread::spawn(move || {
+            for index in 0..2 {
+                let mut req = server
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap()
+                    .expect("model request");
+                assert_eq!(req.url(), "/v1/chat/completions");
+                let mut body = String::new();
+                req.as_reader().read_to_string(&mut body).unwrap();
+                let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(payload["model"], "mock-coder");
+                assert_eq!(payload["stream"], true);
+                assert_eq!(payload["tools"][0]["function"]["name"], "edit_file");
+                assert_eq!(payload["messages"].as_array().unwrap().len(), index + 1);
+                let wire = if index == 0 {
+                    tool_wire(
+                        "{\"path\":\"menu.js\",\"new\":\"incomplete",
+                        "stop",
+                        "Updating menu.",
+                    )
+                } else {
+                    tool_wire(&good_args, "tool_calls", "")
+                };
+                req.respond(tiny_http::Response::from_string(wire).with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
+                ))
+                .unwrap();
+            }
+        });
+        let payload = serde_json::json!({"messages":[{"role":"user","content":"Improve menu"}],"tools":[{"type":"function","function":{"name":"edit_file","parameters":{"type":"object"}}}]});
+        let request = WorkerLaunchRequest {
+            job_id: "test".into(),
+            node_id: "test".into(),
+            backend: Backend::M,
+            stream: true,
+            prompt: format!("{OPENAI_TOOL_TURN_PREFIX}{payload}"),
+            model: None,
+            mode: None,
+            system_prompt: None,
+            max_tokens: Some(8192),
+            temperature: None,
+            top_p: None,
+            seed: None,
+        };
+        let (tx, rx) = mpsc::channel();
+        let response = with_stream_delta_sender(Some(tx), || {
+            run_native_openai_tool_turn(&url, "mock-coder", &request)
+        })
+        .unwrap();
+        backend.join().unwrap();
+        let envelope: serde_json::Value =
+            serde_json::from_str(response.strip_prefix(OPENAI_TOOL_RESULT_PREFIX).unwrap())
+                .unwrap();
+        let mut delivered = native_stream::NativeStream::default();
+        for delta in rx.try_iter() {
+            delivered
+                .push(&serde_json::from_str(&delta).unwrap())
+                .unwrap();
+        }
+        assert_eq!(delivered.message(), envelope["message"]);
+        assert_eq!(
+            delivered.message()["tool_calls"][0]["function"]["arguments"],
+            expected_args
+        );
+        let args: serde_json::Value = serde_json::from_str(&expected_args).unwrap();
+        let dir = env::temp_dir().join(format!("mundusx-recovery-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let file = dir.join("menu.js");
+        fs::write(&file, "console.log('old');\n").unwrap();
+        let patched = fs::read_to_string(&file)
+            .unwrap()
+            .replace(args["old"].as_str().unwrap(), args["new"].as_str().unwrap());
+        fs::write(&file, patched).unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "console.log('Menu ✓');\n"
+        );
+        fs::remove_file(file).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 }
