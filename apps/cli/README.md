@@ -124,7 +124,12 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup
 ### Private control plane behind Coder
 
 Authentication is optional: with no saved token, public control-plane requests
-continue without an authentication header or API key.
+continue without an authentication header or API key. Interactive `opengpu install`
+asks for an optional hidden token after either the public or private control-plane
+selection. Press Enter with no token to disable authentication, including any
+previously saved token. If you enter a token, choose **Bearer token** or
+**Coder / EHDA token**. Non-interactive setup does not prompt; configure its token
+with `opengpu login` when needed.
 
 Set the base URL, without `/health`, before saving a token. With the updated CLI
 and node installed, use these Bash commands (`TOKEN` is your existing token variable):
