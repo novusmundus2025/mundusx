@@ -1,5 +1,19 @@
 # Chat connector recovery
 
+Hermes project tasks using the remote model proxy detect five minutes without
+model progress. SSE keepalives do not extend that deadline; completion text,
+reasoning, and tool-call deltas do. Active tool calls have a separate thirty-minute
+limit. On a model stall, the connector terminates the task's process tree and
+retries once using the original request, saved checkpoint, and existing files.
+A second stall is reported as a failed task with partial changes preserved.
+Proxy teardown waits at most one second for its worker; an outstanding upstream
+request then finishes in the background under its transport deadline.
+
+Chat task status exposes whether the worker lease is still valid. An expired
+lease displays "Local worker disconnected" while retaining the existing task's
+eligibility for recovery when the connector returns. Reading status does not
+cancel a task or submit a replacement request.
+
 The Unix installer configures a saved Chat connection to recover in the signed-in
 user's session. It does not configure GPU inference services or change model support.
 
