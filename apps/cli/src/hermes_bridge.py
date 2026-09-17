@@ -60,6 +60,9 @@ def select_project_skills(prompt):
 
 
 EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical.
+For new test apps and apps intended to run locally, default to SQLite when persistent storage is needed and the user has not explicitly specified a storage technology.
+Use a persistent SQLite file with the project's existing language and framework. Do not introduce Docker or an external database service solely for this default.
+Honor explicitly requested storage technologies and preserve existing projects' database choices. This default does not select storage for production deployments or trigger database migrations.
 Do not narrate each intended read, edit, or command before calling a tool.
 Inspect each unchanged file only once, batch related operations when practical, and do not repeat a completed step.
 Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
