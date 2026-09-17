@@ -317,6 +317,12 @@ def main():
     checkpoint.start()
 
     from run_agent import AIAgent
+    from agent.runtime_cwd import set_session_cwd
+    from tools.terminal_tool import register_task_env_overrides
+
+    # Preserve the installed runtime's project-directory binding on recovery.
+    set_session_cwd(workspace)
+    register_task_env_overrides(task_id, {"cwd": workspace})
 
     selected_skills = []
     answer_stream = AnswerStream(lambda event: emit("MUNDUSX_EVENT=", event))

@@ -7,8 +7,11 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+#[path = "hermes_progress.rs"]
+mod hermes_progress;
 
 const STRUCTURED_BRIDGE: &str = include_str!("hermes_bridge.py");
 
@@ -355,8 +358,14 @@ pub fn run(
         let _ = child_stderr.read_to_end(&mut bytes);
         bytes
     });
+    let mut progress_watchdog = hermes_progress::ProgressWatchdog::new(Instant::now());
+    let mut monitor_failure = None;
     let status = loop {
         while let Ok(event) = event_receiver.try_recv() {
+            progress_watchdog.observe(&event, Instant::now());
+            if event["type"] == "model_stream_progress" {
+                continue;
+            }
             if let Some(callback) = event_callback.as_mut() {
                 callback(event);
             }
@@ -376,6 +385,12 @@ pub fn run(
             .map_err(|error| format!("could not monitor Hermes: {error}"))?
         {
             break status;
+        }
+        if let Some(error) = progress_watchdog.failure(Instant::now()).filter(|_| structured && remote_model.is_some()) {
+            monitor_failure = Some(error);
+            process_group.terminate();
+            let _ = child.kill();
+            break child.wait().map_err(|error| format!("could not reap stalled Hermes: {error}"))?;
         }
         thread::sleep(Duration::from_millis(200));
     };
@@ -399,6 +414,9 @@ pub fn run(
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     let _ = fs::remove_file(&usage_path);
+    if let Some(error) = monitor_failure {
+        return Err(error);
+    }
     if let Some(hermes_id) = usage["session_id"].as_str() {
         save_session(data_dir, mundusx_session_id, hermes_id)?;
     }
