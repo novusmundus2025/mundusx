@@ -52,13 +52,30 @@ Do not narrate each intended read, edit, or command before calling a tool.
 Inspect each unchanged file only once, batch related operations when practical, and do not repeat a completed step.
 Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
 Tool results and JSON representations escape real newline characters as \\n. Do not treat that display escaping as proof that a source file contains literal backslash-n text. If syntax is uncertain, run the project build or parser once and trust the result; do not repeatedly inspect the same bytes after a successful build.
+For multi-file code generation, reserve the final tool turns for dependency installation and a real build, test, lint, syntax, or smoke check. Group related work where the tools permit it; do not consume the entire budget writing one file per planning cycle.
 After the requested change and required build, lint, test, or browser acceptance checks succeed, return the final response immediately. Do not start another inspection cycle or add unrelated improvements.
 """
 
 STANDARD_MAX_ITERATIONS = 12
-FRONTEND_MAX_ITERATIONS = 16
+COMPREHENSIVE_MAX_ITERATIONS = 24
+FRONTEND_MAX_ITERATIONS = 24
 PROJECT_COMPACTION_TOKENS = 16_384
 CHECKPOINT_EVENT_LIMIT = 48
+
+
+def project_iteration_budget(prompt):
+    """Keep small tasks quick while giving multi-file builds room to verify."""
+    value = str(prompt or "").lower()
+    comprehensive_signals = (
+        "complete", "full project", "from scratch", "crud", "api",
+        "frontend", "react", "website", "application", "all files",
+    )
+    signal_count = sum(signal in value for signal in comprehensive_signals)
+    if FRONTEND_ACCEPTANCE_MARKER in value:
+        return FRONTEND_MAX_ITERATIONS
+    if signal_count >= 2:
+        return COMPREHENSIVE_MAX_ITERATIONS
+    return STANDARD_MAX_ITERATIONS
 
 
 class RecoveryCheckpoint:
@@ -189,6 +206,8 @@ def is_verification_command(command):
         " dotnet test ", " mvn test ", " gradle test ", " gradlew test ",
         " npm run build ", " pnpm build ", " yarn build ", " cargo build ",
         " npm run lint ", " pnpm lint ", " yarn lint ",
+        " node --test ", " node --check ", " npm run check ",
+        " npx tsc ", " python -m compileall ",
     )
     return any(check in value for check in checks)
 
@@ -220,6 +239,8 @@ def tool_activity(name, arguments):
             return "test"
         if re.search(prefix + r"(?:npm run lint|pnpm lint|yarn lint|ruff check)\b", command):
             return "lint"
+        if re.search(prefix + r"(?:node --test|node --check|npm run check|npx tsc|python -m compileall)\b", command):
+            return "test"
         if re.search(prefix + r"(?:npm install|npm ci|pnpm install|yarn install|pip install)\b", command):
             return "dependencies"
         if re.search(prefix + r"(?:node|python|python3)\s", command):
@@ -353,6 +374,7 @@ def main():
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
     user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
+    max_iterations = project_iteration_budget(user_prompt)
     if recovery_note:
         user_prompt = recovery_note + "\n\n" + user_prompt
     user_prompt = (
@@ -365,11 +387,6 @@ def main():
     enabled_toolsets = ["coding", "skills"]
     if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
         enabled_toolsets.extend(["browser", "browser-use"])
-    max_iterations = (
-        FRONTEND_MAX_ITERATIONS
-        if FRONTEND_ACCEPTANCE_MARKER in user_prompt
-        else STANDARD_MAX_ITERATIONS
-    )
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],
