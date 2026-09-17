@@ -1,11 +1,21 @@
 ---
 name: project-swarm
-description: Run independent project test or validation lanes concurrently when the user explicitly asks for parallel tests, faster independent checks, or Project Swarm, or when the project has enabled a MundusX swarm manifest.
+description: Coordinate independent coding work or test lanes when the user explicitly asks for Project Swarm, parallel coding, or faster independent checks, or when the project has enabled a MundusX swarm test manifest.
 ---
 
 # Project Swarm
 
-Use Project Swarm for independent, read-only test or validation commands. Keep ordinary project implementation in the existing single-agent workflow.
+Use Project Swarm for explicitly requested parallel coding and for independent, read-only test or validation commands.
+
+## Coordinated coding
+
+The connected-project runtime owns coding coordination. It asks a planner for a dependency graph, validates disjoint path ownership, creates isolated Git worktrees, runs up to two ready Hermes workers at once, integrates their commits in dependency order, and applies the integration only after its verification command passes.
+
+Coding coordination requires a clean Git project. If the repository is missing, dirty, unsafe to partition, or the plan has overlapping ownership, continue with the existing single Hermes worker. Do not ask the user to clean or commit the repository merely to enable parallelism.
+
+Workers must not publish, deploy, edit shared migrations, or update dependency lockfiles independently. The coordinator owns Git commits and integration. A worker failure, ownership violation, merge conflict, cancellation, or failed integrated verification leaves the original project revision unchanged.
+
+## Parallel tests
 
 Before starting parallel lanes, inspect the project test scripts and identify commands that can run independently. Do not parallelize database migrations, tests sharing a mutable database, commands using the same fixed port, snapshot updates, dependency installation, builds writing to the same output directory, publishing, deployment, or other external writes. If independence is uncertain, use the project's normal sequential test command.
 

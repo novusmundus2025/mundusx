@@ -901,6 +901,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     });
 
     let event_batcher = TaskEventBatcher::start(options.clone(), task_id.clone());
+    let swarm_event_sender = event_batcher.sender.as_ref().cloned()
+        .ok_or("project event stream is unavailable")?;
     let mut streamed_event_sequence = 1_000_u64;
     let mut stream_hermes_event = |event: Value| {
         let mapped = structured_hermes_event(&event, streamed_event_sequence);
@@ -987,7 +989,34 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         }
         Err(last_error)
     };
-    let mut response = if runtime == "hermes" {
+    let mut response = if runtime == "hermes" && allow_mutations
+        && super::project_swarm::requested(&prompt) {
+        match super::project_swarm::run(super::project_swarm::CoordinatorOptions {
+            workspace: task_workspace.clone(),
+            objective: prompt.clone(),
+            session_id: session_id.clone(),
+            task_id: task_id.clone(),
+            connection_id: connection_id.to_string(),
+            remote_base: format!("{}/api/agent/model/v1", options.chat_url),
+            token: options.token.clone(),
+            data_dir: super::data_dir(),
+            cancellation: Arc::clone(&stop),
+            event_sender: swarm_event_sender,
+        }) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let _ = post_task_events(options, &task_id, vec![json!({
+                    "sequence": 19_999,
+                    "event": {
+                        "type": "swarm_fallback",
+                        "summary": "Project Swarm could not safely partition this project; continuing with one Hermes worker",
+                        "metadata": {"reason": error}
+                    }
+                })]);
+                run_hermes_with_recovery(&bounded_prompt)
+            }
+        }
+    } else if runtime == "hermes" {
         run_hermes_with_recovery(&bounded_prompt)
     } else {
         match super::post_chat(&bounded_prompt, Some(&session_id), allow_mutations) {
