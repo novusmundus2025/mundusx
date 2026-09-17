@@ -5,7 +5,7 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use uuid::Uuid;
 
@@ -134,6 +134,7 @@ impl ProjectModelProxy {
                             CancellableReader {
                                 inner: upstream.into_reader(),
                                 stop: Arc::clone(&worker_stop),
+                                progress: StreamProgress::new(progress.clone()),
                             },
                             None,
                             None,
@@ -171,7 +172,16 @@ impl Drop for ProjectModelProxy {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(worker) = self.thread.take() {
-            let _ = worker.join();
+            // A blocked upstream read must not hold task cancellation/recovery
+            // hostage. The request has its own transport deadline and checks
+            // stop again when the read returns.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !worker.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            }
         }
     }
 }
@@ -207,6 +217,50 @@ fn open_remote_stream(
 struct CancellableReader {
     inner: Box<dyn Read + Send + Sync>,
     stop: Arc<AtomicBool>,
+    progress: StreamProgress,
+}
+
+struct StreamProgress {
+    sender: Option<std::sync::mpsc::Sender<Value>>,
+    line: Vec<u8>,
+    last_sent: Option<Instant>,
+}
+
+impl StreamProgress {
+    fn new(sender: Option<std::sync::mpsc::Sender<Value>>) -> Self {
+        Self { sender, line: Vec::new(), last_sent: None }
+    }
+
+    fn observe(&mut self, bytes: &[u8]) {
+        if self.sender.is_none() { return; }
+        for byte in bytes {
+            if *byte != b'\n' {
+                // Bound auxiliary parsing; the original bytes still pass through.
+                if self.line.len() <= 1024 * 1024 { self.line.push(*byte); }
+                continue;
+            }
+            let meaningful = self.line.strip_prefix(b"data:")
+                .and_then(|data| serde_json::from_slice::<Value>(data).ok())
+                .and_then(|chunk| chunk.get("choices").and_then(Value::as_array).cloned())
+                .is_some_and(|choices| choices.iter().any(|choice| {
+                    choice.get("finish_reason").is_some_and(|v| !v.is_null())
+                        || ["content", "reasoning_content", "reasoning", "tool_calls", "function_call"].iter().any(|key| {
+                            choice.get("delta").and_then(|delta| delta.get(key)).is_some_and(|v| {
+                                v.as_str().is_some_and(|s| !s.is_empty())
+                                    || v.as_array().is_some_and(|a| !a.is_empty())
+                                    || v.as_object().is_some_and(|o| !o.is_empty())
+                            })
+                        })
+                }));
+            self.line.clear();
+            if meaningful && self.last_sent.is_none_or(|last| last.elapsed() >= Duration::from_secs(1)) {
+                self.last_sent = Some(Instant::now());
+                if let Some(sender) = &self.sender {
+                    let _ = sender.send(json!({"type":"model_stream_progress","data":{}}));
+                }
+            }
+        }
+    }
 }
 
 impl Read for CancellableReader {
@@ -214,7 +268,9 @@ impl Read for CancellableReader {
         if self.stop.load(Ordering::Relaxed) {
             return Ok(0);
         }
-        self.inner.read(buffer)
+        let count = self.inner.read(buffer)?;
+        self.progress.observe(&buffer[..count]);
+        Ok(count)
     }
 }
 
@@ -244,6 +300,50 @@ fn json_response(status: StatusCode, value: Value) -> Response<std::io::Cursor<V
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn only_completion_data_counts_as_progress_even_across_split_reads() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut progress = StreamProgress::new(Some(sender));
+        progress.observe(b": heartbeat\n\ndata: {\"choices\":[]}\n\ndata: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n");
+        assert!(receiver.try_recv().is_err());
+        progress.observe(b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"working");
+        assert!(receiver.try_recv().is_err());
+        progress.observe(b" on it\"}}]}\n\n");
+        assert_eq!(receiver.try_recv().unwrap()["type"], "model_stream_progress");
+        progress.last_sent = None;
+        progress.observe(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"x\"}}]}}]}\n\n");
+        assert_eq!(receiver.try_recv().unwrap()["type"], "model_stream_progress");
+    }
+
+    #[test]
+    fn dropping_proxy_does_not_wait_for_a_silent_upstream() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let upstream = thread::spawn(move || {
+            let request = server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            arrived_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            let _ = request.respond(Response::from_string("unavailable").with_status_code(503));
+        });
+        let proxy = ProjectModelProxy::start(&format!("http://{address}/v1"), "secret", "task", "connection").unwrap();
+        let url = format!("{}/chat/completions", proxy.base_url());
+        let credential = proxy.credential().to_string();
+        let client = thread::spawn(move || {
+            let _ = ureq::post(&url).timeout(Duration::from_secs(5))
+                .set("Authorization", &format!("Bearer {credential}"))
+                .send_json(json!({"messages":[],"stream":true}));
+        });
+        arrived_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let started = Instant::now();
+        drop(proxy);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        release_tx.send(()).unwrap();
+        upstream.join().unwrap();
+        client.join().unwrap();
+    }
 
     #[test]
     fn hermes_discovers_the_project_operating_context_window() {
