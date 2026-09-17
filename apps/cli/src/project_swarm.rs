@@ -93,6 +93,87 @@ pub fn requested(prompt: &str) -> bool {
     .any(|marker| value.contains(marker))
 }
 
+pub fn should_coordinate(prompt: &str) -> bool {
+    let value = prompt.to_ascii_lowercase();
+    if [
+        "do not use project swarm",
+        "don't use project swarm",
+        "without project swarm",
+        "use one worker",
+        "single worker",
+        "work sequentially",
+    ]
+    .iter()
+    .any(|marker| value.contains(marker))
+    {
+        return false;
+    }
+    if requested(prompt) {
+        return true;
+    }
+
+    let substantial_scope = [
+        "complete api",
+        "entire api",
+        "crud api",
+        "full api",
+        "build an api",
+        "create an api",
+        "build a frontend",
+        "create a frontend",
+        "build a backend",
+        "create a backend",
+        "build an app",
+        "create an app",
+        "build an application",
+        "create an application",
+        "build a website",
+        "create a website",
+        "build a dashboard",
+        "create a dashboard",
+        "full stack",
+        "full-stack",
+        "end-to-end",
+        "end to end",
+        "from scratch",
+        "multiple modules",
+        "several modules",
+    ]
+    .iter()
+    .any(|marker| value.contains(marker));
+    if substantial_scope {
+        return true;
+    }
+
+    let has_build_action = [
+        "add ",
+        "build ",
+        "create ",
+        "develop ",
+        "implement ",
+        "migrate ",
+        "refactor ",
+        "rewrite ",
+    ]
+    .iter()
+    .any(|marker| value.contains(marker));
+    let domain_count = [
+        " api",
+        "frontend",
+        "front end",
+        "backend",
+        "back end",
+        "database",
+        "authentication",
+        " test",
+        "documentation",
+    ]
+    .iter()
+    .filter(|marker| value.contains(**marker))
+    .count();
+    has_build_action && domain_count >= 2
+}
+
 pub fn run(options: CoordinatorOptions) -> Result<Value, String> {
     require_clean_git_repository(&options.workspace)?;
     let run_id = Uuid::new_v4().simple().to_string();
@@ -779,10 +860,25 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_only_explicit_swarm_requests() {
+    fn recognizes_explicit_swarm_requests() {
         assert!(requested("Use Project Swarm for this feature"));
         assert!(requested("Can the agents code in parallel?"));
         assert!(!requested("Create a CRUD API"));
+    }
+
+    #[test]
+    fn automatically_coordinates_substantial_project_work() {
+        assert!(should_coordinate(
+            "Create a complete CRUD API for bus ticketing"
+        ));
+        assert!(should_coordinate(
+            "Build a frontend and backend for the booking flow"
+        ));
+        assert!(should_coordinate(
+            "Implement authentication, database, and API tests"
+        ));
+        assert!(!should_coordinate("Rename the login button"));
+        assert!(!should_coordinate("Create a CRUD API with a single worker"));
     }
 
     #[test]
