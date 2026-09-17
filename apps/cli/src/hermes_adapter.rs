@@ -14,6 +14,26 @@ use uuid::Uuid;
 mod hermes_progress;
 
 const STRUCTURED_BRIDGE: &str = include_str!("hermes_bridge.py");
+const PROJECT_SWARM_SKILL: &str = include_str!("../skills/project-swarm/SKILL.md");
+
+fn ensure_project_swarm_skill() -> Result<(), String> {
+    let path = hermes_home()
+        .ok_or_else(|| "could not locate the Hermes home directory".to_string())?
+        .join("skills")
+        .join("software-development")
+        .join("project-swarm")
+        .join("SKILL.md");
+    if fs::read_to_string(&path).ok().as_deref() == Some(PROJECT_SWARM_SKILL) {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid Project Swarm skill path".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("could not prepare Project Swarm skill directory: {error}"))?;
+    fs::write(&path, PROJECT_SWARM_SKILL)
+        .map_err(|error| format!("could not install Project Swarm skill: {error}"))
+}
 
 fn configure_task_process(command: &mut Command) {
     #[cfg(unix)]
@@ -219,6 +239,9 @@ pub fn run(
     remote_model: Option<(&str, &str, &str, &str)>,
     mut event_callback: Option<&mut dyn FnMut(Value)>,
 ) -> Result<Value, String> {
+    // Managed skills are installed lazily so existing Hermes installations gain
+    // them after a MundusX update without replacing the user's other skills.
+    let _ = ensure_project_swarm_skill();
     if !available() {
         return Err(
             "Hermes runtime is not installed; run `mundusx agent install hermes`".to_string(),
