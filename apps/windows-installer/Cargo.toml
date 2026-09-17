@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "mundusx-harness-setup"
 path = "src/harness_main.rs"
 
+[[bin]]
+name = "mundusx-update"
+path = "src/update_main.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
