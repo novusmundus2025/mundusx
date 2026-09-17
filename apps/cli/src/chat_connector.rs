@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const CONNECTOR_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+const TERMINAL_REPORT_ATTEMPTS: usize = 6;
 static CONNECTOR_ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
 
 fn record_connector_activity() {
@@ -319,6 +320,71 @@ fn transient_agent_failure(error: &str) -> bool {
     ]
     .iter()
     .any(|needle| value.contains(needle))
+}
+
+fn retry_terminal_report<F, S>(mut send: F, mut pause: S) -> Result<Value, String>
+where
+    F: FnMut() -> Result<Value, String>,
+    S: FnMut(Duration),
+{
+    let mut last_error = String::new();
+    for attempt in 0..TERMINAL_REPORT_ATTEMPTS {
+        match send() {
+            Ok(value) => return Ok(value),
+            Err(error) if transient_agent_failure(&error) => {
+                last_error = error;
+                if attempt + 1 < TERMINAL_REPORT_ATTEMPTS {
+                    pause(Duration::from_secs((1_u64 << attempt).min(16)));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(format!(
+        "could not acknowledge the finished local task after {TERMINAL_REPORT_ATTEMPTS} attempts: {last_error}"
+    ))
+}
+
+fn post_terminal_task(
+    options: &ConnectorOptions,
+    task_id: &str,
+    body: Value,
+) -> Result<Value, String> {
+    retry_terminal_report(
+        || {
+            post_remote(
+                &options.chat_url,
+                &options.token,
+                &format!("/api/agent/connector/tasks/{task_id}/complete"),
+                body.clone(),
+            )
+        },
+        thread::sleep,
+    )
+}
+
+struct TaskHeartbeat {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl TaskHeartbeat {
+    fn new(stop: Arc<AtomicBool>, handle: thread::JoinHandle<()>) -> Self {
+        Self { stop, handle: Some(handle) }
+    }
+
+    fn finish(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for TaskHeartbeat {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 fn requires_project_file_change(prompt: &str) -> bool {
@@ -881,7 +947,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let heartbeat_connection = connection_id.to_string();
     let heartbeat_task = task_id.clone();
     let heartbeat_session = session_id.clone();
-    let heartbeat = thread::spawn(move || {
+    let mut heartbeat = TaskHeartbeat::new(Arc::clone(&stop), thread::spawn(move || {
         while !heartbeat_stop.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_secs(10));
             if heartbeat_stop.load(Ordering::Relaxed) {
@@ -904,7 +970,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 }
             }
         }
-    });
+    }));
 
     let event_batcher = TaskEventBatcher::start(options.clone(), task_id.clone());
     let swarm_event_sender = event_batcher.sender.as_ref().cloned()
@@ -1096,8 +1162,6 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     drop(run_hermes_with_recovery);
     drop(stream_hermes_event);
     event_batcher.finish();
-    stop.store(true, Ordering::Relaxed);
-    let _ = heartbeat.join();
 
     let events = sanitized_events(&session_id)
         .into_iter()
@@ -1120,49 +1184,50 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     if !changed_events.is_empty() {
         let _ = post_task_events(options, &task_id, changed_events);
     }
-    match response {
+    let terminal_result = match response {
         Ok(value) => {
-            let content = value["choices"][0]["message"]["content"]
-                .as_str()
-                .ok_or("local agent response did not contain assistant content")?;
-            let skills = value["skills"].as_array().cloned().unwrap_or_default();
-            let verified = successful_verification(&value);
-            let browser_verified = successful_browser_verification(&value);
-            let content = harness_completion_content(
-                content,
-                &changed_files,
-                &skills,
-                verified,
-                browser_verified,
-            );
-            post_remote(
-                &options.chat_url,
-                &options.token,
-                &format!("/api/agent/connector/tasks/{task_id}/complete"),
-                json!({"status": "completed", "result": {
-                    "content": content,
-                    "session_id": session_id,
-                    "changed_files": changed_files,
-                    "skills": skills,
-                    "verified": verified,
-                    "browser_verification_required": frontend_verification_required,
-                    "browser_verified": browser_verified,
-                }}),
-            )?;
+            (|| {
+                let content = value["choices"][0]["message"]["content"]
+                    .as_str()
+                    .ok_or("local agent response did not contain assistant content")?;
+                let skills = value["skills"].as_array().cloned().unwrap_or_default();
+                let verified = successful_verification(&value);
+                let browser_verified = successful_browser_verification(&value);
+                let content = harness_completion_content(
+                    content,
+                    &changed_files,
+                    &skills,
+                    verified,
+                    browser_verified,
+                );
+                post_terminal_task(
+                    options,
+                    &task_id,
+                    json!({"status": "completed", "result": {
+                        "content": content,
+                        "session_id": session_id,
+                        "changed_files": changed_files,
+                        "skills": skills,
+                        "verified": verified,
+                        "browser_verification_required": frontend_verification_required,
+                        "browser_verified": browser_verified,
+                    }}),
+                )
+                .map(|_| ())
+            })()
         }
-        Err(error) => {
-            post_remote(
-                &options.chat_url,
-                &options.token,
-                &format!("/api/agent/connector/tasks/{task_id}/complete"),
+        Err(error) => post_terminal_task(
+                options,
+                &task_id,
                 json!({"status": "failed", "error": error, "result": {
                     "session_id": session_id,
                     "changed_files": changed_files,
                     "partial_changes": !changed_files.is_empty(),
                 }}),
-            )?;
-        }
-    }
+            ).map(|_| ()),
+    };
+    heartbeat.finish();
+    terminal_result?;
     Ok(())
 }
 
@@ -1170,8 +1235,7 @@ fn run_and_report(options: &ConnectorOptions, connection_id: &str, task: &Value)
     if let Err(error) = run_task(options, connection_id, task) {
         eprintln!("local task failed: {error}");
         if let Some(task_id) = task["task_id"].as_str() {
-            let _ = post_remote(&options.chat_url, &options.token,
-                &format!("/api/agent/connector/tasks/{task_id}/complete"),
+            let _ = post_terminal_task(options, task_id,
                 json!({"status":"failed", "error":error}));
         }
     }
@@ -1278,9 +1342,9 @@ mod tests {
         bounded_task_workspace, changed_file_events, connection_id, drain_progress_events,
         harness_completion_content,
         project_execution_directive, request_requires_browser_verification,
-        request_requires_verification, requires_project_file_change, structured_hermes_event,
-        successful_browser_verification, successful_verification, transient_agent_failure,
-        validate_chat_url, workspace_snapshot,
+        request_requires_verification, requires_project_file_change, retry_terminal_report,
+        structured_hermes_event, successful_browser_verification, successful_verification,
+        transient_agent_failure, validate_chat_url, workspace_snapshot,
     };
     use std::fs;
 
@@ -1382,6 +1446,42 @@ mod tests {
         assert!(!transient_agent_failure(
             "Hermes rejected an invalid tool argument"
         ));
+    }
+
+    #[test]
+    fn terminal_completion_retries_transient_transport_failures() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let result = retry_terminal_report(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err("HTTP 502: Application failed to respond".to_string())
+                } else {
+                    Ok(serde_json::json!({"state":"completed"}))
+                }
+            },
+            |delay| delays.push(delay.as_secs()),
+        )
+        .unwrap();
+        assert_eq!(result["state"], "completed");
+        assert_eq!(attempts, 3);
+        assert_eq!(delays, vec![1, 2]);
+    }
+
+    #[test]
+    fn terminal_completion_does_not_retry_contract_errors() {
+        let mut attempts = 0;
+        let error = retry_terminal_report(
+            || {
+                attempts += 1;
+                Err("HTTP 422: invalid completion evidence".to_string())
+            },
+            |_| panic!("contract failures must not sleep"),
+        )
+        .unwrap_err();
+        assert_eq!(attempts, 1);
+        assert!(error.contains("422"));
     }
 
     #[test]
