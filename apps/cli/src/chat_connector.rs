@@ -917,6 +917,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         const HARNESS_RECOVERY_ATTEMPTS: usize = 12;
         let mut resume_prompt = initial_prompt.to_string();
         let mut last_error = String::new();
+        let mut stalled_attempts = 0;
         for attempt in 0..HARNESS_RECOVERY_ATTEMPTS {
             match super::hermes_adapter::run(
                 &resume_prompt,
@@ -939,6 +940,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                         && attempt + 1 < HARNESS_RECOVERY_ATTEMPTS
                         && !stop.load(Ordering::Relaxed) =>
                 {
+                    if error.contains("Hermes model progress timed out") {
+                        stalled_attempts += 1;
+                        if stalled_attempts >= 2 {
+                            return Err(format!("{error}; automatic recovery also stalled. Resume the task after checking model availability."));
+                        }
+                    }
                     // Preserve completed tool turns across transient gateway
                     // failures. Rebuild only when the provider says the saved
                     // conversation itself is invalid or over its context limit.
@@ -956,7 +963,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                             "sequence": 10_000 + attempt,
                             "event": {
                                 "type": "model_turn_recovering",
-                                "summary": if rebuilding {
+                                "summary": if last_error.contains("Hermes model progress timed out") {
+                                    "The model stopped responding. Hermes saved the project progress and is trying once more.".to_string()
+                                } else if rebuilding {
                                     format!("EHDA rejected the saved context; Hermes is rebuilding it automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
                                 } else {
                                     format!("EHDA is temporarily unavailable; Hermes preserved its tool progress and will continue automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
@@ -976,7 +985,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                             "Resume the existing Hermes project task after rebuilding an invalid model context. Continue from the files already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
                         )
                     } else {
-                        "Continue the interrupted project task from the preserved Hermes session and existing tool results. Do not restart or repeat completed work.".to_string()
+                        format!("Continue the interrupted project task from the preserved Hermes session, recovery checkpoint, and existing files. Inspect current state; do not repeat completed work.\n\nOriginal request:\n{initial_prompt}")
                     };
                 }
                 Err(error) => return Err(error),

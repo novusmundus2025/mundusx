@@ -324,6 +324,7 @@ def main():
     from tools.terminal_tool import register_task_env_overrides
 
     task_id = os.environ.get("MUNDUSX_HERMES_TASK") or "default"
+    # Preserve the installed runtime's project-directory binding on recovery.
     set_session_cwd(workspace)
     register_task_env_overrides(task_id, {"cwd": workspace})
 
