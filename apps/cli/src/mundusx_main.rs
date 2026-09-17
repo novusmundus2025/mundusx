@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 mod chat_connector;
 mod hermes_adapter;
 mod project_model_proxy;
+mod swarm;
 
 const DEFAULT_AGENT_URL: &str = "http://127.0.0.1:11436";
 
@@ -89,6 +90,36 @@ enum Commands {
         /// Save browser approval and let the MundusX background app own the connection
         #[arg(long, hide = true)]
         authorize_only: bool,
+    },
+    /// Run independent project checks with bounded local concurrency
+    Swarm {
+        #[command(subcommand)]
+        command: SwarmCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SwarmCommands {
+    /// Run independent test lanes and combine their results
+    Test {
+        /// Named test lane in NAME=COMMAND form; repeat for each independent lane
+        #[arg(long = "task", value_name = "NAME=COMMAND")]
+        tasks: Vec<String>,
+        /// Maximum test processes to run at once
+        #[arg(long, default_value_t = 2)]
+        workers: usize,
+        /// Stop assigning queued lanes after the first failure
+        #[arg(long)]
+        fail_fast: bool,
+        /// Sequential command used when the parallel plan cannot be started
+        #[arg(long)]
+        fallback: Option<String>,
+        /// Project directory; defaults to the current directory
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Emit a machine-readable result
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -579,6 +610,23 @@ fn main() {
                 )
             })
         }
+        Commands::Swarm { command } => match command {
+            SwarmCommands::Test {
+                tasks,
+                workers,
+                fail_fast,
+                fallback,
+                workspace,
+                json,
+            } => swarm::run_tests(swarm::TestOptions {
+                workspace,
+                tasks,
+                workers,
+                fail_fast,
+                fallback,
+                json,
+            }),
+        },
     };
     if let Err(error) = result {
         eprintln!("error: {error}");
