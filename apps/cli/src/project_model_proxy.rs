@@ -44,7 +44,10 @@ impl ProjectModelProxy {
     }
 
     pub fn start_with_progress(
-        remote_base: &str, connector_token: &str, task_id: &str, connection_id: &str,
+        remote_base: &str,
+        connector_token: &str,
+        task_id: &str,
+        connection_id: &str,
         progress: Option<std::sync::mpsc::Sender<Value>>,
     ) -> Result<Self, String> {
         let server = Server::http("127.0.0.1:0")
@@ -111,7 +114,10 @@ impl ProjectModelProxy {
                         })
                     })
                     .and_then(|body| {
-                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":"model_requested","data":{}})); }
+                        let wants_stream = body["stream"].as_bool().unwrap_or(false);
+                        if let Some(sender) = &progress {
+                            let _ = sender.send(json!({"type":"model_requested","data":{}}));
+                        }
                         open_remote_stream(
                             &remote,
                             &connector_token,
@@ -119,30 +125,50 @@ impl ProjectModelProxy {
                             &connection_id,
                             body,
                         )
+                        .and_then(|response| {
+                            if wants_stream {
+                                Ok(ProxyResponse::Stream(response))
+                            } else {
+                                collect_openai_response(response).map(ProxyResponse::Json)
+                            }
+                        })
                     });
                 match result {
                     Ok(upstream) => {
-                        let status = StatusCode(upstream.status());
-                        let headers = vec![
-                            Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
-                            Header::from_bytes("Cache-Control", "no-cache").unwrap(),
-                            Header::from_bytes("X-Accel-Buffering", "no").unwrap(),
-                        ];
-                        let response = Response::new(
-                            status,
-                            headers,
-                            CancellableReader {
-                                inner: upstream.into_reader(),
-                                stop: Arc::clone(&worker_stop),
-                            },
-                            None,
-                            None,
-                        );
-                        let delivered = request.respond(response).is_ok();
-                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":if delivered {"model_response_received"} else {"model_failed"},"data":{}})); }
+                        let delivered = match upstream {
+                            ProxyResponse::Stream(upstream) => {
+                                let status = StatusCode(upstream.status());
+                                let headers = vec![
+                                    Header::from_bytes("Content-Type", "text/event-stream")
+                                        .unwrap(),
+                                    Header::from_bytes("Cache-Control", "no-cache").unwrap(),
+                                    Header::from_bytes("X-Accel-Buffering", "no").unwrap(),
+                                ];
+                                request
+                                    .respond(Response::new(
+                                        status,
+                                        headers,
+                                        CancellableReader {
+                                            inner: upstream.into_reader(),
+                                            stop: Arc::clone(&worker_stop),
+                                        },
+                                        None,
+                                        None,
+                                    ))
+                                    .is_ok()
+                            }
+                            ProxyResponse::Json(value) => request
+                                .respond(json_response(StatusCode(200), value))
+                                .is_ok(),
+                        };
+                        if let Some(sender) = &progress {
+                            let _ = sender.send(json!({"type":if delivered {"model_response_received"} else {"model_failed"},"data":{}}));
+                        }
                     }
                     Err(error) => {
-                        if let Some(sender) = &progress { let _ = sender.send(json!({"type":"model_failed","data":{}})); }
+                        if let Some(sender) = &progress {
+                            let _ = sender.send(json!({"type":"model_failed","data":{}}));
+                        }
                         let _ = request.respond(json_response(
                             StatusCode(error.status),
                             json!({"error":{"message":error.message}}),
@@ -165,6 +191,11 @@ impl ProjectModelProxy {
     pub fn credential(&self) -> &str {
         &self.credential
     }
+}
+
+enum ProxyResponse {
+    Stream(ureq::Response),
+    Json(Value),
 }
 
 impl Drop for ProjectModelProxy {
@@ -202,6 +233,85 @@ fn open_remote_stream(
         .set("Accept", "text/event-stream")
         .send_json(body)
         .map_err(remote_error)
+}
+
+/// Convert the gateway's SSE transport back into the ordinary OpenAI JSON
+/// response requested by auxiliary Hermes calls such as context summaries.
+/// Main agent turns still pass through byte-for-byte when `stream: true`.
+fn collect_openai_response(response: ureq::Response) -> Result<Value, ProxyError> {
+    let status = response.status();
+    let body = response.into_string().map_err(|error| ProxyError {
+        status: 502,
+        message: format!("could not read model response: {error}"),
+    })?;
+    if !(200..300).contains(&status) {
+        return Err(ProxyError {
+            status,
+            message: body,
+        });
+    }
+
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    let mut finish_reason = None;
+    let mut saw_choice = false;
+    for line in body.lines() {
+        let Some(data) = line.trim().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let chunk: Value = serde_json::from_str(data).map_err(|error| ProxyError {
+            status: 502,
+            message: format!("model gateway returned malformed SSE: {error}"),
+        })?;
+        let Some(choice) = chunk.pointer("/choices/0") else {
+            continue;
+        };
+        saw_choice = true;
+        if let Some(text) = choice
+            .pointer("/delta/content")
+            .and_then(Value::as_str)
+            .or_else(|| choice.pointer("/message/content").and_then(Value::as_str))
+        {
+            content.push_str(text);
+        }
+        if let Some(text) = choice
+            .pointer("/delta/reasoning_content")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                choice
+                    .pointer("/message/reasoning_content")
+                    .and_then(Value::as_str)
+            })
+        {
+            reasoning.push_str(text);
+        }
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            finish_reason = Some(reason.to_string());
+        }
+    }
+    if !saw_choice {
+        return Err(ProxyError {
+            status: 502,
+            message: "model gateway stream ended without a completion choice".into(),
+        });
+    }
+    let mut message = json!({"role":"assistant","content":content});
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = json!(reasoning);
+    }
+    Ok(json!({
+        "id": format!("chatcmpl-{}", Uuid::new_v4().simple()),
+        "object": "chat.completion",
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason.unwrap_or_else(|| "stop".into())
+        }]
+    }))
 }
 
 struct CancellableReader {
@@ -300,8 +410,18 @@ mod tests {
             _ => panic!("context error must remain HTTP 400"),
         }
         receiver.join().unwrap();
-        assert_eq!(progress_receiver.recv_timeout(Duration::from_secs(1)).unwrap()["type"], "model_requested");
-        assert_eq!(progress_receiver.recv_timeout(Duration::from_secs(1)).unwrap()["type"], "model_failed");
+        assert_eq!(
+            progress_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()["type"],
+            "model_requested"
+        );
+        assert_eq!(
+            progress_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()["type"],
+            "model_failed"
+        );
     }
 
     #[test]
@@ -361,6 +481,48 @@ mod tests {
         response.into_reader().read_to_string(&mut body).unwrap();
         receiver.join().unwrap();
         assert!(body.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn non_streaming_hermes_calls_receive_an_openai_json_response() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap().to_string();
+        let receiver = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            let mut bytes = Vec::new();
+            request.as_reader().read_to_end(&mut bytes).unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            // The remote gateway remains streaming, even though the local
+            // OpenAI client asked the proxy for an ordinary JSON response.
+            assert_eq!(body["stream"], true);
+            request.respond(Response::from_string(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Project \"},\"finish_reason\":null}]}\n\n\
+                 data: {\"choices\":[{\"delta\":{\"content\":\"summary\"},\"finish_reason\":\"stop\"}]}\n\n\
+                 data: [DONE]\n\n",
+            )).unwrap();
+        });
+        let proxy = ProjectModelProxy::start(
+            &format!("http://{address}/v1"),
+            "secret",
+            "task",
+            "connection",
+        )
+        .unwrap();
+        let response: Value = ureq::post(&format!("{}/chat/completions", proxy.base_url()))
+            .set("Authorization", &format!("Bearer {}", proxy.credential()))
+            .send_json(json!({
+                "stream": false,
+                "messages": [{"role":"user","content":"summarize"}]
+            }))
+            .unwrap()
+            .into_json()
+            .unwrap();
+        receiver.join().unwrap();
+        assert_eq!(
+            response["choices"][0]["message"]["content"],
+            "Project summary"
+        );
+        assert_eq!(response["choices"][0]["finish_reason"], "stop");
     }
 
     #[test]

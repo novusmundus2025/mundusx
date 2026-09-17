@@ -496,6 +496,12 @@ fn request_requires_verification(prompt: &str) -> bool {
         .any(|word| matches!(*word, "test" | "tests" | "build" | "compile" | "lint"))
         || lower.contains("run them")
         || lower.contains("run it")
+        || [
+            " api", "api ", "crud", "nodejs", "node.js", "backend", "frontend",
+            "server", "application", "website", "web app",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 fn successful_verification(response: &Value) -> bool {
@@ -1451,6 +1457,9 @@ mod tests {
     #[test]
     fn requested_tests_require_a_successful_hermes_verification_event() {
         assert!(request_requires_verification("Add tests and run them"));
+        assert!(request_requires_verification(
+            "Create a complete Node.js CRUD API"
+        ));
         assert!(!request_requires_verification("Create a README"));
         assert!(!request_requires_verification("Use the latest package"));
         assert!(successful_verification(&serde_json::json!({
