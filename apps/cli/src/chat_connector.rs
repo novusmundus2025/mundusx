@@ -990,7 +990,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         Err(last_error)
     };
     let mut response = if runtime == "hermes" && allow_mutations
-        && super::project_swarm::requested(&prompt) {
+        && super::project_swarm::should_coordinate(&prompt) {
         match super::project_swarm::run(super::project_swarm::CoordinatorOptions {
             workspace: task_workspace.clone(),
             objective: prompt.clone(),
