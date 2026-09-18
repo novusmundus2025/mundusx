@@ -614,7 +614,47 @@ fn frontend_build_required(workspace: &Path) -> bool {
         })
 }
 
+fn request_is_repository_only_operation(prompt: &str) -> bool {
+    let lower = prompt.trim().to_ascii_lowercase();
+    let starts_with_repository_action = [
+        "commit ",
+        "commit locally",
+        "git commit",
+        "git status",
+        "git diff",
+        "show git ",
+        "check git ",
+        "create branch",
+        "create a branch",
+        "switch branch",
+        "switch to branch",
+        "checkout ",
+        "merge ",
+        "rebase ",
+        "cherry-pick ",
+        "stash ",
+        "tag ",
+        "push ",
+        "pull ",
+        "fetch ",
+    ]
+    .iter()
+    .any(|action| lower.starts_with(action));
+    let also_requests_project_work = [
+        " and fix", " and implement", " and add", " and create", " and edit",
+        " and modify", " and update", " and refactor", " then fix", " then implement",
+        " then add", " then create", " then edit", " then modify", " then update",
+        " then refactor",
+    ]
+    .iter()
+    .any(|action| lower.contains(action));
+    starts_with_repository_action && !also_requests_project_work
+}
+
 fn request_requires_browser_verification(prompt: &str, workspace: &Path) -> bool {
+    if request_is_repository_only_operation(prompt) {
+        return false;
+    }
     let lower = prompt.to_ascii_lowercase();
     if ["frontend", "front-end", "react", "vue", "svelte", "angular", "website",
         "webpage", "web app", "user interface", "ui ux", "responsive", "material design"]
@@ -1411,7 +1451,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.00"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.01"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1474,7 +1514,8 @@ mod tests {
         bounded_task_workspace, changed_file_events, checkpoint_managed_project, connection_id,
         drain_progress_events, harness_completion_content, initialize_new_project_repository,
         project_git,
-        project_execution_directive, request_requires_browser_verification,
+        project_execution_directive, request_is_repository_only_operation,
+        request_requires_browser_verification,
         request_requires_verification, requires_project_file_change, retry_terminal_report,
         structured_hermes_event, successful_browser_verification, successful_verification,
         successful_frontend_build, frontend_build_required,
@@ -1786,6 +1827,10 @@ mod tests {
         fs::write(root.join("react-app/package.json"), r#"{"dependencies":{"react":"latest"}}"#).unwrap();
         assert!(request_requires_browser_verification("fix this", &root));
         assert!(request_requires_browser_verification("create a responsive UI", &root.join("missing")));
+        assert!(request_is_repository_only_operation("commit locally the changes"));
+        assert!(!request_requires_browser_verification("commit locally the changes", &root));
+        assert!(!request_is_repository_only_operation("commit the changes and fix the profile page"));
+        assert!(request_requires_browser_verification("commit the changes and fix the profile page", &root));
         assert!(successful_browser_verification(&serde_json::json!({"events":[
             {"type":"tool_completed","data":{"success":true,"browser_verification":"render"}},
             {"type":"tool_completed","data":{"success":true,"browser_verification":"snapshot"}},
