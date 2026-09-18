@@ -30,14 +30,15 @@ impl Drop for StagedBinary {
 
 pub fn update_installed_binaries() -> Result<(), String> {
     let target = release_target(env::consts::OS, env::consts::ARCH)?;
+    let release_prefix = release_prefix(env::consts::OS)?;
     let current_exe =
         env::current_exe().map_err(|error| format!("cannot locate installed opengpu: {error}"))?;
     let install_dir = current_exe
         .parent()
         .ok_or_else(|| "installed opengpu path has no parent directory".to_string())?;
-    let assets = resolve_release_assets(target)?;
+    let assets = resolve_release_assets(target, release_prefix)?;
 
-    println!("updateChannel: linux");
+    println!("updateChannel: {}", env::consts::OS);
     println!("releaseTag: {}", assets.tag);
     println!("releaseTarget: {target}");
     println!("updateStage: downloading and verifying");
@@ -70,7 +71,7 @@ pub fn update_installed_binaries() -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_release_assets(target: &str) -> Result<ReleaseAssets, String> {
+fn resolve_release_assets(target: &str, release_prefix: &str) -> Result<ReleaseAssets, String> {
     let cli_name = format!("opengpu-{target}");
     let agent_name = format!("opengpu-node-agent-{target}");
     if let Ok(base_url) = env::var("OPENGPU_RELEASE_BASE_URL") {
@@ -89,7 +90,9 @@ fn resolve_release_assets(target: &str) -> Result<ReleaseAssets, String> {
             String::from_utf8(bytes)
                 .map_err(|_| "GitHub releases API returned invalid UTF-8".to_string())
         })
-        .and_then(|releases| parse_linux_release_assets(&releases, &cli_name, &agent_name));
+        .and_then(|releases| {
+            parse_release_assets(&releases, release_prefix, &cli_name, &agent_name)
+        });
 
     match discovered {
         Ok(assets) => Ok(assets),
@@ -123,8 +126,9 @@ fn release_assets_from_base(
     }
 }
 
-fn parse_linux_release_assets(
+fn parse_release_assets(
     releases_json: &str,
+    release_prefix: &str,
     cli_name: &str,
     agent_name: &str,
 ) -> Result<ReleaseAssets, String> {
@@ -135,7 +139,7 @@ fn parse_linux_release_assets(
         .ok_or_else(|| "GitHub releases response was not an array".to_string())?;
     for release in releases {
         let tag = release["tag_name"].as_str().unwrap_or_default();
-        if !tag.starts_with("cli-linux-v")
+        if !tag.starts_with(release_prefix)
             || release["draft"].as_bool().unwrap_or(false)
             || release["prerelease"].as_bool().unwrap_or(false)
         {
@@ -164,7 +168,15 @@ fn parse_linux_release_assets(
                 .ok_or_else(|| format!("release {tag} is missing {agent_name}.sha256"))?,
         });
     }
-    Err("no published cli-linux-v* release was found".to_string())
+    Err(format!("no published {release_prefix}* release was found"))
+}
+
+fn release_prefix(os: &str) -> Result<&'static str, String> {
+    match os {
+        "linux" => Ok("cli-linux-v"),
+        "macos" => Ok("cli-macos-v"),
+        _ => Err(format!("opengpu self-update is not supported on {os}")),
+    }
 }
 
 fn release_target(os: &str, arch: &str) -> Result<&'static str, String> {
@@ -172,7 +184,9 @@ fn release_target(os: &str, arch: &str) -> Result<&'static str, String> {
         ("linux", "aarch64" | "arm64") => Ok("aarch64-unknown-linux-gnu"),
         ("linux", "x86_64" | "amd64") => Ok("x86_64-unknown-linux-gnu"),
         ("linux", _) => Err(format!("unsupported Linux architecture: {arch}")),
-        _ => Err("opengpu self-update currently supports Linux only".to_string()),
+        ("macos", "aarch64" | "arm64") => Ok("aarch64-apple-darwin"),
+        ("macos", _) => Err(format!("unsupported macOS architecture: {arch}")),
+        _ => Err(format!("opengpu self-update is not supported on {os}")),
     }
 }
 
@@ -281,8 +295,8 @@ fn set_executable(_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_linux_release_assets, release_assets_from_base, release_target, verify_checksum,
-        PRODUCTION_RELEASE_BASE_URL,
+        parse_release_assets, release_assets_from_base, release_prefix, release_target,
+        verify_checksum, PRODUCTION_RELEASE_BASE_URL,
     };
     use sha2::{Digest, Sha256};
 
@@ -297,7 +311,13 @@ mod tests {
             Ok("x86_64-unknown-linux-gnu")
         );
         assert!(release_target("linux", "riscv64").is_err());
-        assert!(release_target("macos", "aarch64").is_err());
+        assert_eq!(
+            release_target("macos", "aarch64").as_deref(),
+            Ok("aarch64-apple-darwin")
+        );
+        assert!(release_target("macos", "x86_64").is_err());
+        assert_eq!(release_prefix("linux"), Ok("cli-linux-v"));
+        assert_eq!(release_prefix("macos"), Ok("cli-macos-v"));
     }
 
     #[test]
@@ -371,14 +391,61 @@ mod tests {
                 ]
             }
         ]);
-        let assets = parse_linux_release_assets(
+        let assets = parse_release_assets(
             &releases.to_string(),
+            "cli-linux-v",
             "opengpu-aarch64-unknown-linux-gnu",
             "opengpu-node-agent-aarch64-unknown-linux-gnu",
         )
         .expect("Linux assets should resolve");
 
         assert_eq!(assets.tag, "cli-linux-v0.1.18");
+        assert_eq!(assets.cli_url, "https://example.test/opengpu");
+        assert_eq!(assets.agent_url, "https://example.test/agent");
+    }
+
+    #[test]
+    fn selects_macos_release_and_exact_architecture_assets() {
+        let releases = serde_json::json!([
+            {
+                "tag_name": "cli-linux-v9.0.0",
+                "draft": false,
+                "prerelease": false,
+                "assets": []
+            },
+            {
+                "tag_name": "cli-macos-v0.2.03",
+                "draft": false,
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "opengpu-aarch64-apple-darwin",
+                        "browser_download_url": "https://example.test/opengpu"
+                    },
+                    {
+                        "name": "opengpu-aarch64-apple-darwin.sha256",
+                        "browser_download_url": "https://example.test/opengpu.sha256"
+                    },
+                    {
+                        "name": "opengpu-node-agent-aarch64-apple-darwin",
+                        "browser_download_url": "https://example.test/agent"
+                    },
+                    {
+                        "name": "opengpu-node-agent-aarch64-apple-darwin.sha256",
+                        "browser_download_url": "https://example.test/agent.sha256"
+                    }
+                ]
+            }
+        ]);
+        let assets = parse_release_assets(
+            &releases.to_string(),
+            "cli-macos-v",
+            "opengpu-aarch64-apple-darwin",
+            "opengpu-node-agent-aarch64-apple-darwin",
+        )
+        .expect("macOS assets should resolve");
+
+        assert_eq!(assets.tag, "cli-macos-v0.2.03");
         assert_eq!(assets.cli_url, "https://example.test/opengpu");
         assert_eq!(assets.agent_url, "https://example.test/agent");
     }
