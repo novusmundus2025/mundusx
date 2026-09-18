@@ -13,6 +13,7 @@ from hermes_bridge import (
     browser_verification,
     configure_project_compaction,
     loaded_skill,
+    is_verification_command,
     tool_activity,
     tool_outcome,
 )
@@ -82,8 +83,10 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(events[-1]["data"]["truncated"])
 
     def test_activity_is_observed_without_copying_arguments(self):
-        for command, activity in [('echo "5" | node "C:/project/menu.js"', "run"), ("npm run build", "build"), ("npm test", "test"), ("npm run lint", "lint"), ("echo npm test", "command")]:
+        for command, activity in [('echo "5" | node "C:/project/menu.js"', "run"), ("npm run build", "build"), ("npm --prefix client run build", "build"), ("pnpm --dir web build", "build"), ("npm test", "test"), ("npm run lint", "lint"), ("echo npm test", "command")]:
             self.assertEqual(tool_activity("terminal", {"command": command}), activity)
+        self.assertTrue(is_verification_command("npm --prefix client run build"))
+        self.assertTrue(is_verification_command("pnpm --dir web build"))
         self.assertEqual(tool_activity("terminal", {"command": "curl --token SECRET"}), "command")
         self.assertEqual(tool_activity("terminal", []), "command")
 
