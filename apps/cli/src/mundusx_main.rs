@@ -16,7 +16,7 @@ mod swarm;
 const DEFAULT_AGENT_URL: &str = "http://127.0.0.1:11436";
 
 #[derive(Parser)]
-#[command(name = "mundusx", version, about = "Local-first MundusX AI agent")]
+#[command(name = "mundusx", version = "0.2.00", about = "Local-first MundusX AI agent")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

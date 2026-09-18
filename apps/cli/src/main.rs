@@ -70,7 +70,7 @@ const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 #[derive(Parser, Debug)]
 #[command(
     name = "opengpu",
-    version,
+    version = "0.2.00",
     about = "MundusX CLI",
     arg_required_else_help = true
 )]
