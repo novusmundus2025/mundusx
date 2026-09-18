@@ -1067,7 +1067,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             token: options.token.clone(),
             data_dir: super::data_dir(),
             cancellation: Arc::clone(&stop),
-            event_sender: swarm_event_sender,
+            event_sender: swarm_event_sender.clone(),
         }) {
             Ok(value) => Ok(value),
             Err(error) => {
@@ -1155,6 +1155,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     }
     drop(run_hermes_with_recovery);
     drop(stream_hermes_event);
+    // The swarm coordinator receives its own sender clone. Release it before
+    // joining the batching thread, otherwise the receiver can never observe
+    // disconnection after Hermes finishes and the task heartbeats forever.
+    drop(swarm_event_sender);
     event_batcher.finish();
 
     let events = sanitized_events(&session_id)
