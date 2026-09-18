@@ -580,6 +580,40 @@ fn successful_verification(response: &Value) -> bool {
         })
 }
 
+fn successful_frontend_build(response: &Value) -> bool {
+    response["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("tool_complete" | "tool_completed")
+            ) && event["data"]["activity"].as_str() == Some("build")
+                && event["data"]["success"].as_bool() == Some(true)
+        })
+}
+
+fn frontend_build_required(workspace: &Path) -> bool {
+    std::iter::once(workspace.join("package.json"))
+        .chain(
+            fs::read_dir(workspace)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+                .map(|entry| entry.path().join("package.json")),
+        )
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .filter_map(|package| serde_json::from_str::<Value>(&package).ok())
+        .any(|package| {
+            package["scripts"]["build"]
+                .as_str()
+                .is_some_and(|command| !command.trim().is_empty())
+        })
+}
+
 fn request_requires_browser_verification(prompt: &str, workspace: &Path) -> bool {
     let lower = prompt.to_ascii_lowercase();
     if ["frontend", "front-end", "react", "vue", "svelte", "angular", "website",
@@ -1009,7 +1043,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "The current directory is the complete project boundary. Treat every explicit user requirement as an acceptance criterion. Before giving a final response, inspect the resulting files and run the applicable tests or executable command. Never claim success for a check you did not run.\n\n{execution_directive}\n\n{prompt}"
                 );
                 if frontend_verification_required { instructions.push_str(&format!(
-                    "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Completion requires browser proof after the final file change. Start the required local services and use the available browser automation tool. With browser_exec, perform the full acceptance suite in one or more calls. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the browser checks. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
+                    "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Reconcile every third-party source import with the package manifest that owns that source tree, install missing dependencies in that package directory, and run its production build successfully before browser acceptance. A passing backend test does not replace a failed frontend build. If the build fails, use the concrete build error to repair the files or manifest and rerun it. Completion then requires browser proof after the final file change. Start the required local services and use the available browser automation tool. With browser_exec, perform the full acceptance suite in one or more calls. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the build and browser checks. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
                 )); }
                 instructions
             } else {
@@ -1183,6 +1217,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         && requires_project_file_change(&prompt)
         && response.is_ok()
     {
+        // Re-read manifests after Hermes writes the project. Frontend packages
+        // are often created during this task and did not exist at dispatch.
+        let frontend_build_verification_required = frontend_verification_required
+            && frontend_build_required(&task_workspace);
         let used_tools = response
             .as_ref()
             .ok()
@@ -1192,8 +1230,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         let changed_workspace = workspace_snapshot(&task_workspace) != before_files;
         let verification_required = request_requires_verification(&prompt);
         let verified = response.as_ref().ok().is_some_and(successful_verification);
+        let frontend_build_verified = !frontend_build_verification_required
+            || response.as_ref().ok().is_some_and(successful_frontend_build);
         let browser_verified = response.as_ref().ok().is_some_and(successful_browser_verification);
         if !used_tools || !changed_workspace || (verification_required && !verified)
+            || !frontend_build_verified
             || (frontend_verification_required && !browser_verified) {
             let _ = post_task_events(
                 options,
@@ -1203,12 +1244,12 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "event": {
                         "type": "acceptance_retrying",
                         "summary": "Hermes has not completed all project acceptance checks; continuing",
-                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified, "browser_verification_required": frontend_verification_required, "browser_verified": browser_verified}
+                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified, "frontend_build_required": frontend_build_verification_required, "frontend_build_verified": frontend_build_verified, "browser_verification_required": frontend_verification_required, "browser_verified": browser_verified}
                     }
                 })],
             );
             let frontend_clause = if frontend_verification_required { format!(
-                " For frontend work, complete the {FRONTEND_ACCEPTANCE_MARKER} browser checks after the final change: render the application, inspect meaningful visible content, browser errors and DOM/layout at desktop and narrow widths, fix failures, repeat the checks, then stop services you started."
+                " For frontend work, first reconcile source imports with the owning package manifest, install dependencies in that package directory, and make its production build pass. A passing backend test cannot replace this frontend build. Then complete the {FRONTEND_ACCEPTANCE_MARKER} browser checks after the final change: render the application, inspect meaningful visible content, browser errors and DOM/layout at desktop and narrow widths, fix failures, repeat the build and browser checks, then stop services you started."
             ) } else { String::new() };
             let correction = format!(
                 "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Use the available coding tools to implement the requested project files, inspect them, and run the applicable tests, build, or lint command successfully.{frontend_clause} Do not return source code only in chat and do not claim a check passed unless its command or browser check succeeded.\n\nOriginal request:\n{prompt}"
@@ -1220,6 +1261,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 "Hermes returned without changing the project; the task was not completed"
                     .to_string(),
             );
+        }
+        if frontend_build_verification_required && response.as_ref().ok()
+            .is_some_and(|value| !successful_frontend_build(value)) {
+            response = Err("Hermes changed frontend files but did not complete a successful frontend production build. Check source imports against the owning package manifest, install missing dependencies in that package directory, and rerun the build.".to_string());
         }
         if request_requires_verification(&prompt)
             && response
@@ -1432,6 +1477,7 @@ mod tests {
         project_execution_directive, request_requires_browser_verification,
         request_requires_verification, requires_project_file_change, retry_terminal_report,
         structured_hermes_event, successful_browser_verification, successful_verification,
+        successful_frontend_build, frontend_build_required,
         transient_agent_failure, validate_chat_url, workspace_snapshot, MANAGED_PROJECT_MARKER,
     };
     use std::fs;
@@ -1752,6 +1798,30 @@ mod tests {
             {"type":"tool_completed","data":{"success":true,"browser_verification":"render"}},
             {"type":"tool_completed","data":{"success":true,"browser_verification":"snapshot"}}
         ]})));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn frontend_package_build_is_separate_from_other_successful_checks() {
+        let root = std::env::temp_dir().join(format!("mundusx-frontend-build-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("client")).unwrap();
+        fs::write(
+            root.join("client/package.json"),
+            r#"{"scripts":{"build":"vite build"},"dependencies":{"react":"latest"}}"#,
+        ).unwrap();
+        assert!(frontend_build_required(&root));
+
+        let backend_test_only = serde_json::json!({"events":[
+            {"type":"tool_completed","data":{"activity":"test","verification":true,"success":true}},
+            {"type":"tool_completed","data":{"activity":"build","verification":true,"success":false}}
+        ]});
+        assert!(successful_verification(&backend_test_only));
+        assert!(!successful_frontend_build(&backend_test_only));
+
+        let frontend_build = serde_json::json!({"events":[
+            {"type":"tool_completed","data":{"activity":"build","verification":true,"success":true}}
+        ]});
+        assert!(successful_frontend_build(&frontend_build));
         fs::remove_dir_all(root).unwrap();
     }
 

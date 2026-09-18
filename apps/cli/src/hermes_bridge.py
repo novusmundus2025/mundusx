@@ -55,6 +55,8 @@ Do not narrate each intended read, edit, or command before calling a tool.
 Inspect each unchanged file only once, batch related operations when practical, and do not repeat a completed step.
 Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
 Tool results and JSON representations escape real newline characters as \\n. Do not treat that display escaping as proof that a source file contains literal backslash-n text. If syntax is uncertain, run the project build or parser once and trust the result; do not repeatedly inspect the same bytes after a successful build.
+For multi-file code generation, reserve the final tool turns for dependency installation and a real build, test, lint, syntax, or smoke check. Group related work where the tools permit it; do not consume the entire budget writing one file per planning cycle.
+For frontend work, reconcile every third-party source import with the package manifest that owns that source tree. Install missing dependencies in that package directory, not an unrelated parent package. Run that frontend package's production build successfully before starting browser acceptance. If the build fails, use its concrete error to repair the files or manifest and rerun it; never replace a failed frontend build with a passing backend test.
 After the requested change and required build, lint, test, or browser acceptance checks succeed, return the final response immediately. Do not start another inspection cycle or add unrelated improvements.
 """
 
@@ -193,7 +195,11 @@ def is_verification_command(command):
         " npm run build ", " pnpm build ", " yarn build ", " cargo build ",
         " npm run lint ", " pnpm lint ", " yarn lint ",
     )
-    return any(check in value for check in checks)
+    package_check = re.search(
+        r"(?:^|[|;&])\s*(?:npm|pnpm|yarn)(?:\s+(?:--prefix|-c|--dir)\s+\S+)*\s+(?:run\s+)?(?:build|test|lint|check)\b",
+        str(command or "").lower(),
+    )
+    return package_check is not None or any(check in value for check in checks)
 
 
 def tool_result_succeeded(result):
@@ -217,12 +223,15 @@ def tool_activity(name, arguments):
     if name in ("terminal", "execute", "shell"):
         command = str(arguments.get("command", "") if isinstance(arguments, dict) else "").lower()
         prefix = r"(?:^|[|;&])\s*"
-        if re.search(prefix + r"(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?build|cargo build)\b", command):
+        package_command = r"(?:npm|pnpm|yarn)(?:\s+(?:--prefix|-c|--dir)\s+\S+)*\s+"
+        if re.search(prefix + r"(?:" + package_command + r"(?:run\s+)?build|cargo build)\b", command):
             return "build"
-        if re.search(prefix + r"(?:pytest|python -m pytest|cargo test|npm test|npm run test|pnpm test|yarn test|mvn test|go test|dotnet test)\b", command):
+        if re.search(prefix + r"(?:pytest|python -m pytest|cargo test|" + package_command + r"(?:run\s+)?test|mvn test|go test|dotnet test)\b", command):
             return "test"
-        if re.search(prefix + r"(?:npm run lint|pnpm lint|yarn lint|ruff check)\b", command):
+        if re.search(prefix + r"(?:" + package_command + r"(?:run\s+)?lint|ruff check)\b", command):
             return "lint"
+        if re.search(prefix + r"(?:node --test|node --check|" + package_command + r"(?:run\s+)?check|npx tsc|python -m compileall)\b", command):
+            return "test"
         if re.search(prefix + r"(?:npm install|npm ci|pnpm install|yarn install|pip install)\b", command):
             return "dependencies"
         if re.search(prefix + r"(?:node|python|python3)\s", command):
