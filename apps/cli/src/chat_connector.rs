@@ -1479,7 +1479,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.02"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.03"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))

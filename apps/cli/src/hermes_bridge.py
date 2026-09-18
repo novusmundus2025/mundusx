@@ -62,6 +62,7 @@ After the requested change and required build, lint, test, or browser acceptance
 
 STANDARD_MAX_ITERATIONS = 12
 FRONTEND_MAX_ITERATIONS = 16
+SWARM_PLANNER_MARKER = "MUNDUSX_SWARM_PLANNER_V1"
 PROJECT_COMPACTION_TOKENS = 16_384
 CHECKPOINT_EVENT_LIMIT = 48
 
@@ -302,8 +303,11 @@ def main():
     os.environ["TERMINAL_CWD"] = workspace
     sys.path.insert(0, project_root)
 
+    raw_user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
+    planner_mode = SWARM_PLANNER_MARKER in raw_user_prompt
     task_id = os.environ.get("MUNDUSX_HERMES_TASK") or os.environ.get("MUNDUSX_HERMES_SESSION") or "project-task"
-    checkpoint = RecoveryCheckpoint(workspace, task_id)
+    checkpoint_root = os.environ.get("HERMES_HOME", workspace) if planner_mode else workspace
+    checkpoint = RecoveryCheckpoint(checkpoint_root, task_id)
     recovery_note = checkpoint.recovery_note()
     checkpoint.start()
 
@@ -364,24 +368,29 @@ def main():
         )
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
-    user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
-    if recovery_note:
-        user_prompt = recovery_note + "\n\n" + user_prompt
-    user_prompt = (
-        SKILL_DISCOVERY_GUIDANCE
-        + "\n"
-        + EXECUTION_EFFICIENCY_GUIDANCE
-        + "\nUser project request:\n"
-        + user_prompt
-    )
-    enabled_toolsets = ["coding", "skills"]
-    if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
-        enabled_toolsets.extend(["browser", "browser-use"])
+    user_prompt = raw_user_prompt
     max_iterations = (
-        FRONTEND_MAX_ITERATIONS
+        1
+        if planner_mode
+        else FRONTEND_MAX_ITERATIONS
         if FRONTEND_ACCEPTANCE_MARKER in user_prompt
         else STANDARD_MAX_ITERATIONS
     )
+    if recovery_note and not planner_mode:
+        user_prompt = recovery_note + "\n\n" + user_prompt
+    if planner_mode:
+        enabled_toolsets = []
+    else:
+        user_prompt = (
+            SKILL_DISCOVERY_GUIDANCE
+            + "\n"
+            + EXECUTION_EFFICIENCY_GUIDANCE
+            + "\nUser project request:\n"
+            + user_prompt
+        )
+        enabled_toolsets = ["coding", "skills"]
+        if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
+            enabled_toolsets.extend(["browser", "browser-use"])
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],

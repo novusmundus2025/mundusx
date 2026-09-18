@@ -571,6 +571,9 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("max_iterations=max_iterations"));
         assert!(STRUCTURED_BRIDGE.contains("FRONTEND_MAX_ITERATIONS = 16"));
+        assert!(STRUCTURED_BRIDGE.contains("max_iterations = 1 if planner_mode"));
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets = []"));
+        assert!(STRUCTURED_BRIDGE.contains("SWARM_PLANNER_MARKER"));
         assert!(STRUCTURED_BRIDGE.contains("PROJECT_COMPACTION_TOKENS = 16_384"));
         assert!(STRUCTURED_BRIDGE.contains("configure_project_compaction(agent)"));
         assert!(STRUCTURED_BRIDGE.contains("class RecoveryCheckpoint"));
