@@ -49,6 +49,8 @@ fn start_watchdog(timeout: Duration, interval: Duration) {
 
 const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 const FRONTEND_ACCEPTANCE_MARKER: &str = "MUNDUSX_FRONTEND_ACCEPTANCE_V1";
+const MANAGED_PROJECT_MARKER: &str = "mundusx-managed-project";
+const DEFAULT_PROJECT_GITIGNORE: &str = "node_modules/\n.env\n.env.*\n!.env.example\n.DS_Store\n*.log\n.hermes/\ncoverage/\ndist/\nbuild/\ndata/*.db\ndata/*.db-journal\ndata/*.db-shm\ndata/*.db-wal\n";
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -838,6 +840,87 @@ fn bounded_task_workspace(
     Ok(target)
 }
 
+fn project_git(workspace: &Path, arguments: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(arguments)
+        .current_dir(workspace)
+        .output()
+        .map_err(|error| format!("could not start Git: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Git command failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn initialize_new_project_repository(workspace: &Path) -> Result<bool, String> {
+    if workspace.join(".git").exists() {
+        return Ok(false);
+    }
+    let is_empty = fs::read_dir(workspace)
+        .map_err(|error| format!("could not inspect the new project folder: {error}"))?
+        .next()
+        .is_none();
+    if !is_empty {
+        return Ok(false);
+    }
+    fs::write(workspace.join(".gitignore"), DEFAULT_PROJECT_GITIGNORE)
+        .map_err(|error| format!("could not create the project ignore rules: {error}"))?;
+    project_git(workspace, &["init"])?;
+    project_git(workspace, &["add", ".gitignore"])?;
+    project_git(
+        workspace,
+        &[
+            "-c",
+            "user.name=MundusX Hermes",
+            "-c",
+            "user.email=hermes@mundusx.invalid",
+            "commit",
+            "-m",
+            "Initialize MundusX project",
+        ],
+    )?;
+    fs::write(
+        workspace.join(".git").join(MANAGED_PROJECT_MARKER),
+        "Project created and locally checkpointed by MundusX.\n",
+    )
+    .map_err(|error| format!("could not mark the managed project: {error}"))?;
+    Ok(true)
+}
+
+fn checkpoint_managed_project(workspace: &Path) -> Result<Option<String>, String> {
+    if !workspace.join(".git").join(MANAGED_PROJECT_MARKER).is_file() {
+        return Ok(None);
+    }
+    project_git(workspace, &["add", "--all"])?;
+    let staged = std::process::Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(workspace)
+        .status()
+        .map_err(|error| format!("could not inspect the managed project checkpoint: {error}"))?;
+    if staged.success() {
+        return Ok(None);
+    }
+    if staged.code() != Some(1) {
+        return Err("Git could not inspect the managed project checkpoint".to_string());
+    }
+    project_git(
+        workspace,
+        &[
+            "-c",
+            "user.name=MundusX Hermes",
+            "-c",
+            "user.email=hermes@mundusx.invalid",
+            "commit",
+            "-m",
+            "Checkpoint completed MundusX task",
+        ],
+    )?;
+    project_git(workspace, &["rev-parse", "HEAD"]).map(Some)
+}
+
 fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Result<(), String> {
     let task_id = task["task_id"]
         .as_str()
@@ -871,6 +954,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     // in the connector protocol makes the browser wait for proof that the
     // directory exists instead of optimistically creating browser-only state.
     if prompt == PROJECT_INITIALIZE_PROMPT {
+        let initialized_git = initialize_new_project_repository(&task_workspace)?;
         post_task_events(
             options,
             &task_id,
@@ -878,8 +962,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 "sequence": 1,
                 "event": {
                     "type": "project_initialized",
-                    "summary": "Project folder created on this computer",
-                    "metadata": {"workspace": task_workspace.display().to_string()}
+                    "summary": if initialized_git { "Project folder created with a local Git baseline" } else { "Project folder created on this computer" },
+                    "metadata": {"workspace": task_workspace.display().to_string(), "git_initialized": initialized_git}
                 }
             })],
         )?;
@@ -888,7 +972,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             &options.token,
             &format!("/api/agent/connector/tasks/{task_id}/complete"),
             json!({"status": "completed", "result": {
-                "content": "Project folder is ready",
+                "content": if initialized_git { "Project folder is ready with a local Git baseline" } else { "Project folder is ready" },
                 "session_id": session_id,
                 "workspace": task_workspace.display().to_string(),
                 "changed_files": [],
@@ -1159,6 +1243,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             response = Err("Hermes changed project files but did not complete browser acceptance successfully".to_string());
         }
     }
+    if response.is_ok() {
+        if let Err(error) = checkpoint_managed_project(&task_workspace) {
+            response = Err(format!("Hermes completed the task but could not create its local Git checkpoint: {error}"));
+        }
+    }
     drop(run_hermes_with_recovery);
     drop(stream_hermes_event);
     // The swarm coordinator receives its own sender clone. Release it before
@@ -1343,12 +1432,13 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_task_workspace, changed_file_events, connection_id, drain_progress_events,
-        harness_completion_content,
+        bounded_task_workspace, changed_file_events, checkpoint_managed_project, connection_id,
+        drain_progress_events, harness_completion_content, initialize_new_project_repository,
+        project_git,
         project_execution_directive, request_requires_browser_verification,
         request_requires_verification, requires_project_file_change, retry_terminal_report,
         structured_hermes_event, successful_browser_verification, successful_verification,
-        transient_agent_failure, validate_chat_url, workspace_snapshot,
+        transient_agent_failure, validate_chat_url, workspace_snapshot, MANAGED_PROJECT_MARKER,
     };
     use std::fs;
 
@@ -1518,6 +1608,40 @@ mod tests {
         assert!(bounded_task_workspace(&root, Some("../escape"), true).is_err());
         assert!(bounded_task_workspace(&root, Some("Bad-Name"), true).is_err());
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn new_projects_receive_a_clean_local_git_baseline_and_safe_checkpoints() {
+        let root = std::env::temp_dir().join(format!("mundusx-project-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).expect("test project");
+        assert!(initialize_new_project_repository(&root).expect("initialize project"));
+        assert!(root.join(".git").join(MANAGED_PROJECT_MARKER).is_file());
+        let ignore = fs::read_to_string(root.join(".gitignore")).expect("ignore rules");
+        for rule in [".hermes/", "node_modules/", "data/*.db", ".env"] {
+            assert!(ignore.contains(rule), "missing ignore rule {rule}");
+        }
+        assert!(project_git(&root, &["status", "--porcelain"]).unwrap().is_empty());
+
+        fs::write(root.join("server.js"), "console.log('ready');\n").unwrap();
+        fs::create_dir(root.join(".hermes")).unwrap();
+        fs::write(root.join(".hermes/checkpoint.json"), "{}").unwrap();
+        let checkpoint = checkpoint_managed_project(&root).expect("checkpoint");
+        assert!(checkpoint.is_some());
+        assert!(project_git(&root, &["status", "--porcelain"]).unwrap().is_empty());
+        assert_eq!(project_git(&root, &["ls-files", "server.js"]).unwrap(), "server.js");
+        assert!(project_git(&root, &["ls-files", ".hermes/checkpoint.json"]).unwrap().is_empty());
+        fs::remove_dir_all(root).expect("remove test project");
+    }
+
+    #[test]
+    fn project_bootstrap_does_not_adopt_existing_files() {
+        let root = std::env::temp_dir().join(format!("mundusx-existing-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).expect("test project");
+        fs::write(root.join("user-file.txt"), "keep me\n").unwrap();
+        assert!(!initialize_new_project_repository(&root).expect("inspect existing project"));
+        assert!(!root.join(".git").exists());
+        assert!(checkpoint_managed_project(&root).unwrap().is_none());
+        fs::remove_dir_all(root).expect("remove test project");
     }
 
     #[test]
