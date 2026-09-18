@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 const INSTALL_SCRIPT: &str = include_str!("../../../install.ps1");
+const CONNECTOR_UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.00.ps1");
 
 fn installed_cli_path() -> std::path::PathBuf {
     if let Ok(install_dir) = std::env::var("OPENGPU_INSTALL_DIR") {
@@ -116,6 +117,35 @@ fn run_installer(agent_mode: Option<&str>, agent_only: bool) -> Result<(), Strin
             log_path.display()
         ))
     }
+}
+
+fn run_connector_update() -> Result<(), String> {
+    let directory = std::env::temp_dir().join(format!(
+        "mundusx-setup-update-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("failed to prepare the connector update: {error}"))?;
+    let script = directory.join("update.ps1");
+    std::fs::write(&script, CONNECTOR_UPDATE_SCRIPT)
+        .map_err(|error| format!("failed to stage the connector update: {error}"))?;
+    let result = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script.display().to_string(),
+        ])
+        .status()
+        .map_err(|error| format!("failed to start the connector update: {error}"))?;
+    let _ = std::fs::remove_dir_all(&directory);
+    result.success().then_some(()).ok_or_else(|| {
+        format!(
+            "MundusX connector update failed with exit code {}. See .opengpu\\logs\\update-0.2.00.log for details.",
+            result.code().unwrap_or(-1)
+        )
+    })
 }
 
 fn launch_contributor_setup() -> Result<(), String> {
@@ -259,7 +289,7 @@ fn choose_role() -> Option<bool> {
 
 #[cfg(windows)]
 fn main() {
-    if let Err(error) = run_installer(None, false) {
+    if let Err(error) = run_installer(None, false).and_then(|_| run_connector_update()) {
         message("MundusX Setup failed", &error, true);
     }
 }
@@ -286,6 +316,9 @@ mod tests {
         assert!(INSTALL_SCRIPT
             .contains("https://github.com/mundusx/releases/releases/download/opengpu-prod"));
         assert!(!INSTALL_SCRIPT.contains("github.com/mundusx/mundusx/releases/latest"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("cli-windows-v0.2.00"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("e8d7f0d97a2577bcbc292ba91eb2da3d1a29fe6e4ee65cfa91287bb614cf71ce"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("4975e1e2ac413a1a05387efb812d94ea3b3f3b5d9cf9d90a354a48b1fc291778"));
     }
 
     #[test]
