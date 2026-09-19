@@ -23,17 +23,4 @@ After the final source change:
 8. If any check fails, use the concrete browser or console result to repair the source, then repeat the test, build, and browser flow. Do not stop after merely explaining the failure.
 9. Stop every server or test process started for acceptance.
 
-When the browser capability is exposed through `execute_code`, drive the browser and perform all checks in that tool call. After the checks pass, emit this exact structured object as tool output:
-
-```json
-{
-  "MUNDUSX_BROWSER_ACCEPTANCE_V1": true,
-  "rendered": true,
-  "flow_exercised": true,
-  "console_errors": [],
-  "desktop_checked": true,
-  "narrow_checked": true
-}
-```
-
-Emit the object only from the browser execution result after observing every field. Never write it in prose or use it to conceal a failed check.
+Use the native browser tools or `browser_exec` for browser acceptance. Keep browser verification observable as browser tool events; do not wrap it inside a generic code-execution kernel.
