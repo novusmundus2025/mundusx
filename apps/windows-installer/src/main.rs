@@ -317,8 +317,8 @@ mod tests {
             .contains("https://github.com/mundusx/releases/releases/download/opengpu-prod"));
         assert!(!INSTALL_SCRIPT.contains("github.com/mundusx/mundusx/releases/latest"));
         assert!(CONNECTOR_UPDATE_SCRIPT.contains("cli-windows-v0.2.06"));
-        assert!(CONNECTOR_UPDATE_SCRIPT.contains("cdc5019af7c74688571aaf84a03eb03b8894b8e9d69ddbe4c3ab0a2f7651da88"));
-        assert!(CONNECTOR_UPDATE_SCRIPT.contains("cb34262e3cc7db9bb6170179616ccd21c6b44c0dbb4ca4c9a7c5a47e0fd49240"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("9d6a9f0bd4db2db2f3a0c625a6246e21e1aca92a449e68027286991e9bf33f1b"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("cb895971f240f3b7be31023511f108ed22a1d74187e0b09a4ae5917b16890741"));
         assert!(CONNECTOR_UPDATE_SCRIPT.contains("opengpu-node-agent-x86_64-pc-windows-msvc.exe"));
         assert!(CONNECTOR_UPDATE_SCRIPT.contains("mundusx-agent-server-x86_64-pc-windows-msvc.exe"));
     }

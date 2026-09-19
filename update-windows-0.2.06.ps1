@@ -6,8 +6,8 @@ $logDir = Join-Path $env:USERPROFILE ".opengpu\logs"
 $logPath = Join-Path $logDir "update-0.2.06.log"
 $releaseBase = "https://github.com/mundusx/releases/releases/download/cli-windows-v0.2.06"
 $assets = @(
-  @{ Name = "mundusx.exe"; Download = "mundusx-x86_64-pc-windows-msvc.exe"; Hash = "cdc5019af7c74688571aaf84a03eb03b8894b8e9d69ddbe4c3ab0a2f7651da88" },
-  @{ Name = "opengpu.exe"; Download = "opengpu-x86_64-pc-windows-msvc.exe"; Hash = "cb34262e3cc7db9bb6170179616ccd21c6b44c0dbb4ca4c9a7c5a47e0fd49240" },
+  @{ Name = "mundusx.exe"; Download = "mundusx-x86_64-pc-windows-msvc.exe"; Hash = "9d6a9f0bd4db2db2f3a0c625a6246e21e1aca92a449e68027286991e9bf33f1b" },
+  @{ Name = "opengpu.exe"; Download = "opengpu-x86_64-pc-windows-msvc.exe"; Hash = "cb895971f240f3b7be31023511f108ed22a1d74187e0b09a4ae5917b16890741" },
   @{ Name = "opengpu-node-agent.exe"; Download = "opengpu-node-agent-x86_64-pc-windows-msvc.exe"; Hash = "d190a46de10e5ef78ce44dd135a18ec8787d521d2ce04dc8aca02de1fa1549a1" },
   @{ Name = "mundusx-agent-server.exe"; Download = "mundusx-agent-server-x86_64-pc-windows-msvc.exe"; Hash = "6834fe05b72dede9908df719608a0562419af30930fbf3064038ace93bf48479" }
 )
