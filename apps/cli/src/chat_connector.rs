@@ -1037,6 +1037,122 @@ fn checkpoint_managed_project(workspace: &Path) -> Result<Option<String>, String
     project_git(workspace, &["rev-parse", "HEAD"]).map(Some)
 }
 
+fn checkpoint_project_for_swarm(
+    workspace: &Path,
+    objective: &str,
+) -> Result<Option<String>, String> {
+    let repository = PathBuf::from(project_git(workspace, &["rev-parse", "--show-toplevel"])?);
+    let repository = repository
+        .canonicalize()
+        .map_err(|error| format!("could not resolve the Git project root: {error}"))?;
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| format!("could not resolve the selected project folder: {error}"))?;
+    if repository != workspace {
+        return Err(
+            "Project Swarm will not checkpoint a subfolder of a larger Git repository; select the repository root"
+                .to_string(),
+        );
+    }
+
+    let exclude_path = PathBuf::from(project_git(
+        &workspace,
+        &["rev-parse", "--git-path", "info/exclude"],
+    )?);
+    let exclude_path = if exclude_path.is_absolute() {
+        exclude_path
+    } else {
+        workspace.join(exclude_path)
+    };
+    let excludes = fs::read_to_string(&exclude_path).unwrap_or_default();
+    if !excludes.lines().any(|line| line.trim() == ".hermes/") {
+        if let Some(parent) = exclude_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("could not prepare local Git exclusions: {error}"))?;
+        }
+        let separator = if excludes.is_empty() || excludes.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        fs::write(
+            &exclude_path,
+            format!("{excludes}{separator}# MundusX local agent state\n.hermes/\n"),
+        )
+        .map_err(|error| format!("could not save local Git exclusions: {error}"))?;
+    }
+
+    let status = project_git(
+        &workspace,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?;
+    if status.trim().is_empty() {
+        return Ok(None);
+    }
+    let conflicts = project_git(&workspace, &["diff", "--name-only", "--diff-filter=U"])?;
+    if !conflicts.trim().is_empty() {
+        return Err(format!(
+            "Project Swarm cannot checkpoint unresolved Git conflicts: {}",
+            conflicts.lines().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let sensitive = project_git(&workspace, &["ls-files", "--others", "--exclude-standard"])?
+        .lines()
+        .filter(|path| {
+            let name = Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            (name == ".env" || (name.starts_with(".env.") && name != ".env.example"))
+                || name.ends_with(".pem")
+                || name.ends_with(".key")
+                || matches!(
+                    name.as_str(),
+                    "credentials.json" | "service-account.json" | "id_rsa" | "id_ed25519"
+                )
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !sensitive.is_empty() {
+        return Err(format!(
+            "Project Swarm will not automatically checkpoint untracked sensitive files; ignore or commit them deliberately first: {}",
+            sensitive.join(", ")
+        ));
+    }
+
+    project_git(&workspace, &["add", "--all"])?;
+    let summary = objective
+        .lines()
+        .next()
+        .unwrap_or("project work")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let summary = summary.chars().take(72).collect::<String>();
+    let message = if summary.is_empty() {
+        "Checkpoint before Project Swarm".to_string()
+    } else {
+        format!("Checkpoint before Project Swarm: {summary}")
+    };
+    project_git(
+        &workspace,
+        &[
+            "-c",
+            "user.name=MundusX Hermes",
+            "-c",
+            "user.email=hermes@mundusx.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "-m",
+            &message,
+        ],
+    )?;
+    project_git(&workspace, &["rev-parse", "HEAD"]).map(Some)
+}
+
 fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Result<(), String> {
     let task_id = task["task_id"]
         .as_str()
@@ -1266,18 +1382,32 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     };
     let mut response = if runtime == "hermes" && allow_mutations
         && super::project_swarm::should_coordinate(&prompt) {
-        match super::project_swarm::run(super::project_swarm::CoordinatorOptions {
-            workspace: task_workspace.clone(),
-            objective: prompt.clone(),
-            session_id: session_id.clone(),
-            task_id: task_id.clone(),
-            connection_id: connection_id.to_string(),
-            remote_base: format!("{}/api/agent/model/v1", options.chat_url),
-            token: options.token.clone(),
-            data_dir: super::data_dir(),
-            cancellation: Arc::clone(&stop),
-            event_sender: swarm_event_sender.clone(),
-        }) {
+        let swarm_result = checkpoint_project_for_swarm(&task_workspace, &prompt).and_then(|checkpoint| {
+            if let Some(commit) = checkpoint {
+                let short_commit = commit.chars().take(8).collect::<String>();
+                let _ = post_task_events(options, &task_id, vec![json!({
+                    "sequence": 19_998,
+                    "event": {
+                        "type": "swarm_checkpoint_created",
+                        "summary": format!("Created local project checkpoint {short_commit} before Project Swarm"),
+                        "metadata": {"commit": commit, "local_only": true, "project": task_workspace.display().to_string()}
+                    }
+                })]);
+            }
+            super::project_swarm::run(super::project_swarm::CoordinatorOptions {
+                workspace: task_workspace.clone(),
+                objective: prompt.clone(),
+                session_id: session_id.clone(),
+                task_id: task_id.clone(),
+                connection_id: connection_id.to_string(),
+                remote_base: format!("{}/api/agent/model/v1", options.chat_url),
+                token: options.token.clone(),
+                data_dir: super::data_dir(),
+                cancellation: Arc::clone(&stop),
+                event_sender: swarm_event_sender.clone(),
+            })
+        });
+        match swarm_result {
             Ok(value) => Ok(value),
             Err(error) => {
                 let _ = post_task_events(options, &task_id, vec![json!({
@@ -1519,7 +1649,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.06"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.07"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1579,7 +1709,8 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_task_workspace, changed_file_events, checkpoint_managed_project, connection_id,
+        bounded_task_workspace, changed_file_events, checkpoint_managed_project,
+        checkpoint_project_for_swarm, connection_id,
         drain_progress_events, harness_completion_content, hermes_recovery_allowed,
         initialize_new_project_repository, project_git,
         project_execution_directive, request_is_repository_only_operation,
@@ -1796,6 +1927,145 @@ mod tests {
         assert!(project_git(&root, &["status", "--porcelain"]).unwrap().is_empty());
         assert_eq!(project_git(&root, &["ls-files", "server.js"]).unwrap(), "server.js");
         assert!(project_git(&root, &["ls-files", ".hermes/checkpoint.json"]).unwrap().is_empty());
+        fs::remove_dir_all(root).expect("remove test project");
+    }
+
+    #[test]
+    fn dirty_project_receives_a_visible_local_checkpoint_before_swarm() {
+        let root = std::env::temp_dir().join(format!(
+            "mundusx-swarm-checkpoint-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&root).expect("test project");
+        project_git(&root, &["init", "-q"]).unwrap();
+        fs::write(root.join("README.md"), "initial\n").unwrap();
+        project_git(&root, &["add", "README.md"]).unwrap();
+        project_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Checkpoint Test",
+                "-c",
+                "user.email=test@mundusx.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        )
+        .unwrap();
+
+        fs::write(root.join("README.md"), "changed\n").unwrap();
+        fs::write(root.join("new-file.txt"), "new\n").unwrap();
+        fs::create_dir(root.join(".hermes")).unwrap();
+        fs::write(root.join(".hermes/recovery.json"), "{}\n").unwrap();
+        let checkpoint = checkpoint_project_for_swarm(
+            &root,
+            "build the frontend and API in parallel",
+        )
+        .expect("checkpoint")
+        .expect("new checkpoint commit");
+
+        assert_eq!(checkpoint, project_git(&root, &["rev-parse", "HEAD"]).unwrap());
+        assert!(project_git(&root, &["status", "--porcelain"]).unwrap().is_empty());
+        assert!(project_git(&root, &["ls-files", ".hermes/recovery.json"])
+            .unwrap()
+            .is_empty());
+        assert!(project_git(&root, &["log", "-1", "--pretty=%s"])
+            .unwrap()
+            .starts_with("Checkpoint before Project Swarm:"));
+        assert!(checkpoint_project_for_swarm(&root, "same task")
+            .unwrap()
+            .is_none());
+
+        fs::write(root.join(".env.local"), "TOKEN=test-only\n").unwrap();
+        assert!(checkpoint_project_for_swarm(&root, "same task")
+            .unwrap_err()
+            .contains("untracked sensitive files"));
+        fs::remove_file(root.join(".env.local")).unwrap();
+        fs::remove_dir_all(root).expect("remove test project");
+    }
+
+    #[test]
+    fn swarm_checkpoint_refuses_nested_projects_and_unresolved_conflicts() {
+        let root = std::env::temp_dir().join(format!(
+            "mundusx-swarm-safety-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&root).expect("test project");
+        project_git(&root, &["init", "-q"]).unwrap();
+        fs::write(root.join("value.txt"), "base\n").unwrap();
+        fs::create_dir(root.join("nested")).unwrap();
+        project_git(&root, &["add", "--all"]).unwrap();
+        project_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Checkpoint Test",
+                "-c",
+                "user.email=test@mundusx.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        )
+        .unwrap();
+        assert!(checkpoint_project_for_swarm(&root.join("nested"), "task")
+            .unwrap_err()
+            .contains("subfolder"));
+
+        let base_branch = project_git(&root, &["branch", "--show-current"]).unwrap();
+        project_git(&root, &["checkout", "-q", "-b", "other"]).unwrap();
+        fs::write(root.join("value.txt"), "other\n").unwrap();
+        project_git(&root, &["add", "value.txt"]).unwrap();
+        project_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Checkpoint Test",
+                "-c",
+                "user.email=test@mundusx.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "other",
+            ],
+        )
+        .unwrap();
+        project_git(&root, &["checkout", "-q", &base_branch]).unwrap();
+        fs::write(root.join("value.txt"), "current\n").unwrap();
+        project_git(&root, &["add", "value.txt"]).unwrap();
+        project_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Checkpoint Test",
+                "-c",
+                "user.email=test@mundusx.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "current",
+            ],
+        )
+        .unwrap();
+        project_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Checkpoint Test",
+                "-c",
+                "user.email=test@mundusx.invalid",
+                "merge",
+                "other",
+            ],
+        )
+        .unwrap_err();
+        assert!(checkpoint_project_for_swarm(&root, "task")
+            .unwrap_err()
+            .contains("unresolved Git conflicts"));
+        project_git(&root, &["merge", "--abort"]).unwrap();
         fs::remove_dir_all(root).expect("remove test project");
     }
 
