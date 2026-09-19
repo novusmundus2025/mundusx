@@ -5,9 +5,12 @@ from hermes_bridge import (
     AnswerStream,
     CHECKPOINT_EVENT_LIMIT,
     EXECUTION_EFFICIENCY_GUIDANCE,
+    RECOVERY_GUIDANCE,
+    SKILL_DISCOVERY_GUIDANCE,
     FRONTEND_MAX_ITERATIONS,
     COMPREHENSIVE_MAX_ITERATIONS,
     project_iteration_budget,
+    project_user_prompt,
     PROJECT_COMPACTION_TOKENS,
     RecoveryCheckpoint,
     STANDARD_MAX_ITERATIONS,
@@ -57,6 +60,14 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(project_iteration_budget("Create a complete bus ticketing CRUD API"), COMPREHENSIVE_MAX_ITERATIONS)
         self.assertIn("Do not treat that display escaping", EXECUTION_EFFICIENCY_GUIDANCE)
         self.assertIn("return the final response immediately", EXECUTION_EFFICIENCY_GUIDANCE)
+
+    def test_recovery_prompt_skips_completed_setup_and_keeps_checkpoint(self):
+        prompt = project_user_prompt("finish the UI", "checkpoint-data")
+        self.assertIn("checkpoint-data", prompt)
+        self.assertIn("finish the UI", prompt)
+        self.assertIn(RECOVERY_GUIDANCE, prompt)
+        self.assertNotIn(SKILL_DISCOVERY_GUIDANCE, prompt)
+        self.assertIn("Do not repeat skill discovery", prompt)
 
     def test_project_compaction_uses_token_preflight_cap(self):
         class Compressor:
