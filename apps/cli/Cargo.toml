@@ -28,6 +28,9 @@ tiny_http = "0.12"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 mundusx-agent-core = { path = "../../packages/agent-core" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ureq = { version = "2.12", features = ["native-certs"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
