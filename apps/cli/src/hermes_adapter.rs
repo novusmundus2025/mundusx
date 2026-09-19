@@ -15,24 +15,33 @@ mod hermes_progress;
 
 const STRUCTURED_BRIDGE: &str = include_str!("hermes_bridge.py");
 const PROJECT_SWARM_SKILL: &str = include_str!("../skills/project-swarm/SKILL.md");
+const FRONTEND_RUNTIME_ACCEPTANCE_SKILL: &str =
+    include_str!("../skills/frontend-runtime-acceptance/SKILL.md");
 
-fn ensure_project_swarm_skill() -> Result<(), String> {
+fn ensure_managed_skill(name: &str, contents: &str) -> Result<(), String> {
     let path = hermes_home()
         .ok_or_else(|| "could not locate the Hermes home directory".to_string())?
         .join("skills")
         .join("software-development")
-        .join("project-swarm")
+        .join(name)
         .join("SKILL.md");
-    if fs::read_to_string(&path).ok().as_deref() == Some(PROJECT_SWARM_SKILL) {
+    if fs::read_to_string(&path).ok().as_deref() == Some(contents) {
         return Ok(());
     }
     let parent = path
         .parent()
-        .ok_or_else(|| "invalid Project Swarm skill path".to_string())?;
+        .ok_or_else(|| format!("invalid {name} skill path"))?;
     fs::create_dir_all(parent)
-        .map_err(|error| format!("could not prepare Project Swarm skill directory: {error}"))?;
-    fs::write(&path, PROJECT_SWARM_SKILL)
-        .map_err(|error| format!("could not install Project Swarm skill: {error}"))
+        .map_err(|error| format!("could not prepare {name} skill directory: {error}"))?;
+    fs::write(&path, contents).map_err(|error| format!("could not install {name} skill: {error}"))
+}
+
+fn ensure_managed_skills() -> Result<(), String> {
+    ensure_managed_skill("project-swarm", PROJECT_SWARM_SKILL)?;
+    ensure_managed_skill(
+        "frontend-runtime-acceptance",
+        FRONTEND_RUNTIME_ACCEPTANCE_SKILL,
+    )
 }
 
 fn configure_task_process(command: &mut Command) {
@@ -250,7 +259,7 @@ pub fn run(
 ) -> Result<Value, String> {
     // Managed skills are installed lazily so existing Hermes installations gain
     // them after a MundusX update without replacing the user's other skills.
-    let _ = ensure_project_swarm_skill();
+    let _ = ensure_managed_skills();
     if !available() {
         return Err(
             "Hermes runtime is not installed; run `mundusx agent install hermes`".to_string(),
@@ -584,7 +593,7 @@ mod output_tests {
     use super::{
         clear_session, hermes_output_reports_model_failure, is_retryable_model_failure,
         runtime_session_id, save_session, session_map, should_rebuild_session_after_failure,
-        STRUCTURED_BRIDGE,
+        FRONTEND_RUNTIME_ACCEPTANCE_SKILL, STRUCTURED_BRIDGE,
     };
 
     #[test]
@@ -611,6 +620,9 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
         assert!(STRUCTURED_BRIDGE.contains("runtime_session_ready"));
         assert!(STRUCTURED_BRIDGE.contains("RECOVERY_GUIDANCE"));
+        assert!(STRUCTURED_BRIDGE.contains("MUNDUSX_BROWSER_ACCEPTANCE_V1"));
+        assert!(FRONTEND_RUNTIME_ACCEPTANCE_SKILL.contains("MUNDUSX_BROWSER_ACCEPTANCE_V1"));
+        assert!(FRONTEND_RUNTIME_ACCEPTANCE_SKILL.contains("Do not stop after merely explaining"));
         assert!(!STRUCTURED_BRIDGE.contains("select_project_skills"));
     }
 
