@@ -120,6 +120,18 @@ class ProgressTests(unittest.TestCase):
         self.assertIs(tool_outcome('{"exit_code": 1}'), False)
         self.assertIsNone(tool_outcome("Unstructured command output"))
 
+    def test_successful_exit_with_fatal_frontend_diagnostics_fails(self):
+        missing_export = {
+            "exit_code": 0,
+            "output": '"LocalTaxiIcon" is not exported by "@mui/icons-material/index.mjs"',
+        }
+        ordinary_warning = {
+            "exit_code": 0,
+            "output": "Some chunks are larger than 500 kB after minification.",
+        }
+        self.assertIs(tool_outcome(missing_export, "terminal"), False)
+        self.assertIs(tool_outcome(ordinary_warning, "terminal"), True)
+
     def test_browser_tools_report_real_success(self):
         self.assertIs(tool_outcome('{"success":true,"title":"Enrollment System"}', "browser_navigate"), True)
         self.assertIs(tool_outcome('{"success":false,"error":"page crashed"}', "browser_console"), False)
