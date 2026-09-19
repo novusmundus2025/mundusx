@@ -343,6 +343,8 @@ def tool_activity(name, arguments):
         return "command"
     if name in ("write_file", "patch", "apply_patch", "patch_file", "write"):
         return "write"
+    if name == "execute_code" or name.startswith("browser_"):
+        return "browser_acceptance"
     if name in ("read_file", "read", "search_files", "grep", "glob", "search", "list_directory"):
         return "inspect"
     if name.startswith("browser_") or name in ("web_search", "web_fetch"):
