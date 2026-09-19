@@ -2011,7 +2011,7 @@ fn run_llama_server_completion(
         payload["response_format"] = speakai_response_format();
     }
     let response = ureq::post(&format!("{url}/v1/chat/completions"))
-        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
+        .timeout(Duration::from_secs(worker_idle_timeout().as_secs().max(30)))
         .send_json(payload)
         .map_err(|error| format!("llama-server completion failed: {error}"))?;
     let value = response
@@ -2077,8 +2077,13 @@ fn run_vllm_completion(
     if structured {
         payload["response_format"] = speakai_response_format();
     }
+    let request_timeout = if live_stream {
+        worker_hard_timeout()
+    } else {
+        worker_idle_timeout()
+    };
     let mut request = ureq::post(&format!("{url}/v1/chat/completions"))
-        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)));
+        .timeout(Duration::from_secs(request_timeout.as_secs().max(30)));
     if live_stream {
         // ureq advertises gzip by default. Compressing an SSE response makes
         // runtimes and proxies accumulate many small token events before a
@@ -2147,7 +2152,15 @@ fn run_native_openai_tool_turn(
             "{}/v1/chat/completions",
             url.trim_end_matches('/')
         ))
-        .timeout(Duration::from_secs(worker_timeout().as_secs().max(30)))
+        .timeout(Duration::from_secs(
+            if streaming {
+                worker_hard_timeout()
+            } else {
+                worker_idle_timeout()
+            }
+            .as_secs()
+            .max(30),
+        ))
         .send_json(payload)
         .map_err(|error| format!("native OpenAI tool completion failed: {error}"))?;
         if streaming {
@@ -3832,6 +3845,7 @@ pub fn launch_worker_with_stream(
         let _ = stdout_pipe.read_to_end(&mut buf);
         buf
     });
+    let (activity_sender, activity_receiver) = mpsc::channel::<()>();
     let stderr_reader = thread::spawn(move || {
         let mut diagnostics = Vec::new();
         let mut reader = BufReader::new(&mut stderr_pipe);
@@ -3845,6 +3859,7 @@ pub fn launch_worker_with_stream(
                     if let Some(encoded) = text.trim().strip_prefix(STREAM_DELTA_PREFIX) {
                         if let Ok(bytes) = hex::decode(encoded) {
                             if let Ok(delta) = String::from_utf8(bytes) {
+                                let _ = activity_sender.send(());
                                 if let Some(sender) = delta_sender.as_ref() {
                                     let _ = sender.send(delta);
                                 }
@@ -3860,15 +3875,28 @@ pub fn launch_worker_with_stream(
         diagnostics
     });
 
-    let deadline = Instant::now() + worker_timeout();
+    let started = Instant::now();
+    let mut last_progress = started;
+    let idle_timeout = worker_idle_timeout();
+    let hard_timeout = worker_hard_timeout();
     let status = loop {
+        while activity_receiver.try_recv().is_ok() {
+            last_progress = Instant::now();
+        }
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("failed to poll worker: {error}"))?
         {
             break status;
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if let Some(timeout_kind) = worker_timeout_kind(
+            started,
+            last_progress,
+            now,
+            idle_timeout,
+            hard_timeout,
+        ) {
             // Kill the whole tree, not just the direct child: the worker
             // subprocess spawns llama-cli as its own child, and on Windows
             // that grandchild can inherit our stdout/stderr pipe handles.
@@ -3879,10 +3907,16 @@ pub fn launch_worker_with_stream(
             // their own once the tree-kill closes every handle.
             kill_process_tree(child.id());
             let _ = child.wait();
-            return Err(format!(
-                "worker timed out after {}s and was terminated",
-                worker_timeout().as_secs()
-            ));
+            return Err(match timeout_kind {
+                WorkerTimeoutKind::Idle => format!(
+                    "worker made no model progress for {}s and was terminated; retry on another available node",
+                    idle_timeout.as_secs()
+                ),
+                WorkerTimeoutKind::Hard => format!(
+                    "worker exceeded the {}s hard execution limit and was terminated; resume from the task checkpoint",
+                    hard_timeout.as_secs()
+                ),
+            });
         }
         thread::sleep(Duration::from_millis(200));
     };
@@ -3910,13 +3944,46 @@ pub fn launch_worker(
     launch_worker_with_stream(request, model_dir, None)
 }
 
-fn worker_timeout() -> Duration {
+fn worker_idle_timeout() -> Duration {
     std::env::var("OPENGPU_WORKER_TIMEOUT_SECS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(300))
+}
+
+fn worker_hard_timeout() -> Duration {
+    let idle = worker_idle_timeout();
+    std::env::var("OPENGPU_WORKER_HARD_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(3600))
+        .max(idle)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerTimeoutKind {
+    Idle,
+    Hard,
+}
+
+fn worker_timeout_kind(
+    started: Instant,
+    last_progress: Instant,
+    now: Instant,
+    idle_timeout: Duration,
+    hard_timeout: Duration,
+) -> Option<WorkerTimeoutKind> {
+    if now.duration_since(started) >= hard_timeout {
+        Some(WorkerTimeoutKind::Hard)
+    } else if now.duration_since(last_progress) >= idle_timeout {
+        Some(WorkerTimeoutKind::Idle)
+    } else {
+        None
+    }
 }
 
 #[cfg(windows)]
@@ -3960,6 +4027,44 @@ mod tests {
     use std::io::Write;
     use std::net::TcpListener;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn worker_timeout_is_idle_based_with_a_separate_hard_limit() {
+        let started = Instant::now();
+        let idle = Duration::from_secs(300);
+        let hard = Duration::from_secs(3600);
+
+        assert_eq!(
+            worker_timeout_kind(
+                started,
+                started + Duration::from_secs(240),
+                started + Duration::from_secs(539),
+                idle,
+                hard,
+            ),
+            None
+        );
+        assert_eq!(
+            worker_timeout_kind(
+                started,
+                started + Duration::from_secs(240),
+                started + Duration::from_secs(540),
+                idle,
+                hard,
+            ),
+            Some(WorkerTimeoutKind::Idle)
+        );
+        assert_eq!(
+            worker_timeout_kind(
+                started,
+                started + Duration::from_secs(3599),
+                started + Duration::from_secs(3600),
+                idle,
+                hard,
+            ),
+            Some(WorkerTimeoutKind::Hard)
+        );
+    }
 
     #[test]
     fn parses_openai_sse_and_relays_complete_content_after_terminal_event() {

@@ -3,14 +3,21 @@ import tempfile
 import unittest
 from hermes_bridge import (
     AnswerStream,
+    CHECKPOINT_EVENT_LIMIT,
     EXECUTION_EFFICIENCY_GUIDANCE,
+    RECOVERY_GUIDANCE,
+    SKILL_DISCOVERY_GUIDANCE,
     FRONTEND_MAX_ITERATIONS,
+    COMPREHENSIVE_MAX_ITERATIONS,
+    project_iteration_budget,
+    project_user_prompt,
     PROJECT_COMPACTION_TOKENS,
     RecoveryCheckpoint,
     STANDARD_MAX_ITERATIONS,
     browser_verification,
     configure_project_compaction,
     loaded_skill,
+    is_verification_command,
     tool_activity,
     tool_outcome,
 )
@@ -27,19 +34,40 @@ class ProgressTests(unittest.TestCase):
             note = resumed.recovery_note()
             self.assertIn("src/app.js", note)
             self.assertNotIn("bytes_written", note)
-            resumed.events = [{"tool": str(index)} for index in range(80)]
+            self.assertIn("milestone_summary", note)
+            self.assertEqual(resumed.summary["completed_boundaries"], 1)
+            for index in range(80):
+                resumed.record(
+                    "write_file",
+                    {"path": f"src/file-{index}.js"},
+                    {"bytes_written": index},
+                )
             resumed.finish(True)
             with open(resumed.path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
+            self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(payload["state"], "completed")
-            self.assertEqual(len(payload["events"]), 48)
+            self.assertEqual(payload["attempts"], 1)
+            self.assertEqual(len(payload["events"]), CHECKPOINT_EVENT_LIMIT)
+            self.assertEqual(payload["summary"]["completed_boundaries"], 81)
+            self.assertEqual(len(payload["summary"]["recent_targets"]), 24)
             self.assertEqual(RecoveryCheckpoint(root, "task/unsafe").recovery_note(), "")
 
     def test_project_turns_are_bounded_and_escape_aware(self):
         self.assertEqual(STANDARD_MAX_ITERATIONS, 12)
-        self.assertEqual(FRONTEND_MAX_ITERATIONS, 16)
+        self.assertEqual(FRONTEND_MAX_ITERATIONS, 24)
+        self.assertEqual(project_iteration_budget("Fix a typo"), STANDARD_MAX_ITERATIONS)
+        self.assertEqual(project_iteration_budget("Create a complete bus ticketing CRUD API"), COMPREHENSIVE_MAX_ITERATIONS)
         self.assertIn("Do not treat that display escaping", EXECUTION_EFFICIENCY_GUIDANCE)
         self.assertIn("return the final response immediately", EXECUTION_EFFICIENCY_GUIDANCE)
+
+    def test_recovery_prompt_skips_completed_setup_and_keeps_checkpoint(self):
+        prompt = project_user_prompt("finish the UI", "checkpoint-data")
+        self.assertIn("checkpoint-data", prompt)
+        self.assertIn("finish the UI", prompt)
+        self.assertIn(RECOVERY_GUIDANCE, prompt)
+        self.assertNotIn(SKILL_DISCOVERY_GUIDANCE, prompt)
+        self.assertIn("Do not repeat skill discovery", prompt)
 
     def test_project_compaction_uses_token_preflight_cap(self):
         class Compressor:
@@ -78,8 +106,10 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(events[-1]["data"]["truncated"])
 
     def test_activity_is_observed_without_copying_arguments(self):
-        for command, activity in [('echo "5" | node "C:/project/menu.js"', "run"), ("npm run build", "build"), ("npm test", "test"), ("npm run lint", "lint"), ("echo npm test", "command")]:
+        for command, activity in [('echo "5" | node "C:/project/menu.js"', "run"), ("npm run build", "build"), ("npm --prefix client run build", "build"), ("pnpm --dir web build", "build"), ("npm test", "test"), ("npm run lint", "lint"), ("echo npm test", "command")]:
             self.assertEqual(tool_activity("terminal", {"command": command}), activity)
+        self.assertTrue(is_verification_command("npm --prefix client run build"))
+        self.assertTrue(is_verification_command("pnpm --dir web build"))
         self.assertEqual(tool_activity("terminal", {"command": "curl --token SECRET"}), "command")
         self.assertEqual(tool_activity("terminal", []), "command")
 
