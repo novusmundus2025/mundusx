@@ -1,6 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-const UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.05.ps1");
+const UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.06.ps1");
 
 fn run_update() -> Result<(), String> {
     let directory = std::env::temp_dir().join(format!("mundusx-update-{}", std::process::id()));
@@ -22,7 +22,7 @@ fn run_update() -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&directory);
     result.success().then_some(()).ok_or_else(|| {
         format!(
-            "MundusX update failed with exit code {}. See .opengpu\\logs\\update-0.2.05.log for details.",
+            "MundusX update failed with exit code {}. See .opengpu\\logs\\update-0.2.06.log for details.",
             result.code().unwrap_or(-1)
         )
     })
@@ -51,7 +51,7 @@ fn main() {
     match run_update() {
         Ok(()) => message(
             "MundusX updated",
-            "MundusX 0.2.05 is installed. Return to Chat and refresh the page.",
+            "MundusX 0.2.06 is installed. Return to Chat and refresh the page.",
             false,
         ),
         Err(error) => message("MundusX update failed", &error, true),
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn embeds_versioned_verified_update() {
-        assert!(UPDATE_SCRIPT.contains("cli-windows-v0.2.05"));
+        assert!(UPDATE_SCRIPT.contains("cli-windows-v0.2.06"));
         assert!(UPDATE_SCRIPT.contains("cdc5019af7c74688571aaf84a03eb03b8894b8e9d69ddbe4c3ab0a2f7651da88"));
         assert!(UPDATE_SCRIPT.contains("cb34262e3cc7db9bb6170179616ccd21c6b44c0dbb4ca4c9a7c5a47e0fd49240"));
         assert!(UPDATE_SCRIPT.contains("opengpu-node-agent-x86_64-pc-windows-msvc.exe"));
