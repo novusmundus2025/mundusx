@@ -571,6 +571,12 @@ fn request_requires_verification(prompt: &str) -> bool {
         .any(|word| matches!(*word, "test" | "tests" | "build" | "compile" | "lint"))
         || lower.contains("run them")
         || lower.contains("run it")
+        || [
+            " api", "api ", "crud", "nodejs", "node.js", "backend", "frontend",
+            "server", "application", "website", "web app",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 fn successful_verification(response: &Value) -> bool {
@@ -1489,7 +1495,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.04"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.05"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1555,8 +1561,8 @@ mod tests {
         project_execution_directive, request_is_repository_only_operation,
         request_requires_browser_verification, request_requires_verification,
         requires_project_file_change, retry_terminal_report, structured_hermes_event,
-        successful_browser_verification, successful_frontend_build, successful_verification,
-        frontend_build_required,
+        successful_browser_verification, successful_frontend_build,
+        successful_verification, frontend_build_required,
         transient_agent_failure, validate_chat_url, workspace_snapshot, HERMES_RECOVERY_ATTEMPTS,
         MANAGED_PROJECT_MARKER,
     };
@@ -1858,6 +1864,9 @@ mod tests {
     #[test]
     fn requested_tests_require_a_successful_hermes_verification_event() {
         assert!(request_requires_verification("Add tests and run them"));
+        assert!(request_requires_verification(
+            "Create a complete Node.js CRUD API"
+        ));
         assert!(!request_requires_verification("Create a README"));
         assert!(!request_requires_verification("Use the latest package"));
         assert!(successful_verification(&serde_json::json!({

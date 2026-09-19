@@ -47,6 +47,12 @@ Use only skills relevant to the task; do not load the entire library or invent m
 Project instructions and the current user request still apply. A skill does not grant extra permissions.
 """
 
+RECOVERY_GUIDANCE = """Resume this interrupted project task from the preserved Hermes session, recovery checkpoint, and current workspace.
+Treat completed checkpoint boundaries and existing files as authoritative. Continue with the first unfinished implementation or verification step.
+Do not repeat skill discovery, skill loading, web research, or unchanged-file inspection that the preserved session or checkpoint already records as successful unless a concrete error requires it.
+If the requested edits are already present, run the required build, test, lint, or browser acceptance checks and finish with a concise result.
+"""
+
 EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical.
 For new test apps and apps intended to run locally, default to SQLite when persistent storage is needed and the user has not explicitly specified a storage technology.
 Use a persistent SQLite file with the project's existing language and framework. Do not introduce Docker or an external database service solely for this default.
@@ -61,11 +67,42 @@ After the requested change and required build, lint, test, or browser acceptance
 """
 
 STANDARD_MAX_ITERATIONS = 12
-FRONTEND_MAX_ITERATIONS = 16
+COMPREHENSIVE_MAX_ITERATIONS = 24
+FRONTEND_MAX_ITERATIONS = 24
 SWARM_PLANNER_MARKER = "MUNDUSX_SWARM_PLANNER_V1"
 PROJECT_COMPACTION_TOKENS = 16_384
 CHECKPOINT_EVENT_LIMIT = 16
 CHECKPOINT_TARGET_LIMIT = 24
+
+
+def project_iteration_budget(prompt):
+    """Keep small tasks quick while giving multi-file builds room to verify."""
+    value = str(prompt or "").lower()
+    comprehensive_signals = (
+        "complete", "full project", "from scratch", "crud", "api",
+        "frontend", "react", "website", "application", "all files",
+    )
+    signal_count = sum(signal in value for signal in comprehensive_signals)
+    if FRONTEND_ACCEPTANCE_MARKER in value:
+        return FRONTEND_MAX_ITERATIONS
+    if signal_count >= 2:
+        return COMPREHENSIVE_MAX_ITERATIONS
+    return STANDARD_MAX_ITERATIONS
+
+
+def project_user_prompt(raw_prompt, recovery_note=""):
+    """Compose a fresh-task or recovery prompt without replaying completed setup."""
+    task_prompt = raw_prompt
+    if recovery_note:
+        task_prompt = recovery_note + "\n\n" + task_prompt
+    guidance = RECOVERY_GUIDANCE if recovery_note else SKILL_DISCOVERY_GUIDANCE
+    return (
+        guidance
+        + "\n"
+        + EXECUTION_EFFICIENCY_GUIDANCE
+        + "\nUser project request:\n"
+        + task_prompt
+    )
 
 
 class RecoveryCheckpoint:
@@ -258,6 +295,8 @@ def is_verification_command(command):
         " dotnet test ", " mvn test ", " gradle test ", " gradlew test ",
         " npm run build ", " pnpm build ", " yarn build ", " cargo build ",
         " npm run lint ", " pnpm lint ", " yarn lint ",
+        " node --test ", " node --check ", " npm run check ",
+        " npx tsc ", " python -m compileall ",
     )
     package_check = re.search(
         r"(?:^|[|;&])\s*(?:npm|pnpm|yarn)(?:\s+(?:--prefix|-c|--dir)\s+\S+)*\s+(?:run\s+)?(?:build|test|lint|check)\b",
@@ -379,6 +418,7 @@ def main():
     from tools.terminal_tool import register_task_env_overrides
 
     task_id = os.environ.get("MUNDUSX_HERMES_TASK") or "default"
+    # Preserve the installed runtime's project-directory binding on recovery.
     set_session_cwd(workspace)
     register_task_env_overrides(task_id, {"cwd": workspace})
 
@@ -432,25 +472,11 @@ def main():
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
     user_prompt = raw_user_prompt
-    max_iterations = (
-        1
-        if planner_mode
-        else FRONTEND_MAX_ITERATIONS
-        if FRONTEND_ACCEPTANCE_MARKER in user_prompt
-        else STANDARD_MAX_ITERATIONS
-    )
-    if recovery_note and not planner_mode:
-        user_prompt = recovery_note + "\n\n" + user_prompt
+    max_iterations = 1 if planner_mode else project_iteration_budget(user_prompt)
     if planner_mode:
         enabled_toolsets = []
     else:
-        user_prompt = (
-            SKILL_DISCOVERY_GUIDANCE
-            + "\n"
-            + EXECUTION_EFFICIENCY_GUIDANCE
-            + "\nUser project request:\n"
-            + user_prompt
-        )
+        user_prompt = project_user_prompt(user_prompt, recovery_note)
         enabled_toolsets = ["coding", "skills"]
         if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
             enabled_toolsets.extend(["browser", "browser-use"])
@@ -470,6 +496,16 @@ def main():
         session_id=session_id,
         skip_memory=True,
         load_soul_identity=False,
+    )
+    # Publish the runtime session before the first model request. The parent
+    # persists this immediately, so a watchdog termination can resume the same
+    # Hermes history instead of creating a new history=0 session.
+    emit(
+        "MUNDUSX_EVENT=",
+        {
+            "type": "runtime_session_ready",
+            "data": {"session_id": getattr(agent, "session_id", None) or session_id},
+        },
     )
     configure_project_compaction(agent)
     try:

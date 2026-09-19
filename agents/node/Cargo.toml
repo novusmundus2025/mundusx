@@ -1,6 +1,6 @@
 [package]
 name = "opengpu-node-agent"
-version = "0.1.92"
+version = "0.1.94"
 edition = "2021"
 description = "MundusX node agent"
 license = "Apache-2.0"
@@ -19,6 +19,7 @@ path = "src/harness_runner_main.rs"
 required-features = ["harness-runner"]
 
 [dependencies]
+mundusx-control-plane-auth = { path = "../../packages/control-plane-auth" }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
