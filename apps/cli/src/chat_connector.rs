@@ -57,7 +57,6 @@ fn start_watchdog(timeout: Duration, interval: Duration) {
 
 const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 const FRONTEND_ACCEPTANCE_MARKER: &str = "MUNDUSX_FRONTEND_ACCEPTANCE_V1";
-const BROWSER_ACCEPTANCE_EVIDENCE_MARKER: &str = "MUNDUSX_BROWSER_ACCEPTANCE_V1";
 const REUSABLE_TEST_ACCEPTANCE_MARKER: &str = "MUNDUSX_REUSABLE_TEST_ACCEPTANCE_V1";
 const MANAGED_PROJECT_MARKER: &str = "mundusx-managed-project";
 const DEFAULT_PROJECT_GITIGNORE: &str = "node_modules/\n.env\n.env.*\n!.env.example\n.DS_Store\n*.log\n.hermes/\ncoverage/\ndist/\nbuild/\ndata/*.db\ndata/*.db-journal\ndata/*.db-shm\ndata/*.db-wal\n";
@@ -532,6 +531,7 @@ pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
         "inspect" => "Inspecting the codebase",
         "research" => "Looking up information",
         "browser_acceptance" => "Running browser acceptance",
+        "code" => "Running project code",
         "command" => "Running a local command",
         _ => "Running a project tool",
     };
@@ -1347,7 +1347,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "The current directory is the complete project boundary. Treat every explicit user requirement as an acceptance criterion. Before giving a final response, inspect the resulting files and run the applicable tests or executable command. Never claim success for a check you did not run.\n\n{execution_directive}\n\n{prompt}"
                 );
                 if frontend_verification_required { instructions.push_str(&format!(
-                    "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Load and follow the frontend-runtime-acceptance skill. Reconcile every third-party source import with the package manifest that owns that source tree, install missing dependencies in that package directory, and run its production build successfully before browser acceptance. Run package commands from the directory containing that frontend package.json, or use an explicit package-directory option such as npm --prefix client. A passing backend test does not replace a failed frontend build. If the build fails, use the concrete build error to repair the files or manifest and rerun it. Completion then requires browser proof after the final file change. Start the frontend server as a background process bound explicitly to 127.0.0.1, poll the exact browser URL until it returns HTTP success, and use that same host and port in browser automation. With browser_exec, call wait_for_load() after new_tab() or goto_url() before page_info() or DOM inspection, then perform the full acceptance suite. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. If the browser is exposed through execute_code, perform the full flow there and emit the structured {BROWSER_ACCEPTANCE_EVIDENCE_MARKER} evidence object defined by the skill only after every check passes. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the test, build, and browser checks instead of merely explaining it. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
+                    "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Load and follow the frontend-runtime-acceptance skill. Reconcile every third-party source import with the package manifest that owns that source tree, install missing dependencies in that package directory, and run its production build successfully before browser acceptance. Run package commands from the directory containing that frontend package.json, or use an explicit package-directory option such as npm --prefix client. A passing backend test does not replace a failed frontend build. If the build fails, use the concrete build error to repair the files or manifest and rerun it. Completion then requires browser proof after the final file change. Start the frontend server as a background process bound explicitly to 127.0.0.1, poll the exact browser URL until it returns HTTP success, and use that same host and port in browser automation. With browser_exec, call wait_for_load() after new_tab() or goto_url() before page_info() or DOM inspection, then perform the full acceptance suite. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. Keep browser verification in the native browser tools rather than wrapping it in a generic code-execution kernel. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the test, build, and browser checks instead of merely explaining it. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
                 )); }
                 if reusable_tests_required { instructions.push_str(&format!(
                     "\n\n{REUSABLE_TEST_ACCEPTANCE_MARKER}: This project change requires a reusable automated regression test. Use the project's existing test framework when present; otherwise add the smallest maintainable test setup supported by the project. Create or update a project-owned test file that exercises the requested behavior or the reproduced failure, then run that test suite successfully after the final implementation change. Generated build output, a one-off terminal command, lint, compilation, and manual browser checks do not count as the reusable test. Browser acceptance remains a separate requirement for frontend work."
@@ -1428,15 +1428,17 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                         stop.load(Ordering::Relaxed),
                     ) =>
                 {
-                    let stalled = error.contains("Hermes model progress timed out");
+                    let model_stalled = error.contains("Hermes model progress timed out");
+                    let tool_stalled = super::hermes_adapter::is_stalled_tool_failure(&error);
+                    let stalled = model_stalled || tool_stalled;
                     if stalled {
                         stalled_attempts += 1;
                     }
-                    // Preserve completed tool turns across transient gateway
-                    // failures. Rebuild only when the provider says the saved
-                    // conversation itself is invalid or over its context limit.
-                    let rebuilding =
-                        super::hermes_adapter::should_rebuild_session_after_failure(&error);
+                    // Preserve completed turns across transient gateway failures.
+                    // A killed tool leaves an incomplete tool call in the saved
+                    // conversation, so resume that checkpoint in a fresh context.
+                    let rebuilding = tool_stalled
+                        || super::hermes_adapter::should_rebuild_session_after_failure(&error);
                     last_error = error;
                     if rebuilding {
                         super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
@@ -1453,7 +1455,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                             "sequence": 10_000 + attempt,
                             "event": {
                                 "type": "model_turn_recovering",
-                                "summary": if last_error.contains("Hermes model progress timed out") {
+                                "summary": if tool_stalled {
+                                    format!("A local Hermes tool stopped responding. MundusX closed it, preserved the project files, and is resuming with direct project tools (attempt {} of {}).", attempt + 2, HERMES_RECOVERY_ATTEMPTS)
+                                } else if last_error.contains("Hermes model progress timed out") {
                                     format!("The model stopped responding. Hermes preserved and compacted completed milestones, released the stalled turn, and is rescheduling on available compute (attempt {} of {}).", attempt + 2, HERMES_RECOVERY_ATTEMPTS)
                                 } else if rebuilding {
                                     format!("EHDA rejected the saved context; Hermes is rebuilding it automatically (attempt {} of {})", attempt + 2, HERMES_RECOVERY_ATTEMPTS)
@@ -1470,7 +1474,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                         }
                         thread::sleep(Duration::from_secs(1));
                     }
-                    resume_prompt = if rebuilding {
+                    resume_prompt = if tool_stalled {
+                        format!(
+                            "Resume the existing project task in a fresh Hermes context after a local tool stalled. Continue from the files already present in the current project directory and the recovery checkpoint. Do not repeat completed work and do not use execute_code. Use the direct file and terminal tools, inspect only the relevant current state, run the required bounded verification, and return the final result immediately when it passes.\n\nOriginal request:\n{initial_prompt}"
+                        )
+                    } else if rebuilding {
                         format!(
                             "Resume the existing Hermes project task after rebuilding an invalid model context. Continue from the files already present in the current project directory. Do not repeat completed work. Inspect current state, finish every acceptance criterion, and run the required verification.\n\nOriginal request:\n{initial_prompt}"
                         )
@@ -1614,7 +1622,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             );
             let frontend_clause = if frontend_verification_required {
                 format!(
-                " For frontend work, load the frontend-runtime-acceptance skill, reconcile source imports with the owning package manifest, install dependencies there, and run the build from that directory or with an explicit package prefix. A passing backend test cannot replace this frontend build. Start the frontend server in the background bound to 127.0.0.1, poll the exact URL until it returns HTTP success, and use the same URL for the {FRONTEND_ACCEPTANCE_MARKER} browser checks. Exercise the user's exact flow. With browser_exec, call wait_for_load() after navigation before page_info() or DOM inspection. If only execute_code is available, drive the browser there and emit the exact {BROWSER_ACCEPTANCE_EVIDENCE_MARKER} structured evidence object from the skill after confirming render, interaction, an empty console error list, and desktop plus narrow viewports. Fix concrete failures, then repeat the regression test, build, and browser checks before stopping services."
+                " For frontend work, load the frontend-runtime-acceptance skill, reconcile source imports with the owning package manifest, install dependencies there, and run the build from that directory or with an explicit package prefix. A passing backend test cannot replace this frontend build. Start the frontend server in the background bound to 127.0.0.1, poll the exact URL until it returns HTTP success, and use the same URL for the {FRONTEND_ACCEPTANCE_MARKER} browser checks. Exercise the user's exact flow. With browser_exec, call wait_for_load() after navigation before page_info() or DOM inspection. Keep browser verification in the native browser tools rather than wrapping it in a generic code-execution kernel. Fix concrete failures, then repeat the regression test, build, and browser checks before stopping services."
             )
             } else {
                 String::new()
@@ -1810,7 +1818,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.10"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.11"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1914,7 +1922,7 @@ mod tests {
 
         let browser = structured_hermes_event(
             &serde_json::json!({"type":"tool_started","data":{
-                "tool":"execute_code", "activity":"browser_acceptance", "call_id":"browser-a"
+                "tool":"browser_exec", "activity":"browser_acceptance", "call_id":"browser-a"
             }}),
             5,
         );

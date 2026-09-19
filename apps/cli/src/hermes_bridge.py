@@ -271,9 +271,6 @@ def child_workspace_path(path, platform=os.name):
 
 
 FRONTEND_ACCEPTANCE_MARKER = "MUNDUSX_FRONTEND_ACCEPTANCE_V1"
-BROWSER_ACCEPTANCE_EVIDENCE_MARKER = "MUNDUSX_BROWSER_ACCEPTANCE_V1"
-
-
 def loaded_skill(name, result):
     if name != "skill_view":
         return None
@@ -344,7 +341,9 @@ def tool_activity(name, arguments):
         return "command"
     if name in ("write_file", "patch", "apply_patch", "patch_file", "write"):
         return "write"
-    if name == "execute_code" or name.startswith("browser_"):
+    if name == "execute_code":
+        return "code"
+    if name.startswith("browser_"):
         return "browser_acceptance"
     if name in ("read_file", "read", "search_files", "grep", "glob", "search", "list_directory"):
         return "inspect"
@@ -392,36 +391,6 @@ def tool_outcome(result, name=None):
     return None
 
 
-def browser_acceptance_evidence(result):
-    if isinstance(result, str):
-        try:
-            result = json.loads(result)
-        except (ValueError, TypeError):
-            normalized = re.sub(r"\s+", "", result).lower()
-            return all(token in normalized for token in (
-                '"mundusx_browser_acceptance_v1":true',
-                '"rendered":true',
-                '"flow_exercised":true',
-                '"console_errors":[]',
-                '"desktop_checked":true',
-                '"narrow_checked":true',
-            ))
-    if isinstance(result, list):
-        return any(browser_acceptance_evidence(value) for value in result)
-    if not isinstance(result, dict):
-        return False
-    if (
-        result.get(BROWSER_ACCEPTANCE_EVIDENCE_MARKER) is True
-        and result.get("rendered") is True
-        and result.get("flow_exercised") is True
-        and result.get("console_errors") == []
-        and result.get("desktop_checked") is True
-        and result.get("narrow_checked") is True
-    ):
-        return True
-    return any(browser_acceptance_evidence(value) for value in result.values())
-
-
 def browser_verification(name, arguments, result):
     if tool_outcome(result, name) is not True:
         return None
@@ -434,8 +403,6 @@ def browser_verification(name, arguments, result):
     }.get(name)
     if native:
         return native
-    if name == "execute_code" and browser_acceptance_evidence(result):
-        return "suite"
     return None
 
 
@@ -526,7 +493,13 @@ def main():
         enabled_toolsets = []
     else:
         user_prompt = project_user_prompt(user_prompt, recovery_note)
-        enabled_toolsets = ["coding", "skills"]
+        # Direct tools keep project execution observable and cancellable. The
+        # execute_code wrapper runs a nested RPC kernel that can remain open
+        # after its file writes finish, leaving the parent task falsely active.
+        enabled_toolsets = [
+            "file", "terminal", "skills", "web", "vision", "todo",
+            "delegation", "clarify",
+        ]
         if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
             enabled_toolsets.extend(["browser", "browser-use"])
     agent = AIAgent(

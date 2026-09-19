@@ -318,14 +318,18 @@ pub fn run(
         command
     } else {
         let mut command = Command::new(executable());
+        let toolsets = if prompt.contains("MUNDUSX_FRONTEND_ACCEPTANCE_V1") {
+            "file,terminal,skills,web,vision,todo,delegation,clarify,browser,browser-use"
+        } else {
+            "file,terminal,skills,web,vision,todo,delegation,clarify"
+        };
         command
             .arg("-z")
             .arg(prompt)
-            // Match the embedded bridge: project tasks need both the coding
-            // tools and Hermes' native SKILL.md discovery/loading tools.
-            .args(["-t", if prompt.contains("MUNDUSX_FRONTEND_ACCEPTANCE_V1") {
-                "coding,skills,browser,browser-use"
-            } else { "coding,skills" }, "--usage-file"])
+            // Use direct project tools. Hermes' execute_code wrapper introduces
+            // a nested RPC process that can outlive completed file writes and
+            // leave a task looking active after the project work is finished.
+            .args(["-t", toolsets, "--usage-file"])
             .arg(&usage_path);
         if let Some((base_url, token, model)) = model_runtime.as_ref() {
             command
@@ -435,6 +439,11 @@ pub fn run(
         }
         if let Some(error) = progress_watchdog.failure(Instant::now()).filter(|_| structured && remote_model.is_some()) {
             monitor_failure = Some(error);
+            for event in progress_watchdog.interrupted_tool_events() {
+                if let Some(callback) = event_callback.as_mut() {
+                    callback(event);
+                }
+            }
             process_group.terminate();
             let _ = child.kill();
             break child.wait().map_err(|error| format!("could not reap stalled Hermes: {error}"))?;
@@ -577,6 +586,10 @@ pub fn is_retryable_model_failure(message: &str) -> bool {
         || lower.contains("timeout")
 }
 
+pub fn is_stalled_tool_failure(message: &str) -> bool {
+    message.starts_with("Hermes ") && message.contains(" progress stalled after ")
+}
+
 pub fn should_rebuild_session_after_failure(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("context length")
@@ -592,13 +605,14 @@ pub fn should_rebuild_session_after_failure(message: &str) -> bool {
 mod output_tests {
     use super::{
         clear_session, hermes_output_reports_model_failure, is_retryable_model_failure,
-        runtime_session_id, save_session, session_map, should_rebuild_session_after_failure,
+        is_stalled_tool_failure, runtime_session_id, save_session, session_map,
+        should_rebuild_session_after_failure,
         FRONTEND_RUNTIME_ACCEPTANCE_SKILL, STRUCTURED_BRIDGE,
     };
 
     #[test]
     fn structured_bridge_enables_native_hermes_skills() {
-        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets = [\"coding\", \"skills\"]"));
+        assert!(STRUCTURED_BRIDGE.contains("\"file\", \"terminal\", \"skills\""));
         assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets.extend([\"browser\", \"browser-use\"])"));
         assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
@@ -620,8 +634,8 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
         assert!(STRUCTURED_BRIDGE.contains("runtime_session_ready"));
         assert!(STRUCTURED_BRIDGE.contains("RECOVERY_GUIDANCE"));
-        assert!(STRUCTURED_BRIDGE.contains("MUNDUSX_BROWSER_ACCEPTANCE_V1"));
-        assert!(FRONTEND_RUNTIME_ACCEPTANCE_SKILL.contains("MUNDUSX_BROWSER_ACCEPTANCE_V1"));
+        assert!(STRUCTURED_BRIDGE.contains("execute_code wrapper"));
+        assert!(FRONTEND_RUNTIME_ACCEPTANCE_SKILL.contains("native browser tools"));
         assert!(FRONTEND_RUNTIME_ACCEPTANCE_SKILL.contains("Do not stop after merely explaining"));
         assert!(!STRUCTURED_BRIDGE.contains("select_project_skills"));
     }
@@ -669,6 +683,12 @@ mod output_tests {
             "Hermes runtime is not installed"
         ));
         assert!(!is_retryable_model_failure("permission denied"));
+        assert!(is_stalled_tool_failure(
+            "Hermes execute_code progress stalled after 6 minutes; project files and recovery checkpoint were preserved"
+        ));
+        assert!(!is_stalled_tool_failure(
+            "Hermes model progress timed out after 5 minutes"
+        ));
     }
 
     #[test]

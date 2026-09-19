@@ -6,10 +6,12 @@ const MODEL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const TOOL_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 const TERMINAL_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
 const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+const CODE_EXECUTION_IDLE_TIMEOUT: Duration = Duration::from_secs(360);
 
 fn tool_idle_timeout(name: &str) -> Duration {
     match name {
-        name if name == "execute_code" || name.starts_with("browser_") => BROWSER_IDLE_TIMEOUT,
+        name if name.starts_with("browser_") => BROWSER_IDLE_TIMEOUT,
+        "execute_code" => CODE_EXECUTION_IDLE_TIMEOUT,
         "terminal" | "execute" | "shell" => TERMINAL_IDLE_TIMEOUT,
         _ => TOOL_IDLE_TIMEOUT,
     }
@@ -75,6 +77,30 @@ impl ProgressWatchdog {
             }
         })
     }
+
+    pub(super) fn interrupted_tool_events(&self) -> Vec<Value> {
+        self.tools
+            .iter()
+            .map(|(call_id, name)| {
+                serde_json::json!({
+                    "type": "tool_completed",
+                    "data": {
+                        "call_id": call_id,
+                        "name": name,
+                        "success": false,
+                        "timed_out": true,
+                        "activity": if name.starts_with("browser_") {
+                            "browser_acceptance"
+                        } else if name == "execute_code" {
+                            "code"
+                        } else {
+                            "tool"
+                        }
+                    }
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -133,18 +159,33 @@ mod tests {
     }
 
     #[test]
-    fn browser_execution_stalls_quickly_but_terminal_work_keeps_a_longer_deadline() {
+    fn browser_stalls_quickly_but_code_and_terminal_get_their_own_deadlines() {
         let now = Instant::now();
         let mut browser = ProgressWatchdog::new(now);
         browser.observe(
-            &json!({"type":"tool_started","data":{"call_id":"browser","name":"execute_code"}}),
+            &json!({"type":"tool_started","data":{"call_id":"browser","name":"browser_exec"}}),
             now,
         );
         assert!(browser.failure(now + Duration::from_secs(179)).is_none());
         assert!(browser
             .failure(now + Duration::from_secs(180))
             .unwrap()
+            .contains("browser_exec"));
+
+        let mut code = ProgressWatchdog::new(now);
+        code.observe(
+            &json!({"type":"tool_started","data":{"call_id":"code","name":"execute_code"}}),
+            now,
+        );
+        assert!(code.failure(now + Duration::from_secs(359)).is_none());
+        assert!(code
+            .failure(now + Duration::from_secs(360))
+            .unwrap()
             .contains("execute_code"));
+        let interrupted = code.interrupted_tool_events();
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(interrupted[0]["data"]["success"], false);
+        assert_eq!(interrupted[0]["data"]["activity"], "code");
 
         let mut terminal = ProgressWatchdog::new(now);
         terminal.observe(
