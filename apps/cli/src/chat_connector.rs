@@ -607,6 +607,21 @@ fn successful_frontend_build(response: &Value) -> bool {
         })
 }
 
+fn swarm_fallback_summary(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("requires a clean git project") {
+        "Project Swarm needs a clean Git checkpoint; this project has uncommitted files, so Hermes is continuing with one worker".to_string()
+    } else if lower.contains("fewer than two") || lower.contains("at least two") {
+        "Project Swarm could not find two independent file-owning tasks; Hermes is continuing with one worker".to_string()
+    } else if lower.contains("overlap") || lower.contains("ownership") {
+        "Project Swarm found overlapping file ownership; Hermes is continuing with one worker to avoid merge conflicts".to_string()
+    } else if lower.contains("not a git repository") || lower.contains("git project") {
+        "Project Swarm needs a Git repository for isolated worktrees; Hermes is continuing with one worker".to_string()
+    } else {
+        format!("Project Swarm fell back to one Hermes worker: {error}")
+    }
+}
+
 fn frontend_build_required(workspace: &Path) -> bool {
     std::iter::once(workspace.join("package.json"))
         .chain(
@@ -1269,7 +1284,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "sequence": 19_999,
                     "event": {
                         "type": "swarm_fallback",
-                        "summary": "Project Swarm could not safely partition this project; continuing with one Hermes worker",
+                        "summary": swarm_fallback_summary(&error),
                         "metadata": {"reason": error}
                     }
                 })]);
@@ -1360,8 +1375,17 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     .to_string(),
             );
         }
-        // Browser automation is additional acceptance evidence. A local browser/CDP
-        // outage must not discard implementation whose production build succeeded.
+        if frontend_verification_required
+            && response
+                .as_ref()
+                .ok()
+                .is_some_and(|value| !successful_browser_verification(value))
+        {
+            response = Err(
+                "Hermes changed frontend files but did not complete browser runtime acceptance. The page must render, the requested flow must be exercised, and the browser console must be free of runtime exceptions before the task can pass."
+                    .to_string(),
+            );
+        }
     }
     if response.is_ok() {
         if let Err(error) = checkpoint_managed_project(&task_workspace) {
@@ -1423,7 +1447,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                         "changed_files": changed_files,
                         "skills": skills,
                         "verified": verified,
-                        "browser_verification_required": frontend_verification_required && browser_verified,
+                        "browser_verification_required": frontend_verification_required,
                         "browser_verification_requested": frontend_verification_required,
                         "browser_verification_unavailable": frontend_verification_required && !browser_verified,
                         "browser_verified": browser_verified,
@@ -1495,7 +1519,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.05"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.06"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1561,6 +1585,7 @@ mod tests {
         project_execution_directive, request_is_repository_only_operation,
         request_requires_browser_verification, request_requires_verification,
         requires_project_file_change, retry_terminal_report, structured_hermes_event,
+        swarm_fallback_summary,
         successful_browser_verification, successful_frontend_build,
         successful_verification, frontend_build_required,
         transient_agent_failure, validate_chat_url, workspace_snapshot, HERMES_RECOVERY_ATTEMPTS,
@@ -1907,6 +1932,18 @@ mod tests {
             {"type":"tool_completed","data":{"success":true,"browser_verification":"snapshot"}}
         ]})));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn swarm_fallback_explains_the_actual_safety_gate() {
+        assert_eq!(
+            swarm_fallback_summary(
+                "Project Swarm coding requires a clean Git project; using the sequential Hermes fallback"
+            ),
+            "Project Swarm needs a clean Git checkpoint; this project has uncommitted files, so Hermes is continuing with one worker"
+        );
+        assert!(swarm_fallback_summary("planner returned fewer than two tasks")
+            .contains("two independent file-owning tasks"));
     }
 
     #[test]

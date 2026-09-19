@@ -15,7 +15,13 @@ Automatically attempt coordinated coding for complete APIs, frontends, backends,
 
 Coding coordination requires a clean Git project. If the repository is missing, dirty, unsafe to partition, or the plan has overlapping ownership, continue with the existing single Hermes worker. Do not ask the user to clean or commit the repository merely to enable parallelism.
 
+For frontend work, split only along real source boundaries. Good worker ownership includes separate pages, component groups, API clients, assets, or test suites. Keep shared entry points, routing, dependency manifests, lockfiles, and final browser acceptance with the coordinator. A focused runtime repair centered on one entry point or one dependency boundary should remain with one worker; independent diagnosis or read-only checks may still run in parallel.
+
+Before reporting why coding coordination fell back, inspect the exact coordinator error. Say whether the repository is dirty, Git is unavailable, fewer than two disjoint tasks were found, path ownership overlaps, a worker failed, or integration verification failed. Do not hide an actionable safety condition behind a generic partition message.
+
 Workers must not publish, deploy, edit shared migrations, or update dependency lockfiles independently. The coordinator owns Git commits and integration. A worker failure, ownership violation, merge conflict, cancellation, or failed integrated verification leaves the original project revision unchanged.
+
+Frontend integration is incomplete until the production build has no unresolved-import or missing-export diagnostics and the changed flow renders in a browser without console exceptions. Exercise the requested interaction at the relevant viewport before accepting the integrated result.
 
 ## Parallel tests
 

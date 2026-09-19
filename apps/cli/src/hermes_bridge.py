@@ -62,7 +62,7 @@ Inspect each unchanged file only once, batch related operations when practical, 
 Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
 Tool results and JSON representations escape real newline characters as \\n. Do not treat that display escaping as proof that a source file contains literal backslash-n text. If syntax is uncertain, run the project build or parser once and trust the result; do not repeatedly inspect the same bytes after a successful build.
 For multi-file code generation, reserve the final tool turns for dependency installation and a real build, test, lint, syntax, or smoke check. Group related work where the tools permit it; do not consume the entire budget writing one file per planning cycle.
-For frontend work, reconcile every third-party source import with the package manifest that owns that source tree. Install missing dependencies in that package directory, not an unrelated parent package. Run that frontend package's production build successfully before starting browser acceptance. If the build fails, use its concrete error to repair the files or manifest and rerun it; never replace a failed frontend build with a passing backend test.
+For frontend work, reconcile every third-party source import with the package manifest that owns that source tree. Install missing dependencies in that package directory, not an unrelated parent package. Treat missing-export, unresolved-import, and equivalent bundler diagnostics as build failures even when a bundler exits with status 0. Run that frontend package's production build successfully before starting browser acceptance. Then render the changed flow in a browser, inspect the console for runtime exceptions, and exercise the requested interaction. If either check fails, repair the source and repeat both checks; never replace frontend runtime acceptance with a passing backend test.
 After the requested change and required build, lint, test, or browser acceptance checks succeed, return the final response immediately. Do not start another inspection cycle or add unrelated improvements.
 """
 
@@ -358,6 +358,16 @@ def tool_outcome(result, name=None):
     if not isinstance(result, dict):
         return None
     if result.get("error") or result.get("is_error") is True or result.get("success") is False:
+        return False
+    output = str(result.get("output", result.get("stderr", "")) or "").lower()
+    fatal_build_diagnostics = (
+        " is not exported by ",
+        " does not provide an export named ",
+        "module has no exported member",
+        "could not resolve import",
+        "failed to resolve import",
+    )
+    if any(marker in output for marker in fatal_build_diagnostics):
         return False
     code = result.get("exit_code", result.get("returncode"))
     if code is not None:
