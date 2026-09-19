@@ -15,7 +15,6 @@ from hermes_bridge import (
     RecoveryCheckpoint,
     STANDARD_MAX_ITERATIONS,
     browser_verification,
-    browser_acceptance_evidence,
     configure_project_compaction,
     loaded_skill,
     is_verification_command,
@@ -136,27 +135,11 @@ class ProgressTests(unittest.TestCase):
     def test_browser_tools_report_real_success(self):
         self.assertIs(tool_outcome('{"success":true,"title":"Enrollment System"}', "browser_navigate"), True)
         self.assertIs(tool_outcome('{"success":false,"error":"page crashed"}', "browser_console"), False)
-        self.assertEqual(tool_activity("execute_code", {"code": "hidden"}), "browser_acceptance")
+        self.assertEqual(tool_activity("execute_code", {"code": "hidden"}), "code")
         self.assertEqual(tool_activity("browser_exec", {}), "browser_acceptance")
         self.assertEqual(browser_verification("browser_exec", {}, {"success": True}), "suite")
         self.assertIsNone(browser_verification("browser_exec", {}, {"success": False}))
-
-        evidence = {
-            "success": True,
-            "output": {
-                "MUNDUSX_BROWSER_ACCEPTANCE_V1": True,
-                "rendered": True,
-                "flow_exercised": True,
-                "console_errors": [],
-                "desktop_checked": True,
-                "narrow_checked": True,
-            },
-        }
-        self.assertTrue(browser_acceptance_evidence(evidence))
-        self.assertEqual(browser_verification("execute_code", {}, evidence), "suite")
-        evidence["output"]["console_errors"] = ["TypeError"]
-        self.assertFalse(browser_acceptance_evidence(evidence))
-        self.assertIsNone(browser_verification("execute_code", {}, evidence))
+        self.assertIsNone(browser_verification("execute_code", {}, {"success": True}))
 
     def test_hermes_file_results(self):
         self.assertIs(tool_outcome({"content": "", "total_lines": 0}, "read_file"), True)
