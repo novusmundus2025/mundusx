@@ -56,6 +56,7 @@ fn start_watchdog(timeout: Duration, interval: Duration) {
 
 const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 const FRONTEND_ACCEPTANCE_MARKER: &str = "MUNDUSX_FRONTEND_ACCEPTANCE_V1";
+const REUSABLE_TEST_ACCEPTANCE_MARKER: &str = "MUNDUSX_REUSABLE_TEST_ACCEPTANCE_V1";
 const MANAGED_PROJECT_MARKER: &str = "mundusx-managed-project";
 const DEFAULT_PROJECT_GITIGNORE: &str = "node_modules/\n.env\n.env.*\n!.env.example\n.DS_Store\n*.log\n.hermes/\ncoverage/\ndist/\nbuild/\ndata/*.db\ndata/*.db-journal\ndata/*.db-shm\ndata/*.db-wal\n";
 use uuid::Uuid;
@@ -579,6 +580,86 @@ fn request_requires_verification(prompt: &str) -> bool {
         .any(|marker| lower.contains(marker))
 }
 
+fn workspace_is_software_project(workspace: &Path) -> bool {
+    workspace_snapshot(workspace).keys().any(|path| {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            "package.json"
+                | "cargo.toml"
+                | "pyproject.toml"
+                | "requirements.txt"
+                | "go.mod"
+                | "pom.xml"
+                | "build.gradle"
+                | "build.gradle.kts"
+        ) || name.ends_with(".sln")
+            || name.ends_with(".csproj")
+    })
+}
+
+fn request_requires_reusable_tests(prompt: &str, workspace: &Path) -> bool {
+    if !requires_project_file_change(prompt) {
+        return false;
+    }
+    let lower = prompt.to_ascii_lowercase();
+    let explicit_software_work = [
+        " api", "api ", "crud", "frontend", "front-end", "react", "vue", "svelte",
+        "angular", "backend", "back-end", "server", "application", "website", "web app",
+        "authentication", "database", "feature", "bug", "error", "broken", "failing",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    let continuation_work = ["implement", "proceed", "continue", "complete", "fix"]
+        .iter()
+        .any(|marker| lower.contains(marker));
+    explicit_software_work || (continuation_work && workspace_is_software_project(workspace))
+}
+
+fn is_reusable_test_path(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    normalized
+        .split('/')
+        .any(|part| matches!(part, "test" | "tests" | "__tests__" | "e2e" | "spec" | "specs"))
+        || name.contains(".test.")
+        || name.contains(".spec.")
+        || name.starts_with("test_")
+        || name.starts_with("test.")
+        || name.ends_with("_test.go")
+        || name.ends_with("_test.rs")
+        || name.ends_with("_test.py")
+        || name.ends_with("test.java")
+        || name.ends_with("tests.cs")
+        || name.ends_with("_spec.rb")
+}
+
+fn reusable_tests_changed(
+    before: &BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
+    after: &BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
+) -> bool {
+    after
+        .iter()
+        .any(|(path, metadata)| is_reusable_test_path(path) && before.get(path) != Some(metadata))
+}
+
+fn project_has_reusable_tests(
+    snapshot: &BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
+) -> bool {
+    snapshot.keys().any(|path| is_reusable_test_path(path))
+}
+
 fn successful_verification(response: &Value) -> bool {
     response["events"]
         .as_array()
@@ -603,6 +684,20 @@ fn successful_frontend_build(response: &Value) -> bool {
                 event["type"].as_str(),
                 Some("tool_complete" | "tool_completed")
             ) && event["data"]["activity"].as_str() == Some("build")
+                && event["data"]["success"].as_bool() == Some(true)
+        })
+}
+
+fn successful_test_run(response: &Value) -> bool {
+    response["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("tool_complete" | "tool_completed")
+            ) && event["data"]["activity"].as_str() == Some("test")
                 && event["data"]["success"].as_bool() == Some(true)
         })
 }
@@ -1215,6 +1310,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         return Ok(());
     }
     let before_files = workspace_snapshot(&task_workspace);
+    let reusable_tests_required =
+        allow_mutations && request_requires_reusable_tests(&prompt, &task_workspace);
     post_task_events(
         options,
         &task_id,
@@ -1248,6 +1345,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 );
                 if frontend_verification_required { instructions.push_str(&format!(
                     "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Reconcile every third-party source import with the package manifest that owns that source tree, install missing dependencies in that package directory, and run its production build successfully before browser acceptance. Run package commands from the directory containing that frontend package.json, or use an explicit package-directory option such as npm --prefix client. A passing backend test does not replace a failed frontend build. If the build fails, use the concrete build error to repair the files or manifest and rerun it. Completion then requires browser proof after the final file change. Start the frontend server as a background process bound explicitly to 127.0.0.1, poll the exact browser URL until it returns HTTP success, and use that same host and port in browser automation. With browser_exec, call wait_for_load() after new_tab() or goto_url() before page_info() or DOM inspection, then perform the full acceptance suite. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the build and browser checks. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
+                )); }
+                if reusable_tests_required { instructions.push_str(&format!(
+                    "\n\n{REUSABLE_TEST_ACCEPTANCE_MARKER}: This project change requires a reusable automated regression test. Use the project's existing test framework when present; otherwise add the smallest maintainable test setup supported by the project. Create or update a project-owned test file that exercises the requested behavior or the reproduced failure, then run that test suite successfully after the final implementation change. Generated build output, a one-off terminal command, lint, compilation, and manual browser checks do not count as the reusable test. Browser acceptance remains a separate requirement for frontend work."
                 )); }
                 instructions
             } else {
@@ -1448,13 +1548,19 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             .and_then(|value| value["tool_calls"].as_array())
             .map(|calls| !calls.is_empty())
             .unwrap_or(false);
-        let changed_workspace = workspace_snapshot(&task_workspace) != before_files;
+        let after_files = workspace_snapshot(&task_workspace);
+        let changed_workspace = after_files != before_files;
         let verification_required = request_requires_verification(&prompt);
         let verified = response.as_ref().ok().is_some_and(successful_verification);
+        let reusable_test_present = project_has_reusable_tests(&after_files);
+        let reusable_test_changed = reusable_tests_changed(&before_files, &after_files);
+        let reusable_test_ran = response.as_ref().ok().is_some_and(successful_test_run);
         let frontend_build_verified = !frontend_build_verification_required
             || response.as_ref().ok().is_some_and(successful_frontend_build);
         let browser_verified = response.as_ref().ok().is_some_and(successful_browser_verification);
         if !used_tools || !changed_workspace || (verification_required && !verified)
+            || (reusable_tests_required
+                && (!reusable_test_present || !reusable_test_changed || !reusable_test_ran))
             || !frontend_build_verified
             || (frontend_verification_required && !browser_verified) {
             let _ = post_task_events(
@@ -1465,15 +1571,18 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "event": {
                         "type": "acceptance_retrying",
                         "summary": "Hermes has not completed all project acceptance checks; continuing",
-                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified, "frontend_build_required": frontend_build_verification_required, "frontend_build_verified": frontend_build_verified, "browser_verification_required": frontend_verification_required, "browser_verified": browser_verified}
+                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified, "reusable_tests_required": reusable_tests_required, "reusable_test_present": reusable_test_present, "reusable_test_changed": reusable_test_changed, "reusable_test_ran": reusable_test_ran, "frontend_build_required": frontend_build_verification_required, "frontend_build_verified": frontend_build_verified, "browser_verification_required": frontend_verification_required, "browser_verified": browser_verified}
                     }
                 })],
             );
             let frontend_clause = if frontend_verification_required { format!(
                 " For frontend work, first reconcile source imports with the owning package manifest, install dependencies there, and run the build from that directory or with an explicit package prefix. A passing backend test cannot replace this frontend build. Start the frontend server in the background bound to 127.0.0.1, poll the exact URL until it returns HTTP success, and use the same URL for the {FRONTEND_ACCEPTANCE_MARKER} browser checks. With browser_exec, call wait_for_load() after navigation before page_info() or DOM inspection. Inspect meaningful visible content, browser errors and DOM/layout at desktop and narrow widths, fix failures, repeat the build and browser checks, then stop services you started."
             ) } else { String::new() };
+            let reusable_test_clause = if reusable_tests_required { format!(
+                " For {REUSABLE_TEST_ACCEPTANCE_MARKER}, create or update a durable project-owned regression test covering the requested behavior or failure, using the existing test framework when available, and run the resulting test suite successfully after the final implementation change. A build, lint, one-off command, generated output, or manual browser check does not satisfy this requirement."
+            ) } else { String::new() };
             let correction = format!(
-                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Use the available coding tools to implement the requested project files, inspect them, and run the applicable tests, build, or lint command successfully.{frontend_clause} Do not return source code only in chat and do not claim a check passed unless its command or browser check succeeded.\n\nOriginal request:\n{prompt}"
+                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Use the available coding tools to implement the requested project files, inspect them, and run the applicable tests, build, or lint command successfully.{reusable_test_clause}{frontend_clause} Do not return source code only in chat and do not claim a check passed unless its command or browser check succeeded.\n\nOriginal request:\n{prompt}"
             );
             let previous_evidence = response.as_ref().ok().cloned();
             // Acceptance repair should not inherit a large, stale coding conversation.
@@ -1515,6 +1624,18 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 "Hermes changed frontend files but did not complete browser runtime acceptance. The page must render, the requested flow must be exercised, and the browser console must be free of runtime exceptions before the task can pass."
                     .to_string(),
             );
+        }
+        if reusable_tests_required && response.is_ok() {
+            let after_files = workspace_snapshot(&task_workspace);
+            let tests_present = project_has_reusable_tests(&after_files);
+            let tests_changed = reusable_tests_changed(&before_files, &after_files);
+            let tests_ran = response.as_ref().ok().is_some_and(successful_test_run);
+            if !tests_present || !tests_changed || !tests_ran {
+                response = Err(
+                    "Hermes changed the project but did not add or update a reusable regression test and run it successfully. The project must retain an automated test covering the requested behavior or reproduced failure."
+                        .to_string(),
+                );
+            }
         }
     }
     if response.is_ok() {
@@ -1649,7 +1770,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.07"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.08"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1714,11 +1835,13 @@ mod tests {
         drain_progress_events, harness_completion_content, hermes_recovery_allowed,
         initialize_new_project_repository, project_git,
         project_execution_directive, request_is_repository_only_operation,
-        request_requires_browser_verification, request_requires_verification,
-        requires_project_file_change, retry_terminal_report, structured_hermes_event,
+        project_has_reusable_tests, request_requires_browser_verification,
+        request_requires_reusable_tests, request_requires_verification,
+        requires_project_file_change, reusable_tests_changed, retry_terminal_report,
+        structured_hermes_event,
         swarm_fallback_summary,
         successful_browser_verification, successful_frontend_build,
-        successful_verification, frontend_build_required,
+        successful_test_run, successful_verification, frontend_build_required,
         transient_agent_failure, validate_chat_url, workspace_snapshot, HERMES_RECOVERY_ATTEMPTS,
         MANAGED_PROJECT_MARKER,
     };
@@ -2176,6 +2299,39 @@ mod tests {
                 "data": {"name": "terminal", "verification": true, "success": false}
             }]
         })));
+    }
+
+    #[test]
+    fn substantial_project_changes_require_a_changed_reusable_test_and_passing_run() {
+        let root = std::env::temp_dir().join(format!(
+            "mundusx-reusable-tests-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("package.json"), "{\"scripts\":{}}\n").unwrap();
+        fs::write(root.join("src/app.js"), "export const app = true;\n").unwrap();
+        assert!(request_requires_reusable_tests("create a complete CRUD API", &root));
+        assert!(request_requires_reusable_tests("fix this React runtime error", &root));
+        assert!(request_requires_reusable_tests("please proceed implement it", &root));
+        assert!(!request_requires_reusable_tests("update the README", &root));
+        assert!(!request_requires_reusable_tests("why did the API fail?", &root));
+        let before = workspace_snapshot(&root);
+        assert!(!project_has_reusable_tests(&before));
+
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(root.join("tests/app.test.js"), "test('app', () => {});\n").unwrap();
+        let after = workspace_snapshot(&root);
+        assert!(project_has_reusable_tests(&after));
+        assert!(reusable_tests_changed(&before, &after));
+        assert!(!reusable_tests_changed(&after, &after));
+
+        assert!(successful_test_run(&serde_json::json!({
+            "events": [{"type":"tool_completed","data":{"activity":"test","success":true}}]
+        })));
+        assert!(!successful_test_run(&serde_json::json!({
+            "events": [{"type":"tool_completed","data":{"activity":"build","success":true}}]
+        })));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
