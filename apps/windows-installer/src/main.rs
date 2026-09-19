@@ -1,7 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 const INSTALL_SCRIPT: &str = include_str!("../../../install.ps1");
-const CONNECTOR_UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.07.ps1");
+const CONNECTOR_UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.08.ps1");
 
 fn installed_cli_path() -> std::path::PathBuf {
     if let Ok(install_dir) = std::env::var("OPENGPU_INSTALL_DIR") {
@@ -316,9 +316,9 @@ mod tests {
         assert!(INSTALL_SCRIPT
             .contains("https://github.com/mundusx/releases/releases/download/opengpu-prod"));
         assert!(!INSTALL_SCRIPT.contains("github.com/mundusx/mundusx/releases/latest"));
-        assert!(CONNECTOR_UPDATE_SCRIPT.contains("cli-windows-v0.2.07"));
-        assert!(CONNECTOR_UPDATE_SCRIPT.contains("514f2c8654170672ac41b43a2b0faa6deae08f61ea9b600194177fa044270559"));
-        assert!(CONNECTOR_UPDATE_SCRIPT.contains("d04b75d298e635de5ad460cae27a251ec131c92ae09a2dbd2e187e47eb8f67d6"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("cli-windows-v0.2.08"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("4a822dfdd4c0df90dd6d55812f85d61973e081538fe79999d6189543c63aad2f"));
+        assert!(CONNECTOR_UPDATE_SCRIPT.contains("4e1d83d87777d0d6e6e1f4956ad932b0354eefbebea13e24ef59bdad328bce40"));
         assert!(CONNECTOR_UPDATE_SCRIPT.contains("opengpu-node-agent-x86_64-pc-windows-msvc.exe"));
         assert!(CONNECTOR_UPDATE_SCRIPT.contains("mundusx-agent-server-x86_64-pc-windows-msvc.exe"));
     }

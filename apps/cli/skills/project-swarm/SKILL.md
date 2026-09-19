@@ -23,6 +23,8 @@ Workers must not publish, deploy, edit shared migrations, or update dependency l
 
 Frontend integration is incomplete until the production build has no unresolved-import or missing-export diagnostics and the changed flow renders in a browser without console exceptions. Exercise the requested interaction at the relevant viewport before accepting the integrated result.
 
+Substantial application work and defect repairs are incomplete without a reusable project-owned regression test. Create or update a test file that covers the requested behavior or reproduced failure, prefer the project's existing framework, and run the resulting suite after the final implementation change. Keep this separate from manual browser acceptance: a browser check proves the current runtime works, while the committed test protects later changes. A build, lint command, generated output, or one-off terminal probe does not count as the reusable test.
+
 ## Parallel tests
 
 Before starting tests, inspect the project test scripts and automatically use parallel lanes when commands can run independently. Do not wait for the user to request Project Swarm. Do not parallelize database migrations, tests sharing a mutable database, commands using the same fixed port, snapshot updates, dependency installation, builds writing to the same output directory, publishing, deployment, or other external writes. If independence is uncertain, use the project's normal sequential test command.
