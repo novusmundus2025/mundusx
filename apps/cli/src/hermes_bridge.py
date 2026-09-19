@@ -271,6 +271,7 @@ def child_workspace_path(path, platform=os.name):
 
 
 FRONTEND_ACCEPTANCE_MARKER = "MUNDUSX_FRONTEND_ACCEPTANCE_V1"
+BROWSER_ACCEPTANCE_EVIDENCE_MARKER = "MUNDUSX_BROWSER_ACCEPTANCE_V1"
 
 
 def loaded_skill(name, result):
@@ -391,16 +392,51 @@ def tool_outcome(result, name=None):
     return None
 
 
-def browser_verification(name, result):
+def browser_acceptance_evidence(result):
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (ValueError, TypeError):
+            normalized = re.sub(r"\s+", "", result).lower()
+            return all(token in normalized for token in (
+                '"mundusx_browser_acceptance_v1":true',
+                '"rendered":true',
+                '"flow_exercised":true',
+                '"console_errors":[]',
+                '"desktop_checked":true',
+                '"narrow_checked":true',
+            ))
+    if isinstance(result, list):
+        return any(browser_acceptance_evidence(value) for value in result)
+    if not isinstance(result, dict):
+        return False
+    if (
+        result.get(BROWSER_ACCEPTANCE_EVIDENCE_MARKER) is True
+        and result.get("rendered") is True
+        and result.get("flow_exercised") is True
+        and result.get("console_errors") == []
+        and result.get("desktop_checked") is True
+        and result.get("narrow_checked") is True
+    ):
+        return True
+    return any(browser_acceptance_evidence(value) for value in result.values())
+
+
+def browser_verification(name, arguments, result):
     if tool_outcome(result, name) is not True:
         return None
-    return {
+    native = {
         "browser_navigate": "render",
         "browser_snapshot": "snapshot",
         "browser_vision": "snapshot",
         "browser_console": "console",
         "browser_exec": "suite",
     }.get(name)
+    if native:
+        return native
+    if name == "execute_code" and browser_acceptance_evidence(result):
+        return "suite"
+    return None
 
 
 def main():
@@ -476,7 +512,7 @@ def main():
                     "call_id": call_id,
                     "name": name,
                     "verification": is_verification_command(command),
-                    "browser_verification": browser_verification(name, result),
+                    "browser_verification": browser_verification(name, arguments, result),
                     "success": tool_outcome(result, name),
                     "activity": tool_activity(name, arguments),
                 },
