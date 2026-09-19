@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 const CONNECTOR_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 const TERMINAL_REPORT_ATTEMPTS: usize = 6;
 const HERMES_RECOVERY_ATTEMPTS: usize = 12;
+const HERMES_ACCEPTANCE_REPAIR_ATTEMPTS: usize = 3;
 static CONNECTOR_ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
 
 fn hermes_recovery_allowed(error: &str, attempt: usize, stopped: bool) -> bool {
@@ -56,6 +57,7 @@ fn start_watchdog(timeout: Duration, interval: Duration) {
 
 const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 const FRONTEND_ACCEPTANCE_MARKER: &str = "MUNDUSX_FRONTEND_ACCEPTANCE_V1";
+const BROWSER_ACCEPTANCE_EVIDENCE_MARKER: &str = "MUNDUSX_BROWSER_ACCEPTANCE_V1";
 const REUSABLE_TEST_ACCEPTANCE_MARKER: &str = "MUNDUSX_REUSABLE_TEST_ACCEPTANCE_V1";
 const MANAGED_PROJECT_MARKER: &str = "mundusx-managed-project";
 const DEFAULT_PROJECT_GITIGNORE: &str = "node_modules/\n.env\n.env.*\n!.env.example\n.DS_Store\n*.log\n.hermes/\ncoverage/\ndist/\nbuild/\ndata/*.db\ndata/*.db-journal\ndata/*.db-shm\ndata/*.db-wal\n";
@@ -1345,7 +1347,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     "The current directory is the complete project boundary. Treat every explicit user requirement as an acceptance criterion. Before giving a final response, inspect the resulting files and run the applicable tests or executable command. Never claim success for a check you did not run.\n\n{execution_directive}\n\n{prompt}"
                 );
                 if frontend_verification_required { instructions.push_str(&format!(
-                    "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Reconcile every third-party source import with the package manifest that owns that source tree, install missing dependencies in that package directory, and run its production build successfully before browser acceptance. Run package commands from the directory containing that frontend package.json, or use an explicit package-directory option such as npm --prefix client. A passing backend test does not replace a failed frontend build. If the build fails, use the concrete build error to repair the files or manifest and rerun it. Completion then requires browser proof after the final file change. Start the frontend server as a background process bound explicitly to 127.0.0.1, poll the exact browser URL until it returns HTTP success, and use that same host and port in browser automation. With browser_exec, call wait_for_load() after new_tab() or goto_url() before page_info() or DOM inspection, then perform the full acceptance suite. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the build and browser checks. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
+                    "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Load and follow the frontend-runtime-acceptance skill. Reconcile every third-party source import with the package manifest that owns that source tree, install missing dependencies in that package directory, and run its production build successfully before browser acceptance. Run package commands from the directory containing that frontend package.json, or use an explicit package-directory option such as npm --prefix client. A passing backend test does not replace a failed frontend build. If the build fails, use the concrete build error to repair the files or manifest and rerun it. Completion then requires browser proof after the final file change. Start the frontend server as a background process bound explicitly to 127.0.0.1, poll the exact browser URL until it returns HTTP success, and use that same host and port in browser automation. With browser_exec, call wait_for_load() after new_tab() or goto_url() before page_info() or DOM inspection, then perform the full acceptance suite. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. If the browser is exposed through execute_code, perform the full flow there and emit the structured {BROWSER_ACCEPTANCE_EVIDENCE_MARKER} evidence object defined by the skill only after every check passes. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the test, build, and browser checks instead of merely explaining it. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
                 )); }
                 if reusable_tests_required { instructions.push_str(&format!(
                     "\n\n{REUSABLE_TEST_ACCEPTANCE_MARKER}: This project change requires a reusable automated regression test. Use the project's existing test framework when present; otherwise add the smallest maintainable test setup supported by the project. Create or update a project-owned test file that exercises the requested behavior or the reproduced failure, then run that test suite successfully after the final implementation change. Generated build output, a one-off terminal command, lint, compilation, and manual browser checks do not count as the reusable test. Browser acceptance remains a separate requirement for frontend work."
@@ -1543,6 +1545,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         // are often created during this task and did not exist at dispatch.
         let frontend_build_verification_required = frontend_verification_required
             && frontend_build_required(&task_workspace);
+        let verification_required = request_requires_verification(&prompt);
+        for repair_attempt in 0..=HERMES_ACCEPTANCE_REPAIR_ATTEMPTS {
         let used_tools = response
             .as_ref()
             .ok()
@@ -1551,48 +1555,85 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             .unwrap_or(false);
         let after_files = workspace_snapshot(&task_workspace);
         let changed_workspace = after_files != before_files;
-        let verification_required = request_requires_verification(&prompt);
         let verified = response.as_ref().ok().is_some_and(successful_verification);
         let reusable_test_present = project_has_reusable_tests(&after_files);
         let reusable_test_changed = reusable_tests_changed(&before_files, &after_files);
         let reusable_test_ran = response.as_ref().ok().is_some_and(successful_test_run);
         let frontend_build_verified = !frontend_build_verification_required
-            || response.as_ref().ok().is_some_and(successful_frontend_build);
-        let browser_verified = response.as_ref().ok().is_some_and(successful_browser_verification);
-        if !used_tools || !changed_workspace || (verification_required && !verified)
-            || (reusable_tests_required
-                && (!reusable_test_present || !reusable_test_changed || !reusable_test_ran))
-            || !frontend_build_verified
-            || (frontend_verification_required && !browser_verified) {
+                || response
+                    .as_ref()
+                    .ok()
+                    .is_some_and(successful_frontend_build);
+            let browser_verified = response
+                .as_ref()
+                .ok()
+                .is_some_and(successful_browser_verification);
+            let mut missing = Vec::new();
+            if !used_tools {
+                missing.push("project tool execution");
+            }
+            if !changed_workspace {
+                missing.push("requested project file change");
+            }
+            if verification_required && !verified {
+                missing.push("successful requested verification");
+            }
+            if reusable_tests_required && !reusable_test_present {
+                missing.push("project-owned regression test");
+            }
+            if reusable_tests_required && !reusable_test_changed {
+                missing.push("regression test changed for this task");
+            }
+            if reusable_tests_required && !reusable_test_ran {
+                missing.push("successful regression test run");
+            }
+            if !frontend_build_verified {
+                missing.push("successful frontend production build");
+            }
+            if frontend_verification_required && !browser_verified {
+                missing.push("successful browser runtime acceptance");
+            }
+            if missing.is_empty() || response.is_err() {
+                break;
+            }
+            if repair_attempt == HERMES_ACCEPTANCE_REPAIR_ATTEMPTS {
+                break;
+            }
+            let repair_number = repair_attempt + 1;
             let _ = post_task_events(
                 options,
                 &task_id,
                 vec![json!({
-                    "sequence": 50,
+                    "sequence": 50 + repair_attempt,
                     "event": {
                         "type": "acceptance_retrying",
-                        "summary": "Hermes has not completed all project acceptance checks; continuing",
-                        "metadata": {"used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified, "reusable_tests_required": reusable_tests_required, "reusable_test_present": reusable_test_present, "reusable_test_changed": reusable_test_changed, "reusable_test_ran": reusable_test_ran, "frontend_build_required": frontend_build_verification_required, "frontend_build_verified": frontend_build_verified, "browser_verification_required": frontend_verification_required, "browser_verified": browser_verified}
+                        "summary": format!("Hermes is repairing incomplete acceptance checks (attempt {} of {})", repair_number, HERMES_ACCEPTANCE_REPAIR_ATTEMPTS),
+                        "metadata": {"attempt": repair_number, "max_attempts": HERMES_ACCEPTANCE_REPAIR_ATTEMPTS, "missing": missing.clone(), "used_tools": used_tools, "changed_workspace": changed_workspace, "verification_required": verification_required, "verified": verified, "reusable_tests_required": reusable_tests_required, "reusable_test_present": reusable_test_present, "reusable_test_changed": reusable_test_changed, "reusable_test_ran": reusable_test_ran, "frontend_build_required": frontend_build_verification_required, "frontend_build_verified": frontend_build_verified, "browser_verification_required": frontend_verification_required, "browser_verified": browser_verified}
                     }
                 })],
             );
-            let frontend_clause = if frontend_verification_required { format!(
-                " For frontend work, first reconcile source imports with the owning package manifest, install dependencies there, and run the build from that directory or with an explicit package prefix. A passing backend test cannot replace this frontend build. Start the frontend server in the background bound to 127.0.0.1, poll the exact URL until it returns HTTP success, and use the same URL for the {FRONTEND_ACCEPTANCE_MARKER} browser checks. With browser_exec, call wait_for_load() after navigation before page_info() or DOM inspection. Inspect meaningful visible content, browser errors and DOM/layout at desktop and narrow widths, fix failures, repeat the build and browser checks, then stop services you started."
-            ) } else { String::new() };
-            let reusable_test_clause = if reusable_tests_required { format!(
+            let frontend_clause = if frontend_verification_required {
+                format!(
+                " For frontend work, load the frontend-runtime-acceptance skill, reconcile source imports with the owning package manifest, install dependencies there, and run the build from that directory or with an explicit package prefix. A passing backend test cannot replace this frontend build. Start the frontend server in the background bound to 127.0.0.1, poll the exact URL until it returns HTTP success, and use the same URL for the {FRONTEND_ACCEPTANCE_MARKER} browser checks. Exercise the user's exact flow. With browser_exec, call wait_for_load() after navigation before page_info() or DOM inspection. If only execute_code is available, drive the browser there and emit the exact {BROWSER_ACCEPTANCE_EVIDENCE_MARKER} structured evidence object from the skill after confirming render, interaction, an empty console error list, and desktop plus narrow viewports. Fix concrete failures, then repeat the regression test, build, and browser checks before stopping services."
+            )
+            } else {
+                String::new()
+            };
+            let reusable_test_clause = if reusable_tests_required {
+                format!(
                 " For {REUSABLE_TEST_ACCEPTANCE_MARKER}, create or update a durable project-owned regression test covering the requested behavior or failure, using the existing test framework when available, and run the resulting test suite successfully after the final implementation change. A build, lint, one-off command, generated output, or manual browser check does not satisfy this requirement."
-            ) } else { String::new() };
+            )
+            } else {
+                String::new()
+            };
             let correction = format!(
-                "Continue the existing project task now. The previous response did not yet satisfy all acceptance criteria. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Use the available coding tools to implement the requested project files, inspect them, and run the applicable tests, build, or lint command successfully.{reusable_test_clause}{frontend_clause} Do not return source code only in chat and do not claim a check passed unless its command or browser check succeeded.\n\nOriginal request:\n{prompt}"
+                "Continue the existing project task now. Acceptance repair pass {repair_number} is missing: {}. Use the current project files and the concrete test, build, browser, console, or layout failure as repair input. A plan file or any other file under .hermes is internal agent state and does not count as implementing the project. Full mutation authority is already granted, so do not ask whether to proceed. Implement the repair with the available coding tools. After the final repair, rerun the complete applicable regression-test, production-build, and browser-acceptance sequence so every result reflects the final source state.{reusable_test_clause}{frontend_clause} Do not merely explain the failure, return source code only in chat, or claim a check passed unless its command or browser result succeeded.\n\nOriginal request:\n{prompt}",
+                missing.join(", ")
             );
-            let previous_evidence = response.as_ref().ok().cloned();
             // Acceptance repair should not inherit a large, stale coding conversation.
             // The workspace is authoritative and the correction prompt is self-contained.
             super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
             response = run_hermes_with_recovery(&correction);
-            if let (Some(previous), Ok(current)) = (previous_evidence.as_ref(), response.as_mut()) {
-                preserve_response_evidence(current, previous);
-            }
         }
         if response.is_ok() && workspace_snapshot(&task_workspace) == before_files {
             response = Err(
@@ -1621,10 +1662,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 .ok()
                 .is_some_and(|value| !successful_browser_verification(value))
         {
-            response = Err(
-                "Hermes changed frontend files but did not complete browser runtime acceptance. The page must render, the requested flow must be exercised, and the browser console must be free of runtime exceptions before the task can pass."
-                    .to_string(),
-            );
+            response = Err(format!(
+                "Hermes changed frontend files but did not complete browser runtime acceptance after {HERMES_ACCEPTANCE_REPAIR_ATTEMPTS} automatic repair attempts. The page must render, the requested flow must be exercised, and the browser console must be free of runtime exceptions before the task can pass."
+            ));
         }
         if reusable_tests_required && response.is_ok() {
             let after_files = workspace_snapshot(&task_workspace);
@@ -1632,10 +1672,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             let tests_changed = reusable_tests_changed(&before_files, &after_files);
             let tests_ran = response.as_ref().ok().is_some_and(successful_test_run);
             if !tests_present || !tests_changed || !tests_ran {
-                response = Err(
-                    "Hermes changed the project but did not add or update a reusable regression test and run it successfully. The project must retain an automated test covering the requested behavior or reproduced failure."
-                        .to_string(),
-                );
+                response = Err(format!(
+                    "Hermes changed the project but did not add or update a reusable regression test and run it successfully after {HERMES_ACCEPTANCE_REPAIR_ATTEMPTS} automatic repair attempts. The project must retain an automated test covering the requested behavior or reproduced failure."
+                ));
             }
         }
     }
@@ -1771,7 +1810,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.09"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.10"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1843,8 +1882,8 @@ mod tests {
         swarm_fallback_summary,
         successful_browser_verification, successful_frontend_build,
         successful_test_run, successful_verification, frontend_build_required,
-        transient_agent_failure, validate_chat_url, workspace_snapshot, HERMES_RECOVERY_ATTEMPTS,
-        MANAGED_PROJECT_MARKER,
+        transient_agent_failure, validate_chat_url, workspace_snapshot,
+        HERMES_ACCEPTANCE_REPAIR_ATTEMPTS, HERMES_RECOVERY_ATTEMPTS, MANAGED_PROJECT_MARKER,
     };
     use std::fs;
 
@@ -1872,6 +1911,15 @@ mod tests {
         assert!(event["event"]["summary"].as_str().unwrap().contains("failed"));
         assert!(!event.to_string().contains("secret command"));
         assert!(!event.to_string().contains("private output"));
+
+        let browser = structured_hermes_event(
+            &serde_json::json!({"type":"tool_started","data":{
+                "tool":"execute_code", "activity":"browser_acceptance", "call_id":"browser-a"
+            }}),
+            5,
+        );
+        assert_eq!(browser["event"]["summary"], "Running browser acceptance");
+        assert_eq!(HERMES_ACCEPTANCE_REPAIR_ATTEMPTS, 3);
     }
 
     #[test]

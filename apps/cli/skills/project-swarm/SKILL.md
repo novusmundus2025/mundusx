@@ -21,7 +21,7 @@ Before reporting why coding coordination fell back, inspect the exact coordinato
 
 Workers must not publish, deploy, edit shared migrations, or update dependency lockfiles independently. The coordinator owns Git commits and integration. A worker failure, ownership violation, merge conflict, cancellation, or failed integrated verification leaves the project at the local pre-swarm checkpoint with the user's files preserved.
 
-Frontend integration is incomplete until the production build has no unresolved-import or missing-export diagnostics and the changed flow renders in a browser without console exceptions. Exercise the requested interaction at the relevant viewport before accepting the integrated result.
+Frontend integration is incomplete until the production build has no unresolved-import or missing-export diagnostics and the changed flow renders in a browser without console exceptions. Load the `frontend-runtime-acceptance` skill for the final integration check, exercise the requested interaction at the relevant viewports, and use any concrete failure as repair input before rerunning acceptance.
 
 Substantial application work and defect repairs are incomplete without a reusable project-owned regression test. Create or update a test file that covers the requested behavior or reproduced failure, prefer the project's existing framework, and run the resulting suite after the final implementation change. Keep this separate from manual browser acceptance: a browser check proves the current runtime works, while the committed test protects later changes. A build, lint command, generated output, or one-off terminal probe does not count as the reusable test.
 
