@@ -529,6 +529,7 @@ pub(crate) fn structured_hermes_event(item: &Value, sequence: u64) -> Value {
         "write" => "Updating project files",
         "inspect" => "Inspecting the codebase",
         "research" => "Looking up information",
+        "browser_acceptance" => "Running browser acceptance",
         "command" => "Running a local command",
         _ => "Running a project tool",
     };
@@ -1770,7 +1771,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.08"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.09"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))

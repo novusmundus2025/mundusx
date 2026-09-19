@@ -135,6 +135,8 @@ class ProgressTests(unittest.TestCase):
     def test_browser_tools_report_real_success(self):
         self.assertIs(tool_outcome('{"success":true,"title":"Enrollment System"}', "browser_navigate"), True)
         self.assertIs(tool_outcome('{"success":false,"error":"page crashed"}', "browser_console"), False)
+        self.assertEqual(tool_activity("execute_code", {"code": "hidden"}), "browser_acceptance")
+        self.assertEqual(tool_activity("browser_exec", {}), "browser_acceptance")
         self.assertEqual(browser_verification("browser_exec", {"success": True}), "suite")
         self.assertIsNone(browser_verification("browser_exec", {"success": False}))
 
