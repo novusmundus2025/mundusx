@@ -1,6 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-const UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.03.ps1");
+const UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.04.ps1");
 
 fn run_update() -> Result<(), String> {
     let directory = std::env::temp_dir().join(format!("mundusx-update-{}", std::process::id()));
@@ -22,7 +22,7 @@ fn run_update() -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&directory);
     result.success().then_some(()).ok_or_else(|| {
         format!(
-            "MundusX update failed with exit code {}. See .opengpu\\logs\\update-0.2.03.log for details.",
+            "MundusX update failed with exit code {}. See .opengpu\\logs\\update-0.2.04.log for details.",
             result.code().unwrap_or(-1)
         )
     })
@@ -51,7 +51,7 @@ fn main() {
     match run_update() {
         Ok(()) => message(
             "MundusX updated",
-            "MundusX 0.2.03 is installed. Return to Chat and refresh the page.",
+            "MundusX 0.2.04 is installed. Return to Chat and refresh the page.",
             false,
         ),
         Err(error) => message("MundusX update failed", &error, true),
@@ -69,9 +69,11 @@ mod tests {
 
     #[test]
     fn embeds_versioned_verified_update() {
-        assert!(UPDATE_SCRIPT.contains("cli-windows-v0.2.03"));
-        assert!(UPDATE_SCRIPT.contains("c62faa8337f153f33aff9383c2be58bbf110a1424e54dad7c83850cb4d293c9e"));
-        assert!(UPDATE_SCRIPT.contains("6d2f1f02a0a0f368f05f8a7f48fef22a27aa5640c23709da3a11c598f9601fb4"));
+        assert!(UPDATE_SCRIPT.contains("cli-windows-v0.2.04"));
+        assert!(UPDATE_SCRIPT.contains("ceb268ba6f582eeae534eb87489b61ae6aff9d562d85f7b68f3292702428e5bc"));
+        assert!(UPDATE_SCRIPT.contains("7b491dafbd88ae46a38b5367372051f40ba7a42dc288c0b153ab0aa6602c1870"));
+        assert!(UPDATE_SCRIPT.contains("opengpu-node-agent-x86_64-pc-windows-msvc.exe"));
+        assert!(UPDATE_SCRIPT.contains("mundusx-agent-server-x86_64-pc-windows-msvc.exe"));
         assert!(UPDATE_SCRIPT.contains("mundusx-tray.exe"));
     }
 }

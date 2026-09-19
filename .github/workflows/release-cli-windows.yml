@@ -20,13 +20,19 @@ env:
   TARGET: x86_64-pc-windows-msvc
   BINARY_NAME: opengpu-x86_64-pc-windows-msvc.exe
   EXECUTABLE_NAME: opengpu.exe
+  MUNDUSX_BINARY_NAME: mundusx-x86_64-pc-windows-msvc.exe
+  MUNDUSX_EXECUTABLE_NAME: mundusx.exe
   AGENT_BINARY_NAME: opengpu-node-agent-x86_64-pc-windows-msvc.exe
   AGENT_EXECUTABLE_NAME: opengpu-node-agent.exe
+  AGENT_SERVER_BINARY_NAME: mundusx-agent-server-x86_64-pc-windows-msvc.exe
+  AGENT_SERVER_EXECUTABLE_NAME: mundusx-agent-server.exe
   TRAY_BINARY_NAME: mundusx-tray-x86_64-pc-windows-msvc.exe
   TRAY_EXECUTABLE_NAME: mundusx-tray.exe
   TRAY_ICON_NAME: mundusx.ico
   SETUP_BINARY_NAME: MundusX-Setup.exe
   SETUP_EXECUTABLE_NAME: mundusx-bootstrap.exe
+  UPDATE_BINARY_NAME: MundusX-Update.exe
+  UPDATE_EXECUTABLE_NAME: mundusx-update.exe
   RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-cuda.zip
   VULKAN_RUNTIME_BINARY_NAME: llama-runtime-x86_64-pc-windows-msvc-vulkan.zip
 
@@ -52,6 +58,9 @@ jobs:
       - name: Build node agent
         run: cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target ${{ env.TARGET }}
 
+      - name: Build Chat agent server
+        run: cargo build --release --manifest-path apps/agent-server/Cargo.toml --target ${{ env.TARGET }}
+
       - name: Build tray companion
         run: cargo build --release --manifest-path apps/tray/Cargo.toml --target ${{ env.TARGET }}
 
@@ -74,19 +83,25 @@ jobs:
         shell: bash
         run: |
           cp "target/${TARGET}/release/${EXECUTABLE_NAME}" "${BINARY_NAME}"
+          cp "target/${TARGET}/release/${MUNDUSX_EXECUTABLE_NAME}" "${MUNDUSX_BINARY_NAME}"
           cp "target/${TARGET}/release/${AGENT_EXECUTABLE_NAME}" "${AGENT_BINARY_NAME}"
+          cp "target/${TARGET}/release/${AGENT_SERVER_EXECUTABLE_NAME}" "${AGENT_SERVER_BINARY_NAME}"
           cp "target/${TARGET}/release/${TRAY_EXECUTABLE_NAME}" "${TRAY_BINARY_NAME}"
           cp "apps/tray/assets/${TRAY_ICON_NAME}" "${TRAY_ICON_NAME}"
           cp "target/${TARGET}/release/${SETUP_EXECUTABLE_NAME}" "${SETUP_BINARY_NAME}"
+          cp "target/${TARGET}/release/${UPDATE_EXECUTABLE_NAME}" "${UPDATE_BINARY_NAME}"
 
       - name: Generate checksums
         shell: bash
         run: |
           sha256sum "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
+          sha256sum "${MUNDUSX_BINARY_NAME}" > "${MUNDUSX_BINARY_NAME}.sha256"
           sha256sum "${AGENT_BINARY_NAME}" > "${AGENT_BINARY_NAME}.sha256"
+          sha256sum "${AGENT_SERVER_BINARY_NAME}" > "${AGENT_SERVER_BINARY_NAME}.sha256"
           sha256sum "${TRAY_BINARY_NAME}" > "${TRAY_BINARY_NAME}.sha256"
           sha256sum "${TRAY_ICON_NAME}" > "${TRAY_ICON_NAME}.sha256"
           sha256sum "${SETUP_BINARY_NAME}" > "${SETUP_BINARY_NAME}.sha256"
+          sha256sum "${UPDATE_BINARY_NAME}" > "${UPDATE_BINARY_NAME}.sha256"
           sha256sum "${RUNTIME_BINARY_NAME}" > "${RUNTIME_BINARY_NAME}.sha256"
           sha256sum "${VULKAN_RUNTIME_BINARY_NAME}" > "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
 
@@ -94,10 +109,13 @@ jobs:
         shell: bash
         run: |
           sha256sum -c "${BINARY_NAME}.sha256"
+          sha256sum -c "${MUNDUSX_BINARY_NAME}.sha256"
           sha256sum -c "${AGENT_BINARY_NAME}.sha256"
+          sha256sum -c "${AGENT_SERVER_BINARY_NAME}.sha256"
           sha256sum -c "${TRAY_BINARY_NAME}.sha256"
           sha256sum -c "${TRAY_ICON_NAME}.sha256"
           sha256sum -c "${SETUP_BINARY_NAME}.sha256"
+          sha256sum -c "${UPDATE_BINARY_NAME}.sha256"
           sha256sum -c "${RUNTIME_BINARY_NAME}.sha256"
           sha256sum -c "${VULKAN_RUNTIME_BINARY_NAME}.sha256"
 
@@ -128,14 +146,20 @@ jobs:
           files: |
             ${{ env.BINARY_NAME }}
             ${{ env.BINARY_NAME }}.sha256
+            ${{ env.MUNDUSX_BINARY_NAME }}
+            ${{ env.MUNDUSX_BINARY_NAME }}.sha256
             ${{ env.AGENT_BINARY_NAME }}
             ${{ env.AGENT_BINARY_NAME }}.sha256
+            ${{ env.AGENT_SERVER_BINARY_NAME }}
+            ${{ env.AGENT_SERVER_BINARY_NAME }}.sha256
             ${{ env.TRAY_BINARY_NAME }}
             ${{ env.TRAY_BINARY_NAME }}.sha256
             ${{ env.TRAY_ICON_NAME }}
             ${{ env.TRAY_ICON_NAME }}.sha256
             ${{ env.SETUP_BINARY_NAME }}
             ${{ env.SETUP_BINARY_NAME }}.sha256
+            ${{ env.UPDATE_BINARY_NAME }}
+            ${{ env.UPDATE_BINARY_NAME }}.sha256
             ${{ env.RUNTIME_BINARY_NAME }}
             ${{ env.RUNTIME_BINARY_NAME }}.sha256
             ${{ env.VULKAN_RUNTIME_BINARY_NAME }}

@@ -13,7 +13,14 @@ use std::time::{Duration, Instant};
 
 const CONNECTOR_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 const TERMINAL_REPORT_ATTEMPTS: usize = 6;
+const HERMES_RECOVERY_ATTEMPTS: usize = 12;
 static CONNECTOR_ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
+
+fn hermes_recovery_allowed(error: &str, attempt: usize, stopped: bool) -> bool {
+    super::hermes_adapter::is_retryable_model_failure(error)
+        && attempt + 1 < HERMES_RECOVERY_ATTEMPTS
+        && !stopped
+}
 
 fn record_connector_activity() {
     if let Some(activity) = CONNECTOR_ACTIVITY.get() {
@@ -1160,11 +1167,10 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
         event_batcher.push(mapped);
     };
     let mut run_hermes_with_recovery = |initial_prompt: &str| {
-        const HARNESS_RECOVERY_ATTEMPTS: usize = 12;
         let mut resume_prompt = initial_prompt.to_string();
         let mut last_error = String::new();
         let mut stalled_attempts = 0;
-        for attempt in 0..HARNESS_RECOVERY_ATTEMPTS {
+        for attempt in 0..HERMES_RECOVERY_ATTEMPTS {
             match super::hermes_adapter::run(
                 &resume_prompt,
                 &session_id,
@@ -1182,15 +1188,15 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             ) {
                 Ok(value) => return Ok(value),
                 Err(error)
-                    if super::hermes_adapter::is_retryable_model_failure(&error)
-                        && attempt + 1 < HARNESS_RECOVERY_ATTEMPTS
-                        && !stop.load(Ordering::Relaxed) =>
+                    if hermes_recovery_allowed(
+                        &error,
+                        attempt,
+                        stop.load(Ordering::Relaxed),
+                    ) =>
                 {
-                    if error.contains("Hermes model progress timed out") {
+                    let stalled = error.contains("Hermes model progress timed out");
+                    if stalled {
                         stalled_attempts += 1;
-                        if stalled_attempts >= 2 {
-                            return Err(format!("{error}; automatic recovery also stalled. Resume the task after checking model availability."));
-                        }
                     }
                     // Preserve completed tool turns across transient gateway
                     // failures. Rebuild only when the provider says the saved
@@ -1201,7 +1207,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                     if rebuilding {
                         super::hermes_adapter::clear_session(&super::data_dir(), &session_id)?;
                     }
-                    let delay_seconds = (2_u64.pow(attempt as u32)).min(30);
+                    let delay_seconds = if stalled {
+                        (attempt as u64 + 1).min(5)
+                    } else {
+                        (2_u64.pow(attempt as u32)).min(30)
+                    };
                     let _ = post_task_events(
                         options,
                         &task_id,
@@ -1210,13 +1220,13 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                             "event": {
                                 "type": "model_turn_recovering",
                                 "summary": if last_error.contains("Hermes model progress timed out") {
-                                    "The model stopped responding. Hermes saved the project progress and is trying once more.".to_string()
+                                    format!("The model stopped responding. Hermes preserved and compacted completed milestones, released the stalled turn, and is rescheduling on available compute (attempt {} of {}).", attempt + 2, HERMES_RECOVERY_ATTEMPTS)
                                 } else if rebuilding {
-                                    format!("EHDA rejected the saved context; Hermes is rebuilding it automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                    format!("EHDA rejected the saved context; Hermes is rebuilding it automatically (attempt {} of {})", attempt + 2, HERMES_RECOVERY_ATTEMPTS)
                                 } else {
-                                    format!("EHDA is temporarily unavailable; Hermes preserved its tool progress and will continue automatically (attempt {} of {})", attempt + 2, HARNESS_RECOVERY_ATTEMPTS)
+                                    format!("EHDA is temporarily unavailable; Hermes preserved its tool progress and will continue automatically (attempt {} of {})", attempt + 2, HERMES_RECOVERY_ATTEMPTS)
                                 },
-                                "metadata": {"attempt": attempt + 2, "max_attempts": HARNESS_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds, "session_preserved": !rebuilding}
+                                "metadata": {"attempt": attempt + 2, "max_attempts": HERMES_RECOVERY_ATTEMPTS, "delay_seconds": delay_seconds, "session_preserved": !rebuilding, "stalled_attempts": stalled_attempts, "checkpoint_compacted": true, "rescheduled": true}
                             }
                         })],
                     );
@@ -1485,7 +1495,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.03"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.04"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1546,14 +1556,15 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
 mod tests {
     use super::{
         bounded_task_workspace, changed_file_events, checkpoint_managed_project, connection_id,
-        drain_progress_events, harness_completion_content, initialize_new_project_repository,
-        project_git,
+        drain_progress_events, harness_completion_content, hermes_recovery_allowed,
+        initialize_new_project_repository, project_git,
         project_execution_directive, request_is_repository_only_operation,
         request_requires_browser_verification, request_requires_verification,
         requires_project_file_change, retry_terminal_report, structured_hermes_event,
         successful_browser_verification, successful_frontend_build,
         successful_verification, frontend_build_required,
-        transient_agent_failure, validate_chat_url, workspace_snapshot, MANAGED_PROJECT_MARKER,
+        transient_agent_failure, validate_chat_url, workspace_snapshot, HERMES_RECOVERY_ATTEMPTS,
+        MANAGED_PROJECT_MARKER,
     };
     use std::fs;
 
@@ -1655,6 +1666,21 @@ mod tests {
         assert!(!transient_agent_failure(
             "Hermes rejected an invalid tool argument"
         ));
+    }
+
+    #[test]
+    fn repeated_model_stalls_use_the_full_bounded_recovery_budget() {
+        let stalled = "Hermes model progress timed out after 5 minutes";
+        for attempt in 0..HERMES_RECOVERY_ATTEMPTS - 1 {
+            assert!(hermes_recovery_allowed(stalled, attempt, false));
+        }
+        assert!(!hermes_recovery_allowed(
+            stalled,
+            HERMES_RECOVERY_ATTEMPTS - 1,
+            false
+        ));
+        assert!(!hermes_recovery_allowed(stalled, 0, true));
+        assert!(!hermes_recovery_allowed("permission denied", 0, false));
     }
 
     #[test]
