@@ -47,6 +47,12 @@ Use only skills relevant to the task; do not load the entire library or invent m
 Project instructions and the current user request still apply. A skill does not grant extra permissions.
 """
 
+RECOVERY_GUIDANCE = """Resume this interrupted project task from the preserved Hermes session, recovery checkpoint, and current workspace.
+Treat completed checkpoint boundaries and existing files as authoritative. Continue with the first unfinished implementation or verification step.
+Do not repeat skill discovery, skill loading, web research, or unchanged-file inspection that the preserved session or checkpoint already records as successful unless a concrete error requires it.
+If the requested edits are already present, run the required build, test, lint, or browser acceptance checks and finish with a concise result.
+"""
+
 EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical.
 For new test apps and apps intended to run locally, default to SQLite when persistent storage is needed and the user has not explicitly specified a storage technology.
 Use a persistent SQLite file with the project's existing language and framework. Do not introduce Docker or an external database service solely for this default.
@@ -55,23 +61,110 @@ Do not narrate each intended read, edit, or command before calling a tool.
 Inspect each unchanged file only once, batch related operations when practical, and do not repeat a completed step.
 Use the structured tool progress events for status. Reserve prose for a concise final summary after implementation and verification.
 Tool results and JSON representations escape real newline characters as \\n. Do not treat that display escaping as proof that a source file contains literal backslash-n text. If syntax is uncertain, run the project build or parser once and trust the result; do not repeatedly inspect the same bytes after a successful build.
+For multi-file code generation, reserve the final tool turns for dependency installation and a real build, test, lint, syntax, or smoke check. Group related work where the tools permit it; do not consume the entire budget writing one file per planning cycle.
+For frontend work, reconcile every third-party source import with the package manifest that owns that source tree. Install missing dependencies in that package directory, not an unrelated parent package. Run that frontend package's production build successfully before starting browser acceptance. If the build fails, use its concrete error to repair the files or manifest and rerun it; never replace a failed frontend build with a passing backend test.
 After the requested change and required build, lint, test, or browser acceptance checks succeed, return the final response immediately. Do not start another inspection cycle or add unrelated improvements.
 """
 
 STANDARD_MAX_ITERATIONS = 12
-FRONTEND_MAX_ITERATIONS = 16
+COMPREHENSIVE_MAX_ITERATIONS = 24
+FRONTEND_MAX_ITERATIONS = 24
+SWARM_PLANNER_MARKER = "MUNDUSX_SWARM_PLANNER_V1"
 PROJECT_COMPACTION_TOKENS = 16_384
-CHECKPOINT_EVENT_LIMIT = 48
+CHECKPOINT_EVENT_LIMIT = 16
+CHECKPOINT_TARGET_LIMIT = 24
+
+
+def project_iteration_budget(prompt):
+    """Keep small tasks quick while giving multi-file builds room to verify."""
+    value = str(prompt or "").lower()
+    comprehensive_signals = (
+        "complete", "full project", "from scratch", "crud", "api",
+        "frontend", "react", "website", "application", "all files",
+    )
+    signal_count = sum(signal in value for signal in comprehensive_signals)
+    if FRONTEND_ACCEPTANCE_MARKER in value:
+        return FRONTEND_MAX_ITERATIONS
+    if signal_count >= 2:
+        return COMPREHENSIVE_MAX_ITERATIONS
+    return STANDARD_MAX_ITERATIONS
+
+
+def project_user_prompt(raw_prompt, recovery_note=""):
+    """Compose a fresh-task or recovery prompt without replaying completed setup."""
+    task_prompt = raw_prompt
+    if recovery_note:
+        task_prompt = recovery_note + "\n\n" + task_prompt
+    guidance = RECOVERY_GUIDANCE if recovery_note else SKILL_DISCOVERY_GUIDANCE
+    return (
+        guidance
+        + "\n"
+        + EXECUTION_EFFICIENCY_GUIDANCE
+        + "\nUser project request:\n"
+        + task_prompt
+    )
 
 
 class RecoveryCheckpoint:
-    """Small durable task journal; never copied into ordinary model turns."""
+    """Bounded durable milestone journal for safe cross-attempt recovery."""
 
     def __init__(self, workspace, task_id):
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_id or "project-task")[:96]
         self.path = os.path.join(workspace, ".hermes", "checkpoints", safe_id + ".json")
         self.previous = self._load()
         self.events = list((self.previous or {}).get("events") or [])
+        self.summary = self._normalized_summary((self.previous or {}).get("summary"))
+        try:
+            self.attempts = max(0, int((self.previous or {}).get("attempts") or 0))
+        except (TypeError, ValueError):
+            self.attempts = 0
+        if (self.previous or {}).get("schema_version", 1) < 2:
+            for event in self.events:
+                self._summarize(event)
+
+    @staticmethod
+    def _normalized_summary(value):
+        def count(raw):
+            try:
+                return max(0, int(raw or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        value = value if isinstance(value, dict) else {}
+        activities = value.get("activities") if isinstance(value.get("activities"), dict) else {}
+        targets = value.get("recent_targets") if isinstance(value.get("recent_targets"), list) else []
+        return {
+            "completed_boundaries": count(value.get("completed_boundaries")),
+            "successful_boundaries": count(value.get("successful_boundaries")),
+            "failed_boundaries": count(value.get("failed_boundaries")),
+            "verification_passes": count(value.get("verification_passes")),
+            "verification_failures": count(value.get("verification_failures")),
+            "activities": {
+                str(name)[:64]: count(raw_count)
+                for name, raw_count in list(activities.items())[:24]
+            },
+            "recent_targets": [str(target)[-512:] for target in targets[-CHECKPOINT_TARGET_LIMIT:]],
+        }
+
+    def _summarize(self, event):
+        self.summary["completed_boundaries"] += 1
+        success = event.get("success")
+        if success is True:
+            self.summary["successful_boundaries"] += 1
+        elif success is False:
+            self.summary["failed_boundaries"] += 1
+        if event.get("verification"):
+            if success is True:
+                self.summary["verification_passes"] += 1
+            elif success is False:
+                self.summary["verification_failures"] += 1
+        activity = str(event.get("activity") or "other")[:64]
+        self.summary["activities"][activity] = self.summary["activities"].get(activity, 0) + 1
+        target = event.get("target")
+        if target:
+            targets = [item for item in self.summary["recent_targets"] if item != target]
+            targets.append(target)
+            self.summary["recent_targets"] = targets[-CHECKPOINT_TARGET_LIMIT:]
 
     def _load(self):
         try:
@@ -95,18 +188,27 @@ class RecoveryCheckpoint:
             for event in events[-12:]
         ]
         return (
-            "Recovery checkpoint from an interrupted run. Reconcile these completed "
-            "boundaries with the workspace and continue without repeating them: "
-            + json.dumps(compact, separators=(",", ":"))
+            "Recovery checkpoint from an interrupted run. Treat the workspace as authoritative, "
+            "reconcile this bounded milestone summary, and continue without repeating completed work: "
+            + json.dumps(
+                {
+                    "attempts": self.previous.get("attempts", 1),
+                    "milestone_summary": self.previous.get("summary") or {},
+                    "recent_boundaries": compact,
+                },
+                separators=(",", ":"),
+            )
         )
 
     def _write(self, state):
         directory = os.path.dirname(self.path)
         os.makedirs(directory, exist_ok=True)
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "state": state,
             "updated_unix_ms": int(time.time() * 1000),
+            "attempts": self.attempts,
+            "summary": self.summary,
             "events": self.events[-CHECKPOINT_EVENT_LIMIT:],
         }
         temporary = self.path + ".tmp-" + str(os.getpid())
@@ -117,6 +219,7 @@ class RecoveryCheckpoint:
         os.replace(temporary, self.path)
 
     def start(self):
+        self.attempts += 1
         self._write("active")
 
     def record(self, name, arguments, result):
@@ -128,15 +231,15 @@ class RecoveryCheckpoint:
                     target = value[-512:]
                     break
         command = arguments.get("command") if isinstance(arguments, dict) else None
-        self.events.append(
-            {
-                "tool": name,
-                "activity": tool_activity(name, arguments),
-                "success": tool_outcome(result, name),
-                "verification": is_verification_command(command),
-                "target": target,
-            }
-        )
+        event = {
+            "tool": name,
+            "activity": tool_activity(name, arguments),
+            "success": tool_outcome(result, name),
+            "verification": is_verification_command(command),
+            "target": target,
+        }
+        self.events.append(event)
+        self._summarize(event)
         self._write("active")
 
     def finish(self, succeeded):
@@ -192,8 +295,14 @@ def is_verification_command(command):
         " dotnet test ", " mvn test ", " gradle test ", " gradlew test ",
         " npm run build ", " pnpm build ", " yarn build ", " cargo build ",
         " npm run lint ", " pnpm lint ", " yarn lint ",
+        " node --test ", " node --check ", " npm run check ",
+        " npx tsc ", " python -m compileall ",
     )
-    return any(check in value for check in checks)
+    package_check = re.search(
+        r"(?:^|[|;&])\s*(?:npm|pnpm|yarn)(?:\s+(?:--prefix|-c|--dir)\s+\S+)*\s+(?:run\s+)?(?:build|test|lint|check)\b",
+        str(command or "").lower(),
+    )
+    return package_check is not None or any(check in value for check in checks)
 
 
 def tool_result_succeeded(result):
@@ -217,12 +326,15 @@ def tool_activity(name, arguments):
     if name in ("terminal", "execute", "shell"):
         command = str(arguments.get("command", "") if isinstance(arguments, dict) else "").lower()
         prefix = r"(?:^|[|;&])\s*"
-        if re.search(prefix + r"(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?build|cargo build)\b", command):
+        package_command = r"(?:npm|pnpm|yarn)(?:\s+(?:--prefix|-c|--dir)\s+\S+)*\s+"
+        if re.search(prefix + r"(?:" + package_command + r"(?:run\s+)?build|cargo build)\b", command):
             return "build"
-        if re.search(prefix + r"(?:pytest|python -m pytest|cargo test|npm test|npm run test|pnpm test|yarn test|mvn test|go test|dotnet test)\b", command):
+        if re.search(prefix + r"(?:pytest|python -m pytest|cargo test|" + package_command + r"(?:run\s+)?test|mvn test|go test|dotnet test)\b", command):
             return "test"
-        if re.search(prefix + r"(?:npm run lint|pnpm lint|yarn lint|ruff check)\b", command):
+        if re.search(prefix + r"(?:" + package_command + r"(?:run\s+)?lint|ruff check)\b", command):
             return "lint"
+        if re.search(prefix + r"(?:node --test|node --check|" + package_command + r"(?:run\s+)?check|npx tsc|python -m compileall)\b", command):
+            return "test"
         if re.search(prefix + r"(?:npm install|npm ci|pnpm install|yarn install|pip install)\b", command):
             return "dependencies"
         if re.search(prefix + r"(?:node|python|python3)\s", command):
@@ -293,8 +405,11 @@ def main():
     os.environ["TERMINAL_CWD"] = workspace
     sys.path.insert(0, project_root)
 
+    raw_user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
+    planner_mode = SWARM_PLANNER_MARKER in raw_user_prompt
     task_id = os.environ.get("MUNDUSX_HERMES_TASK") or os.environ.get("MUNDUSX_HERMES_SESSION") or "project-task"
-    checkpoint = RecoveryCheckpoint(workspace, task_id)
+    checkpoint_root = os.environ.get("HERMES_HOME", workspace) if planner_mode else workspace
+    checkpoint = RecoveryCheckpoint(checkpoint_root, task_id)
     recovery_note = checkpoint.recovery_note()
     checkpoint.start()
 
@@ -303,6 +418,7 @@ def main():
     from tools.terminal_tool import register_task_env_overrides
 
     task_id = os.environ.get("MUNDUSX_HERMES_TASK") or "default"
+    # Preserve the installed runtime's project-directory binding on recovery.
     set_session_cwd(workspace)
     register_task_env_overrides(task_id, {"cwd": workspace})
 
@@ -355,24 +471,15 @@ def main():
         )
 
     session_id = os.environ.get("MUNDUSX_HERMES_SESSION") or None
-    user_prompt = os.environ["MUNDUSX_HERMES_PROMPT"]
-    if recovery_note:
-        user_prompt = recovery_note + "\n\n" + user_prompt
-    user_prompt = (
-        SKILL_DISCOVERY_GUIDANCE
-        + "\n"
-        + EXECUTION_EFFICIENCY_GUIDANCE
-        + "\nUser project request:\n"
-        + user_prompt
-    )
-    enabled_toolsets = ["coding", "skills"]
-    if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
-        enabled_toolsets.extend(["browser", "browser-use"])
-    max_iterations = (
-        FRONTEND_MAX_ITERATIONS
-        if FRONTEND_ACCEPTANCE_MARKER in user_prompt
-        else STANDARD_MAX_ITERATIONS
-    )
+    user_prompt = raw_user_prompt
+    max_iterations = 1 if planner_mode else project_iteration_budget(user_prompt)
+    if planner_mode:
+        enabled_toolsets = []
+    else:
+        user_prompt = project_user_prompt(user_prompt, recovery_note)
+        enabled_toolsets = ["coding", "skills"]
+        if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
+            enabled_toolsets.extend(["browser", "browser-use"])
     agent = AIAgent(
         base_url=os.environ["OPENAI_BASE_URL"],
         api_key=os.environ["OPENAI_API_KEY"],
@@ -389,6 +496,16 @@ def main():
         session_id=session_id,
         skip_memory=True,
         load_soul_identity=False,
+    )
+    # Publish the runtime session before the first model request. The parent
+    # persists this immediately, so a watchdog termination can resume the same
+    # Hermes history instead of creating a new history=0 session.
+    emit(
+        "MUNDUSX_EVENT=",
+        {
+            "type": "runtime_session_ready",
+            "data": {"session_id": getattr(agent, "session_id", None) or session_id},
+        },
     )
     configure_project_compaction(agent)
     try:

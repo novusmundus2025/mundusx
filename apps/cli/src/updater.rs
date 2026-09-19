@@ -20,6 +20,10 @@ struct ReleaseAssets {
     cli_checksum_url: String,
     agent_url: String,
     agent_checksum_url: String,
+    connector_url: String,
+    connector_checksum_url: String,
+    agent_server_url: String,
+    agent_server_checksum_url: String,
 }
 
 impl Drop for StagedBinary {
@@ -30,14 +34,15 @@ impl Drop for StagedBinary {
 
 pub fn update_installed_binaries() -> Result<(), String> {
     let target = release_target(env::consts::OS, env::consts::ARCH)?;
+    let release_prefix = release_prefix(env::consts::OS)?;
     let current_exe =
         env::current_exe().map_err(|error| format!("cannot locate installed opengpu: {error}"))?;
     let install_dir = current_exe
         .parent()
         .ok_or_else(|| "installed opengpu path has no parent directory".to_string())?;
-    let assets = resolve_release_assets(target)?;
+    let assets = resolve_release_assets(target, release_prefix)?;
 
-    println!("updateChannel: linux");
+    println!("updateChannel: {}", env::consts::OS);
     println!("releaseTag: {}", assets.tag);
     println!("releaseTarget: {target}");
     println!("updateStage: downloading and verifying");
@@ -55,24 +60,45 @@ pub fn update_installed_binaries() -> Result<(), String> {
         &assets.agent_checksum_url,
         &agent_target,
     )?;
+    let connector_target = install_dir.join("mundusx");
+    let connector = stage_release_binary(
+        &format!("mundusx-{target}"),
+        &assets.connector_url,
+        &assets.connector_checksum_url,
+        &connector_target,
+    )?;
+    let agent_server_target = install_dir.join("mundusx-agent-server");
+    let agent_server = stage_release_binary(
+        &format!("mundusx-agent-server-{target}"),
+        &assets.agent_server_url,
+        &assets.agent_server_checksum_url,
+        &agent_server_target,
+    )?;
 
     smoke_check(&cli.path, "opengpu")?;
     smoke_check(&agent.path, "opengpu-node-agent")?;
+    smoke_check(&connector.path, "mundusx")?;
 
     // Replace the companion first so the final CLI swap is the commit point.
+    replace_binary(&agent_server.path, &agent_server.target)?;
+    replace_binary(&connector.path, &connector.target)?;
     replace_binary(&agent.path, &agent.target)?;
     replace_binary(&cli.path, &cli.target)?;
 
     println!("updateStage: complete");
     println!("updated: {}", cli.target.display());
     println!("updatedAgent: {}", agent.target.display());
+    println!("updatedConnector: {}", connector.target.display());
+    println!("updatedAgentServer: {}", agent_server.target.display());
     println!("updateHint: a running background node agent will restart automatically");
     Ok(())
 }
 
-fn resolve_release_assets(target: &str) -> Result<ReleaseAssets, String> {
+fn resolve_release_assets(target: &str, release_prefix: &str) -> Result<ReleaseAssets, String> {
     let cli_name = format!("opengpu-{target}");
     let agent_name = format!("opengpu-node-agent-{target}");
+    let connector_name = format!("mundusx-{target}");
+    let agent_server_name = format!("mundusx-agent-server-{target}");
     if let Ok(base_url) = env::var("OPENGPU_RELEASE_BASE_URL") {
         if !base_url.trim().is_empty() {
             return Ok(release_assets_from_base(
@@ -80,6 +106,8 @@ fn resolve_release_assets(target: &str) -> Result<ReleaseAssets, String> {
                 "custom",
                 &cli_name,
                 &agent_name,
+                &connector_name,
+                &agent_server_name,
             ));
         }
     }
@@ -89,7 +117,16 @@ fn resolve_release_assets(target: &str) -> Result<ReleaseAssets, String> {
             String::from_utf8(bytes)
                 .map_err(|_| "GitHub releases API returned invalid UTF-8".to_string())
         })
-        .and_then(|releases| parse_linux_release_assets(&releases, &cli_name, &agent_name));
+        .and_then(|releases| {
+            parse_release_assets(
+                &releases,
+                release_prefix,
+                &cli_name,
+                &agent_name,
+                &connector_name,
+                &agent_server_name,
+            )
+        });
 
     match discovered {
         Ok(assets) => Ok(assets),
@@ -102,6 +139,8 @@ fn resolve_release_assets(target: &str) -> Result<ReleaseAssets, String> {
                 "opengpu-prod",
                 &cli_name,
                 &agent_name,
+                &connector_name,
+                &agent_server_name,
             ))
         }
     }
@@ -112,6 +151,8 @@ fn release_assets_from_base(
     tag: &str,
     cli_name: &str,
     agent_name: &str,
+    connector_name: &str,
+    agent_server_name: &str,
 ) -> ReleaseAssets {
     let base = base_url.trim().trim_end_matches('/');
     ReleaseAssets {
@@ -120,13 +161,20 @@ fn release_assets_from_base(
         cli_checksum_url: format!("{base}/{cli_name}.sha256"),
         agent_url: format!("{base}/{agent_name}"),
         agent_checksum_url: format!("{base}/{agent_name}.sha256"),
+        connector_url: format!("{base}/{connector_name}"),
+        connector_checksum_url: format!("{base}/{connector_name}.sha256"),
+        agent_server_url: format!("{base}/{agent_server_name}"),
+        agent_server_checksum_url: format!("{base}/{agent_server_name}.sha256"),
     }
 }
 
-fn parse_linux_release_assets(
+fn parse_release_assets(
     releases_json: &str,
+    release_prefix: &str,
     cli_name: &str,
     agent_name: &str,
+    connector_name: &str,
+    agent_server_name: &str,
 ) -> Result<ReleaseAssets, String> {
     let releases: serde_json::Value = serde_json::from_str(releases_json)
         .map_err(|error| format!("invalid GitHub releases response: {error}"))?;
@@ -135,7 +183,7 @@ fn parse_linux_release_assets(
         .ok_or_else(|| "GitHub releases response was not an array".to_string())?;
     for release in releases {
         let tag = release["tag_name"].as_str().unwrap_or_default();
-        if !tag.starts_with("cli-linux-v")
+        if !tag.starts_with(release_prefix)
             || release["draft"].as_bool().unwrap_or(false)
             || release["prerelease"].as_bool().unwrap_or(false)
         {
@@ -162,9 +210,25 @@ fn parse_linux_release_assets(
                 .ok_or_else(|| format!("release {tag} is missing {agent_name}"))?,
             agent_checksum_url: asset_url(&format!("{agent_name}.sha256"))
                 .ok_or_else(|| format!("release {tag} is missing {agent_name}.sha256"))?,
+            connector_url: asset_url(connector_name)
+                .ok_or_else(|| format!("release {tag} is missing {connector_name}"))?,
+            connector_checksum_url: asset_url(&format!("{connector_name}.sha256"))
+                .ok_or_else(|| format!("release {tag} is missing {connector_name}.sha256"))?,
+            agent_server_url: asset_url(agent_server_name)
+                .ok_or_else(|| format!("release {tag} is missing {agent_server_name}"))?,
+            agent_server_checksum_url: asset_url(&format!("{agent_server_name}.sha256"))
+                .ok_or_else(|| format!("release {tag} is missing {agent_server_name}.sha256"))?,
         });
     }
-    Err("no published cli-linux-v* release was found".to_string())
+    Err(format!("no published {release_prefix}* release was found"))
+}
+
+fn release_prefix(os: &str) -> Result<&'static str, String> {
+    match os {
+        "linux" => Ok("cli-linux-v"),
+        "macos" => Ok("cli-macos-v"),
+        _ => Err(format!("opengpu self-update is not supported on {os}")),
+    }
 }
 
 fn release_target(os: &str, arch: &str) -> Result<&'static str, String> {
@@ -172,7 +236,9 @@ fn release_target(os: &str, arch: &str) -> Result<&'static str, String> {
         ("linux", "aarch64" | "arm64") => Ok("aarch64-unknown-linux-gnu"),
         ("linux", "x86_64" | "amd64") => Ok("x86_64-unknown-linux-gnu"),
         ("linux", _) => Err(format!("unsupported Linux architecture: {arch}")),
-        _ => Err("opengpu self-update currently supports Linux only".to_string()),
+        ("macos", "aarch64" | "arm64") => Ok("aarch64-apple-darwin"),
+        ("macos", _) => Err(format!("unsupported macOS architecture: {arch}")),
+        _ => Err(format!("opengpu self-update is not supported on {os}")),
     }
 }
 
@@ -281,8 +347,8 @@ fn set_executable(_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_linux_release_assets, release_assets_from_base, release_target, verify_checksum,
-        PRODUCTION_RELEASE_BASE_URL,
+        parse_release_assets, release_assets_from_base, release_prefix, release_target,
+        verify_checksum, PRODUCTION_RELEASE_BASE_URL,
     };
     use sha2::{Digest, Sha256};
 
@@ -297,7 +363,13 @@ mod tests {
             Ok("x86_64-unknown-linux-gnu")
         );
         assert!(release_target("linux", "riscv64").is_err());
-        assert!(release_target("macos", "aarch64").is_err());
+        assert_eq!(
+            release_target("macos", "aarch64").as_deref(),
+            Ok("aarch64-apple-darwin")
+        );
+        assert!(release_target("macos", "x86_64").is_err());
+        assert_eq!(release_prefix("linux"), Ok("cli-linux-v"));
+        assert_eq!(release_prefix("macos"), Ok("cli-macos-v"));
     }
 
     #[test]
@@ -307,6 +379,8 @@ mod tests {
             "opengpu-prod",
             "opengpu-x86_64-unknown-linux-gnu",
             "opengpu-node-agent-x86_64-unknown-linux-gnu",
+            "mundusx-x86_64-unknown-linux-gnu",
+            "mundusx-agent-server-x86_64-unknown-linux-gnu",
         );
         assert_eq!(assets.tag, "opengpu-prod");
         assert_eq!(
@@ -367,19 +441,106 @@ mod tests {
                     {
                         "name": "opengpu-node-agent-aarch64-unknown-linux-gnu.sha256",
                         "browser_download_url": "https://example.test/agent.sha256"
+                    },
+                    {
+                        "name": "mundusx-aarch64-unknown-linux-gnu",
+                        "browser_download_url": "https://example.test/mundusx"
+                    },
+                    {
+                        "name": "mundusx-aarch64-unknown-linux-gnu.sha256",
+                        "browser_download_url": "https://example.test/mundusx.sha256"
+                    },
+                    {
+                        "name": "mundusx-agent-server-aarch64-unknown-linux-gnu",
+                        "browser_download_url": "https://example.test/server"
+                    },
+                    {
+                        "name": "mundusx-agent-server-aarch64-unknown-linux-gnu.sha256",
+                        "browser_download_url": "https://example.test/server.sha256"
                     }
                 ]
             }
         ]);
-        let assets = parse_linux_release_assets(
+        let assets = parse_release_assets(
             &releases.to_string(),
+            "cli-linux-v",
             "opengpu-aarch64-unknown-linux-gnu",
             "opengpu-node-agent-aarch64-unknown-linux-gnu",
+            "mundusx-aarch64-unknown-linux-gnu",
+            "mundusx-agent-server-aarch64-unknown-linux-gnu",
         )
         .expect("Linux assets should resolve");
 
         assert_eq!(assets.tag, "cli-linux-v0.1.18");
         assert_eq!(assets.cli_url, "https://example.test/opengpu");
         assert_eq!(assets.agent_url, "https://example.test/agent");
+        assert_eq!(assets.connector_url, "https://example.test/mundusx");
+        assert_eq!(assets.agent_server_url, "https://example.test/server");
+    }
+
+    #[test]
+    fn selects_macos_release_and_exact_architecture_assets() {
+        let releases = serde_json::json!([
+            {
+                "tag_name": "cli-linux-v9.0.0",
+                "draft": false,
+                "prerelease": false,
+                "assets": []
+            },
+            {
+                "tag_name": "cli-macos-v0.2.03",
+                "draft": false,
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "opengpu-aarch64-apple-darwin",
+                        "browser_download_url": "https://example.test/opengpu"
+                    },
+                    {
+                        "name": "opengpu-aarch64-apple-darwin.sha256",
+                        "browser_download_url": "https://example.test/opengpu.sha256"
+                    },
+                    {
+                        "name": "opengpu-node-agent-aarch64-apple-darwin",
+                        "browser_download_url": "https://example.test/agent"
+                    },
+                    {
+                        "name": "opengpu-node-agent-aarch64-apple-darwin.sha256",
+                        "browser_download_url": "https://example.test/agent.sha256"
+                    },
+                    {
+                        "name": "mundusx-aarch64-apple-darwin",
+                        "browser_download_url": "https://example.test/mundusx"
+                    },
+                    {
+                        "name": "mundusx-aarch64-apple-darwin.sha256",
+                        "browser_download_url": "https://example.test/mundusx.sha256"
+                    },
+                    {
+                        "name": "mundusx-agent-server-aarch64-apple-darwin",
+                        "browser_download_url": "https://example.test/server"
+                    },
+                    {
+                        "name": "mundusx-agent-server-aarch64-apple-darwin.sha256",
+                        "browser_download_url": "https://example.test/server.sha256"
+                    }
+                ]
+            }
+        ]);
+        let assets = parse_release_assets(
+            &releases.to_string(),
+            "cli-macos-v",
+            "opengpu-aarch64-apple-darwin",
+            "opengpu-node-agent-aarch64-apple-darwin",
+            "mundusx-aarch64-apple-darwin",
+            "mundusx-agent-server-aarch64-apple-darwin",
+        )
+        .expect("macOS assets should resolve");
+
+        assert_eq!(assets.tag, "cli-macos-v0.2.03");
+        assert_eq!(assets.cli_url, "https://example.test/opengpu");
+        assert_eq!(assets.agent_url, "https://example.test/agent");
+        assert_eq!(assets.connector_url, "https://example.test/mundusx");
+        assert_eq!(assets.agent_server_url, "https://example.test/server");
     }
 }

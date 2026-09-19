@@ -1,6 +1,6 @@
 [package]
 name = "opengpu"
-version = "0.1.101"
+version = "0.2.5"
 edition = "2021"
 description = "MundusX CLI"
 license = "Apache-2.0"
@@ -14,6 +14,7 @@ name = "mundusx"
 path = "src/mundusx_main.rs"
 
 [dependencies]
+mundusx-control-plane-auth = { path = "../../packages/control-plane-auth" }
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.28"
 dirs = "5.0"
@@ -27,6 +28,9 @@ ureq = { version = "2.12", features = ["json"] }
 tiny_http = "0.12"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 mundusx-agent-core = { path = "../../packages/agent-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ureq = { version = "2.12", features = ["native-certs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

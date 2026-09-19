@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 const MAX_TASKS: usize = 4;
 const DEFAULT_WORKERS: usize = 2;
+const PLANNER_MARKER: &str = "MUNDUSX_SWARM_PLANNER_V1";
+const PLANNER_MANIFEST_MAX_CHARS: usize = 24_000;
 
 #[derive(Clone)]
 pub struct CoordinatorOptions {
@@ -131,6 +133,11 @@ pub fn should_coordinate(prompt: &str) -> bool {
         "create a website",
         "build a dashboard",
         "create a dashboard",
+        "react ui",
+        "ui ux",
+        "ui/ux",
+        "complete ui",
+        "full ui",
         "full stack",
         "full-stack",
         "end-to-end",
@@ -199,7 +206,7 @@ pub fn run(options: CoordinatorOptions) -> Result<Value, String> {
         json!({"workers": DEFAULT_WORKERS}),
     );
 
-    let planner_prompt = planner_prompt(&options.objective);
+    let planner_prompt = planner_prompt(&options.objective, &project_manifest(&options.workspace)?);
     let planner_data = journal_dir.join("planner");
     let planner = run_hermes(
         &options,
@@ -536,10 +543,28 @@ fn run_hermes(
     )
 }
 
-fn planner_prompt(objective: &str) -> String {
+fn planner_prompt(objective: &str, manifest: &str) -> String {
     format!(
-        "Act as the Project Swarm planner. Inspect this Git project and decompose the authorized request into 2 to {MAX_TASKS} implementation tasks that can safely use isolated worktrees. Return only one JSON object with this exact shape: {{\"summary\":\"...\",\"tasks\":[{{\"id\":\"lowercase-id\",\"objective\":\"...\",\"depends_on\":[],\"owned_paths\":[\"relative/path\"]}}],\"verification_command\":\"one non-interactive command\"}}. Path ownership must be disjoint across every task. Keep dependency lockfiles, root configuration, database migrations, generated schemas, deployment and publishing out of parallel tasks. If shared groundwork is required, make it an earlier task with its own paths. Do not modify files.\n\nAuthorized project request:\n{objective}"
+        "{PLANNER_MARKER}\nAct as the Project Swarm planner. Use the supplied tracked-file manifest and decompose the authorized request into 2 to {MAX_TASKS} implementation tasks that can safely use isolated worktrees. Return only one JSON object with this exact shape: {{\"summary\":\"...\",\"tasks\":[{{\"id\":\"lowercase-id\",\"objective\":\"...\",\"depends_on\":[],\"owned_paths\":[\"relative/path\"]}}],\"verification_command\":\"one non-interactive command\"}}. Path ownership must be disjoint across every task. Keep dependency lockfiles, root configuration, database migrations, generated schemas, deployment and publishing out of parallel tasks. If the work cannot be split safely, return a JSON object with fewer than two tasks so validation selects the sequential fallback. You have no tools and must not modify files.\n\nTracked project files:\n{manifest}\n\nAuthorized project request:\n{objective}"
     )
+}
+
+fn project_manifest(workspace: &Path) -> Result<String, String> {
+    let tracked = git_output(workspace, &["ls-files"])?;
+    let mut manifest = String::new();
+    for path in tracked.lines().map(str::trim).filter(|path| !path.is_empty()) {
+        let needed = path.len().saturating_add(1);
+        if manifest.len().saturating_add(needed) > PLANNER_MANIFEST_MAX_CHARS {
+            manifest.push_str("[additional tracked files omitted]\n");
+            break;
+        }
+        manifest.push_str(path);
+        manifest.push('\n');
+    }
+    if manifest.is_empty() {
+        return Err("Project Swarm cannot plan a repository with no tracked files".to_string());
+    }
+    Ok(manifest)
 }
 
 fn requires_browser_acceptance(objective: &str) -> bool {
@@ -877,8 +902,17 @@ mod tests {
         assert!(should_coordinate(
             "Implement authentication, database, and API tests"
         ));
+        assert!(should_coordinate("Create a superb React UI UX for the taxi app"));
         assert!(!should_coordinate("Rename the login button"));
         assert!(!should_coordinate("Create a CRUD API with a single worker"));
+    }
+
+    #[test]
+    fn planner_receives_a_bounded_read_only_manifest() {
+        let prompt = planner_prompt("Build a frontend and backend", "client/App.jsx\nserver/api.js\n");
+        assert!(prompt.starts_with(PLANNER_MARKER));
+        assert!(prompt.contains("client/App.jsx"));
+        assert!(prompt.contains("You have no tools and must not modify files"));
     }
 
     #[test]

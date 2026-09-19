@@ -267,7 +267,19 @@ fn request_timeout() -> Duration {
 }
 
 pub fn request_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(request_timeout()).build()
+    ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(request_timeout())
+        .build()
+}
+
+pub fn request_agent_with_timeouts(connect: Duration, io: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout_connect(connect)
+        .timeout_read(io)
+        .timeout_write(io)
+        .build()
 }
 
 pub fn request_agent_with_timeouts(connect: Duration, io: Duration) -> ureq::Agent {
@@ -318,6 +330,7 @@ fn send_request_with_agent(
         "POST" => agent.post(url),
         other => return Err(format!("unsupported HTTP method `{other}`")),
     };
+    request = mundusx_control_plane_auth::apply(request)?;
     for (name, value) in headers {
         request = request.set(name, &value);
     }
@@ -345,6 +358,88 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn private_gateway_token_is_optional_and_preserves_signatures() {
+        let _guard = env_lock().lock().unwrap();
+        struct TestHome(Option<std::ffi::OsString>, std::path::PathBuf);
+        impl Drop for TestHome {
+            fn drop(&mut self) {
+                if let Some(previous) = &self.0 {
+                    env::set_var("OPENGPU_HOME", previous);
+                } else {
+                    env::remove_var("OPENGPU_HOME");
+                }
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let dir = env::temp_dir().join(format!("mundusx-node-auth-{}", uuid::Uuid::new_v4()));
+        let _home = TestHome(env::var_os("OPENGPU_HOME"), dir.clone());
+        env::set_var("OPENGPU_HOME", &dir);
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr());
+        mundusx_control_plane_auth::store(
+            &base,
+            "node-test-token",
+            mundusx_control_plane_auth::TokenHeader::CoderSessionToken,
+        )
+        .unwrap();
+        let handle = std::thread::spawn(move || {
+            for (index, method) in ["GET", "POST", "GET"].into_iter().enumerate() {
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let header = |name| {
+                    request
+                        .headers()
+                        .iter()
+                        .find(|header| header.field.equiv(name))
+                        .map(|header| header.value.as_str().to_string())
+                };
+                let actual = (
+                    request.method().as_str().to_string(),
+                    header("Coder-Session-Token"),
+                    header("X-MundusX-Signature"),
+                    header("Authorization"),
+                );
+                request
+                    .respond(tiny_http::Response::from_string("{}"))
+                    .unwrap();
+                assert_eq!(
+                    actual,
+                    (
+                        method.into(),
+                        if index < 2 {
+                            Some("node-test-token".into())
+                        } else {
+                            None
+                        },
+                        Some("test-signature".into()),
+                        None
+                    )
+                );
+            }
+        });
+        for (index, method) in ["GET", "POST", "GET"].into_iter().enumerate() {
+            if index == 2 {
+                mundusx_control_plane_auth::clear().unwrap();
+            }
+            super::send_request_with_agent(
+                &super::request_agent(),
+                method,
+                &format!("{base}/v1/heartbeat"),
+                vec![("X-MundusX-Signature", "test-signature".into())],
+                if method == "POST" {
+                    Some("{}".into())
+                } else {
+                    None
+                },
+            )
+            .unwrap();
+        }
+        handle.join().unwrap();
     }
 
     #[test]

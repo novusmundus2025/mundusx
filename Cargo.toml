@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "packages/control-plane-auth",
     "apps/cli",
     "apps/tray",
     "apps/windows-installer",

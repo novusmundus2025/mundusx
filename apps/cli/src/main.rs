@@ -26,6 +26,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use types::{Backend, Heartbeat};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ControlPlaneTokenHeader {
+    Bearer,
+    CoderSessionToken,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum ExecutionMode {
     Single,
     Auto,
@@ -70,7 +76,7 @@ const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 #[derive(Parser, Debug)]
 #[command(
     name = "opengpu",
-    version,
+    version = "0.2.05",
     about = "MundusX CLI",
     arg_required_else_help = true
 )]
@@ -138,10 +144,13 @@ enum Commands {
     Pause,
     /// Resume contribution in the background
     Resume,
-    /// Store local operator auth state
+    /// Store a token for the configured control plane
     Login {
         #[arg(long)]
         token: Option<String>,
+        /// Authentication header used by the private endpoint
+        #[arg(long, value_enum, default_value = "bearer")]
+        token_header: ControlPlaneTokenHeader,
     },
     /// Clear local operator auth state
     Logout,
@@ -2431,10 +2440,10 @@ fn http_post_json(
 
     let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let agent = ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout(Duration::from_secs(10))
         .build();
-    let response = agent
-        .post(&endpoint)
+    let response = mundusx_control_plane_auth::apply(agent.post(&endpoint))?
         .set("Content-Type", "application/json")
         .send_json(payload)
         .map_err(control_plane_error)?;
@@ -2788,13 +2797,16 @@ fn operator_get_json(
 
     let endpoint = control_plane_endpoint(control_plane_url, path)?;
     let agent = ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout(Duration::from_secs(10))
         .build();
     let mut request = agent.get(&endpoint);
     if let Some(token) = auth_token.filter(|token| !token.is_empty()) {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }
-    let response = request.call().map_err(control_plane_error)?;
+    let response = mundusx_control_plane_auth::apply(request)?
+        .call()
+        .map_err(control_plane_error)?;
     read_control_plane_response(response)
 }
 fn colored_state(
@@ -3911,22 +3923,119 @@ fn print_model_event(title: &str, model_name: &str, detail: &str, accent: Color,
     print_retro_panel(title, "local cache updated", &body, accent);
 }
 
-fn read_operator_token_from_prompt() -> Result<String, String> {
+fn read_token_from_prompt(label: &str) -> Result<String, String> {
     if !io::stdin().is_terminal() {
         return Err("missing token; pass --token or use an interactive terminal".to_string());
     }
-
-    print!("Operator token: ");
+    print!("{label}");
     io::stdout().flush().map_err(|error| error.to_string())?;
-    let mut token = String::new();
-    io::stdin()
-        .read_line(&mut token)
-        .map_err(|error| error.to_string())?;
-    let token = token.trim().to_string();
+    enable_raw_mode().map_err(|error| error.to_string())?;
+    let result = (|| {
+        let mut token = String::new();
+        loop {
+            match read().map_err(|error| error.to_string())? {
+                Event::Key(key) if handles_terminal_key(key.kind) => match key.code {
+                    KeyCode::Enter => return Ok(token.trim().to_string()),
+                    KeyCode::Esc => return Err("token entry cancelled".to_string()),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Err("token entry cancelled".to_string());
+                    }
+                    KeyCode::Backspace => {
+                        token.pop();
+                    }
+                    KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        token.push(character);
+                    }
+                    _ => {}
+                },
+                Event::Paste(value) => token.push_str(&value),
+                _ => {}
+            }
+        }
+    })();
+    let restore = disable_raw_mode().map_err(|error| error.to_string());
+    println!();
+    restore?;
+    result
+}
+
+fn read_operator_token_from_prompt() -> Result<String, String> {
+    let token = read_token_from_prompt("Control-plane token (hidden): ")?;
     if token.is_empty() {
-        return Err("operator token cannot be empty".to_string());
+        return Err("control-plane token cannot be empty".to_string());
     }
     Ok(token)
+}
+
+fn save_control_plane_auth(
+    config: &mut Config,
+    token: &str,
+    header: ControlPlaneTokenHeader,
+) -> Result<Option<PathBuf>, String> {
+    let path = if token.trim().is_empty() {
+        mundusx_control_plane_auth::clear().map_err(|error| error.to_string())?;
+        None
+    } else {
+        let header = match header {
+            ControlPlaneTokenHeader::Bearer => mundusx_control_plane_auth::TokenHeader::Bearer,
+            ControlPlaneTokenHeader::CoderSessionToken => {
+                mundusx_control_plane_auth::TokenHeader::CoderSessionToken
+            }
+        };
+        Some(
+            mundusx_control_plane_auth::store(&config.control_plane_url, token, header)
+                .map_err(|error| error.to_string())?,
+        )
+    };
+    // Blank setup input must remove legacy credentials as well as scoped tokens.
+    auth_token::clear_operator_token().map_err(|error| error.to_string())?;
+    config.auth_token = None;
+    save_config(config).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn prompt_install_control_plane_auth(config: &mut Config) -> Result<(), String> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Ok(());
+    }
+    theme::note(
+        "Token is optional. Leave blank to use no authentication (clears any saved token).",
+    );
+    let token = read_token_from_prompt("Control-plane token (hidden; Enter for none): ")?;
+    let header = if token.is_empty() {
+        ControlPlaneTokenHeader::Bearer
+    } else {
+        let options = vec![
+            (
+                "Bearer token".to_string(),
+                "Standard token authentication".to_string(),
+            ),
+            (
+                "Coder / EHDA token".to_string(),
+                "For control planes hosted behind Coder".to_string(),
+            ),
+        ];
+        match select_menu_option(
+            &["Which type of token does this endpoint use?".to_string()],
+            &options,
+            "Use arrow keys and Enter; Esc cancels",
+            0,
+        ) {
+            Some(0) => ControlPlaneTokenHeader::Bearer,
+            Some(1) => ControlPlaneTokenHeader::CoderSessionToken,
+            _ => return Err("token setup cancelled".to_string()),
+        }
+    };
+    save_control_plane_auth(config, &token, header)?;
+    theme::field(
+        "authentication",
+        if token.is_empty() {
+            "none"
+        } else {
+            "token saved"
+        },
+    );
+    Ok(())
 }
 
 fn print_retro_panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
@@ -6031,6 +6140,10 @@ fn run_install(
         std::process::exit(1);
     }
     theme::field("control plane", &config.control_plane_url);
+    if let Err(error) = prompt_install_control_plane_auth(&mut config) {
+        eprintln!("failed to configure control-plane authentication: {error}");
+        std::process::exit(1);
+    }
 
     let ranked_clusters = cluster::servable_clusters_by_size(&detected_clusters);
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -6649,7 +6762,10 @@ fn main() {
             }
         }
         Commands::Resume => run_start_or_connect(AgentLaunchMode::Background, None, None, None),
-        Commands::Login { token } => {
+        Commands::Login {
+            token,
+            token_header,
+        } => {
             let mut config = current_config_or_default();
             let token = match token {
                 Some(token) => token.trim().to_string(),
@@ -6664,39 +6780,22 @@ fn main() {
                 std::process::exit(1);
             }
 
-            #[cfg(windows)]
-            {
-                if let Err(error) = auth_token::store_operator_token(&token) {
-                    eprintln!("failed to store protected auth token: {error}");
+            let path = save_control_plane_auth(&mut config, &token, token_header)
+                .unwrap_or_else(|error| {
+                    eprintln!("failed to save control-plane token: {error}");
                     std::process::exit(1);
-                }
-                config.auth_token = None;
-            }
-            #[cfg(not(windows))]
-            {
-                config.auth_token = Some(token);
-            }
-            match save_config(&config) {
-                Ok(path) => {
-                    #[cfg(windows)]
-                    let _ = &path;
-                    println!("authenticated: yes");
-                    #[cfg(windows)]
-                    println!(
-                        "authTokenPath: {}",
-                        auth_token::protected_token_path().display()
-                    );
-                    #[cfg(not(windows))]
-                    println!("authTokenPath: {}", path.display());
-                }
-                Err(error) => {
-                    eprintln!("failed to save auth token: {error}");
-                    std::process::exit(1);
-                }
-            }
+                })
+                .expect("nonempty login token has a credential path");
+            println!("tokenSaved: yes");
+            println!("controlPlaneUrl: {}", config.control_plane_url);
+            println!("authTokenPath: {}", path.display());
         }
         Commands::Logout => {
             let mut config = current_config_or_default();
+            if let Err(error) = mundusx_control_plane_auth::clear() {
+                eprintln!("failed to clear control-plane token: {error}");
+                std::process::exit(1);
+            }
             if let Err(error) = auth_token::clear_operator_token() {
                 eprintln!("failed to clear protected auth token: {error}");
                 std::process::exit(1);
@@ -7409,6 +7508,87 @@ mod tests {
             contribution_percent: 80,
             active_model: Some("Qwen/Qwen2.5-1.5B-Instruct".to_string()),
             ..Config::default()
+        }
+    }
+
+    #[test]
+    fn login_selects_coder_header_and_defaults_to_bearer() {
+        let coder = Cli::try_parse_from([
+            "opengpu",
+            "login",
+            "--token-header",
+            "coder-session-token",
+            "--token",
+            "test-token",
+        ])
+        .unwrap();
+        assert!(matches!(
+            coder.command,
+            Commands::Login {
+                token_header: super::ControlPlaneTokenHeader::CoderSessionToken,
+                ..
+            }
+        ));
+        let bearer = Cli::try_parse_from(["opengpu", "login"]).unwrap();
+        assert!(matches!(
+            bearer.command,
+            Commands::Login {
+                token_header: super::ControlPlaneTokenHeader::Bearer,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["opengpu", "login", "--token-header", "unknown"]).is_err());
+    }
+
+    #[test]
+    fn setup_blank_token_disables_auth_for_public_and_private_control_planes() {
+        let _guard = env_lock().lock().unwrap();
+        struct TestHome(Option<std::ffi::OsString>, std::path::PathBuf);
+        impl Drop for TestHome {
+            fn drop(&mut self) {
+                if let Some(previous) = &self.0 {
+                    std::env::set_var("OPENGPU_HOME", previous);
+                } else {
+                    std::env::remove_var("OPENGPU_HOME");
+                }
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("mundusx-setup-auth-{}", uuid::Uuid::new_v4()));
+        let _home = TestHome(std::env::var_os("OPENGPU_HOME"), dir.clone());
+        std::env::set_var("OPENGPU_HOME", &dir);
+        for url in [PUBLIC_CONTROL_PLANE_URL, "https://private.example"] {
+            let mut config = Config {
+                control_plane_url: url.into(),
+                ..Config::default()
+            };
+            super::save_control_plane_auth(
+                &mut config,
+                "test-token",
+                super::ControlPlaneTokenHeader::CoderSessionToken,
+            )
+            .unwrap();
+            assert!(mundusx_control_plane_auth::present_for(url));
+            let request =
+                mundusx_control_plane_auth::apply(ureq::get(&format!("{url}/health"))).unwrap();
+            assert_eq!(request.header("Coder-Session-Token"), Some("test-token"));
+            config.auth_token = Some("legacy-test-token".into());
+            assert!(super::save_control_plane_auth(
+                &mut config,
+                "  ",
+                super::ControlPlaneTokenHeader::Bearer
+            )
+            .unwrap()
+            .is_none());
+            assert!(config.auth_token.is_none());
+            assert!(!super::auth_token::operator_token_present(&config));
+            let request =
+                mundusx_control_plane_auth::apply(ureq::get(&format!("{url}/health"))).unwrap();
+            assert!(request.header("Coder-Session-Token").is_none());
+            assert!(request.header("Authorization").is_none());
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(dir.join("config.json")).unwrap()).unwrap();
+            assert!(saved["auth_token"].is_null());
         }
     }
 

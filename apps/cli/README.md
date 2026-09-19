@@ -108,8 +108,8 @@ Startup flow:
 - `opengpu onboarding` shows the Mac-first contributor checklist until completed
 - `opengpu cap` sets the contribution budget explicitly, with quick picks and custom whole-percent values up to 80%
 - `opengpu update` prints the local install page and release preview URLs
-- `opengpu login` stores a local operator bearer token; on Windows the token is protected with DPAPI outside `config.json`
-- `opengpu logout` clears that local token and the protected Windows token blob
+- `opengpu login` stores a bearer token scoped to the configured control-plane URL; `--token-header coder-session-token` selects Coder gateway authentication. The CLI and node both use it for control-plane requests. On Windows it is protected with DPAPI outside `config.json`; on Unix the credential file is readable only by its owner.
+- `opengpu logout` clears the scoped credential and any legacy operator token
 - `opengpu connect` marks the machine ready once a cap has been recorded and the secure device identity is available
 - `opengpu exit` leaves contribution mode and stops the recorded background agent; `opengpu disconnect` remains available as the explicit alias
 - `opengpu status` shows the live local routing decision
@@ -120,3 +120,35 @@ Startup flow:
 - `scripts/no-auth-e2e-smoke.sh` verifies the local/UAT no-auth lifecycle: disabled operator auth on `/health`, signed node registration and heartbeat, no-auth job submit, node-agent claim and completion, and final CLI polling.
 
 See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup-flow.md) for the full first-run sequence.
+
+### Private control plane behind Coder
+
+Authentication is optional: with no saved token, public control-plane requests
+continue without an authentication header or API key. Interactive `opengpu install`
+asks for an optional hidden token after either the public or private control-plane
+selection. Press Enter with no token to disable authentication, including any
+previously saved token. If you enter a token, choose **Bearer token** or
+**Coder / EHDA token**. Non-interactive setup does not prompt; configure its token
+with `opengpu login` when needed.
+
+Set the base URL, without `/health`, before saving a token. With the updated CLI
+and node installed, use these Bash commands (`TOKEN` is your existing token variable):
+
+```bash
+opengpu config control-plane-url "https://private-control.example"
+opengpu login --token-header coder-session-token --token "$TOKEN"
+opengpu start
+```
+
+For PowerShell use `--token "$env:TOKEN"` when the token is an environment variable,
+or omit `--token` to enter it at the login prompt. For a gateway that accepts
+`Authorization: Bearer`, use `--token-header bearer` (the default).
+
+The saved token is attached to job submissions and polling as well as node
+registration, heartbeat, claims, streaming, and completion. Node identity signatures
+remain in place. Tokens are not attached to model downloads, local model endpoints,
+or other control-plane origins. Redirects are not followed; configure the final
+control-plane base URL. Changing the URL to another origin requires logging in again.
+Login saves credentials locally; it does not prove that the gateway accepts them or
+replace separate control-plane user/pairing authorization. Restart an older running
+node after updating its binary so it can use this support.

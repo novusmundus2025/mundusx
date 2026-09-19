@@ -217,6 +217,15 @@ fn save_session(data_dir: &Path, mundusx_id: &str, hermes_id: &str) -> Result<()
     .map_err(|error| format!("could not save Hermes session mapping: {error}"))
 }
 
+fn runtime_session_id(event: &Value) -> Option<&str> {
+    if event["type"] != "runtime_session_ready" {
+        return None;
+    }
+    event["data"]["session_id"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+}
+
 pub fn clear_session(data_dir: &Path, mundusx_id: &str) -> Result<(), String> {
     let mut sessions = session_map(data_dir);
     if sessions.remove(mundusx_id).is_none() {
@@ -364,7 +373,9 @@ pub fn run(
                     {
                         // Snapshots have already been delivered to the UI. Keep
                         // them out of the final transcript/result evidence.
-                        if payload["type"] != "assistant_snapshot" {
+                        if payload["type"] != "assistant_snapshot"
+                            && payload["type"] != "runtime_session_ready"
+                        {
                             output.push_str(&line);
                         }
                         let _ = event_sender.send(payload);
@@ -387,6 +398,10 @@ pub fn run(
         while let Ok(event) = event_receiver.try_recv() {
             progress_watchdog.observe(&event, Instant::now());
             if event["type"] == "model_stream_progress" {
+                continue;
+            }
+            if let Some(session) = runtime_session_id(&event) {
+                save_session(data_dir, mundusx_session_id, session)?;
                 continue;
             }
             if let Some(callback) = event_callback.as_mut() {
@@ -422,6 +437,10 @@ pub fn run(
     // result so completed, failed, and cancelled tasks all release their ports.
     process_group.terminate();
     while let Ok(event) = event_receiver.try_recv() {
+        if let Some(session) = runtime_session_id(&event) {
+            save_session(data_dir, mundusx_session_id, session)?;
+            continue;
+        }
         if let Some(callback) = event_callback.as_mut() {
             callback(event);
         }
@@ -444,6 +463,10 @@ pub fn run(
         save_session(data_dir, mundusx_session_id, hermes_id)?;
     }
     while let Ok(event) = event_receiver.try_recv() {
+        if let Some(session) = runtime_session_id(&event) {
+            save_session(data_dir, mundusx_session_id, session)?;
+            continue;
+        }
         if let Some(callback) = event_callback.as_mut() {
             callback(event);
         }
@@ -560,7 +583,8 @@ pub fn should_rebuild_session_after_failure(message: &str) -> bool {
 mod output_tests {
     use super::{
         clear_session, hermes_output_reports_model_failure, is_retryable_model_failure,
-        save_session, session_map, should_rebuild_session_after_failure, STRUCTURED_BRIDGE,
+        runtime_session_id, save_session, session_map, should_rebuild_session_after_failure,
+        STRUCTURED_BRIDGE,
     };
 
     #[test]
@@ -570,7 +594,11 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("SKILL_DISCOVERY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("EXECUTION_EFFICIENCY_GUIDANCE"));
         assert!(STRUCTURED_BRIDGE.contains("max_iterations=max_iterations"));
-        assert!(STRUCTURED_BRIDGE.contains("FRONTEND_MAX_ITERATIONS = 16"));
+        assert!(STRUCTURED_BRIDGE.contains("COMPREHENSIVE_MAX_ITERATIONS = 24"));
+        assert!(STRUCTURED_BRIDGE.contains("project_iteration_budget(user_prompt)"));
+        assert!(STRUCTURED_BRIDGE.contains("max_iterations = 1 if planner_mode"));
+        assert!(STRUCTURED_BRIDGE.contains("enabled_toolsets = []"));
+        assert!(STRUCTURED_BRIDGE.contains("SWARM_PLANNER_MARKER"));
         assert!(STRUCTURED_BRIDGE.contains("PROJECT_COMPACTION_TOKENS = 16_384"));
         assert!(STRUCTURED_BRIDGE.contains("configure_project_compaction(agent)"));
         assert!(STRUCTURED_BRIDGE.contains("class RecoveryCheckpoint"));
@@ -581,7 +609,29 @@ mod output_tests {
             STRUCTURED_BRIDGE.contains("os.environ.get(\"MUNDUSX_HERMES_WORKSPACE\", os.getcwd())")
         );
         assert!(STRUCTURED_BRIDGE.contains("skills_selected"));
+        assert!(STRUCTURED_BRIDGE.contains("runtime_session_ready"));
+        assert!(STRUCTURED_BRIDGE.contains("RECOVERY_GUIDANCE"));
         assert!(!STRUCTURED_BRIDGE.contains("select_project_skills"));
+    }
+
+    #[test]
+    fn accepts_only_a_nonempty_internal_runtime_session_event() {
+        let event = serde_json::json!({
+            "type": "runtime_session_ready",
+            "data": {"session_id": "hermes-session-1"}
+        });
+        assert_eq!(runtime_session_id(&event), Some("hermes-session-1"));
+        assert_eq!(
+            runtime_session_id(&serde_json::json!({
+                "type": "runtime_session_ready",
+                "data": {"session_id": ""}
+            })),
+            None
+        );
+        assert_eq!(
+            runtime_session_id(&serde_json::json!({"type": "tool_started"})),
+            None
+        );
     }
 
     #[test]

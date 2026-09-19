@@ -19,61 +19,8 @@ pub fn effective_operator_token(config: &Config) -> Option<String> {
 }
 
 pub fn operator_token_present(config: &Config) -> bool {
-    effective_operator_token(config).is_some()
-}
-
-#[cfg(windows)]
-pub fn store_operator_token(token: &str) -> io::Result<PathBuf> {
-    use std::fs;
-    use windows_sys::Win32::Security::Cryptography::{
-        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
-    };
-
-    let token_bytes = token.as_bytes();
-    let input = CRYPT_INTEGER_BLOB {
-        cbData: token_bytes.len() as u32,
-        pbData: token_bytes.as_ptr() as *mut u8,
-    };
-    let mut output = CRYPT_INTEGER_BLOB {
-        cbData: 0,
-        pbData: std::ptr::null_mut(),
-    };
-
-    let ok = unsafe {
-        CryptProtectData(
-            &input,
-            std::ptr::null(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    let encrypted =
-        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
-    unsafe {
-        windows_sys::Win32::Foundation::LocalFree(output.pbData as _);
-    }
-
-    let path = protected_token_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, encrypted)?;
-    Ok(path)
-}
-
-#[cfg(not(windows))]
-pub fn store_operator_token(_token: &str) -> io::Result<PathBuf> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "protected operator token storage is only available on Windows",
-    ))
+    mundusx_control_plane_auth::present_for(&config.control_plane_url)
+        || effective_operator_token(config).is_some()
 }
 
 #[cfg(windows)]
