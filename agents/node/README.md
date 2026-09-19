@@ -2,6 +2,13 @@
 
 Rust node daemon that runs on contributing machines and reports availability, health, and capability.
 
+Long streaming generations use an activity lease. `OPENGPU_WORKER_TIMEOUT_SECS`
+sets the maximum silence between meaningful model deltas (300 seconds by default),
+while `OPENGPU_WORKER_HARD_TIMEOUT_SECS` sets the absolute execution ceiling
+(3600 seconds by default and never shorter than the idle timeout). Active streams
+therefore keep running, but silent or runaway workers are terminated so the task
+coordinator can resume from its durable checkpoint on available compute.
+
 The health probe supports the current Mac/BLAS path and the first Windows NVIDIA CUDA bring-up path. CUDA diagnostics use `nvidia-smi` to report device availability, driver/runtime readiness, device name, VRAM, and whether a 4 GB-class GPU should use the low-VRAM profile.
 
 Enterprise Windows hosts can pin trusted runtime executables in the non-secret config file `~/.opengpu/trusted-runtime-paths.json` so worker launch and diagnostics do not depend on PATH order:

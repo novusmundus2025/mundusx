@@ -64,17 +64,70 @@ STANDARD_MAX_ITERATIONS = 12
 FRONTEND_MAX_ITERATIONS = 16
 SWARM_PLANNER_MARKER = "MUNDUSX_SWARM_PLANNER_V1"
 PROJECT_COMPACTION_TOKENS = 16_384
-CHECKPOINT_EVENT_LIMIT = 48
+CHECKPOINT_EVENT_LIMIT = 16
+CHECKPOINT_TARGET_LIMIT = 24
 
 
 class RecoveryCheckpoint:
-    """Small durable task journal; never copied into ordinary model turns."""
+    """Bounded durable milestone journal for safe cross-attempt recovery."""
 
     def __init__(self, workspace, task_id):
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_id or "project-task")[:96]
         self.path = os.path.join(workspace, ".hermes", "checkpoints", safe_id + ".json")
         self.previous = self._load()
         self.events = list((self.previous or {}).get("events") or [])
+        self.summary = self._normalized_summary((self.previous or {}).get("summary"))
+        try:
+            self.attempts = max(0, int((self.previous or {}).get("attempts") or 0))
+        except (TypeError, ValueError):
+            self.attempts = 0
+        if (self.previous or {}).get("schema_version", 1) < 2:
+            for event in self.events:
+                self._summarize(event)
+
+    @staticmethod
+    def _normalized_summary(value):
+        def count(raw):
+            try:
+                return max(0, int(raw or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        value = value if isinstance(value, dict) else {}
+        activities = value.get("activities") if isinstance(value.get("activities"), dict) else {}
+        targets = value.get("recent_targets") if isinstance(value.get("recent_targets"), list) else []
+        return {
+            "completed_boundaries": count(value.get("completed_boundaries")),
+            "successful_boundaries": count(value.get("successful_boundaries")),
+            "failed_boundaries": count(value.get("failed_boundaries")),
+            "verification_passes": count(value.get("verification_passes")),
+            "verification_failures": count(value.get("verification_failures")),
+            "activities": {
+                str(name)[:64]: count(raw_count)
+                for name, raw_count in list(activities.items())[:24]
+            },
+            "recent_targets": [str(target)[-512:] for target in targets[-CHECKPOINT_TARGET_LIMIT:]],
+        }
+
+    def _summarize(self, event):
+        self.summary["completed_boundaries"] += 1
+        success = event.get("success")
+        if success is True:
+            self.summary["successful_boundaries"] += 1
+        elif success is False:
+            self.summary["failed_boundaries"] += 1
+        if event.get("verification"):
+            if success is True:
+                self.summary["verification_passes"] += 1
+            elif success is False:
+                self.summary["verification_failures"] += 1
+        activity = str(event.get("activity") or "other")[:64]
+        self.summary["activities"][activity] = self.summary["activities"].get(activity, 0) + 1
+        target = event.get("target")
+        if target:
+            targets = [item for item in self.summary["recent_targets"] if item != target]
+            targets.append(target)
+            self.summary["recent_targets"] = targets[-CHECKPOINT_TARGET_LIMIT:]
 
     def _load(self):
         try:
@@ -98,18 +151,27 @@ class RecoveryCheckpoint:
             for event in events[-12:]
         ]
         return (
-            "Recovery checkpoint from an interrupted run. Reconcile these completed "
-            "boundaries with the workspace and continue without repeating them: "
-            + json.dumps(compact, separators=(",", ":"))
+            "Recovery checkpoint from an interrupted run. Treat the workspace as authoritative, "
+            "reconcile this bounded milestone summary, and continue without repeating completed work: "
+            + json.dumps(
+                {
+                    "attempts": self.previous.get("attempts", 1),
+                    "milestone_summary": self.previous.get("summary") or {},
+                    "recent_boundaries": compact,
+                },
+                separators=(",", ":"),
+            )
         )
 
     def _write(self, state):
         directory = os.path.dirname(self.path)
         os.makedirs(directory, exist_ok=True)
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "state": state,
             "updated_unix_ms": int(time.time() * 1000),
+            "attempts": self.attempts,
+            "summary": self.summary,
             "events": self.events[-CHECKPOINT_EVENT_LIMIT:],
         }
         temporary = self.path + ".tmp-" + str(os.getpid())
@@ -120,6 +182,7 @@ class RecoveryCheckpoint:
         os.replace(temporary, self.path)
 
     def start(self):
+        self.attempts += 1
         self._write("active")
 
     def record(self, name, arguments, result):
@@ -131,15 +194,15 @@ class RecoveryCheckpoint:
                     target = value[-512:]
                     break
         command = arguments.get("command") if isinstance(arguments, dict) else None
-        self.events.append(
-            {
-                "tool": name,
-                "activity": tool_activity(name, arguments),
-                "success": tool_outcome(result, name),
-                "verification": is_verification_command(command),
-                "target": target,
-            }
-        )
+        event = {
+            "tool": name,
+            "activity": tool_activity(name, arguments),
+            "success": tool_outcome(result, name),
+            "verification": is_verification_command(command),
+            "target": target,
+        }
+        self.events.append(event)
+        self._summarize(event)
         self._write("active")
 
     def finish(self, succeeded):

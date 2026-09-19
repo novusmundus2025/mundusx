@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from hermes_bridge import (
     AnswerStream,
+    CHECKPOINT_EVENT_LIMIT,
     EXECUTION_EFFICIENCY_GUIDANCE,
     FRONTEND_MAX_ITERATIONS,
     PROJECT_COMPACTION_TOKENS,
@@ -28,12 +29,23 @@ class ProgressTests(unittest.TestCase):
             note = resumed.recovery_note()
             self.assertIn("src/app.js", note)
             self.assertNotIn("bytes_written", note)
-            resumed.events = [{"tool": str(index)} for index in range(80)]
+            self.assertIn("milestone_summary", note)
+            self.assertEqual(resumed.summary["completed_boundaries"], 1)
+            for index in range(80):
+                resumed.record(
+                    "write_file",
+                    {"path": f"src/file-{index}.js"},
+                    {"bytes_written": index},
+                )
             resumed.finish(True)
             with open(resumed.path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
+            self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(payload["state"], "completed")
-            self.assertEqual(len(payload["events"]), 48)
+            self.assertEqual(payload["attempts"], 1)
+            self.assertEqual(len(payload["events"]), CHECKPOINT_EVENT_LIMIT)
+            self.assertEqual(payload["summary"]["completed_boundaries"], 81)
+            self.assertEqual(len(payload["summary"]["recent_targets"]), 24)
             self.assertEqual(RecoveryCheckpoint(root, "task/unsafe").recovery_note(), "")
 
     def test_project_turns_are_bounded_and_escape_aware(self):
