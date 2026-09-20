@@ -7,9 +7,19 @@ const TOOL_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 const TERMINAL_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
 const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const CODE_EXECUTION_IDLE_TIMEOUT: Duration = Duration::from_secs(360);
+const PROGRAM_RUN_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn tool_idle_timeout(name: &str) -> Duration {
-    match name {
+#[derive(Clone)]
+struct ActiveTool {
+    name: String,
+    activity: String,
+}
+
+fn tool_idle_timeout(tool: &ActiveTool) -> Duration {
+    if tool.activity == "run" {
+        return PROGRAM_RUN_IDLE_TIMEOUT;
+    }
+    match tool.name.as_str() {
         name if name.starts_with("browser_") => BROWSER_IDLE_TIMEOUT,
         "execute_code" => CODE_EXECUTION_IDLE_TIMEOUT,
         "terminal" | "execute" | "shell" => TERMINAL_IDLE_TIMEOUT,
@@ -20,7 +30,7 @@ fn tool_idle_timeout(name: &str) -> Duration {
 /// Transport heartbeats prove connectivity, not forward progress.
 pub(super) struct ProgressWatchdog {
     last_progress: Instant,
-    tools: HashMap<String, String>,
+    tools: HashMap<String, ActiveTool>,
 }
 
 impl ProgressWatchdog {
@@ -35,13 +45,16 @@ impl ProgressWatchdog {
         match event["type"].as_str().unwrap_or_default() {
             "tool_started" => {
                 if let Some(id) = event["data"]["call_id"].as_str() {
-                    self.tools.insert(
-                        id.to_string(),
-                        event["data"]["name"]
+                    self.tools.insert(id.to_string(), ActiveTool {
+                        name: event["data"]["name"]
                             .as_str()
                             .unwrap_or_default()
                             .to_ascii_lowercase(),
-                    );
+                        activity: event["data"]["activity"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase(),
+                    });
                 }
             }
             "tool_completed" => {
@@ -59,8 +72,7 @@ impl ProgressWatchdog {
         let active_tool = self
             .tools
             .values()
-            .min_by_key(|name| tool_idle_timeout(name))
-            .map(String::as_str);
+            .min_by_key(|tool| tool_idle_timeout(tool));
         let timeout = active_tool
             .map(tool_idle_timeout)
             .unwrap_or(MODEL_IDLE_TIMEOUT);
@@ -68,7 +80,10 @@ impl ProgressWatchdog {
             if self.tools.is_empty() {
                 "Hermes model progress timed out after 5 minutes; project files and recovery checkpoint were preserved".to_string()
             } else {
-                let name = active_tool.filter(|name| !name.is_empty()).unwrap_or("tool");
+                let name = active_tool
+                    .map(|tool| tool.name.as_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("tool");
                 format!(
                     "Hermes {} progress stalled after {} minutes; project files and recovery checkpoint were preserved",
                     name,
@@ -81,20 +96,24 @@ impl ProgressWatchdog {
     pub(super) fn interrupted_tool_events(&self) -> Vec<Value> {
         self.tools
             .iter()
-            .map(|(call_id, name)| {
+            .map(|(call_id, tool)| {
                 serde_json::json!({
                     "type": "tool_completed",
                     "data": {
                         "call_id": call_id,
-                        "name": name,
+                        "name": tool.name.as_str(),
                         "success": false,
                         "timed_out": true,
-                        "activity": if name.starts_with("browser_") {
-                            "browser_acceptance"
-                        } else if name == "execute_code" {
-                            "code"
+                        "activity": if tool.activity.is_empty() {
+                            if tool.name.starts_with("browser_") {
+                                "browser_acceptance"
+                            } else if tool.name == "execute_code" {
+                                "code"
+                            } else {
+                                "tool"
+                            }
                         } else {
-                            "tool"
+                            tool.activity.as_str()
                         }
                     }
                 })
@@ -194,5 +213,16 @@ mod tests {
         );
         assert!(terminal.failure(now + Duration::from_secs(899)).is_none());
         assert!(terminal.failure(now + Duration::from_secs(900)).is_some());
+
+        let mut program = ProgressWatchdog::new(now);
+        program.observe(
+            &json!({"type":"tool_started","data":{"call_id":"program","name":"terminal","activity":"run"}}),
+            now,
+        );
+        assert!(program.failure(now + Duration::from_secs(59)).is_none());
+        assert!(program
+            .failure(now + Duration::from_secs(60))
+            .unwrap()
+            .contains("terminal"));
     }
 }
