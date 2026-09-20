@@ -57,6 +57,7 @@ fn start_watchdog(timeout: Duration, interval: Duration) {
 
 const PROJECT_INITIALIZE_PROMPT: &str = "__mundusx_initialize_project__";
 const FRONTEND_ACCEPTANCE_MARKER: &str = "MUNDUSX_FRONTEND_ACCEPTANCE_V1";
+const CLI_ACCEPTANCE_MARKER: &str = "MUNDUSX_CLI_ACCEPTANCE_V1";
 const REUSABLE_TEST_ACCEPTANCE_MARKER: &str = "MUNDUSX_REUSABLE_TEST_ACCEPTANCE_V1";
 const MANAGED_PROJECT_MARKER: &str = "mundusx-managed-project";
 const DEFAULT_PROJECT_GITIGNORE: &str = "node_modules/\n.env\n.env.*\n!.env.example\n.DS_Store\n*.log\n.hermes/\ncoverage/\ndist/\nbuild/\ndata/*.db\ndata/*.db-journal\ndata/*.db-shm\ndata/*.db-wal\n";
@@ -577,10 +578,26 @@ fn request_requires_verification(prompt: &str) -> bool {
         || lower.contains("run it")
         || [
             " api", "api ", "crud", "nodejs", "node.js", "backend", "frontend",
-            "server", "application", "website", "web app",
+            "server", "application", "website", "web app", "python program",
         ]
         .iter()
         .any(|marker| lower.contains(marker))
+        || request_requires_cli_verification(prompt)
+}
+
+fn request_requires_cli_verification(prompt: &str) -> bool {
+    let lower = format!(" {} ", prompt.to_ascii_lowercase());
+    [
+        " cli ",
+        " command line ",
+        " command-line ",
+        " console app ",
+        " console program ",
+        " terminal app ",
+        " terminal program ",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn workspace_is_software_project(workspace: &Path) -> bool {
@@ -614,9 +631,11 @@ fn request_requires_reusable_tests(prompt: &str, workspace: &Path) -> bool {
         " api", "api ", "crud", "frontend", "front-end", "react", "vue", "svelte",
         "angular", "backend", "back-end", "server", "application", "website", "web app",
         "authentication", "database", "feature", "bug", "error", "broken", "failing",
+        "python program",
     ]
     .iter()
-    .any(|marker| lower.contains(marker));
+    .any(|marker| lower.contains(marker))
+        || request_requires_cli_verification(prompt);
     let continuation_work = ["implement", "proceed", "continue", "complete", "fix"]
         .iter()
         .any(|marker| lower.contains(marker));
@@ -1340,6 +1359,8 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let execution_directive = project_execution_directive(allow_mutations, &prompt);
     let frontend_verification_required = workspace_relative.is_some() && allow_mutations
         && request_requires_browser_verification(&prompt, &task_workspace);
+    let cli_verification_required = workspace_relative.is_some() && allow_mutations
+        && request_requires_cli_verification(&prompt);
     let bounded_prompt = workspace_relative
         .map(|relative| {
             if runtime == "hermes" {
@@ -1348,6 +1369,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 );
                 if frontend_verification_required { instructions.push_str(&format!(
                     "\n\n{FRONTEND_ACCEPTANCE_MARKER}: This is a frontend task. Load and follow the frontend-runtime-acceptance skill. Reconcile every third-party source import with the package manifest that owns that source tree, install missing dependencies in that package directory, and run its production build successfully before browser acceptance. Run package commands from the directory containing that frontend package.json, or use an explicit package-directory option such as npm --prefix client. A passing backend test does not replace a failed frontend build. If the build fails, use the concrete build error to repair the files or manifest and rerun it. Completion then requires browser proof after the final file change. Start the frontend server as a background process bound explicitly to 127.0.0.1, poll the exact browser URL until it returns HTTP success, and use that same host and port in browser automation. With browser_exec, call wait_for_load() after new_tab() or goto_url() before page_info() or DOM inspection, then perform the full acceptance suite. With the built-in browser tools, navigate using browser_navigate, inspect visible page content with browser_snapshot or browser_vision, and inspect browser errors plus DOM/layout state with browser_console. Keep browser verification in the native browser tools rather than wrapping it in a generic code-execution kernel. Verify both a desktop viewport (about 1440px wide) and a narrow viewport (about 850px wide), confirming meaningful main content is visible, there is no accidental horizontal overflow, and there are no uncaught JavaScript or failed API errors. Fix any failure and repeat the test, build, and browser checks instead of merely explaining it. Stop every development server or test process you started before returning the final response. Do not report completion from build or lint alone."
+                )); }
+                if cli_verification_required { instructions.push_str(&format!(
+                    "\n\n{CLI_ACCEPTANCE_MARKER}: This is a command-line program task. Load and follow the cli-runtime-acceptance skill. Keep core behavior callable without interactive prompts and cover it with project-owned automated tests. Before a smoke run, inspect the supported arguments and stdin flow. Never launch an interactive CLI unattended: supply every response through redirected input or supported noninteractive flags, set an explicit timeout of at most 30 seconds, and verify that the process exits. A usage message with a nonzero status is a wrong invocation, not successful verification. After any repair, rerun the complete automated test and bounded smoke sequence, then return the result immediately."
                 )); }
                 if reusable_tests_required { instructions.push_str(&format!(
                     "\n\n{REUSABLE_TEST_ACCEPTANCE_MARKER}: This project change requires a reusable automated regression test. Use the project's existing test framework when present; otherwise add the smallest maintainable test setup supported by the project. Create or update a project-owned test file that exercises the requested behavior or the reproduced failure, then run that test suite successfully after the final implementation change. Generated build output, a one-off terminal command, lint, compilation, and manual browser checks do not count as the reusable test. Browser acceptance remains a separate requirement for frontend work."
@@ -1818,7 +1842,7 @@ pub fn connect(mut options: ConnectorOptions, data_dir: &Path) -> Result<(), Str
                 "protocol": "mundusx-agent-bridge/v1",
                 "project_browser": true,
                 "project_git": true,
-                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.11"),
+                "client_version": option_env!("MUNDUSX_RELEASE_VERSION").unwrap_or("0.2.12"),
                 "mutations": false,
                 "agent_runtimes": runtimes,
                 "preferred_agent": serde_json::to_value(selected).unwrap_or_else(|_| json!("native"))
@@ -1884,8 +1908,9 @@ mod tests {
         initialize_new_project_repository, project_git,
         project_execution_directive, request_is_repository_only_operation,
         project_has_reusable_tests, request_requires_browser_verification,
-        request_requires_reusable_tests, request_requires_verification,
-        requires_project_file_change, reusable_tests_changed, retry_terminal_report,
+        request_requires_cli_verification, request_requires_reusable_tests,
+        request_requires_verification, requires_project_file_change,
+        reusable_tests_changed, retry_terminal_report,
         structured_hermes_event,
         swarm_fallback_summary,
         successful_browser_verification, successful_frontend_build,
@@ -2064,6 +2089,19 @@ mod tests {
         assert!(!requires_project_file_change("run the existing tests"));
         assert!(!requires_project_file_change(
             "explain how this module works"
+        ));
+    }
+
+    #[test]
+    fn detects_interactive_cli_acceptance_requests() {
+        assert!(request_requires_cli_verification(
+            "create a Python CLI program that asks for names and a key"
+        ));
+        assert!(request_requires_cli_verification(
+            "build a command-line encryption utility"
+        ));
+        assert!(!request_requires_cli_verification(
+            "create a React profile page"
         ));
     }
 
