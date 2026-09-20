@@ -17,6 +17,8 @@ const STRUCTURED_BRIDGE: &str = include_str!("hermes_bridge.py");
 const PROJECT_SWARM_SKILL: &str = include_str!("../skills/project-swarm/SKILL.md");
 const FRONTEND_RUNTIME_ACCEPTANCE_SKILL: &str =
     include_str!("../skills/frontend-runtime-acceptance/SKILL.md");
+const CLI_RUNTIME_ACCEPTANCE_SKILL: &str =
+    include_str!("../skills/cli-runtime-acceptance/SKILL.md");
 
 fn ensure_managed_skill(name: &str, contents: &str) -> Result<(), String> {
     let path = hermes_home()
@@ -41,7 +43,8 @@ fn ensure_managed_skills() -> Result<(), String> {
     ensure_managed_skill(
         "frontend-runtime-acceptance",
         FRONTEND_RUNTIME_ACCEPTANCE_SKILL,
-    )
+    )?;
+    ensure_managed_skill("cli-runtime-acceptance", CLI_RUNTIME_ACCEPTANCE_SKILL)
 }
 
 fn configure_task_process(command: &mut Command) {
@@ -607,7 +610,7 @@ mod output_tests {
         clear_session, hermes_output_reports_model_failure, is_retryable_model_failure,
         is_stalled_tool_failure, runtime_session_id, save_session, session_map,
         should_rebuild_session_after_failure,
-        FRONTEND_RUNTIME_ACCEPTANCE_SKILL, STRUCTURED_BRIDGE,
+        CLI_RUNTIME_ACCEPTANCE_SKILL, FRONTEND_RUNTIME_ACCEPTANCE_SKILL, STRUCTURED_BRIDGE,
     };
 
     #[test]
@@ -637,6 +640,8 @@ mod output_tests {
         assert!(STRUCTURED_BRIDGE.contains("execute_code wrapper"));
         assert!(FRONTEND_RUNTIME_ACCEPTANCE_SKILL.contains("native browser tools"));
         assert!(FRONTEND_RUNTIME_ACCEPTANCE_SKILL.contains("Do not stop after merely explaining"));
+        assert!(CLI_RUNTIME_ACCEPTANCE_SKILL.contains("Never launch an interactive CLI"));
+        assert!(CLI_RUNTIME_ACCEPTANCE_SKILL.contains("timeout of at most 30 seconds"));
         assert!(!STRUCTURED_BRIDGE.contains("select_project_skills"));
     }
 
