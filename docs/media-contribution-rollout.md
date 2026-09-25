@@ -88,8 +88,23 @@ At the user's requested 100% contribution, the 2-second verification completed i
 182,667 ms. Output: 187,622 bytes, SHA-256
 `9c154ebabba64014568de324ff4b73e9dd6a5e139e5763c3a721b231090d3e09`.
 
-Production queue-to-download acceptance and public release publication must be
-recorded separately; local generation alone does not establish either.
+Production job `242fc5ab-c01d-4968-b692-134718559c3f` completed on the GX10 at
+100% contribution. The owned LLM runtime stopped before generation and restarted
+afterward. Generation took 224,635 ms. The anonymous MP4 download returned HTTP 200,
+120,522 bytes, and SHA-256
+`3b3d3fc61305626fd9e1cb51d289e9acf6a58ae214fdcc1a03f8e7b105586b6a`.
+PostgreSQL contained exactly one 4-credit video reward. The server expiry was
+2026-09-27 07:56:47 UTC; job and reward retention were tested independently.
+
+Linux release 0.2.14 is published in `mundusx/releases`, with ARM64 and x86_64
+binaries and SHA-256 checksums. All 18 uploaded release asset digests matched the
+local files. The GX10's normal `opengpu update` downloaded and verified that public
+release. Native ARM64 generation and emulated x86_64 command startup were checked;
+x86_64 GPU inference was not hardware-tested. The hosted build could not start
+because of the private repository's Actions budget, so these binaries were built
+locally from commit `33ee5b2`.
+
+The public build passed 210 CLI, 139 node, 19 media-helper and 425 web tests.
 
 ## Checks
 
