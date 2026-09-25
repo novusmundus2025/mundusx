@@ -1484,6 +1484,10 @@ fn start_vllm_runtime(
     if env::var_os("HF_TOKEN").is_some() {
         command.args(["-e", "HF_TOKEN"]);
     }
+    if model_name == crate::vllm_model_profile::MUSE_GLIMMER_FP8_MODEL {
+        // FP8 block kernels in DeepGEMM have a known SM120 layout incompatibility.
+        command.args(["-e", "VLLM_USE_DEEP_GEMM=0", "-e", "VLLM_MOE_USE_DEEP_GEMM=0"]);
+    }
     if crate::vllm_model_profile::is_muse_glimmer(model_name) {
         command.args(["--entrypoint", "vllm"]).arg(&image).arg("serve");
     } else {
