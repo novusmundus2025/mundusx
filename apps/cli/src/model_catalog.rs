@@ -368,6 +368,21 @@ mod tests {
     }
 
     #[test]
+    fn muse_glimmer_is_an_optional_memory_gated_vllm_selection() {
+        let name = crate::vllm_model_profile::MUSE_GLIMMER_MODEL;
+        let options = selectable_catalog_options_for(Backend::Vllm, Some(73_728));
+        assert_eq!(options.iter().filter(|option| option.name == name).count(), 1);
+        for budget in [None, Some(73_727)] {
+            assert!(!selectable_catalog_options_for(Backend::Vllm, budget).iter().any(|option| option.name == name));
+        }
+        for backend in [Backend::M, Backend::Cuda, Backend::Vulkan] {
+            assert!(lookup_model_for_backend(name, backend).is_none());
+        }
+        assert!(lookup_model_for_backend(name, Backend::Vllm).is_some());
+        assert_ne!(selection_for(Backend::Vllm, 128).recommended.name, name);
+    }
+
+    #[test]
     fn official_remote_catalog_entries_include_sha256() {
         let catalog = load_catalog().expect("catalog");
         for option in catalog

@@ -1,4 +1,6 @@
 mod media_process;
+#[path = "../../../packages/vllm-model-profile.rs"]
+mod vllm_model_profile;
 #[path = "../../../packages/media-drain.rs"]
 mod media_drain;
 mod contracts;
