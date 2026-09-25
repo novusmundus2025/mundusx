@@ -3,7 +3,7 @@
 ## Video workflow
 
 The web service queues authenticated text-to-video requests at `/video`.
-Contributors use Wan2.2-TI2V-5B through a pinned ComfyUI workflow. Qwen-Image
+Contributors use Wan2.2-T2V-A14B through a pinned ComfyUI workflow. Qwen-Image
 remains the separate image model; neither image editing nor image-to-video is
 implemented by the video worker.
 
@@ -44,9 +44,36 @@ arrangement and are not automatically evicted.
 
 ## Presets and accounting
 
-All presets use 1280 x 704, 24 fps, 20 steps, CFG 5, UniPC/simple, and
-ModelSamplingSD3 shift 8. Outputs are silent H.264 MP4 files. The latent frame
-constraint gives durations slightly longer than their nominal labels.
+The 14B replacement uses 1280 x 704, 16 fps, 20 steps, CFG 3.5,
+Euler/simple and ModelSamplingSD3 shift 8. The high-noise expert runs steps
+0–10, then the low-noise expert continues the same latent for steps 10–20
+without adding new noise. Both diffusion experts use the official scaled FP8
+weights, the UMT5 text encoder is shared, and the VAE is `wan_2.1_vae`.
+The 2/5/10-second presets have 33/81/161 frames. The latent frame constraint
+gives durations slightly longer than their nominal labels. Outputs are silent
+H.264 MP4 files. Managed setup requires a 64 GiB contribution budget.
+
+Workflow reference: Comfy-Org/workflow_templates revision
+`5d6089c4250f59b66040651ad100de99d4fcb8ca`,
+`templates/video_wan2_2_14B_t2v.json` (non-distilled two-expert workflow).
+
+The GX10 at 100% contribution rendered the 33-frame preset in 893,905 ms
+(14 minutes 54 seconds). Its 1,494,263-byte MP4 passed full decode validation;
+an extracted frame was inspected. SHA-256:
+`504a8bd403cc406be86d723e1b5a196f5893cf15752ad22a08b3b6377e28a11f`.
+This yields 15 contributor credits for the 2-second preset. Initial 5/10-second
+quotes are 37/73 credits, extrapolated linearly by frame count from this run,
+not independently measured benchmarks. Their API quotes and UI explicitly mark
+them provisional. Neither generation time nor visual quality is guaranteed.
+
+Models live in `~/.opengpu/media/models/`. The shared UMT5 encoder and Qwen image
+files are retained during upgrade. The retired 5B diffusion weights and
+`wan2.2_vae.safetensors` can be removed after 14B verification and cutover.
+
+### Historical 5B pricing
+
+These retired 24 FPS presets remain recognizable for historical jobs and credits.
+New requests use distinct 14B profile IDs; 5B workers cannot claim 14B jobs.
 
 | Label | Frames | Reference generation | Fixed contributor credits |
 | --- | --- | --- | --- |

@@ -45,6 +45,8 @@ class FakeComfy:
                     result={node['class_type']:{'input':{'required':{}}} for node in media.workflow(fixture.profile,'test',1,'test').values()}
                     for kind,key,index in [('UNETLoader','unet_name',0),('CLIPLoader','clip_name',1),('VAELoader','vae_name',2)]:
                         result[kind]['input']['required'][key]=[[Path(fixture.profile['files'][index]['path']).name]]
+                    if fixture.profile.get('architecture') == 'wan22_t2v_a14b':
+                        result['UNETLoader']['input']['required']['unet_name'][0].append(Path(fixture.profile['files'][3]['path']).name)
                 elif self.path=='/queue': result={'queue_running':[1] if fixture.busy else [],'queue_pending':[]}
                 elif self.path=='/prompt':
                     fixture.token=body['client_id'];result={'prompt_id':'owned-job','node_errors':{}}
@@ -63,6 +65,19 @@ class FakeComfy:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_14b_workflow_preserves_latent_between_noise_experts(self):
+        graph = media.workflow(VIDEO_PROFILE, 'a car', 42, 'test')
+        self.assertIn('high_noise_14B', graph['1']['inputs']['unet_name'])
+        self.assertIn('low_noise_14B', graph['12']['inputs']['unet_name'])
+        high, low = graph['8']['inputs'], graph['14']['inputs']
+        self.assertEqual(high['end_at_step'], low['start_at_step'])
+        self.assertEqual(low['latent_image'], ['8', 0])
+        self.assertEqual(high['return_with_leftover_noise'], 'enable')
+        self.assertEqual(low['add_noise'], 'disable')
+        self.assertEqual(graph['9']['inputs']['samples'], ['14', 0])
+        self.assertEqual(graph['6']['class_type'], 'EmptyHunyuanLatentVideo')
+        self.assertEqual(media.preset_profile(VIDEO_PROFILE, 10)['id'], 'wan22-14b-704p-161f-v1')
+
     def setUp(self):
         self.profile=copy.deepcopy(PROFILE);self.profile['width']=8;self.profile['height']=8
 
@@ -167,7 +182,7 @@ class RuntimeTests(unittest.TestCase):
 class VideoTests(unittest.TestCase):
     def test_long_presets_keep_base_runtime_and_separate_certificates(self):
         original = copy.deepcopy(VIDEO_PROFILE)
-        for seconds, frames in [(2, 49), (5, 121), (10, 241)]:
+        for seconds, frames in [(2, 33), (5, 81), (10, 161)]:
             profile = media.preset_profile(VIDEO_PROFILE, seconds)
             self.assertEqual(profile['frames'], frames)
             self.assertEqual(profile['files'], original['files'])
@@ -180,12 +195,12 @@ class VideoTests(unittest.TestCase):
 
     def test_workflow_is_bounded_and_uses_native_wan_nodes(self):
         flow=media.workflow(VIDEO_PROFILE,'A teapot slowly rotates',42,'owned')
-        self.assertEqual(flow['6']['inputs']['length'],49)
+        self.assertEqual(flow['6']['inputs']['length'],33)
         self.assertEqual(flow['6']['inputs']['width'],1280)
         self.assertEqual(flow['8']['inputs']['steps'],20)
         self.assertEqual(flow['10']['inputs']['codec'],'h264')
         self.assertEqual(flow['10']['inputs']['format'],'auto')
-        self.assertEqual(flow['11']['inputs']['fps'],24)
+        self.assertEqual(flow['11']['inputs']['fps'],16)
         self.assertNotIn('start_image',flow['6']['inputs'])
         self.assertNotEqual(media.profile_record(Path('.'),PROFILE,'verified'), media.profile_record(Path('.'),VIDEO_PROFILE,'verified'))
 
@@ -194,7 +209,7 @@ class VideoTests(unittest.TestCase):
         profile=copy.deepcopy(VIDEO_PROFILE);profile.update(width=32,height=32,frames=5)
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             root=Path(directory); video=root/'fixture.mp4'
-            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=red:s=32x32:r=24',
+            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i',f"color=c=red:s=32x32:r={profile['fps']}",
                 '-frames:v','5','-c:v','libx264','-pix_fmt','yuv420p',str(video)],check=True,capture_output=True)
             media.validate_video(video,profile)
             for changes in [{'frames':9},{'width':64},{'fps':12}]:

@@ -8295,7 +8295,12 @@ mod tests {
     #[test]
     fn preflight_reports_everything_start_would_need() {
         // No identity, no agent binary, no cap, no model and no cluster.
-        let blockers = start_preflight_blockers(&Config::default(), false, false, None);
+        // The test host may already have an active model in its real cache.
+        let config = Config {
+            model_dir: Some(std::env::temp_dir().join(format!("empty-models-{}", uuid::Uuid::new_v4())).display().to_string()),
+            ..Config::default()
+        };
+        let blockers = start_preflight_blockers(&config, false, false, None);
 
         assert_eq!(blockers.len(), 4);
         assert!(blockers

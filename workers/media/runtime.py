@@ -34,7 +34,7 @@ def is_video(profile):
 
 
 def profile_record(root, profile, name):
-    return root / (name + ('-video' if is_video(profile) else '') + (('-' + str(profile['frames']) + 'f') if name == 'verified' and is_video(profile) and profile['frames'] != 49 else '') + '.json')
+    return root / (name + ('-video' if is_video(profile) else '') + (('-' + str(profile['frames']) + 'f') if name == 'verified' and is_video(profile) and profile['frames'] != profile['fps'] * 2 + 1 else '') + '.json')
 
 
 class MediaError(Exception):
@@ -122,7 +122,10 @@ class Comfy:
         missing = sorted(required - set(info))
         if missing:
             raise MediaError("Missing ComfyUI nodes: " + ", ".join(missing))
-        for node, field, index in [("UNETLoader", "unet_name", 0), ("CLIPLoader", "clip_name", 1), ("VAELoader", "vae_name", 2)]:
+        models = [("UNETLoader", "unet_name", 0), ("CLIPLoader", "clip_name", 1), ("VAELoader", "vae_name", 2)]
+        if profile.get('architecture') == 'wan22_t2v_a14b':
+            models.append(("UNETLoader", "unet_name", 3))
+        for node, field, index in models:
             name = Path(profile["files"][index]["path"]).name
             choices = info[node].get("input", {}).get("required", {}).get(field, [[]])[0]
             if not isinstance(choices, list) or name not in choices:
@@ -145,6 +148,30 @@ def workflow(profile, prompt, seed, prefix):
     def node(kind, **inputs):
         return {"class_type": kind, "inputs": inputs}
     if is_video(profile):
+        if profile.get('architecture') == 'wan22_t2v_a14b':
+            common = dict(positive=["4", 0], negative=["5", 0], steps=profile["steps"],
+                          cfg=profile["cfg"], sampler_name="euler", scheduler="simple")
+            split = profile["switch_step"]
+            if not 0 < split < profile["steps"]:
+                raise MediaError("Invalid high/low noise sampler boundary")
+            return {
+                "1": node("UNETLoader", unet_name=Path(profile["files"][0]["path"]).name, weight_dtype="default"),
+                "2": node("CLIPLoader", clip_name=Path(profile["files"][1]["path"]).name, type="wan", device="default"),
+                "3": node("VAELoader", vae_name=Path(profile["files"][2]["path"]).name),
+                "4": node("CLIPTextEncode", text=prompt, clip=["2", 0]),
+                "5": node("CLIPTextEncode", text="blur, low quality, still frame, subtitles, watermark, distorted motion", clip=["2", 0]),
+                "6": node("EmptyHunyuanLatentVideo", width=profile["width"], height=profile["height"], length=profile["frames"], batch_size=1),
+                "7": node("ModelSamplingSD3", model=["1", 0], shift=8.0),
+                "12": node("UNETLoader", unet_name=Path(profile["files"][3]["path"]).name, weight_dtype="default"),
+                "13": node("ModelSamplingSD3", model=["12", 0], shift=8.0),
+                "8": node("KSamplerAdvanced", model=["7", 0], latent_image=["6", 0], add_noise="enable",
+                          noise_seed=seed, start_at_step=0, end_at_step=split, return_with_leftover_noise="enable", **common),
+                "14": node("KSamplerAdvanced", model=["13", 0], latent_image=["8", 0], add_noise="disable",
+                           noise_seed=0, start_at_step=split, end_at_step=profile["steps"], return_with_leftover_noise="disable", **common),
+                "9": node("VAEDecode", samples=["14", 0], vae=["3", 0]),
+                "11": node("CreateVideo", images=["9", 0], fps=profile["fps"]),
+                "10": node("SaveVideo", video=["11", 0], filename_prefix="opengpu/" + prefix, format="auto", codec="h264"),
+            }
         return {
             "1": node("UNETLoader", unet_name=Path(profile["files"][0]["path"]).name, weight_dtype="default"),
             "2": node("CLIPLoader", clip_name=Path(profile["files"][1]["path"]).name, type="wan", device="default"),
@@ -364,7 +391,7 @@ def install(root, profile, budget_bytes):
     if platform.system() != "Linux" or platform.machine().lower() not in ('aarch64', 'arm64'):
         raise MediaError("Automatic media runtime currently targets Linux ARM64 GB10/GX10; connect existing ComfyUI on other platforms")
     if budget_bytes < profile["minimum_budget_bytes"]:
-        raise MediaError("Selected profile requires at least 32 GiB contribution budget")
+        raise MediaError(f"Selected profile requires at least {profile['minimum_budget_bytes']/1024**3:g} GiB contribution budget")
     if not shutil.which("docker") or not shutil.which("nvidia-smi"):
         raise MediaError("Automatic setup requires Docker, NVIDIA GPU drivers, and NVIDIA Container Toolkit")
     run(["docker", "info"], timeout=30, capture=True)
@@ -517,8 +544,9 @@ def preset_profile(profile, seconds):
         raise MediaError('Video seconds must be 2, 5 or 10')
     if not is_video(profile) or seconds == 2:
         return profile
-    frames = seconds * 24 + 1
-    return {**profile, 'frames': frames, 'id': f'wan22-5b-704p-{frames}f-v1', 'timeout_seconds': 7200}
+    frames = seconds * profile['fps'] + 1
+    return {**profile, 'frames': frames, 'id': profile['id'].replace(f"-{profile['frames']}f-", f'-{frames}f-'),
+            'timeout_seconds': max(profile['timeout_seconds'], 7200)}
 
 
 def main():

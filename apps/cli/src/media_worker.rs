@@ -68,12 +68,23 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
     let frames = job["quote"]["frames"]
         .as_u64()
         .ok_or("Missing video frames")?;
-    let seconds = match frames {
-        49 => 2,
-        121 => 5,
-        241 => 10,
-        _ => return Err("Unsupported video preset".into()),
-    };
+    let profile: Value =
+        serde_json::from_str(media_runtime::VIDEO_PROFILE).map_err(|e| e.to_string())?;
+    let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
+    let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
+    let seconds = [2, 5, 10]
+        .into_iter()
+        .find(|s| s * fps + 1 == frames)
+        .ok_or("Unsupported video preset")?;
+    let expected = profile["id"]
+        .as_str()
+        .ok_or("Missing bundled video profile")?
+        .replace(&format!("-{base_frames}f-"), &format!("-{frames}f-"));
+    if job["profile_id"].as_str() != Some(expected.as_str())
+        || job["quote"]["fps"].as_u64() != Some(fps)
+    {
+        return Err("Job model does not match the installed video workflow".into());
+    }
     let home = config::config_dir();
     media_runtime::run_profile(
         &home,
@@ -90,7 +101,7 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
             job["seed"].as_u64().unwrap_or(42).to_string(),
         ],
     )?;
-    let name = if frames == 49 {
+    let name = if frames == base_frames {
         "verified-video.json".into()
     } else {
         format!("verified-video-{frames}f.json")
@@ -209,7 +220,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             &id,
             &cfg.device_id,
             "claim",
-            json!({"profiles":["wan22-5b-704p-49f-v1","wan22-5b-704p-121f-v1","wan22-5b-704p-241f-v1"]}),
+            json!({"profiles": bundled_video_profiles()?}),
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -261,4 +272,23 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         }
         thread::sleep(Duration::from_secs(10));
     }
+}
+
+fn bundled_video_profiles() -> Result<Vec<String>, String> {
+    let profile: Value =
+        serde_json::from_str(media_runtime::VIDEO_PROFILE).map_err(|e| e.to_string())?;
+    let id = profile["id"]
+        .as_str()
+        .ok_or("Missing bundled video profile")?;
+    let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
+    let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
+    Ok([2, 5, 10]
+        .into_iter()
+        .map(|seconds| {
+            id.replace(
+                &format!("-{base_frames}f-"),
+                &format!("-{}f-", seconds * fps + 1),
+            )
+        })
+        .collect())
 }
