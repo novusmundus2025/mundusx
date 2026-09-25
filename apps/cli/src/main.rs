@@ -4947,8 +4947,12 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
         Some((80, "maximum")),
         None,
     ];
-    let cluster_index = OPTIONS.len();
-    let row_count = OPTIONS.len() + usize::from(cluster_count > 0);
+    let mut options = OPTIONS.to_vec();
+    if !options.iter().flatten().any(|(percent, _)| *percent == default_percent) {
+        options.push(Some((default_percent, "current setting")));
+    }
+    let cluster_index = options.len();
+    let row_count = options.len() + usize::from(cluster_count > 0);
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let mut input = String::new();
@@ -4967,7 +4971,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
         return PromptOutcome::Selected(default_percent);
     }
 
-    let mut selected = OPTIONS
+    let mut selected = options
         .iter()
         .position(|option| {
             option
@@ -4985,7 +4989,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
         clear_menu_screen();
         raw_println!("{}", theme::menu_title("Contribution level"));
         raw_println!("{}", theme::menu_rule());
-        for (index, option) in OPTIONS.iter().enumerate() {
+        for (index, option) in options.iter().enumerate() {
             let is_selected = index == selected;
             let marker = theme::menu_marker(is_selected);
             match option {
@@ -5044,7 +5048,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
                         .and_then(|value| usize::try_from(value).ok())
                         .and_then(|value| value.checked_sub(1))
                     {
-                        if index < OPTIONS.len() {
+                        if index < options.len() {
                             selected = index;
                             render_menu(selected);
                         }
@@ -5054,7 +5058,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
                     let _ = disable_raw_mode();
                     return PromptOutcome::UseCluster;
                 }
-                KeyCode::Enter => match OPTIONS[selected] {
+                KeyCode::Enter => match options[selected] {
                     Some((percent, _)) => break Some(percent),
                     None => {
                         let _ = disable_raw_mode();
