@@ -69,6 +69,11 @@ them provisional. Neither generation time nor visual quality is guaranteed.
 Models live in `~/.opengpu/media/models/`. The shared UMT5 encoder and Qwen image
 files are retained during upgrade. The retired 5B diffusion weights and
 `wan2.2_vae.safetensors` can be removed after 14B verification and cutover.
+On the test GX10 these two retired files were removed after verification,
+freeing 11,409,059,808 bytes. Qwen image files and the shared encoder were retained.
+Linux release `cli-linux-v0.2.15` was published from `ecb42cf`; all 18 release
+asset digests and all 16 Linux production-channel asset digests matched the
+locally built files. The companion web deployment is commit `a7234fb`.
 
 ### Historical 5B pricing
 
