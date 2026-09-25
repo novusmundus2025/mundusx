@@ -1397,11 +1397,11 @@ fn start_vllm_runtime(
         return Ok(None);
     }
 
-    let image = vllm_setting(
-        "OPENGPU_VLLM_IMAGE",
-        "VLLM_IMAGE",
-        "nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e",
-    );
+    let image = crate::vllm_model_profile::image_for(
+        model_name,
+        env::var("OPENGPU_VLLM_IMAGE").ok(),
+        vllm_runtime_setting("VLLM_IMAGE"),
+    ).unwrap_or_else(|| "nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e".to_string());
     let container_name = vllm_setting(
         "OPENGPU_VLLM_CONTAINER_NAME",
         "VLLM_CONTAINER_NAME",
@@ -1456,9 +1456,19 @@ fn start_vllm_runtime(
     if env::var_os("HF_TOKEN").is_some() {
         command.args(["-e", "HF_TOKEN"]);
     }
+    if crate::vllm_model_profile::is_muse_glimmer(model_name) {
+        command.args(["--entrypoint", "vllm"]).arg(&image).arg("serve");
+    } else {
+        command.arg(&image).args(["vllm", "serve"]);
+    }
+    if crate::vllm_model_profile::is_muse_glimmer(model_name) {
+        command.args([
+            "--enable-auto-tool-choice", "--tool-call-parser", "muse_glimmer",
+            "--reasoning-parser", "muse_glimmer", "--generation-config", "auto",
+            "--max-model-len", "8192",
+        ]);
+    }
     command
-        .arg(&image)
-        .args(["vllm", "serve"])
         .arg(model_name)
         .args(["--host", "0.0.0.0", "--port", "8000"])
         .arg("--gpu-memory-utilization")

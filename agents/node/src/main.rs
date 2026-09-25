@@ -1,3 +1,5 @@
+#[path = "../../../packages/vllm-model-profile.rs"]
+mod vllm_model_profile;
 mod contracts;
 mod http;
 mod identity;
