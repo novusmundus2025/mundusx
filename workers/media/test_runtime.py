@@ -116,7 +116,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(low['add_noise'], 'disable')
         self.assertEqual(graph['9']['inputs']['samples'], ['14', 0])
         self.assertEqual(graph['6']['class_type'], 'EmptyHunyuanLatentVideo')
-        self.assertEqual(media.preset_profile(VIDEO_PROFILE, 10)['id'], 'wan22-14b-704p-161f-v1')
+        self.assertEqual(media.preset_profile(VIDEO_PROFILE, 10)['id'], 'wan22-14b-480p-161f-v1')
 
     def setUp(self):
         self.profile=copy.deepcopy(PROFILE);self.profile['width']=8;self.profile['height']=8
@@ -159,6 +159,8 @@ class RuntimeTests(unittest.TestCase):
     def test_workflow_pins_model_settings_and_treats_prompt_as_data(self):
         prompt='"}; arbitrary-node; {'
         value=media.workflow(PROFILE,prompt,123,'owned')
+        self.assertEqual(value['6']['inputs']['width'], 832)
+        self.assertEqual(value['6']['inputs']['height'], 480)
         self.assertEqual(value['4']['inputs']['text'],prompt)
         self.assertEqual(value['8']['inputs']['steps'],30)
         self.assertEqual(value['6']['inputs']['batch_size'],1)
@@ -236,7 +238,7 @@ class VideoTests(unittest.TestCase):
     def test_workflow_is_bounded_and_uses_native_wan_nodes(self):
         flow=media.workflow(VIDEO_PROFILE,'A teapot slowly rotates',42,'owned')
         self.assertEqual(flow['6']['inputs']['length'],33)
-        self.assertEqual(flow['6']['inputs']['width'],1280)
+        self.assertEqual(flow['6']['inputs']['width'],832)
         self.assertEqual(flow['8']['inputs']['steps'],20)
         self.assertEqual(flow['10']['inputs']['codec'],'h264')
         self.assertEqual(flow['10']['inputs']['format'],'auto')
