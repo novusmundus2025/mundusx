@@ -349,7 +349,7 @@ mod tests {
         let profiles = bundled_video_profiles().unwrap();
         assert_eq!(profiles.len(), 10);
         for seconds in 1..=10_u64 {
-            let id = format!("wan22-14b-704p-{}f-v1", seconds * 16 + 1);
+            let id = format!("wan22-14b-480p-{}f-v1", seconds * 16 + 1);
             assert!(profiles.contains(&id));
             let mut job = json!({"profile_id":id,"quote":{"operation":"text_to_video","fps":16,"frames":seconds*16+1}});
             let result = execution_profile(&job).unwrap();
