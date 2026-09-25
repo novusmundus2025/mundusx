@@ -383,6 +383,26 @@ mod tests {
     }
 
     #[test]
+    fn muse_fp8_and_bf16_have_separate_memory_budgets() {
+        let fp8 = crate::vllm_model_profile::MUSE_GLIMMER_FP8_MODEL;
+        let bf16 = crate::vllm_model_profile::MUSE_GLIMMER_MODEL;
+        let options = selectable_catalog_options_for(Backend::Vllm, Some(49_152));
+        assert_eq!(options.iter().filter(|option| option.name == fp8).count(), 1);
+        assert!(!options.iter().any(|option| option.name == bf16));
+        for budget in [None, Some(49_151)] {
+            assert!(!selectable_catalog_options_for(Backend::Vllm, budget).iter().any(|option| option.name == fp8));
+        }
+        let large = selectable_catalog_options_for(Backend::Vllm, Some(100_000));
+        for name in [fp8, bf16] {
+            assert_eq!(large.iter().filter(|option| option.name == name).count(), 1);
+            assert!(lookup_model_for_backend(name, Backend::Vllm).is_some());
+            for backend in [Backend::M, Backend::Cuda, Backend::Vulkan] {
+                assert!(lookup_model_for_backend(name, backend).is_none());
+            }
+        }
+    }
+
+    #[test]
     fn official_remote_catalog_entries_include_sha256() {
         let catalog = load_catalog().expect("catalog");
         for option in catalog

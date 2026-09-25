@@ -235,7 +235,7 @@
     },
     {
       "backend": "vllm", "min_memory_gb": 0, "max_memory_gb": 999,
-      "lighter": {"name":"meta-models/Muse-Glimmer-30B","label":"Muse Glimmer 30B — BF16","notes":"Meta chat/agent model; text output; about 60 GB download; 72 GiB estimated serving budget; dedicated vLLM 0.28 runtime; initial 8K context; hardware validation pending","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/meta-models/Muse-Glimmer-30B","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":73728},
+      "lighter": {"name":"RedHatAI/Muse-Glimmer-30B-FP8-block","label":"Muse Glimmer 30B — FP8","notes":"Red Hat quantization; text output; about 33 GB download; provisional 48 GiB serving budget; dedicated vLLM 0.28 runtime; initial 8K context; hardware validation pending","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/RedHatAI/Muse-Glimmer-30B-FP8-block","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":49152},
       "recommended": {"name":"meta-models/Muse-Glimmer-30B","label":"Muse Glimmer 30B — BF16","notes":"Meta chat/agent model; text output; about 60 GB download; 72 GiB estimated serving budget; dedicated vLLM 0.28 runtime; initial 8K context; hardware validation pending","source_kind":"huggingface-vllm","source_url":"https://huggingface.co/meta-models/Muse-Glimmer-30B","sha256":"","format":"safetensors","backend_compatibility":["vllm"],"estimated_vram_mb":73728}
     }
   ]
