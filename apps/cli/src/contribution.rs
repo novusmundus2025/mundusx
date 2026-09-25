@@ -54,24 +54,7 @@ pub fn configure(
     if let Some(value) = workloads {
         config.contribution.operations = parse_operations(value)?;
     } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        println!("Contribution workloads: llm,image,image-edit,video,image-to-video or all");
-        println!("Qwen image and Wan video local verification are available. Video queue serving is available after verification; image dispatch and editing remain pending.");
-        let current = config
-            .contribution
-            .operations
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        print!("Workloads [{current}] (Enter keeps current): ");
-        io::stdout().flush().map_err(|error| error.to_string())?;
-        let mut answer = String::new();
-        io::stdin()
-            .read_line(&mut answer)
-            .map_err(|error| error.to_string())?;
-        if !answer.trim().is_empty() {
-            config.contribution.operations = parse_operations(answer.trim())?;
-        }
+        config.contribution.operations = crate::workload_picker::prompt(&config.contribution.operations)?;
     }
     if let Some(value) = endpoint {
         config.contribution.comfyui_url = Some(validate_endpoint(value)?);
@@ -196,12 +179,16 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
         }
     );
     if config.contribution.media_enabled() {
-        println!("Media: use opengpu media --video setup/verify, then media serve for queued video work");
-        if let Some(verification) = report.get("local_image_verification").filter(|value| !value.is_null()) {
-            println!("Local image verification: {}", if verification["ready"] == true { "passed" } else { "needs verification" });
+        if config.contribution.operations.contains(&Operation::TextToImage) {
+            println!("Local image verification: {}", if report["local_image_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media verify)" });
+            println!("Image generation is local; network image dispatch is pending.");
         }
-        if let Some(verification) = report.get("local_video_verification").filter(|value| !value.is_null()) {
-            println!("Local video verification: {}", if verification["ready"] == true { "passed" } else { "needs verification" });
+        if config.contribution.operations.contains(&Operation::TextToVideo) {
+            println!("Local video verification: {}", if report["local_video_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media --video verify)" });
+            println!("Video queue serving also requires a running, admitted LLM contributor.");
+        }
+        if config.contribution.comfyui_url.is_none() {
+            println!("Managed ComfyUI starts on demand; no always-running endpoint is required.");
         }
     }
     if let Some(comfy) = report.get("comfyui").filter(|value| !value.is_null()) {
@@ -223,19 +210,29 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let mut install = requested;
     if !requested && interactive {
-        println!("Selected Qwen image / Wan video setup: [1] automatic (Linux ARM64 GX10/GB10) [2] existing ComfyUI [3] later");
+        let managed = cfg!(all(target_os = "linux", target_arch = "aarch64"));
+        let mut options = Vec::new();
+        if managed {
+            options.push(("Set up managed ComfyUI".to_string(), "Reuse cached models; download missing files and verify".to_string()));
+        }
+        let existing_index = options.len();
+        options.push(("Use an existing ComfyUI endpoint".to_string(), "Connect without taking ownership of the service".to_string()));
+        let later_index = options.len();
+        options.push(("Set up later".to_string(), "Save choices; media may still need verification".to_string()));
+        let selection = crate::select_menu_option(
+            &["Image and video setup".to_string(), "Verification generates real media and can take several minutes.".to_string()],
+            &options, "Up/Down: move | Enter: select | Esc: cancel", later_index,
+        ).ok_or("Media setup cancelled; workload choices have been saved.")?;
         let mut answer = String::new();
-        io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-        match answer.trim() {
-            "1" => { config.contribution.comfyui_url = None; install = true; }
-            "2" => {
-                println!("ComfyUI endpoint [http://127.0.0.1:8188]:");
-                answer.clear(); io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-                config.contribution.comfyui_url = Some(validate_endpoint(if answer.trim().is_empty() { "http://127.0.0.1:8188" } else { answer.trim() })?);
-                install = true;
-            }
-            "" | "3" => (),
-            _ => return Err("Choose 1, 2, or 3; rerun setup to continue".into()),
+        if managed && selection == 0 {
+            config.contribution.comfyui_url = None;
+            install = true;
+        } else if selection == existing_index {
+            let current = config.contribution.comfyui_url.as_deref().unwrap_or("http://127.0.0.1:8188");
+            println!("ComfyUI endpoint [{current}]:");
+            io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
+            config.contribution.comfyui_url = Some(validate_endpoint(if answer.trim().is_empty() { current } else { answer.trim() })?);
+            install = true;
         }
     }
     if !install { return Ok(()); }

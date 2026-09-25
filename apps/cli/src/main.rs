@@ -3,6 +3,7 @@ mod media_runtime;
 #[path = "../../../packages/vllm-model-profile.rs"]
 mod vllm_model_profile;
 mod media_worker;
+mod workload_picker;
 mod auth_token;
 mod cluster;
 mod config;
@@ -4615,12 +4616,12 @@ fn detect_machine_profile() -> MachineProfile {
         arch: env::consts::ARCH,
         backend,
         install_profile: install_profile_for(env::consts::OS, env::consts::ARCH, backend),
-        cuda_gpu_name: if backend == Backend::Cuda {
+        cuda_gpu_name: if matches!(backend, Backend::Cuda | Backend::Vllm) {
             detect_cuda_gpu_name()
         } else {
             None
         },
-        cuda_vram_mb: if backend == Backend::Cuda {
+        cuda_vram_mb: if matches!(backend, Backend::Cuda | Backend::Vllm) {
             detect_cuda_vram_mb()
         } else {
             None
@@ -6103,8 +6104,8 @@ fn print_start_preflight(config: &Config) {
     );
 
     if blockers.is_empty() {
-        theme::section("Ready to contribute");
-        theme::field("status", theme::status("ready"));
+        theme::section("LLM setup checks");
+        theme::field("status", "passed; runtime startup and network admission are checked by opengpu start");
         if config.contributed_cluster.is_some() {
             theme::note(
                 "This node serves work from the contributed cluster; the control plane must admit the `contributed-cluster` runtime mode",
@@ -6224,12 +6225,23 @@ fn run_install(
         std::process::exit(1);
     }
 
-    let ranked_clusters = cluster::servable_clusters_by_size(&detected_clusters);
+    if let Err(error) =
+        contribution::configure(&mut config, workloads.as_deref(), comfyui_url.as_deref())
+    {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+    let ranked_clusters = if config.contribution.llm_enabled() {
+        cluster::servable_clusters_by_size(&detected_clusters)
+    } else {
+        Vec::new()
+    };
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let mut contributed_from_menu = false;
 
-    let cluster_uses_automatic_cap = config.contributed_cluster.is_some()
-        || (cluster_choice == Some(true) && !ranked_clusters.is_empty());
+    let cluster_uses_automatic_cap = config.contribution.llm_enabled()
+        && (config.contributed_cluster.is_some()
+            || (cluster_choice == Some(true) && !ranked_clusters.is_empty()));
     let selected_cap = if let Some(value) = cap_percent {
         match normalize_contribution_percent(u16::from(value)) {
             Ok(value) => Some(value),
@@ -6246,7 +6258,11 @@ fn run_install(
             detected.as_str()
         ));
         theme::note(contribution_semantics(detected));
-        let default_percent = default_contribution_percent(detected);
+        let default_percent = if config.contribution_percent > 0 {
+            config.contribution_percent
+        } else {
+            default_contribution_percent(detected)
+        };
         // The cluster list is reached from this menu, and Esc or "None" inside it
         // comes back here so the cap can still be chosen.
         loop {
@@ -6281,15 +6297,8 @@ fn run_install(
         config.contribution_percent = value;
     }
 
-    if let Err(error) =
-        contribution::configure(&mut config, workloads.as_deref(), comfyui_url.as_deref())
-    {
-        eprintln!("{error}");
-        std::process::exit(2);
-    }
-
     let contributing_cluster = contributed_from_menu
-        || maybe_contribute_running_cluster(
+        || (config.contribution.llm_enabled() && maybe_contribute_running_cluster(
             &mut config,
             cluster_choice,
             cluster_url.as_deref(),
@@ -6297,7 +6306,7 @@ fn run_install(
             // Interactive installs ask through the contribution level menu.
             !interactive,
             max_jobs,
-        );
+        ));
 
     if config.contribution.llm_enabled() && should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
@@ -6327,8 +6336,6 @@ fn run_install(
             );
         }
     }
-    contribution::print_report(&config, false, config.contribution.media_enabled());
-
     match save_config(&config) {
         Ok(path) => {
             let body = vec![
@@ -6343,7 +6350,7 @@ fn run_install(
                     profile
                         .cuda_vram_mb
                         .map(|value| format!("{value} MB"))
-                        .unwrap_or_else(|| "none detected".to_string())
+                        .unwrap_or_else(|| "not reported by driver (GB10 uses unified memory)".to_string())
                 ),
                 format!("control plane: {}", config.control_plane_url),
                 format!(
@@ -6391,12 +6398,16 @@ fn run_install(
                 std::process::exit(1);
             }
             print_retro_panel(
-                "INSTALL COMPLETE",
-                "machine setup saved",
+                "SETUP SAVED",
+                "configuration saved; use start to connect",
                 &body,
                 Color::Green,
             );
-            print_start_preflight(&config);
+            contribution::print_report(&config, false, config.contribution.comfyui_url.is_some());
+            if config.contribution.llm_enabled() {
+                print_start_preflight(&config);
+            }
+            theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
         }
         Err(error) => {
             eprintln!("failed to save install setup: {error}");
