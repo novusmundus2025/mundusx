@@ -1,3 +1,5 @@
+#[path = "../../../packages/vllm-model-profile.rs"]
+mod vllm_model_profile;
 mod auth_token;
 mod cluster;
 mod config;
@@ -4383,10 +4385,11 @@ fn prefetch_vllm_catalog_model(config: &Config, model: &str) -> Result<(), Strin
     }
 
     let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
-    let image = env::var("OPENGPU_VLLM_IMAGE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| vllm_runtime_config_value("VLLM_IMAGE"))
+    let image = vllm_model_profile::image_for(
+        model,
+        env::var("OPENGPU_VLLM_IMAGE").ok(),
+        vllm_runtime_config_value("VLLM_IMAGE"),
+    )
         .ok_or_else(|| {
             "the vLLM runtime image is not configured; run the Linux installer with --with-vllm"
                 .to_string()
@@ -4425,7 +4428,11 @@ fn prefetch_vllm_catalog_model(config: &Config, model: &str) -> Result<(), Strin
     if env::var_os("HF_TOKEN").is_some() {
         command.args(["-e", "HF_TOKEN"]);
     }
-    command.arg(image).args(["python3", "-c", script, model]);
+    if vllm_model_profile::is_muse_glimmer(model) {
+        command.args(["--entrypoint", "python3"]).arg(image).args(["-c", script, model]);
+    } else {
+        command.arg(image).args(["python3", "-c", script, model]);
+    }
     run_streaming_command(command, "prefetch vLLM model")?;
     println!("modelPrefetch: ready");
     Ok(())
