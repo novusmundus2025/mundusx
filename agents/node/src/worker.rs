@@ -5838,6 +5838,7 @@ mod native_delta_tests {
         });
         let payload = serde_json::json!({"messages":[{"role":"user","content":"Improve menu"}],"tools":[{"type":"function","function":{"name":"edit_file","parameters":{"type":"object"}}}]});
         let request = WorkerLaunchRequest {
+            operation: Default::default(),
             job_id: "test".into(),
             node_id: "test".into(),
             backend: Backend::M,
