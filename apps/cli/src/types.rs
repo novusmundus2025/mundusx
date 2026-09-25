@@ -250,6 +250,8 @@ pub enum NodeRole {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeCapabilityProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::contribution_contract::ExecutionCapabilities>,
     #[serde(default)]
     pub schema_version: u32,
     #[serde(default)]
@@ -289,6 +291,7 @@ pub struct NodeCapabilityProfile {
 impl Default for NodeCapabilityProfile {
     fn default() -> Self {
         Self {
+            execution: None,
             schema_version: 0,
             models: Vec::new(),
             physical_memory_mb: None,

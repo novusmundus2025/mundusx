@@ -1,0 +1,24 @@
+{
+  "id": "qwen-image-fp8-1024-v1",
+  "operation": "text_to_image",
+  "model": "Qwen/Qwen-Image",
+  "license": "Apache-2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen-Image/blob/main/LICENSE",
+  "source": "https://docs.comfy.org/tutorials/image/qwen/qwen-image",
+  "width": 1024,
+  "height": 1024,
+  "steps": 30,
+  "cfg": 4.0,
+  "minimum_budget_bytes": 34359738368,
+  "timeout_seconds": 1800,
+  "comfy_revision": "30c259cac8c08ff8d015f9aff3151cb525c9b702",
+  "comfy_archive_sha256": "d80f38c2d01047d3fe86667cd662ac9f1e220577401aad83d25043d68a330a7b",
+  "container_base": "nvcr.io/nvidia/pytorch:25.09-py3",
+  "models_revision": "1f12b17be14c89b026c51a91d67c32f84bb047bc",
+  "models_repo": "Comfy-Org/Qwen-Image_ComfyUI",
+  "files": [
+    {"path": "diffusion_models/qwen_image_fp8_e4m3fn.safetensors", "size": 20430635136, "sha256": "98763a127701eb6fb59096f7742cb3aa7d64ed510b9f4e882d8351f8176e3ce3"},
+    {"path": "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors", "size": 9384670680, "sha256": "cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4"},
+    {"path": "vae/qwen_image_vae.safetensors", "size": 253806246, "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f"}
+  ]
+}

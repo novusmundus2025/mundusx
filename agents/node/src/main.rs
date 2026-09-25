@@ -1,6 +1,11 @@
+mod media_process;
 #[path = "../../../packages/vllm-model-profile.rs"]
 mod vllm_model_profile;
+#[path = "../../../packages/media-drain.rs"]
+mod media_drain;
 mod contracts;
+#[path = "../../../packages/contribution-contract.rs"]
+mod contribution_contract;
 mod http;
 mod identity;
 mod local_api;
@@ -422,6 +427,13 @@ fn build_capabilities(
         readiness_reason = Some("worker health is degraded".to_string());
     }
 
+    if !config.contribution.llm_enabled() {
+        ready_for_jobs = false;
+        readiness_reason = Some(
+            "LLM contribution disabled; video jobs use the media queue".into(),
+        );
+    }
+
     NodeCapabilityAdvertisement {
         schema_version: 4,
         backend,
@@ -755,6 +767,9 @@ fn build_scheduler_capabilities(
     supported_tools.dedup();
 
     NodeCapabilityProfile {
+        execution: Some(contribution_contract::ExecutionCapabilities::llm_only(
+            config.contribution.llm_enabled(),
+        )),
         schema_version: capabilities.schema_version,
         models,
         physical_memory_mb: capabilities.physical_memory_mb,
@@ -1127,6 +1142,7 @@ fn build_worker_launch_request(
     seed: Option<u64>,
 ) -> WorkerLaunchRequest {
     WorkerLaunchRequest {
+        operation: crate::contribution_contract::Operation::Llm,
         job_id,
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
@@ -1269,6 +1285,9 @@ fn launch_worker_process(
     json: bool,
     delta_sender: Option<mpsc::Sender<String>>,
 ) -> Result<contracts::WorkerLaunchResponse, String> {
+    if !request.operation.is_llm() || !config.contribution.llm_enabled() {
+        return Err("Workload is not enabled for execution by this contributor".into());
+    }
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
         return Err(policy
@@ -1761,6 +1780,7 @@ fn execute_claimed_job(
     _permit: local_api::SlotPermit,
 ) {
     let request = WorkerLaunchRequest {
+        operation: job.operation,
         job_id: job.job_id.clone(),
         node_id: config.device_id.clone(),
         backend: job.backend.unwrap_or_else(|| resolved_backend(&config)),
@@ -1857,6 +1877,7 @@ fn process_pending_jobs(
     slot_pool: Arc<local_api::SlotPool>,
     heartbeat_snapshot: &Heartbeat,
 ) {
+    if !config.contribution.llm_enabled() || media_drain::request(&storage::config_dir()).is_some() { return; }
     let identity = load_identity_or_exit();
     // Health probing can invoke slow external programs such as nvidia-smi and
     // contact a contributed runtime. The heartbeat path already performs those
@@ -1920,7 +1941,7 @@ fn process_pending_jobs(
             reap_finished_jobs(&mut handles);
 
             let refill_config = match load_agent_config() {
-                Ok(Some(latest)) if should_agent_run(&latest) => Some(latest),
+                Ok(Some(latest)) if should_agent_run(&latest) && media_drain::request(&storage::config_dir()).is_none() => Some(latest),
                 Ok(_) => None,
                 Err(error) => {
                     eprintln!("jobPoll: refill paused ({error})");
@@ -2002,7 +2023,7 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    should_agent_run(config)
+    should_agent_run(config) && config.contribution.llm_enabled() && media_drain::request(&storage::config_dir()).is_none()
 }
 
 fn should_agent_run(config: &AgentConfig) -> bool {
@@ -2166,6 +2187,8 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             }
         }
     };
+    let mut media_drained = false;
+    let mut media_release_confirmed = false;
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
     let mut heartbeat_snapshot = heartbeat.clone();
@@ -2176,11 +2199,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let mut tool_refresh_in_flight = false;
     let mut last_tool_refresh_started = Instant::now() - TOOL_CAPABILITY_REFRESH_INTERVAL;
     let state = resolved_state(&config);
-    let interval = if config.paused {
-        interval_seconds.max(30)
-    } else {
-        interval_seconds.max(5)
-    };
+    let interval = if config.paused { interval_seconds.max(30) } else { interval_seconds.max(5) };
 
     if json {
         let payload = serde_json::json!({
@@ -2236,16 +2255,9 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         clear_runtime_environment();
         eprintln_error_field("persistentRuntime", "stopped");
         std::process::exit(2);
-    } else {
-        process_pending_jobs(
-            &config,
-            json,
-            verbose,
-            !once,
-            slot_pool.clone(),
-            &heartbeat_snapshot,
-        );
     }
+    let mut media_worker = if once { None } else { Some(media_process::MediaProcess::start(&config)) };
+    process_pending_jobs(&config, json, verbose, !once, slot_pool.clone(), &heartbeat_snapshot);
 
     println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
@@ -2337,6 +2349,55 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             );
             break;
         }
+
+        if let Some(worker) = media_worker.as_mut() { worker.maintain(&latest_config); }
+
+        if let Some(request_id) = media_drain::request(&storage::config_dir()) {
+            if slot_pool.active() > 0 { continue; }
+            if !media_drained {
+                media_release_confirmed = if let Some(runtime) = persistent_runtime.as_mut() {
+                    match runtime.stop_for_media() {
+                        Ok(()) => true,
+                        Err(error) => { eprintln!("mediaDrain: {error}"); false }
+                    }
+                } else {
+                    !worker::external_runtime_blocks_media()
+                };
+                if !media_release_confirmed {
+                    eprintln!("mediaDrain: runtime memory release is unconfirmed; withholding media handoff");
+                }
+            }
+            media_drained = true;
+            // process_pending_jobs joins active requests before returning here.
+            if media_release_confirmed {
+                drop(persistent_runtime.take());
+                clear_runtime_environment();
+            }
+            let heartbeat = build_heartbeat_with_state(&latest_config, AgentState::Paused);
+            let _ = save_agent_state(&heartbeat);
+            send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+            if media_release_confirmed {
+                if let Err(error) = media_drain::acknowledge(&storage::config_dir(), &request_id) {
+                    eprintln!("mediaDrain: {error}");
+                }
+            }
+            continue;
+        }
+        if media_drained && persistent_runtime.is_none() && should_keep_runtime_warm(&latest_config) {
+            match worker::start_persistent_runtime(
+                &latest_config.effective_model_dir(), latest_config.active_model.as_deref(),
+                resolved_backend(&latest_config), worker_readiness(&latest_config).0.parallel_slots,
+            ) {
+                Ok(runtime) => {
+                    persistent_runtime = runtime;
+                    if let Some(runtime) = persistent_runtime.as_ref() {
+                        std::env::set_var(runtime.environment_variable(), runtime.url());
+                    }
+                }
+                Err(error) => eprintln!("persistentRuntime: resume failed ({error})"),
+            }
+        }
+        if media_drained { media_drained = false; }
 
         while let Ok(mut refreshed) = health_refresh_rx.try_recv() {
             // The health probe may have started before a native-tool probe
@@ -2652,6 +2713,7 @@ mod tests {
 
     fn test_config() -> AgentConfig {
         AgentConfig {
+            contribution: Default::default(),
             version: 1,
             device_id: "node-1".to_string(),
             public_key_fingerprint: None,
@@ -3273,6 +3335,7 @@ mod tests {
 
     fn test_job() -> JobRecord {
         JobRecord {
+            operation: crate::contribution_contract::Operation::Llm,
             job_id: "job-1".to_string(),
             request_id: "request-1".to_string(),
             prompt: "summarize".to_string(),

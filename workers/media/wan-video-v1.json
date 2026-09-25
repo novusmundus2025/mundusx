@@ -1,0 +1,45 @@
+{
+  "id": "wan22-14b-704p-33f-v1",
+  "operation": "text_to_video",
+  "model": "Wan-AI/Wan2.2-T2V-A14B",
+  "license": "Apache-2.0",
+  "license_url": "https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B/blob/main/LICENSE",
+  "source": "https://docs.comfy.org/tutorials/video/wan/wan2_2",
+  "width": 1280,
+  "height": 704,
+  "steps": 20,
+  "cfg": 3.5,
+  "minimum_budget_bytes": 68719476736,
+  "timeout_seconds": 14400,
+  "comfy_revision": "30c259cac8c08ff8d015f9aff3151cb525c9b702",
+  "comfy_archive_sha256": "d80f38c2d01047d3fe86667cd662ac9f1e220577401aad83d25043d68a330a7b",
+  "container_base": "nvcr.io/nvidia/pytorch:25.09-py3",
+  "models_revision": "ee6f4a40737a995bf5818954cfce6d59443b0f04",
+  "models_repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+  "files": [
+    {
+      "path": "diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+      "size": 14293923632,
+      "sha256": "cad711ae211c8b23455ec68cd6a190a33a3d874234a77eb57266d73f8f0e6c9f"
+    },
+    {
+      "path": "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "size": 6735906897,
+      "sha256": "c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68"
+    },
+    {
+      "path": "vae/wan_2.1_vae.safetensors",
+      "size": 253815318,
+      "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b"
+    },
+    {
+      "path": "diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+      "size": 14293923632,
+      "sha256": "e71b96d7c82e638694c5e7fb98fac4bfb0e4ddc5fbbb4b1df40da8f0f1278a97"
+    }
+  ],
+  "frames": 33,
+  "fps": 16,
+  "architecture": "wan22_t2v_a14b",
+  "switch_step": 10
+}

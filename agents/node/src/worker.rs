@@ -1174,6 +1174,19 @@ struct PersistentRuntimeState {
 }
 
 impl PersistentRuntimeHandle {
+    pub fn stop_for_media(&mut self) -> Result<(), String> {
+        if let Some(name) = self.container_name.as_deref() {
+            let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
+            let status = Command::new(docker).args(["stop", "--timeout", "10", name])
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(|e| e.to_string())?;
+            if !status.success() { return Err("LLM container did not stop; media handoff withheld".into()); }
+        }
+        if self.child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            self.child.kill().map_err(|e| e.to_string())?;
+        }
+        self.child.wait().map_err(|e| e.to_string())?;
+        Ok(())
+    }
     fn new(
         child: Child,
         url: String,
@@ -1197,6 +1210,21 @@ impl PersistentRuntimeHandle {
     pub fn environment_variable(&self) -> &'static str {
         self.environment_variable
     }
+}
+
+pub fn external_runtime_blocks_media() -> bool {
+    if contributed_cluster().is_some() { return true; }
+    // Explicit endpoints have no ownership proof, including temporarily unhealthy servers.
+    if env::var_os("OPENGPU_LLAMA_SERVER_URL").is_some() || env::var_os("OPENGPU_VLLM_URL").is_some() || env::var_os("OPENGPU_MLX_SERVER_URL").is_some() {
+        return true;
+    }
+    let llama_port = env::var("OPENGPU_LLAMA_SERVER_PORT").unwrap_or_else(|_| "8789".into());
+    let vllm_port = vllm_setting("OPENGPU_VLLM_PORT", "VLLM_PORT", "8000");
+    let mlx_port = env::var("OPENGPU_MLX_SERVER_PORT").unwrap_or_else(|_| "8790".into());
+    [llama_port, vllm_port, mlx_port].iter().any(|port| {
+        let Ok(address) = format!("127.0.0.1:{port}").parse() else { return true; };
+        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok()
+    })
 }
 
 impl Drop for PersistentRuntimeHandle {
@@ -3705,6 +3733,7 @@ fn execute_request_with_cluster(
 pub fn worker_main(cli: WorkerCli) {
     let live_stream = cli.stream;
     let request = WorkerLaunchRequest {
+        operation: crate::contribution_contract::Operation::Llm,
         job_id: cli.job_id,
         node_id: cli.node_id,
         backend: cli.backend,
@@ -3798,6 +3827,12 @@ pub fn launch_worker_with_stream(
     model_dir: &Path,
     delta_sender: Option<mpsc::Sender<String>>,
 ) -> Result<WorkerLaunchResponse, String> {
+    if !request.operation.is_llm() {
+        return Err(format!(
+            "unsupported operation {}; media worker is not enabled",
+            request.operation
+        ));
+    }
     // A contributed cluster is served over HTTP, so there is nothing to isolate
     // in a subprocess and no reason to depend on re-execing this binary.
     if let Some(cluster) = contributed_cluster() {
@@ -4294,6 +4329,14 @@ mod tests {
         let _ = fs::remove_dir_all(temp_dir);
     }
 
+    #[test]
+    fn external_endpoint_withholds_media_handoff_even_if_unhealthy() {
+        with_temp_runtime_home(|_| {
+            env::set_var("OPENGPU_VLLM_URL", "http://127.0.0.1:1");
+            assert!(external_runtime_blocks_media());
+        });
+    }
+
     fn write_trusted_paths(home: &Path, paths: TrustedRuntimePaths) {
         fs::write(
             home.join("trusted-runtime-paths.json"),
@@ -4455,6 +4498,7 @@ mod tests {
 
     fn speakai_request(model: Option<&str>) -> WorkerLaunchRequest {
         WorkerLaunchRequest {
+            operation: Default::default(),
             job_id: "speakai-job".to_string(),
             node_id: "node-1".to_string(),
             backend: Backend::M,
@@ -4927,6 +4971,7 @@ mod tests {
     #[test]
     fn vulkan_worker_uses_llama_runtime_path() {
         let response = execute_without_cluster(&WorkerLaunchRequest {
+            operation: crate::contribution_contract::Operation::Llm,
             job_id: "job-vulkan".to_string(),
             node_id: "node-1".to_string(),
             backend: Backend::Vulkan,
@@ -4971,6 +5016,7 @@ mod tests {
             env::set_var("OPENGPU_MODEL_DIR", &model_dir);
 
             let response = execute_without_cluster(&WorkerLaunchRequest {
+                operation: crate::contribution_contract::Operation::Llm,
                 job_id: "job-1".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Cuda,
@@ -5057,6 +5103,7 @@ mod tests {
     fn vllm_worker_fails_with_clear_runtime_message() {
         with_temp_runtime_home(|_| {
             let response = execute_without_cluster(&WorkerLaunchRequest {
+                operation: crate::contribution_contract::Operation::Llm,
                 job_id: "job-vllm".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Vllm,
@@ -5115,6 +5162,7 @@ mod tests {
 
         let response = super::execute_request_with_cluster(
             &WorkerLaunchRequest {
+                operation: Default::default(),
                 job_id: "j".to_string(),
                 node_id: "n".to_string(),
                 prompt: "hello".to_string(),
@@ -5202,6 +5250,7 @@ mod tests {
             env::set_var("OPENGPU_VLLM_URL", &url);
 
             let response = execute_without_cluster(&WorkerLaunchRequest {
+                operation: crate::contribution_contract::Operation::Llm,
                 job_id: "job-vllm".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::Vllm,
@@ -5300,6 +5349,7 @@ mod tests {
             env::set_var("OPENGPU_MLX_SERVER_URL", url);
 
             let response = execute_without_cluster(&WorkerLaunchRequest {
+                operation: Default::default(),
                 job_id: "job-mlx".to_string(),
                 node_id: "node-m".to_string(),
                 backend: Backend::M,
@@ -5348,6 +5398,7 @@ mod tests {
             env::set_var("OPENGPU_LLAMA_SERVER_URL", url);
 
             let response = execute_without_cluster(&WorkerLaunchRequest {
+                operation: crate::contribution_contract::Operation::Llm,
                 job_id: "job-1".to_string(),
                 node_id: "node-1".to_string(),
                 backend: Backend::M,
@@ -5801,6 +5852,7 @@ mod native_delta_tests {
         });
         let payload = serde_json::json!({"messages":[{"role":"user","content":"Improve menu"}],"tools":[{"type":"function","function":{"name":"edit_file","parameters":{"type":"object"}}}]});
         let request = WorkerLaunchRequest {
+            operation: Default::default(),
             job_id: "test".into(),
             node_id: "test".into(),
             backend: Backend::M,

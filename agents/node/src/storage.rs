@@ -63,6 +63,8 @@ fn default_cluster_capacity_class() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentConfig {
+    #[serde(default)]
+    pub contribution: crate::contribution_contract::ContributionSelection,
     pub version: u32,
     pub device_id: String,
     pub public_key_fingerprint: Option<String>,
@@ -98,6 +100,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
+            contribution: Default::default(),
             version: 1,
             device_id: String::new(),
             public_key_fingerprint: None,
