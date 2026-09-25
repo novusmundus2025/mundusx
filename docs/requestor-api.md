@@ -18,6 +18,7 @@ The requestor layer stays OpenAI-shaped where that helps client compatibility, b
 ## What It Does Today
 
 - Accepts `model`, `messages`, `temperature`, `top_p`, `max_tokens`, and `seed`.
+- Accepts the MundusX extension `mode: "speakai"` for structured conversation-learning responses.
 - Accepts `stream` when the client wants a `text/event-stream` response.
 - Converts chat messages into an internal prompt plus optional system prompt.
 - Submits the request to the control plane with explicit request metadata.
@@ -170,6 +171,21 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
 ```
 
 The control plane stores the request as a job and returns a queued MundusX response envelope immediately.
+
+## SpeakAI mode
+
+Set `mode` to `speakai` when the completion must analyze an utterance and produce exactly three useful replies:
+
+```json
+{
+  "mode": "speakai",
+  "messages": [
+    {"role": "user", "content": "Heute ist das Wetter wirklich schön."}
+  ]
+}
+```
+
+The `model` field is optional; when omitted, MundusX routes the request to the active/default model. The completed assistant content is parsed and validated as a JSON object with `speechAct`, `topic`, `summary`, and exactly three `replies`. Questions also require `questionType`. Each reply contains the speech-act-specific `strategy` and `purpose`, non-empty `text`, and non-empty English `meaning`. Supported speech acts are `opinion`, `question`, `observation`, `request`, `invitation`, `suggestion`, `greeting`, `thanks`, `apology`, `compliment`, `emotion`, and `information`. Invalid or additional fields, malformed JSON, missing replies, and strategies that do not match the speech act fail the job instead of being returned as successful output. SpeakAI mode uses a 512-token generation budget when `max_tokens` is omitted; an explicit client value still takes precedence. Unsupported non-empty mode values return `400 Bad Request`.
 
 ## What Comes Next
 

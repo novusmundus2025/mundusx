@@ -153,6 +153,10 @@ Heartbeats also carry `worker_health.capabilities`, which is the first-class sch
 - `current_load_percent`: current load derived from available GPU percentage
 - `roles`: scheduler roles such as `chat`, `coding`, `batch`, `reducer`, `vision`, `embedding`, or `tool_use`
 - `skill_tags`: normalized matching tags such as `backend:cuda` and `runtime:cuda`
+- model-level `languages`, `specialties`, and `supports_structured_output` metadata
+- normalized `language:<code>`, `specialty:<name>`, and `output:structured` tags derived from the active reviewed model profile
+
+Capability schema version 3 adds these model-quality fields. Older model manifests remain readable, but advertise empty language and specialty lists. Locally imported community models therefore remain general-purpose until a reviewed profile declares their capabilities.
 
 The scheduler should treat the top-level `capabilities.ready_for_jobs` as the eligibility gate, then choose a node and a specific model together. It first filters for eligibility and current availability, then ranks the remaining choices by task appropriateness, quality, latency, load, reliability, and resource fit. Model size is one fit signal, not an automatic preference for the smallest model. A claimed job carries the selected model name, so the worker executes the model the scheduler evaluated. Legacy agents without a schema-v4 model inventory continue through the node-wide compatibility path.
 

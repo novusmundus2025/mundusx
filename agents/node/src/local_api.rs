@@ -58,6 +58,7 @@ impl SlotPool {
     }
 
     pub fn try_acquire(self: &Arc<Self>) -> Option<SlotPermit> {
+        if crate::media_drain::request(&crate::storage::config_dir()).is_some() { return None; }
         let mut active = self.active.load(Ordering::Acquire);
         loop {
             if active >= self.capacity {
@@ -69,7 +70,15 @@ impl SlotPool {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Some(SlotPermit { pool: self.clone() }),
+                Ok(_) => {
+                    let permit = SlotPermit { pool: self.clone() };
+                    // The drain may have started between the initial check and CAS.
+                    if crate::media_drain::request(&crate::storage::config_dir()).is_some() {
+                        drop(permit);
+                        return None;
+                    }
+                    return Some(permit);
+                },
                 Err(observed) => active = observed,
             }
         }
@@ -499,6 +508,7 @@ fn handle_local_inference(
         control_plane_offline.clone(),
     );
     let worker_request = WorkerLaunchRequest {
+        operation: Default::default(),
         job_id: request_id.clone(),
         node_id: config.device_id.clone(),
         backend,

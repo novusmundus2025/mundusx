@@ -196,6 +196,11 @@ pub struct JobRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobRecord {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::contribution_contract::Operation::is_llm"
+    )]
+    pub operation: crate::contribution_contract::Operation,
     pub job_id: String,
     pub request_id: String,
     pub prompt: String,
@@ -262,6 +267,11 @@ pub struct JobStreamAck {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLaunchRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::contribution_contract::Operation::is_llm"
+    )]
+    pub operation: crate::contribution_contract::Operation,
     pub job_id: String,
     pub node_id: String,
     pub backend: Backend,
@@ -421,6 +431,8 @@ impl NodeRole {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeCapabilityProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::contribution_contract::ExecutionCapabilities>,
     #[serde(default = "default_capability_schema_version")]
     pub schema_version: u32,
     #[serde(default)]
@@ -464,6 +476,7 @@ pub struct NodeCapabilityProfile {
 impl Default for NodeCapabilityProfile {
     fn default() -> Self {
         Self {
+            execution: None,
             schema_version: 4,
             models: Vec::new(),
             physical_memory_mb: None,
