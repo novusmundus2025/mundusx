@@ -13,11 +13,13 @@ impl MediaProcess {
     }
 
     pub fn start(config: &AgentConfig) -> Self {
-        if !config
-            .contribution
-            .operations
-            .contains(&crate::contribution_contract::Operation::TextToVideo)
-        {
+        if !config.contribution.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                crate::contribution_contract::Operation::TextToVideo
+                    | crate::contribution_contract::Operation::TextToImage
+            )
+        }) {
             return Self(None, std::time::Instant::now());
         }
         let server = std::env::var("MUNDUSX_MEDIA_SERVER_URL").ok().or_else(|| {

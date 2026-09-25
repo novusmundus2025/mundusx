@@ -15,12 +15,12 @@ const OPTIONS: [(Operation, &str, bool); 5] = [
     ),
     (
         Operation::TextToImage,
-        "Images - Qwen Image (local generation; network queue pending)",
+        "Images - Qwen Image (network queue needs node admission)",
         true,
     ),
     (
         Operation::TextToVideo,
-        "Videos - Wan 14B (network queue needs LLM admission)",
+        "Videos - Wan 14B (network queue needs node admission)",
         true,
     ),
     (

@@ -143,9 +143,10 @@ pub fn report(config: &Config, probe: bool) -> Value {
         "selected_operations": config.contribution.operations,
         "execution_support": crate::contribution_contract::ExecutionCapabilities::llm_only(config.contribution.llm_enabled()),
         "llm_readiness": "Use opengpu doctor or node health; selection alone does not establish readiness",
-        "media_status": if config.contribution.media_enabled() { "local_image_and_queued_video" } else { "disabled" },
-        "media_reason": "Qwen image local generation and Wan video queue serving are available; image dispatch and editing remain pending",
+        "media_status": if config.contribution.media_enabled() { "queued_image_and_video" } else { "disabled" },
+        "media_reason": "Qwen image and Wan video queue serving are available; editing remains pending",
         "local_image_verification": crate::media_runtime::verification(&crate::config::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent),
+        "image_queue_supported": true,
         "video_queue_supported": true,
         "video_queue_requires": "selected video workload, current verification, and control-plane admission",
         "video_queue_command": "opengpu media serve --server https://chat.mundusx.ai",
@@ -181,7 +182,7 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
     if config.contribution.media_enabled() {
         if config.contribution.operations.contains(&Operation::TextToImage) {
             println!("Local image verification: {}", if report["local_image_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media verify)" });
-            println!("Image generation is local; network image dispatch is pending.");
+            println!("Image queue serving requires a running, admitted contributor and an updated media server.");
         }
         if config.contribution.operations.contains(&Operation::TextToVideo) {
             println!("Local video verification: {}", if report["local_video_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media --video verify)" });
@@ -350,7 +351,7 @@ mod tests {
             value["execution_support"]["operations"],
             serde_json::json!(["llm"])
         );
-        assert_eq!(value["media_status"], "local_image_and_queued_video");
+        assert_eq!(value["media_status"], "queued_image_and_video");
     }
     #[test]
     fn selections_survive_config_roundtrip() {

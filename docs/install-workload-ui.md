@@ -27,8 +27,8 @@ to answer on port 8188. Selecting an operation does not start a network worker.
 
 ## Current boundaries
 
-- Images support local generation; network image dispatch is not implemented.
-- Video network serving requires an admitted LLM contributor.
+- Images and videos support queued generation with the updated media server and worker.
+- Media network serving requires an admitted contributor through the existing LLM admission path.
 - Existing HTTP model servers can be discovered or specified explicitly;
   Sparkrun recipe provisioning is not implemented.
 - Full GPU installation and generation must be validated separately from UI

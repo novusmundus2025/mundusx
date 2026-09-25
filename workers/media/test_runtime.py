@@ -270,3 +270,12 @@ class VideoTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class IntegerDurationTests(unittest.TestCase):
+    def test_all_integer_durations_and_bounds(self):
+        for seconds in range(1, 11):
+            profile = media.preset_profile(VIDEO_PROFILE, seconds)
+            self.assertEqual(profile['frames'], seconds * 16 + 1)
+        for seconds in (0, 11, 1.5):
+            with self.assertRaises(media.MediaError):
+                media.preset_profile(VIDEO_PROFILE, seconds)

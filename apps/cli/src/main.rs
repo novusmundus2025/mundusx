@@ -99,7 +99,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum MediaCommands {
-    /// Serve queued video requests using this contributor identity
+    /// Serve queued image and video requests using this contributor identity
     Serve { #[arg(long, default_value = "https://chat.mundusx.ai")] server: String, #[arg(long)] once: bool },
     /// Upload a generated PNG or MP4 using a scoped ticket from the requesting user's web session
     Upload {
@@ -162,7 +162,7 @@ enum Commands {
         /// Select the bounded Wan video profile instead of Qwen image
         #[arg(long, global = true)]
         video: bool,
-        /// Video duration preset: 2, 5 or 10 seconds
+        /// Video duration: any integer from 1 to 10 seconds
         #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(2..=10))]
         seconds: u8,
         #[command(subcommand)]
@@ -6853,7 +6853,7 @@ fn main() {
             yes,
         ),
         Commands::Media { command, video, seconds } => {
-            if ![2, 5, 10].contains(&seconds) { eprintln!("Video seconds must be 2, 5 or 10"); std::process::exit(2); }
+            if !(1..=10).contains(&seconds) { eprintln!("Video seconds must be an integer from 1 to 10"); std::process::exit(2); }
             if let MediaCommands::Serve { server, once } = command {
                 if let Err(error) = media_worker::serve(server, once) { eprintln!("{error}"); std::process::exit(1); }
                 return;
