@@ -65,6 +65,46 @@ class FakeComfy:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_interactive_download_bar_preserves_machine_output_mode(self):
+        data = b'weights'
+        checksum = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            output, terminal = io.StringIO(), io.StringIO()
+            with patch.dict(media.os.environ, {'OPENGPU_MEDIA_HUMAN_PROGRESS': '1'}), contextlib.redirect_stdout(output), contextlib.redirect_stderr(terminal), patch.object(terminal, 'isatty', return_value=True), patch.object(media.urllib.request, 'urlopen', return_value=io.BytesIO(data)):
+                media.download('https://example.test/model', Path(directory)/'model', len(data), checksum)
+            self.assertIn('[########################] 100%', terminal.getvalue())
+            self.assertIn('Download checksum verified', terminal.getvalue())
+            self.assertEqual(output.getvalue(), '')
+        output = io.StringIO()
+        with patch.dict(media.os.environ, {'OPENGPU_MEDIA_HUMAN_PROGRESS': '0'}), contextlib.redirect_stdout(output):
+            media.emit('download_progress', downloaded_bytes=7, total_bytes=7)
+        self.assertEqual(json.loads(output.getvalue())['downloaded_bytes'], 7)
+
+    def test_download_progress_and_verified_cache_reuse(self):
+        data = b'model bytes'
+        checksum = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'model.bin'
+            with patch.object(media.urllib.request, 'urlopen', return_value=io.BytesIO(data)) as fetch, patch.object(media, 'emit') as emit:
+                media.download('https://example.test/model', path, len(data), checksum)
+                progress = [call.kwargs for call in emit.call_args_list if call.args == ('download_progress',)]
+                self.assertEqual(progress[-1]['downloaded_bytes'], len(data))
+                self.assertEqual(progress[-1]['total_bytes'], len(data))
+                media.download('https://example.test/model', path, len(data), checksum)
+                self.assertEqual(fetch.call_count, 1)
+                self.assertEqual(path.read_bytes(), data)
+
+    def test_cache_space_check_rejects_corrupt_same_size_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'models' / 'model.bin'
+            path.parent.mkdir()
+            path.write_bytes(b'good')
+            file = {'path': 'model.bin', 'size': 4, 'sha256': hashlib.sha256(b'good').hexdigest()}
+            self.assertTrue(media.cached_model(root, file))
+            path.write_bytes(b'bad!')
+            self.assertFalse(media.cached_model(root, file))
+
     def test_14b_workflow_preserves_latent_between_noise_experts(self):
         graph = media.workflow(VIDEO_PROFILE, 'a car', 42, 'test')
         self.assertIn('high_noise_14B', graph['1']['inputs']['unet_name'])

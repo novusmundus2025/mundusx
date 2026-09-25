@@ -6174,6 +6174,12 @@ fn run_install(
 ) {
     theme::banner("Set up this machine for OpenGPU", "Private compute. Your limits. The MundusX network.");
     // Reject malformed options before touching identity, config, or model downloads.
+    if let Some(value) = cap_percent {
+        if let Err(error) = normalize_contribution_percent(u16::from(value)) {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    }
     if let Err(error) = workloads
         .as_deref()
         .map(contribution::parse_operations)
@@ -6215,7 +6221,9 @@ fn run_install(
     }
 
     // Probe up front so the cluster step after the cap has results ready.
+    theme::note("Checking for running model servers and clusters...");
     let detected_clusters = detect_clusters_for_setup(cluster_url.as_deref());
+    theme::note(format!("Discovery complete: {} server(s) found", detected_clusters.len()));
 
     config.control_plane_url =
         resolve_install_control_plane_url(public, private, control_plane_url);
@@ -6272,7 +6280,10 @@ fn run_install(
         loop {
             match prompt_contribution_percent(default_percent, ranked_clusters.len()) {
                 PromptOutcome::Selected(value) => break Some(value),
-                PromptOutcome::Cancelled => break None,
+                PromptOutcome::Cancelled => {
+                    theme::note("Setup cancelled before model provisioning.");
+                    return;
+                },
                 PromptOutcome::UseCluster => match prompt_cluster_pick(&ranked_clusters) {
                     ClusterPickOutcome::Picked(index) => {
                         let chosen = ranked_clusters[index];
@@ -6312,7 +6323,7 @@ fn run_install(
             max_jobs,
         ));
 
-    if config.contribution.llm_enabled() && should_prompt_model_selection(&config) {
+    if config.contribution.llm_enabled() && !contributing_cluster && should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
         let choice = prompt_model_selection(&config, backend);
         apply_model_choice(&mut config, choice, true);
@@ -6354,7 +6365,9 @@ fn run_install(
                     profile
                         .cuda_vram_mb
                         .map(|value| format!("{value} MB"))
-                        .unwrap_or_else(|| "not reported by driver (GB10 uses unified memory)".to_string())
+                        .unwrap_or_else(|| if profile.cuda_gpu_name.as_deref().is_some_and(|name| name.contains("GB10")) {
+                            "not reported by driver (GB10 uses unified memory)".to_string()
+                        } else { "not reported by driver".to_string() })
                 ),
                 format!("control plane: {}", config.control_plane_url),
                 format!(
@@ -6393,7 +6406,7 @@ fn run_install(
                 if config.contribution.llm_enabled() {
                     "next step: run `opengpu start`".to_string()
                 } else {
-                    "media selections saved; use opengpu media verify for local image testing. Network media is pending.".to_string()
+                    "media selections saved; local generation is available after verification; network video needs LLM admission".to_string()
                 },
             ];
             if let Err(error) = contribution::install_media(&mut config, setup_media, yes) {
@@ -6411,7 +6424,11 @@ fn run_install(
             if config.contribution.llm_enabled() {
                 print_start_preflight(&config);
             }
-            theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
+            if config.contribution.llm_enabled() {
+                theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
+            } else {
+                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Network video serving currently requires LLM node admission.");
+            }
         }
         Err(error) => {
             eprintln!("failed to save install setup: {error}");

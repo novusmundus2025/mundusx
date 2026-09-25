@@ -210,18 +210,24 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let mut install = requested;
     if !requested && interactive {
-        let managed = cfg!(all(target_os = "linux", target_arch = "aarch64"));
+        let candidate = config.contribution.comfyui_url.as_deref().unwrap_or("http://127.0.0.1:8188");
+        println!("Checking for ComfyUI at {candidate}...");
+        let discovery = discover(candidate);
+        let managed = cfg!(all(target_os = "linux", target_arch = "aarch64"))
+            && crate::detect_cuda_gpu_name().is_some_and(|name| name.contains("GB10"));
         let mut options = Vec::new();
         if managed {
             options.push(("Set up managed ComfyUI".to_string(), "Reuse cached models; download missing files and verify".to_string()));
         }
         let existing_index = options.len();
-        options.push(("Use an existing ComfyUI endpoint".to_string(), "Connect without taking ownership of the service".to_string()));
+        options.push(("Use an existing ComfyUI endpoint".to_string(), if discovery.detected {
+            format!("Detected at {}; verify models and workflow before use", discovery.endpoint)
+        } else { "Enter an address; connect without taking ownership of the service".to_string() }));
         let later_index = options.len();
         options.push(("Set up later".to_string(), "Save choices; media may still need verification".to_string()));
         let selection = crate::select_menu_option(
             &["Image and video setup".to_string(), "Verification generates real media and can take several minutes.".to_string()],
-            &options, "Up/Down: move | Enter: select | Esc: cancel", later_index,
+            &options, "Up/Down: move | Enter: select | Esc: cancel", if discovery.detected { existing_index } else if managed { 0 } else { later_index },
         ).ok_or("Media setup cancelled; workload choices have been saved.")?;
         let mut answer = String::new();
         if managed && selection == 0 {
@@ -236,6 +242,11 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
         }
     }
     if !install { return Ok(()); }
+    if let Some(endpoint) = config.contribution.comfyui_url.as_deref() {
+        println!("Checking ComfyUI connection...");
+        let discovery = discover(endpoint);
+        if !discovery.detected { return Err(format!("ComfyUI connection failed: {}", discovery.reason)); }
+    }
     let home = crate::config::config_dir();
     let endpoint = config.contribution.comfyui_url.as_deref();
     for video in &profiles {
@@ -248,9 +259,14 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
         if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") { return Ok(()); }
     }
     crate::config::save_config(config).map_err(|e| e.to_string())?;
-    for video in profiles {
+    let count = profiles.len();
+    for (index, video) in profiles.into_iter().enumerate() {
+        let label = if video { "Wan video" } else { "Qwen image" };
+        println!("[{}/{}] {label}: preparing runtime and models", index + 1, count);
         crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "setup", video, &["--yes".into()])?;
+        println!("[{}/{}] {label}: generating verification output (this can take several minutes)", index + 1, count);
         crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "verify", video, &[])?;
+        println!("[{}/{}] {label}: verification passed", index + 1, count);
     }
     Ok(())
 }

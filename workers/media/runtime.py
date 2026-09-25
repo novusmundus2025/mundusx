@@ -42,6 +42,18 @@ class MediaError(Exception):
 
 
 def emit(event, **fields):
+    if os.environ.get('OPENGPU_MEDIA_HUMAN_PROGRESS') == '1':
+        if event == 'download_progress':
+            return
+        if event in ('checking_cache', 'cached', 'download', 'download_verified'):
+            labels = {'checking_cache': 'Checking cached file', 'cached': 'Reusing verified file',
+                      'download': 'Downloading', 'download_verified': 'Download checksum verified'}
+            print(f"{labels[event]}: {fields['file']}", file=sys.stderr, flush=True)
+            return
+        if event == 'progress':
+            print(f"Generating media... {fields.get('elapsed_seconds', 0)}s elapsed",
+                  file=sys.stderr, flush=True)
+            return
     print(json.dumps({"event": event, **fields}), flush=True)
 
 
@@ -370,10 +382,13 @@ def run(args, timeout=3600, capture=False):
 
 def download(url, path, size, sha256):
     path.parent.mkdir(parents=True, exist_ok=True)
+    emit("checking_cache", file=path.name)
     if path.exists() and path.stat().st_size == size and digest_file(path) == sha256:
+        emit("cached", file=path.name, bytes=size)
         return
     partial = path.with_suffix(path.suffix + ".partial")
     emit("download", file=path.name, bytes=size)
+    started = last_update = time.monotonic()
     with urllib.request.urlopen(url, timeout=60) as response, partial.open("wb") as stream:
         digest, count = hashlib.sha256(), 0
         while True:
@@ -382,9 +397,27 @@ def download(url, path, size, sha256):
             count += len(block)
             if count > size: raise MediaError("Download exceeds expected size")
             stream.write(block); digest.update(block)
+            now = time.monotonic()
+            if now - last_update >= 1 or count == size:
+                emit("download_progress", file=path.name, downloaded_bytes=count,
+                     total_bytes=size, elapsed_seconds=round(now-started, 1))
+                if sys.stderr.isatty():
+                    fraction = min(count / max(size, 1), 1)
+                    filled = int(fraction * 24)
+                    print(f"\r{path.name}: [{'#'*filled}{'-'*(24-filled)}] "
+                          f"{fraction:.0%} {count/1024**3:.2f}/{size/1024**3:.2f} GiB",
+                          end="\n" if count == size else "", file=sys.stderr, flush=True)
+                last_update = now
     if count != size or digest.hexdigest() != sha256:
         raise MediaError("Download checksum or size mismatch for " + path.name)
     os.replace(partial, path)
+    emit("download_verified", file=path.name, bytes=count)
+
+
+def cached_model(root, file):
+    path = root / "models" / file["path"]
+    emit("checking_cache", file=path.name)
+    return path.is_file() and path.stat().st_size == file["size"] and digest_file(path) == file["sha256"]
 
 
 def install(root, profile, budget_bytes):
@@ -398,7 +431,9 @@ def install(root, profile, budget_bytes):
     gpu = run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], timeout=30, capture=True)
     if 'GB10' not in gpu or len(gpu.splitlines()) != 1:
         raise MediaError("Managed profile requires one GB10 GPU; use an existing ComfyUI endpoint for other hardware")
-    total = sum(file["size"] for file in profile["files"])
+    # Existing valid files are reused, so only reserve space for missing/replaced files.
+    total = sum(file["size"] for file in profile["files"]
+                if not cached_model(root, file))
     if shutil.disk_usage(root).free < total + 15*1024**3:
         raise MediaError("Insufficient disk space: models plus 15 GiB runtime/build headroom required")
     revision = profile["comfy_revision"]

@@ -1,6 +1,7 @@
 //! Embedded media helper used by the CLI and local node worker.
 use serde_json::Value;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -71,6 +72,7 @@ pub fn run_profile(
         .ok_or("Media setup needs Python 3.12 or newer on PATH")?;
     let mut command = Command::new(python);
     command
+        .arg("-u")
         .arg(helper)
         .arg(action)
         .arg("--home")
@@ -82,6 +84,9 @@ pub fn run_profile(
         .args(extra);
     if let Some(endpoint) = endpoint {
         command.arg("--endpoint").arg(endpoint);
+    }
+    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
+        command.env("OPENGPU_MEDIA_HUMAN_PROGRESS", "1");
     }
     let status = command
         .stdin(Stdio::null())
