@@ -237,8 +237,10 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
         let candidate = config.contribution.comfyui_url.as_deref().unwrap_or("http://127.0.0.1:8188");
         println!("Checking for ComfyUI at {candidate}...");
         let discovery = discover(candidate);
-        let managed = cfg!(all(target_os = "linux", target_arch = "aarch64"))
-            && crate::detect_cuda_gpu_name().is_some_and(|name| name.contains("GB10"));
+        let managed = (cfg!(all(target_os = "linux", target_arch = "aarch64"))
+            && crate::detect_cuda_gpu_name().is_some_and(|name| name.contains("GB10")))
+            || cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            || (cfg!(all(target_os = "windows", target_arch = "x86_64")) && crate::detect_cuda_gpu_name().is_some());
         let mut options = Vec::new();
         if managed {
             options.push(("Set up managed ComfyUI".to_string(), "Reuse cached models; download missing files and verify".to_string()));

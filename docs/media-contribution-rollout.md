@@ -193,3 +193,28 @@ before deletion. Failed uploads or invalid receipts retain local files; cleanup
 errors are reported rather than silently claiming success. Videos retain their
 existing behavior. An external ComfyUI server's original output remains under
 that server's control; only the worker's downloaded copy is removed.
+
+## Native managed ComfyUI setup (Windows and Apple Silicon)
+
+Guided setup now offers a managed native environment on Windows x64 with an
+NVIDIA driver and Apple Silicon macOS. Linux ARM64 GB10/GX10 retains Docker.
+Native setup requires Python 3.12/3.13 and installs PyTorch 2.9.1, torchvision
+0.24.1 and torchaudio 2.9.1 inside a contributor-owned virtual environment.
+Windows uses the CUDA 12.8 wheel index; macOS uses MPS, not MLX. No existing
+ComfyUI installation or system Python package environment is modified.
+
+The pinned ComfyUI source and checksummed models are shared with the managed
+workflow. A CUDA/MPS tensor probe must pass before model downloads. The runtime
+binds to a dynamic loopback port, uses owned model/output directories, disables
+custom nodes, applies the contribution fraction to the GPU allocator and stops
+after the job. Mac runs with FP16 model/text-encoder settings. The advertised
+32/64 GiB limits remain eligibility floors, not a guarantee the model fits a
+particular device. FP8 conversion, driver compatibility, and real output must pass
+`opengpu media verify` (or `--video verify`) before queue claims are enabled.
+Video additionally requires ffmpeg and ffprobe on PATH.
+
+Native setup/start/cleanup are covered by mocked platform and process tests.
+Neither Windows GPU nor Apple Silicon generation has been validated in this
+change; these paths are provisional until real generation verification succeeds.
+Official references: https://docs.comfy.org/installation/manual_install and
+https://pytorch.org/get-started/previous-versions/ .

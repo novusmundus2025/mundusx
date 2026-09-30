@@ -257,8 +257,94 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(media.MediaError):
                 with media.drain_contributor(home):self.fail('must not enter')
 
+    def test_native_backend_selection(self):
+        for system, machine, expected in [('Windows','AMD64','cuda'), ('Darwin','arm64','mps'),
+                                          ('Darwin','x86_64',None), ('Linux','aarch64',None)]:
+            with patch.object(media.platform,'system',return_value=system), patch.object(media.platform,'machine',return_value=machine):
+                self.assertEqual(media.native_backend(),expected)
+
+    def test_native_install_is_isolated_probes_gpu_before_model_download_and_needs_verification(self):
+        for backend in ['cuda','mps']:
+            with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+                root=Path(directory); source=root/'source'; source.mkdir()
+                commands=[]; downloads=[]
+                def command(args, **kwargs): commands.append(args); return ''
+                def download(*args):
+                    self.assertTrue(any('-c' in cmd for cmd in commands))
+                    downloads.append(args)
+                with patch.object(media,'native_backend',return_value=backend), \
+                     patch.object(media.shutil,'which',return_value='nvidia-smi'), \
+                     patch.object(media.shutil,'disk_usage',return_value=type('Disk',(),{'free':10**12})()), \
+                     patch.object(media,'cached_model',return_value=True), \
+                     patch.object(media,'prepare_source',return_value=source), \
+                     patch.object(media,'run',side_effect=command), \
+                     patch.object(media,'download',side_effect=download), \
+                     patch.object(media,'drain_contributor',return_value=contextlib.nullcontext()), \
+                     patch.object(media.sys,'version_info',(3,13,0)):
+                    media.install_native(root,PROFILE,64*1024**3)
+                self.assertEqual(commands[0][1:3],['-m','venv'])
+                self.assertIn('torch==2.9.1',commands[1])
+                self.assertEqual('--index-url' in commands[1],backend=='cuda')
+                self.assertIn('-c',commands[2]); self.assertIn('-r',commands[2])
+                self.assertEqual(len(downloads),len(PROFILE['files']))
+                record=media.load_json(media.profile_record(root,PROFILE,'runtime'))
+                self.assertEqual(record['kind'],'managed_native_comfyui')
+                self.assertEqual(record['backend'],backend)
+                self.assertFalse(media.profile_record(root,PROFILE,'verified').exists())
+
+    def test_native_missing_gpu_fails_before_model_download(self):
+        with patch.object(media,'native_backend',return_value='cuda'), \
+             patch.object(media.shutil,'which',return_value=None), patch.object(media,'download') as download:
+            with self.assertRaisesRegex(media.MediaError,'NVIDIA'):
+                media.install_native(Path('.'),PROFILE,64*1024**3)
+            download.assert_not_called()
+
+    def test_native_runtime_uses_owned_paths_loopback_and_stops_on_generation_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); base,python=media.native_paths(root,PROFILE)
+            python.parent.mkdir(parents=True); python.touch()
+            source=root/('build-'+PROFILE['comfy_revision'])/('ComfyUI-'+PROFILE['comfy_revision'])
+            source.mkdir(parents=True); (source/'main.py').touch()
+            calls=[]
+            class Process:
+                pid=123; stopped=False
+                def poll(self): return 0 if self.stopped else None
+                def terminate(self): self.stopped=True
+                def wait(self,timeout): return 0
+            process=Process()
+            def launch(args,**kwargs): calls.append((args,kwargs)); return process
+            class Client:
+                def __init__(self,url): self.url=url
+                def inspect(self,profile): return {},{}
+            record={'backend':'mps'}
+            with patch.object(media,'native_backend',return_value='mps'), \
+                 patch.object(media,'physical_memory',return_value=128*1024**3), \
+                 patch.object(media.subprocess,'Popen',side_effect=launch), patch.object(media,'Comfy',Client):
+                with self.assertRaisesRegex(RuntimeError,'generation failed'):
+                    with media.native_client(root,PROFILE,record,64*1024**3) as client:
+                        self.assertTrue(client.url.startswith('http://127.0.0.1:'))
+                        self.assertTrue((root/'active-native.json').exists())
+                        raise RuntimeError('generation failed')
+            self.assertTrue(process.stopped); self.assertFalse((root/'active-native.json').exists())
+            args,kwargs=calls[0]
+            self.assertIn('--disable-all-custom-nodes',args)
+            self.assertIn('--fp16-unet',args)
+            self.assertIn('--fp16-text-enc',args)
+            self.assertEqual(args[args.index('--output-directory')+1],str(root/'outputs'))
+            self.assertEqual(args[args.index('--listen')+1],'127.0.0.1')
+            self.assertEqual(args[args.index('mps')+1],'0.5')
+
+    def test_invalid_native_cleanup_marker_never_runs_a_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); media.atomic_json(root/'active-native.json',{'pid':1,'token':'invalid','python':'outside'})
+            with patch.object(media,'run') as run:
+                with self.assertRaisesRegex(media.MediaError,'ownership'):
+                    media.stop_owned_native(root)
+                run.assert_not_called()
+            self.assertTrue((root/'active-native.json').exists())
+
     def test_unsupported_platform_does_not_install_dependencies(self):
-        with patch.object(media.platform,'system',return_value='Windows'),patch.object(media,'run') as run:
+        with patch.object(media.platform,'system',return_value='Darwin'),patch.object(media.platform,'machine',return_value='x86_64'),patch.object(media,'run') as run:
             with self.assertRaisesRegex(media.MediaError,'Linux ARM64'):
                 media.install(Path('.'),PROFILE,64*1024**3)
             run.assert_not_called()

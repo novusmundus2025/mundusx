@@ -152,7 +152,8 @@ fn profile_verification_with_memory(
     let matches = value["profile_hash"].as_str() == Some(&hash)
         && value["cap_percent"].as_u64() == Some(u64::from(cap))
         && endpoint_matches
-        && !home.join("media/active-container.json").exists();
+        && !home.join("media/active-container.json").exists()
+        && !home.join("media/active-native.json").exists();
     if !matches {
         value["ready"] = Value::Bool(false);
         value["reason"] = "Configuration or bundled profile changed; verify again".into();
