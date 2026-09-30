@@ -64,34 +64,90 @@ fn private_json(path: &std::path::Path, value: &Value) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())
 }
+fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
+    let video = job["quote"]["operation"] == "text_to_video";
+    let (seconds, name) = if video {
+        let frames = job["quote"]["frames"]
+            .as_u64()
+            .ok_or("Missing video frames")?;
+        let profile: Value =
+            serde_json::from_str(media_runtime::VIDEO_PROFILE).map_err(|e| e.to_string())?;
+        let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
+        let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
+        let seconds = [2, 5, 10]
+            .into_iter()
+            .find(|s| s * fps + 1 == frames)
+            .ok_or("Unsupported video preset")?;
+        let expected = profile["id"]
+            .as_str()
+            .ok_or("Missing bundled video profile")?
+            .replace(&format!("-{base_frames}f-"), &format!("-{frames}f-"));
+        if job["profile_id"].as_str() != Some(expected.as_str())
+            || job["quote"]["fps"].as_u64() != Some(fps)
+        {
+            return Err("Job model does not match the installed video workflow".into());
+        }
+        let name = if frames == base_frames {
+            "verified-video.json".to_string()
+        } else {
+            format!("verified-video-{frames}f.json")
+        };
+        (seconds, name)
+    } else {
+        let profile: Value =
+            serde_json::from_str(media_runtime::PROFILE).map_err(|e| e.to_string())?;
+        if job["quote"]["operation"] != "text_to_image" || job["profile_id"] != profile["id"] {
+            return Err("Job does not match the installed image workflow".into());
+        }
+        (2, "verified.json".to_string())
+    };
+    Ok((video, seconds, name))
+}
+
 fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Result<(), String> {
-    let frames = job["quote"]["frames"]
-        .as_u64()
-        .ok_or("Missing video frames")?;
-    let profile: Value =
-        serde_json::from_str(media_runtime::VIDEO_PROFILE).map_err(|e| e.to_string())?;
-    let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
-    let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
-    let seconds = [2, 5, 10]
-        .into_iter()
-        .find(|s| s * fps + 1 == frames)
-        .ok_or("Unsupported video preset")?;
-    let expected = profile["id"]
-        .as_str()
-        .ok_or("Missing bundled video profile")?
-        .replace(&format!("-{base_frames}f-"), &format!("-{frames}f-"));
-    if job["profile_id"].as_str() != Some(expected.as_str())
-        || job["quote"]["fps"].as_u64() != Some(fps)
-    {
-        return Err("Job model does not match the installed video workflow".into());
+    execute_with(
+        cfg,
+        job,
+        &config::config_dir(),
+        server,
+        |action, video, extra| {
+            media_runtime::run_profile(
+                &config::config_dir(),
+                cfg.contribution_percent,
+                if action == "upload" {
+                    None
+                } else {
+                    cfg.contribution.comfyui_url.as_deref()
+                },
+                action,
+                video,
+                extra,
+            )
+        },
+        |action, body| request(server, id, &cfg.device_id, action, body),
+    )
+}
+
+fn execute_with(
+    cfg: &Config,
+    job: &Value,
+    home: &std::path::Path,
+    server: &str,
+    mut run: impl FnMut(&str, bool, &[String]) -> Result<(), String>,
+    mut call: impl FnMut(&str, Value) -> Result<Value, String>,
+) -> Result<(), String> {
+    let (video, seconds, name) = execution_profile(job)?;
+    let operation = if video {
+        crate::contribution_contract::Operation::TextToVideo
+    } else {
+        crate::contribution_contract::Operation::TextToImage
+    };
+    if !cfg.contribution.operations.contains(&operation) {
+        return Err("Claimed media workload is not selected by this contributor".into());
     }
-    let home = config::config_dir();
-    media_runtime::run_profile(
-        &home,
-        cfg.contribution_percent,
-        cfg.contribution.comfyui_url.as_deref(),
+    run(
         "generate",
-        true,
+        video,
         &[
             "--seconds".into(),
             seconds.to_string(),
@@ -101,11 +157,6 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
             job["seed"].as_u64().unwrap_or(42).to_string(),
         ],
     )?;
-    let name = if frames == base_frames {
-        "verified-video.json".into()
-    } else {
-        format!("verified-video-{frames}f.json")
-    };
     let result: Value = serde_json::from_slice(
         &fs::read(home.join("media").join(name)).map_err(|e| e.to_string())?,
     )
@@ -113,17 +164,14 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
     let lease = json!({"job_id":job["job_id"],"lease_token":job["lease_token"]});
     let mut reserve = lease.clone();
     reserve["metadata"] = json!({"sha256":result["sha256"],"byte_size":result["bytes"]});
-    let ticket = request(server, id, &cfg.device_id, "reserve", reserve)?;
+    let ticket = call("reserve", reserve)?;
     let ticket_file = home
         .join("media")
         .join(format!("upload-{}.json", uuid::Uuid::new_v4()));
     private_json(&ticket_file, &ticket)?;
-    let upload = media_runtime::run_profile(
-        &home,
-        cfg.contribution_percent,
-        None,
+    let upload = run(
         "upload",
-        true,
+        video,
         &[
             "--file".into(),
             result["artifact"]
@@ -143,10 +191,10 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
     let pending = home.join("media/pending-completion.json");
     private_json(&pending, &complete)?;
     for attempt in 0..4 {
-        match request(server, id, &cfg.device_id, "complete", complete.clone()) {
+        match call("complete", complete.clone()) {
             Ok(_) => {
                 let _ = fs::remove_file(&pending);
-                println!("Video job completed and credits settled");
+                println!("Media job completed and credits settled");
                 return Ok(());
             }
             Err(e) => {
@@ -181,7 +229,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     lock.try_lock()
         .map_err(|_| "A media worker is already running")?;
-    println!("Video contributor listening for queued jobs");
+    println!("Media contributor listening for queued jobs");
     loop {
         let cfg = config::load_config()
             .map_err(|e| e.to_string())?
@@ -191,23 +239,54 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         {
             return Ok(());
         }
-        if !cfg
-            .contribution
-            .operations
-            .contains(&crate::contribution_contract::Operation::TextToVideo)
-        {
-            return Err("Enable video with opengpu install --workloads llm,video".into());
+        let mut profiles = Vec::new();
+        for video in [false, true] {
+            let operation = if video {
+                crate::contribution_contract::Operation::TextToVideo
+            } else {
+                crate::contribution_contract::Operation::TextToImage
+            };
+            if !cfg.contribution.operations.contains(&operation) {
+                continue;
+            }
+            if !media_runtime::memory::MediaBudget::detect(cfg.contribution_percent)
+                .allows(operation)
+            {
+                continue;
+            }
+            let verified = if video {
+                media_runtime::video_verification(
+                    &home,
+                    cfg.contribution.comfyui_url.as_deref(),
+                    cfg.contribution_percent,
+                )
+            } else {
+                media_runtime::verification(
+                    &home,
+                    cfg.contribution.comfyui_url.as_deref(),
+                    cfg.contribution_percent,
+                )
+            };
+            if verified.is_some_and(|value| value["ready"] == true) {
+                if video {
+                    profiles.extend(bundled_video_profiles()?);
+                } else {
+                    let profile: Value =
+                        serde_json::from_str(media_runtime::PROFILE).map_err(|e| e.to_string())?;
+                    profiles.push(
+                        profile["id"]
+                            .as_str()
+                            .ok_or("Missing image profile")?
+                            .to_string(),
+                    );
+                }
+            }
         }
-        media_runtime::memory::MediaBudget::detect(cfg.contribution_percent)
-            .require_operation(crate::contribution_contract::Operation::TextToVideo)?;
-        if media_runtime::video_verification(
-            &home,
-            cfg.contribution.comfyui_url.as_deref(),
-            cfg.contribution_percent,
-        )
-        .is_none_or(|v| v["ready"] != true)
-        {
-            return Err("Run opengpu media --video verify before serving video jobs".into());
+        if profiles.is_empty() {
+            return Err(
+                "Select image/video workloads and verify at least one profile before serving media"
+                    .into(),
+            );
         }
         let pending = home.join("media/pending-completion.json");
         if pending.exists() {
@@ -222,14 +301,14 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             &id,
             &cfg.device_id,
             "claim",
-            json!({"profiles": bundled_video_profiles()?}),
+            json!({"profiles": profiles}),
         ) {
             Ok(value) => value,
             Err(error) => {
                 if once {
                     return Err(error);
                 }
-                eprintln!("Video queue: {error}; retrying in 30 seconds");
+                eprintln!("Media queue: {error}; retrying in 30 seconds");
                 thread::sleep(Duration::from_secs(30));
                 continue;
             }
@@ -252,7 +331,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
                         if let Err(e) =
                             request(&server2, &identity2, &node, "heartbeat", heartbeat.clone())
                         {
-                            eprintln!("Video lease heartbeat: {e}");
+                            eprintln!("Media lease heartbeat: {e}");
                         }
                     }
                 }
@@ -261,7 +340,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             done.store(true, Ordering::Relaxed);
             let _ = thread.join();
             if let Err(e) = result {
-                eprintln!("Video job failed: {e}");
+                eprintln!("Media job failed: {e}");
                 if !pending.exists() {
                     let _ = request(&server, &id, &cfg.device_id, "fail", lease);
                 } else {
@@ -293,4 +372,129 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
             )
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unselected_image_job_never_generates_or_uploads() {
+        let cfg = Config::default();
+        let profile: Value = serde_json::from_str(media_runtime::PROFILE).unwrap();
+        let job = json!({"profile_id":profile["id"],"quote":{"operation":"text_to_image"}});
+        assert!(execute_with(
+            &cfg,
+            &job,
+            std::path::Path::new("."),
+            "https://chat.example",
+            |_, _, _| panic!("unselected workload must not generate"),
+            |_, _| panic!("unselected workload must not upload")
+        )
+        .unwrap_err()
+        .contains("not selected"));
+    }
+
+    #[test]
+    fn image_job_generates_uploads_then_completes_and_never_completes_failed_upload() {
+        for fail_upload in [false, true] {
+            let home = std::env::temp_dir().join(format!("image-job-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(home.join("media")).unwrap();
+            let mut cfg = Config::default();
+            cfg.contribution.operations =
+                vec![crate::contribution_contract::Operation::TextToImage];
+            let profile: Value = serde_json::from_str(media_runtime::PROFILE).unwrap();
+            let job = json!({"job_id":"test-job", "lease_token":"test-lease", "profile_id":profile["id"],
+                "quote":{"operation":"text_to_image"}, "prompt":"a blue bird", "seed":17});
+            let events = std::cell::RefCell::new(Vec::new());
+            let result = execute_with(
+                &cfg,
+                &job,
+                &home,
+                "https://chat.example",
+                |action, video, args| {
+                    assert!(!video);
+                    events.borrow_mut().push(action.to_string());
+                    if action == "generate" {
+                        assert!(args.windows(2).any(|v| v == ["--prompt", "a blue bird"]));
+                        private_json(
+                            &home.join("media/verified.json"),
+                            &json!({
+                            "artifact":home.join("image.png"),"sha256":"digest","bytes":123,"duration_ms":456}),
+                        )?;
+                    } else {
+                        assert_eq!(action, "upload");
+                        let ticket = std::path::Path::new(
+                            &args[args.iter().position(|v| v == "--ticket").unwrap() + 1],
+                        );
+                        assert!(ticket.exists());
+                        if fail_upload {
+                            return Err("Upload failed".into());
+                        }
+                    }
+                    Ok(())
+                },
+                |action, body| {
+                    events.borrow_mut().push(action.to_string());
+                    assert_eq!(body["job_id"], "test-job");
+                    assert_eq!(body["lease_token"], "test-lease");
+                    if action == "reserve" {
+                        assert_eq!(body["metadata"]["byte_size"], 123);
+                        Ok(json!({"upload_ticket":{"artifact_id":"test-artifact"}}))
+                    } else {
+                        assert_eq!(action, "complete");
+                        assert_eq!(body["generation_ms"], 456);
+                        Ok(json!({"status":"completed"}))
+                    }
+                },
+            );
+            assert_eq!(result.is_err(), fail_upload);
+            assert_eq!(
+                *events.borrow(),
+                if fail_upload {
+                    vec!["generate", "reserve", "upload"]
+                } else {
+                    vec!["generate", "reserve", "upload", "complete"]
+                }
+            );
+            assert!(!home.join("media/pending-completion.json").exists());
+            assert!(!fs::read_dir(home.join("media")).unwrap().any(|p| p
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("upload-")));
+            fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[test]
+    fn chooses_image_and_supported_video_profiles_and_rejects_mismatch() {
+        let image: Value = serde_json::from_str(media_runtime::PROFILE).unwrap();
+        let image_job = json!({"profile_id":image["id"],"quote":{"operation":"text_to_image"}});
+        assert_eq!(
+            execution_profile(&image_job).unwrap(),
+            (false, 2, "verified.json".into())
+        );
+        let profiles = bundled_video_profiles().unwrap();
+        assert_eq!(profiles.len(), 3);
+        for seconds in [2, 5, 10_u64] {
+            let id = bundled_video_profiles().unwrap()
+                [[2, 5, 10].iter().position(|s| *s == seconds).unwrap()]
+            .clone();
+            assert!(profiles.contains(&id));
+            let mut job = json!({"profile_id":id,"quote":{"operation":"text_to_video","fps":16,"frames":seconds*16+1}});
+            let result = execution_profile(&job).unwrap();
+            assert!(result.0);
+            assert_eq!(result.1, seconds);
+            job["quote"]["fps"] = json!(24);
+            assert!(execution_profile(&job).is_err());
+        }
+        assert!(execution_profile(
+            &json!({"profile_id":"unknown","quote":{"operation":"text_to_image"}})
+        )
+        .is_err());
+        assert!(execution_profile(
+            &json!({"profile_id":image["id"],"quote":{"operation":"image_edit"}})
+        )
+        .is_err());
+    }
 }

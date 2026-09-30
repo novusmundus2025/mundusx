@@ -164,3 +164,21 @@ lease expiry, MP4 validation, downloads, reward idempotency, and file expiry wit
 retained job/credit records. Hardware testing of every OS, arbitrary external
 ComfyUI installation, editing, and longer-than-10-second workflows remains outside
 this release.
+
+## Image queue integration
+
+The node agent starts the media worker when image or video generation is selected.
+The worker claims only selected, memory-eligible profiles with a current verification
+certificate. Images use chat's `qwen-image-fp8-832x480-v1` profile (832 x 480,
+30 steps); existing 1024-profile certificates must be renewed with
+`opengpu media verify`. The image contribution-memory minimum remains 32 GiB.
+
+Image jobs generate a PNG, reserve a scoped upload, upload the file, and only then
+report completion. Failed uploads never complete a job. Chat's completed-result
+endpoint supplies an expiring preview URL and download URL; contributor-local paths
+and upload credentials are not returned as user download links. Queue admission
+still requires an admitted contributor; editing is not supported.
+
+This integration is source-tested with a simulated image job and failed upload,
+plus media transport tests. A rebuilt contributor and a real queued GPU generation
+are required before claiming a hardware-verified deployment.

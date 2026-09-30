@@ -99,7 +99,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum MediaCommands {
-    /// Serve queued video requests using this contributor identity
+    /// Serve queued image and video requests using this contributor identity
     Serve { #[arg(long, default_value = "https://chat.mundusx.ai")] server: String, #[arg(long)] once: bool },
     /// Upload a generated PNG or MP4 using a scoped ticket from the requesting user's web session
     Upload {
@@ -6404,7 +6404,7 @@ fn run_install(
                 if config.contribution.llm_enabled() {
                     "next step: run `opengpu start`".to_string()
                 } else {
-                    "media selections saved; local generation is available after verification; network video needs LLM admission".to_string()
+                    "media selections saved; local generation is available after verification; network image/video serving needs LLM admission".to_string()
                 },
             ];
             if let Err(error) = contribution::install_media(&mut config, setup_media, yes) {
@@ -6425,7 +6425,7 @@ fn run_install(
             if config.contribution.llm_enabled() {
                 theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
             } else {
-                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Network video serving currently requires LLM node admission.");
+                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Network image/video serving currently requires LLM node admission.");
             }
         }
         Err(error) => {
