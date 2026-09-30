@@ -105,6 +105,7 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
 }
 
 fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Result<(), String> {
+    require_isolated_media(cfg, cfg!(target_os = "linux"))?;
     execute_with(
         cfg,
         job,
@@ -126,6 +127,13 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
         },
         |action, body| request(server, id, &cfg.device_id, action, body),
     )
+}
+
+fn require_isolated_media(cfg: &Config, linux: bool) -> Result<(), String> {
+    if !linux || cfg.contribution.comfyui_url.is_some() {
+        return Err("Remote media jobs require the managed Linux container; native and external ComfyUI are local-only until OS sandboxing is available".into());
+    }
+    Ok(())
 }
 
 fn execute_with(
@@ -236,6 +244,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         let cfg = config::load_config()
             .map_err(|e| e.to_string())?
             .ok_or("Missing contributor configuration")?;
+        require_isolated_media(&cfg, cfg!(target_os = "linux"))?;
         if cfg.paused
             || (std::env::var("OPENGPU_MEDIA_MANAGED").as_deref() == Ok("true") && !cfg.connected)
         {
@@ -379,6 +388,14 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_media_rejects_native_and_external_runtimes() {
+        let mut cfg = Config::default();
+        assert!(require_isolated_media(&cfg, false).is_err());
+        assert!(require_isolated_media(&cfg, true).is_ok());
+        cfg.contribution.comfyui_url = Some("http://127.0.0.1:8188".into());
+        assert!(require_isolated_media(&cfg, true).is_err());
+    }
     #[test]
     fn unselected_image_job_never_generates_or_uploads() {
         let cfg = Config::default();

@@ -24,6 +24,17 @@ VIDEO_PROFILE = json.loads(Path(__file__).with_name('wan-video-v1.json').read_te
 
 
 class ContributionMemoryTests(unittest.TestCase):
+    def test_native_environment_excludes_credentials_and_python_hooks(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(media.os.environ, {
+            'AWS_SECRET_ACCESS_KEY':'secret', 'HF_TOKEN':'secret', 'OPENAI_API_KEY':'secret',
+            'PYTHONPATH':'/malicious', 'HTTP_PROXY':'http://user:secret@proxy',
+            'SSH_AUTH_SOCK':'/private/socket', 'HOME':'/private/home'}):
+            environment = media.native_environment(Path(directory))
+            self.assertNotIn('secret', json.dumps(environment))
+            self.assertNotIn('/private', json.dumps(environment))
+            self.assertNotIn('PYTHONPATH', environment)
+            self.assertEqual(environment['HOME'], str(Path(directory)/'runtime-home'))
+
     def test_floor_uses_exact_capped_bytes_and_preserves_profile_fit(self):
         gib = 1024**3
         self.assertEqual(media.MINIMUM_MEDIA_BUDGET, 24*gib)

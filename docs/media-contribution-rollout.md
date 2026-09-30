@@ -218,3 +218,30 @@ Neither Windows GPU nor Apple Silicon generation has been validated in this
 change; these paths are provisional until real generation verification succeeds.
 Official references: https://docs.comfy.org/installation/manual_install and
 https://pytorch.org/get-started/previous-versions/ .
+# Security boundary update — 2026-10-01
+
+Remote media jobs now require the managed Linux container. Native Windows/macOS
+and externally managed ComfyUI remain available for local setup and verification,
+but must not claim network jobs until an OS sandbox has been implemented and tested.
+This supersedes earlier native network-contribution readiness statements below.
+
+Uploads require a direct, generated UUID-named artifact in the owned media/artifacts
+directory. Tickets must be in the owned media directory. Symlinks, hard links,
+reparse points, directory escapes and changed file identities are rejected before
+upload. Managed-image cleanup is restricted to media/outputs/opengpu. These checks
+are defense in depth, not protection from a malicious process running as the owner
+and concurrently replacing parent directories.
+
+Native local ComfyUI receives an allowlisted environment and an application-owned
+home/cache instead of inherited cloud tokens, SSH agent sockets, proxies or Python
+hooks. This is not filesystem isolation. Managed containers drop Linux capabilities
+and prohibit privilege escalation. Network coding runners require their configured,
+digest-pinned sandbox and no longer advertise or fall back to trusted host execution.
+Coding sandbox validation has disabled networking, existing resource limits, and
+only the assigned workspace mounted; secrets deliberately committed to that assigned
+repository are still within its readable scope and must not be provisioned there.
+
+Validation: Python media regression tests, Rust media-worker and harness tests.
+Real GPU/OS sandbox validation and rebuilt releases remain rollout requirements.
+The related control-plane patch replaces exception text in public HTTP and stream
+errors with fixed messages and tests credential/path-containing failures.
