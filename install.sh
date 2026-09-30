@@ -16,7 +16,7 @@ runtime_only=0
 without_vllm=0
 install_only=1
 cap_percent="${OPENGPU_CAP_PERCENT:-30}"
-max_jobs="${OPENGPU_MAX_JOBS:-2}"
+max_jobs="${OPENGPU_MAX_JOBS:-}"
 local_assets=""
 configure_service_only=0
 
@@ -147,7 +147,7 @@ Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only]
   --auto-start   Unattended mode: configure safe defaults and start the node.
   --install-only Install binaries/runtime only (default; retained for scripts).
   --cap-percent  Contribution cap used with --auto-start (default: 30).
-  --max-jobs     Concurrent job limit used with --auto-start (default: 2).
+  --max-jobs     Concurrent job limit used with --auto-start (Mac: RAM-capped; others: 2).
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
   --local-assets Install release binaries and checksums directly from DIR.
   --configure-chat-service Configure per-user Chat startup/reconnect for existing binaries.
@@ -226,9 +226,11 @@ if [ "$cap_percent" -lt 1 ] || [ "$cap_percent" -gt 80 ]; then
   echo "--cap-percent must be a whole number from 1 through 80" >&2
   exit 1
 fi
-case "$max_jobs" in
-  ''|*[!0-9]*|0) echo "--max-jobs must be a positive whole number" >&2; exit 1 ;;
-esac
+if [ -n "$max_jobs" ]; then
+  case "$max_jobs" in
+    *[!0-9]*|0) echo "--max-jobs must be a positive whole number" >&2; exit 1 ;;
+  esac
+fi
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -239,6 +241,31 @@ case "$os" in
   mingw*|msys*|cygwin*) echo "Windows installs must use PowerShell: powershell -ExecutionPolicy Bypass -File .\\install.ps1" >&2; exit 1 ;;
   *) echo "unsupported operating system: $os" >&2; exit 1 ;;
 esac
+
+if [ "$os" = "darwin" ]; then
+  # Use physical unified memory, not currently free memory. Fall back safely
+  # when hardware detection is unavailable. Explicit limits may only lower it.
+  mac_job_limit=1
+  mac_memory_bytes="$(sysctl -n hw.memsize 2>/dev/null || true)"
+  case "$mac_memory_bytes" in
+    ''|*[!0-9]*) echo "Could not detect Mac RAM; limiting contribution to 1 job." >&2 ;;
+    *)
+      if [ "$mac_memory_bytes" -ge 137438953472 ]; then
+        mac_job_limit=4
+      elif [ "$mac_memory_bytes" -ge 34359738368 ]; then
+        mac_job_limit=2
+      fi
+      ;;
+  esac
+  if [ -z "$max_jobs" ]; then
+    max_jobs="$mac_job_limit"
+  elif [ "$max_jobs" -gt "$mac_job_limit" ]; then
+    echo "Mac RAM limits contribution to ${mac_job_limit} job(s); reducing --max-jobs from ${max_jobs}."
+    max_jobs="$mac_job_limit"
+  fi
+else
+  max_jobs="${max_jobs:-2}"
+fi
 
 if [ "$without_vllm" -eq 0 ] \
   && [ "$with_vllm" -eq 0 ] \

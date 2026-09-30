@@ -4,6 +4,15 @@ This page defines the recommended way to distribute `opengpu` with native one-co
 
 ## Guiding Principle
 
+For macOS, `install.sh --auto-start` selects the concurrent job limit from
+physical RAM: below 32 GiB uses 1 job (including 16 GiB Macs), 32 to below
+128 GiB uses 2 jobs, and 128 GiB or more uses 4 jobs. `--max-jobs` and
+`OPENGPU_MAX_JOBS` may lower this limit but cannot exceed it through the
+bootstrapper. If RAM detection fails, the script uses a limit of 1 job.
+The selected limit is passed to both contributor setup and background startup.
+Linux retains its default of 2 jobs. This policy controls concurrency; model
+memory requirements still determine whether a particular workload fits.
+
 - Ship a signed native binary.
 - Keep Rust as the build tool, not a user dependency.
 - Make the first install path one command wherever possible.
