@@ -5,6 +5,9 @@
 //! asked whether that running cluster should be contributed to MundusX instead
 //! of standing up a second runtime and downloading another copy of the weights.
 
+#[path = "../../../packages/cluster-policy.rs"]
+pub mod policy;
+
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::Duration;
@@ -24,7 +27,6 @@ const SKIP_DETECT_ENV: &str = "OPENGPU_SKIP_CLUSTER_DETECT";
 #[serde(rename_all = "kebab-case")]
 pub enum ClusterKind {
     Ollama,
-    LmStudio,
     Vllm,
     LlamaCpp,
     OpenAiCompatible,
@@ -34,7 +36,6 @@ impl ClusterKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
-            Self::LmStudio => "lm-studio",
             Self::Vllm => "vllm",
             Self::LlamaCpp => "llama.cpp",
             Self::OpenAiCompatible => "openai-compatible",
@@ -44,7 +45,6 @@ impl ClusterKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Ollama => "Ollama",
-            Self::LmStudio => "LM Studio",
             Self::Vllm => "vLLM",
             Self::LlamaCpp => "llama.cpp",
             Self::OpenAiCompatible => "OpenAI-compatible server",
@@ -63,7 +63,6 @@ impl ClusterKind {
     fn probe_hint(base_url: &str) -> Self {
         match port_of(base_url) {
             Some(11434) => Self::Ollama,
-            Some(1234) => Self::LmStudio,
             Some(8000) => Self::Vllm,
             _ => Self::OpenAiCompatible,
         }
@@ -334,7 +333,6 @@ pub fn normalize_base_url(raw: &str) -> Option<String> {
 fn default_base_urls() -> Vec<String> {
     vec![
         "http://127.0.0.1:11434".to_string(),
-        "http://127.0.0.1:1234".to_string(),
         "http://127.0.0.1:8000".to_string(),
         "http://127.0.0.1:8080".to_string(),
     ]
@@ -480,7 +478,7 @@ where
     let mut found: Vec<DetectedCluster> = Vec::new();
 
     for base_url in base_urls {
-        if is_managed_endpoint(&base_url) || found.iter().any(|entry| entry.base_url == base_url) {
+        if policy::unsupported_runtime("", &base_url) || is_managed_endpoint(&base_url) || found.iter().any(|entry| entry.base_url == base_url) {
             continue;
         }
 
@@ -496,6 +494,7 @@ where
             let Some(body) = fetch(&format!("{base_url}{path}")) else {
                 continue;
             };
+            if policy::unsupported_listing(&body) { break; }
             let served_context_tokens = fetch(&format!("{base_url}/props"))
                 .as_ref()
                 .and_then(parse_served_context)
@@ -852,6 +851,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn excluded_runtime_is_not_probed_or_offered() {
+        assert!(!default_base_urls().iter().any(|url| url.contains(":1234")));
+        let found = detect_with(vec!["http://127.0.0.1:1234".into()], |_| panic!("excluded endpoint must not be contacted"));
+        assert!(found.is_empty());
+        let found = detect_with(vec!["http://127.0.0.1:9999".into()], |_| Some(serde_json::json!({"data":[{"id":"model", "owned_by":"lmstudio"}]})));
+        assert!(found.is_empty());
+    }
+
+    #[test]
     fn accepts_only_a_genuine_native_capability_probe_tool_call() {
         assert!(native_tool_response_supported(&json!({
             "choices": [{
@@ -1024,8 +1032,8 @@ mod tests {
     fn on_disk_bytes_break_ties_when_no_parameter_count_is_reported() {
         let clusters = vec![
             cluster(
-                ClusterKind::LmStudio,
-                "http://127.0.0.1:1234",
+                ClusterKind::OpenAiCompatible,
+                "http://127.0.0.1:8080",
                 vec![ModelInfo::new("small", None, Some(1_000))],
             ),
             cluster(
@@ -1043,7 +1051,7 @@ mod tests {
 
     #[test]
     fn idle_endpoints_are_ranked_out_but_still_reportable() {
-        let idle = cluster(ClusterKind::LmStudio, "http://127.0.0.1:1234", Vec::new());
+        let idle = cluster(ClusterKind::OpenAiCompatible, "http://127.0.0.1:8080", Vec::new());
         let servable = cluster(
             ClusterKind::Ollama,
             "http://127.0.0.1:11434",
@@ -1338,8 +1346,8 @@ mod tests {
         let plain = json!({"data": [{"id": "m", "object": "model"}]});
 
         assert_eq!(
-            identify_kind(&plain, "http://127.0.0.1:1234"),
-            ClusterKind::LmStudio
+            identify_kind(&plain, "http://127.0.0.1:8080"),
+            ClusterKind::OpenAiCompatible
         );
         assert_eq!(
             identify_kind(&plain, "http://127.0.0.1:4000"),
@@ -1392,9 +1400,9 @@ mod tests {
     #[test]
     fn reports_a_running_endpoint_with_no_loaded_model_as_not_servable() {
         let clusters = detect_with(
-            vec!["http://127.0.0.1:1234".to_string()],
+            vec!["http://127.0.0.1:8080".to_string()],
             fetcher(vec![(
-                "http://127.0.0.1:1234/v1/models",
+                "http://127.0.0.1:8080/v1/models",
                 json!({"data": []}),
             )]),
         );

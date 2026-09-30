@@ -80,7 +80,7 @@ If a Windows host is wiped, loses DPAPI-protected material, or deletes the Mundu
 
 Enterprise support should separate product issues from local environment issues:
 
-- Missing NVIDIA drivers, missing CUDA runtime support, unreachable LM Studio, absent model cache, or low VRAM are host readiness issues until diagnostics show a product defect.
+- Missing NVIDIA drivers, missing CUDA runtime support, absent model cache, or low VRAM are host readiness issues until diagnostics show a product defect.
 - Local preview commands, unsigned fixtures, and developer release sources are not production evidence.
 - Hosted release installs require signed manifest artifacts and checksum verification before a host can be considered enterprise-ready.
 - Human-readable support bundles may include config, health output, and logs, but must not include DPAPI-protected blobs, raw tokens, raw private keys, or copied model artifacts.

@@ -652,13 +652,6 @@ fn cuda_doctor_payload(
         );
     }
 
-    if os == "windows" {
-        notes.push(
-            "LM Studio can be used on Windows without the full CUDA developer toolkit when its local OpenAI-compatible endpoint and loaded model probe successfully"
-                .to_string(),
-        );
-    }
-
     if backend != Backend::Cuda {
         notes.push(format!(
             "selected backend is {}; CUDA diagnostics are informational unless CUDA is selected",
@@ -689,7 +682,6 @@ fn cuda_doctor_payload(
         "cuda_vram_mb": memory_mb,
         "cuda_low_vram_profile": low_vram_profile,
         "runtime_readiness": readiness,
-        "lm_studio_without_cuda_toolkit_supported": os == "windows",
         "notes": notes,
         "name_probe_error": name_query.err(),
         "memory_probe_error": memory_query.err(),
@@ -5324,7 +5316,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
             raw_println!(
                 "{marker} {}",
                 theme::menu_label(
-                    format!("{}. Import local GGUF / LM Studio model", options.len() + 1),
+                    format!("{}. Import local GGUF model", options.len() + 1),
                     is_selected
                 )
             );
@@ -8154,7 +8146,7 @@ mod tests {
             "opengpu",
             "cluster",
             "use",
-            "http://127.0.0.1:1234",
+            "http://127.0.0.1:8080",
             "--model",
             "qwen2.5-7b",
         ])
@@ -8163,7 +8155,7 @@ mod tests {
             Commands::Cluster {
                 command: ClusterCommands::Use { url, model, .. },
             } => {
-                assert_eq!(url, "http://127.0.0.1:1234");
+                assert_eq!(url, "http://127.0.0.1:8080");
                 assert_eq!(model.as_deref(), Some("qwen2.5-7b"));
             }
             other => panic!("unexpected command: {other:?}"),
@@ -8421,8 +8413,8 @@ mod tests {
     fn explicit_cluster_model_wins_over_the_first_listed_model() {
         let mut config = Config::default();
         config.contributed_cluster = Some(ContributedCluster {
-            kind: "lm-studio".to_string(),
-            base_url: "http://127.0.0.1:1234".to_string(),
+            kind: "openai-compatible".to_string(),
+            base_url: "http://127.0.0.1:8080".to_string(),
             capacity_class: "server".to_string(),
             models: vec!["a".to_string(), "b".to_string()],
             model: Some("b".to_string()),
@@ -9644,9 +9636,6 @@ mod tests {
             payload["runtime_readiness"].as_str(),
             Some("cuda-prerequisites-detected")
         );
-        assert!(payload["lm_studio_without_cuda_toolkit_supported"]
-            .as_bool()
-            .unwrap_or(false));
     }
 
     #[test]

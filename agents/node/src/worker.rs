@@ -1170,14 +1170,17 @@ pub fn contributed_cluster() -> Option<crate::storage::ContributedCluster> {
 /// listing. `/health` is accepted as a fallback for runtimes that do not expose
 /// `/v1/models` without auth.
 pub fn cluster_endpoint_healthy(base_url: &str) -> bool {
+    if crate::storage::cluster_policy::unsupported_runtime("", base_url) { return false; }
     let base_url = base_url.trim_end_matches('/');
     for path in ["/v1/models", "/api/tags", "/health"] {
-        let ok = ureq::get(&format!("{base_url}{path}"))
-            .timeout(Duration::from_secs(2))
-            .call()
-            .map(|response| response.status() < 400)
-            .unwrap_or(false);
-        if ok {
+        if let Ok(response) = ureq::get(&format!("{base_url}{path}"))
+            .timeout(Duration::from_secs(2)).call() {
+            if response.status() >= 400 { continue; }
+            if path == "/v1/models" {
+                if let Ok(body) = response.into_json::<serde_json::Value>() {
+                    if crate::storage::cluster_policy::unsupported_listing(&body) { return false; }
+                }
+            }
             return true;
         }
     }
@@ -3074,7 +3077,7 @@ fn contributed_cluster_health(
 ) -> WorkerHealthReport {
     let power_state = probe_power_state();
     let cuda = probe_cuda_diagnostics();
-    let reachable = cluster_endpoint_healthy(&cluster.base_url);
+    let reachable = !crate::storage::cluster_policy::unsupported_runtime(&cluster.kind, &cluster.base_url) && cluster_endpoint_healthy(&cluster.base_url);
     let model_name = cluster
         .model
         .clone()
@@ -3553,6 +3556,9 @@ fn run_contributed_cluster_request(
     request: &WorkerLaunchRequest,
     cluster: &crate::storage::ContributedCluster,
 ) -> Result<WorkerLaunchResponse, String> {
+    if crate::storage::cluster_policy::unsupported_runtime(&cluster.kind, &cluster.base_url) {
+        return Err("LM Studio contribution is no longer supported; run `opengpu install`.".into());
+    }
     if !cluster_endpoint_healthy(&cluster.base_url) {
         return Err(format!(
             "contributed {} cluster is not answering at {}",
@@ -4103,6 +4109,20 @@ fn kill_process_tree(pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn external_health_rejects_identified_unsupported_runtime() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", server.server_addr());
+        let responder = std::thread::spawn(move || {
+            let request = server.recv_timeout(std::time::Duration::from_secs(3)).unwrap().unwrap();
+            assert_eq!(request.url(), "/v1/models");
+            request.respond(tiny_http::Response::from_string(r#"{"data":[{"id":"test", "owned_by":"lmstudio"}]}"#)).unwrap();
+            assert!(server.recv_timeout(std::time::Duration::from_millis(100)).unwrap().is_none());
+        });
+        assert!(!super::cluster_endpoint_healthy(&url));
+        responder.join().unwrap();
+    }
+
     #[test]
     fn mlx_warmup_performs_a_bounded_generation_not_a_liveness_check() {
         for (body, status, succeeds) in [

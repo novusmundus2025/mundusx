@@ -96,7 +96,7 @@ the CLI runs the guided machine setup wizard:
    contributed in the previous step:
    - lighter safe catalog model
    - recommended safe catalog model
-   - local GGUF / LM Studio model file
+   - local GGUF model file
 8. Filters model choices by the selected contribution cap and detected machine profile, then checks model fit before download or activation.
 9. Saves the selected control-plane URL, contribution cap, and active model or contributed cluster.
 10. Prints the next step: `opengpu start`.
@@ -123,7 +123,6 @@ each:
 | Runtime | Port | Listing endpoint |
 | --- | --- | --- |
 | Ollama | `11434` | `/api/tags` |
-| LM Studio | `1234` | `/v1/models` |
 | vLLM | `8000` | `/v1/models` |
 | OpenAI-compatible server | `8080` | `/v1/models` |
 
