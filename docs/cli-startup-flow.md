@@ -4,6 +4,21 @@ This document describes what the CLI does when a user starts using it for the fi
 
 ## First Run
 
+On Apple Silicon, managed MLX startup checks the model endpoint and then sends
+a local, non-streaming one-token generation request for the selected model.
+The agent prints `persistentRuntime: warming MLX model ... (first generation)`
+and waits for an actual generation response before handing the runtime to the
+worker. Completion prints `persistentRuntime: MLX model warm-up complete`.
+This also applies when reusing a local MLX server and after restarting MLX
+following a media memory handoff. No network job or credits are used for this probe.
+
+The startup and warm-up share `OPENGPU_MLX_START_TIMEOUT_SECONDS` (300 seconds
+by default). Failure stops a newly owned MLX server and reports the existing
+batch fallback; an existing server is not stopped. This removes the initial
+generation setup from the first real job, but does not guarantee identical
+latency for later prompts, contexts or models. Managed image/video runtimes
+remain on demand; this change does not keep all workloads resident together.
+
 The CLI owns the user-facing lifecycle. It manages local state and, when the user runs `opengpu start`, launches the installed node agent that connects the machine to the platform.
 
 On first run, the CLI:
