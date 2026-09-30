@@ -1,5 +1,10 @@
 # Media contribution
 
+The installer enables **Images at 32 GiB** and **Videos at 64 GiB** of memory
+after the contribution cap, matching the bundled Qwen Image and Wan 14B profiles.
+The picker, scripted workload options, setup, and readiness checks all enforce
+these model-specific thresholds on macOS, Windows, and Linux.
+
 All platforms apply a 24 GiB minimum **contributed** memory budget to image,
 editing, video, and image-to-video selection. The cap is chosen before workloads;
 32 GiB at 50% is ineligible, while 32 GiB at 75% meets this general threshold.

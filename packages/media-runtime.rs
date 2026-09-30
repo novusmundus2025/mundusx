@@ -56,7 +56,11 @@ pub fn run_profile(
     extra: &[String],
 ) -> Result<(), String> {
     if matches!(action, "setup" | "verify" | "generate") {
-        memory::MediaBudget::detect(cap).require()?;
+        memory::MediaBudget::detect(cap).require_operation(if video {
+            crate::contribution_contract::Operation::TextToVideo
+        } else {
+            crate::contribution_contract::Operation::TextToImage
+        })?;
     }
     let (helper, profile) = prepare(home)?;
     let profile = if video {

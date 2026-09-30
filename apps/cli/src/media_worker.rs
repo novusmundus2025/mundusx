@@ -198,7 +198,8 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         {
             return Err("Enable video with opengpu install --workloads llm,video".into());
         }
-        media_runtime::memory::MediaBudget::detect(cfg.contribution_percent).require()?;
+        media_runtime::memory::MediaBudget::detect(cfg.contribution_percent)
+            .require_operation(crate::contribution_contract::Operation::TextToVideo)?;
         if media_runtime::video_verification(
             &home,
             cfg.contribution.comfyui_url.as_deref(),

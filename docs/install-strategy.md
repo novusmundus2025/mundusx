@@ -10,6 +10,19 @@ This page defines the recommended way to distribute `opengpu` with native one-co
 
 ## Image and video contribution eligibility
 
+Workload selection uses the bundled model requirements on every OS:
+
+| Workload | Minimum memory after the cap |
+| --- | --- |
+| Images (Qwen Image) | 32 GiB |
+| Videos (Wan 14B) | 64 GiB |
+
+For example, 64 GiB at 50% enables Images only; 128 GiB at 50% enables
+both Images and Videos. Below each model's threshold its checkbox is disabled.
+`--workloads`, including `all`, must satisfy every selected model's minimum.
+These thresholds are read from the bundled model profiles, so selection and
+runtime setup cannot drift. Existing saved selections are checked again.
+
 Every installer delegates contributor choices to the shared `opengpu install`
 wizard: `install.sh` (including `scripts/install.sh`), Windows `install.ps1`
 and the clickable Windows setup, and setup after installing the macOS package.
@@ -21,9 +34,10 @@ Eligibility uses detected physical/unified system memory in bytes multiplied by
 the cap percentage, rounded down to bytes; disk space, swap, and uncapped total
 RAM do not satisfy the requirement. Dedicated GPU/model fit is checked separately.
 For example, 32 GiB at 50% contributes 16 GiB and cannot select media; 32 GiB at
-75% contributes exactly 24 GiB and passes the general media threshold.
+75% contributes exactly 24 GiB and passes the general media threshold, but
+still cannot select the bundled image or video model.
 
-Below this threshold, media checkboxes are unavailable while LLM remains selectable.
+Below the applicable model threshold, its checkbox is unavailable while LLM remains selectable.
 Explicit `--workloads` flags (including `all` and editing operations) and saved
 media selections are validated too. Lowering the cap or moving state to a smaller
 machine invalidates media readiness; direct setup/generation and queue serving

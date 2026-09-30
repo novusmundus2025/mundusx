@@ -61,7 +61,7 @@ fn configure_with_budget(config: &mut Config, workloads: Option<&str>, endpoint:
     } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
         selection.operations = crate::workload_picker::prompt(&selection.operations, budget)?;
     }
-    if selection.media_enabled() { budget.require()?; }
+    for operation in &selection.operations { budget.require_operation(*operation)?; }
     if let Some(value) = endpoint {
         selection.comfyui_url = Some(validate_endpoint(value)?);
     }
@@ -141,6 +141,8 @@ pub fn discover(value: &str) -> ComfyDiscovery {
 
 pub fn report(config: &Config, probe: bool) -> Value {
     let budget = crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent);
+    let memory_reason = config.contribution.operations.iter()
+        .find_map(|operation| budget.require_operation(*operation).err());
     let endpoint = config
         .contribution
         .comfyui_url
@@ -152,7 +154,12 @@ pub fn report(config: &Config, probe: bool) -> Value {
         "execution_support": crate::contribution_contract::ExecutionCapabilities::llm_only(config.contribution.llm_enabled()),
         "llm_readiness": "Use opengpu doctor or node health; selection alone does not establish readiness",
         "media_eligibility": budget,
-        "media_status": if !config.contribution.media_enabled() { "disabled" } else if !budget.eligible { "insufficient_contribution_memory" } else { "local_image_and_queued_video" },
+        "image_eligible": budget.allows(Operation::TextToImage),
+        "video_eligible": budget.allows(Operation::TextToVideo),
+        "image_minimum_budget_bytes": budget.minimum_for(Operation::TextToImage),
+        "video_minimum_budget_bytes": budget.minimum_for(Operation::TextToVideo),
+        "media_memory_reason": memory_reason,
+        "media_status": if !config.contribution.media_enabled() { "disabled" } else if memory_reason.is_some() { "insufficient_contribution_memory" } else { "local_image_and_queued_video" },
         "media_reason": "Qwen image local generation and Wan video queue serving are available; image dispatch and editing remain pending",
         "local_image_verification": crate::media_runtime::verification(&crate::config::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent),
         "video_queue_supported": true,
@@ -188,8 +195,8 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
         }
     );
     if config.contribution.media_enabled() {
-        if report["media_eligibility"]["eligible"] != true {
-            println!("Media unavailable: {}", crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent).description());
+        if let Some(reason) = report["media_memory_reason"].as_str() {
+            println!("Media unavailable: {reason}");
         }
         if config.contribution.operations.contains(&Operation::TextToImage) {
             println!("Local image verification: {}", if report["local_image_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media verify)" });
@@ -213,9 +220,8 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
 }
 
 pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<(), String> {
-    if config.contribution.media_enabled() || requested {
-        crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent).require()?;
-    }
+    let budget = crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent);
+    for operation in &config.contribution.operations { budget.require_operation(*operation)?; }
     let profiles: Vec<bool> = [false, true].into_iter().filter(|video| config.contribution.operations.contains(
         if *video { &Operation::TextToVideo } else { &Operation::TextToImage })).collect();
     if profiles.is_empty() {
@@ -299,12 +305,27 @@ mod tests {
                 assert!(configure_with_budget(&mut config, Some(workloads), None, &budget).is_err());
                 assert_eq!(config.contribution, original);
             }
-            configure_with_budget(&mut config, Some(workloads), None, &MediaBudget::new(Some(32 * GIB), 75)).unwrap();
+            configure_with_budget(&mut config, Some(workloads), None, &MediaBudget::new(Some(128 * GIB), 80)).unwrap();
             config.contribution = original.clone();
         }
         configure_with_budget(&mut config, Some("llm"), None, &MediaBudget::new(None, 0)).unwrap();
         config.contribution.operations.push(Operation::TextToVideo);
         assert!(configure_with_budget(&mut config, None, None, &MediaBudget::new(Some(32 * GIB), 50)).is_err());
+    }
+    #[test]
+    fn scripted_selection_checks_each_model_before_saving() {
+        use crate::media_runtime::memory::{MediaBudget, GIB};
+        let mut config = Config::default();
+        let budget = MediaBudget::new(Some(64 * GIB),50);
+        configure_with_budget(&mut config, Some("llm,image"), None, &budget).unwrap();
+        let saved = config.contribution.clone();
+        for value in ["video", "all", "llm,image,video"] {
+            assert!(configure_with_budget(&mut config, Some(value), None, &budget).unwrap_err().contains("64 GiB"));
+            assert_eq!(config.contribution, saved);
+        }
+        let budget = MediaBudget::new(Some(32 * GIB),75);
+        assert!(configure_with_budget(&mut config, Some("image"), None, &budget).unwrap_err().contains("32 GiB"));
+        assert!(configure_with_budget(&mut config, None, None, &budget).is_err());
     }
     #[test]
     fn discovery_reads_only_comfy_metadata() {

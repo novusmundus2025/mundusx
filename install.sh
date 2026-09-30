@@ -154,9 +154,9 @@ Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only]
   --help         Show this help.
 
 Guided setup: run opengpu install after downloading the binaries.
-Image/video workloads require at least 24 GiB of memory after applying your
-contribution cap, on every OS. The CLI checks eligibility before media setup;
-individual models can require more memory.
+Images (Qwen Image) require 32 GiB and videos (Wan 14B) require 64 GiB
+of memory after applying your contribution cap, on every OS. The CLI checks
+each workload before selection and setup.
 EOF
 }
 
@@ -505,7 +505,7 @@ EOF
 }
 
 echo "MundusX installer"
-echo "Image/video workloads need at least 24 GiB after your contribution cap; model fit is checked separately."
+echo "Images require 32 GiB and videos require 64 GiB after applying your contribution cap."
 echo "  target: ${target}"
 echo "  source: ${release_source}"
 echo "  node agent: ${agent_asset_name}"

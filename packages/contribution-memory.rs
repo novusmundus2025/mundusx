@@ -1,4 +1,5 @@
 //! OS-independent media eligibility, measured after applying the user's cap.
+use crate::contribution_contract::Operation;
 use serde::Serialize;
 
 pub const POLICY: &str = include_str!("../workers/media/contribution-policy.json");
@@ -50,6 +51,42 @@ impl MediaBudget {
             Err(self.description())
         }
     }
+
+    pub fn minimum_for(&self, operation: Operation) -> u64 {
+        let profile = match operation {
+            Operation::Llm => return 0,
+            Operation::TextToImage => Some(super::PROFILE),
+            Operation::TextToVideo => Some(super::VIDEO_PROFILE),
+            _ => None,
+        };
+        profile
+            .map(|text| {
+                serde_json::from_str::<serde_json::Value>(text).expect("bundled media profile")
+                    ["minimum_budget_bytes"]
+                    .as_u64()
+                    .expect("profile memory requirement")
+            })
+            .unwrap_or(0)
+            .max(self.minimum_media_budget_bytes)
+    }
+
+    pub fn allows(&self, operation: Operation) -> bool {
+        operation.is_llm()
+            || self
+                .contribution_budget_bytes
+                .is_some_and(|bytes| bytes >= self.minimum_for(operation))
+    }
+
+    pub fn require_operation(&self, operation: Operation) -> Result<(), String> {
+        if self.allows(operation) {
+            return Ok(());
+        }
+        let available = self
+            .contribution_budget_bytes
+            .map(|bytes| format!("{:.2} GiB", bytes as f64 / GIB as f64))
+            .unwrap_or_else(|| "unknown".into());
+        Err(format!("{operation} requires at least {} GiB of contributed memory after applying the cap; current budget: {available} at {}%. Deselect this workload or increase the cap.", self.minimum_for(operation) / GIB, self.cap_percent))
+    }
 }
 
 pub fn physical_memory_bytes() -> Option<u64> {
@@ -95,6 +132,24 @@ pub fn physical_memory_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_and_video_use_their_bundled_model_minima() {
+        for (total, cap, image, video) in [
+            (32, 75, false, false),
+            (64, 49, false, false),
+            (64, 50, true, false),
+            (128, 49, true, false),
+            (128, 50, true, true),
+        ] {
+            let budget = MediaBudget::new(Some(total * GIB), cap);
+            assert_eq!(budget.allows(Operation::TextToImage), image);
+            assert_eq!(budget.allows(Operation::TextToVideo), video);
+            assert!(budget.allows(Operation::Llm));
+        }
+        assert!(!MediaBudget::new(Some(64 * GIB - 1), 50).allows(Operation::TextToImage));
+        assert!(!MediaBudget::new(Some(128 * GIB - 1), 50).allows(Operation::TextToVideo));
+        assert!(!MediaBudget::new(None, 80).allows(Operation::TextToVideo));
+    }
     #[test]
     fn eligibility_uses_capped_memory_without_rounding_up() {
         for (total, cap, eligible) in [

@@ -39,15 +39,15 @@ const OPTIONS: [(Operation, &str, bool); 5] = [
 struct Picker {
     selected: [bool; 5],
     cursor: usize,
-    media_eligible: bool,
+    budget: MediaBudget,
 }
 
 impl Picker {
-    fn new(current: &[Operation], media_eligible: bool) -> Self {
+    fn new(current: &[Operation], budget: MediaBudget) -> Self {
         Self {
             selected: OPTIONS.map(|(operation, _, _)| current.contains(&operation)),
             cursor: 0,
-            media_eligible,
+            budget,
         }
     }
 
@@ -59,7 +59,7 @@ impl Picker {
     }
 
     fn available(&self, index: usize) -> bool {
-        OPTIONS[index].2 && (OPTIONS[index].0.is_llm() || self.media_eligible)
+        OPTIONS[index].2 && self.budget.allows(OPTIONS[index].0)
     }
 
     fn select_all(&mut self) {
@@ -70,15 +70,11 @@ impl Picker {
         }
     }
 
-    fn result(&self) -> Result<Vec<Operation>, &'static str> {
-        if !self.media_eligible
-            && self
-                .selected
-                .iter()
-                .zip(OPTIONS)
-                .any(|(selected, (operation, _, _))| *selected && !operation.is_llm())
-        {
-            return Err("Media needs at least 24 GiB after the cap. Deselect media, or cancel and increase the cap.");
+    fn result(&self) -> Result<Vec<Operation>, String> {
+        for (selected, (operation, _, _)) in self.selected.iter().zip(OPTIONS) {
+            if *selected {
+                self.budget.require_operation(operation)?;
+            }
         }
         if !self
             .selected
@@ -86,7 +82,7 @@ impl Picker {
             .zip(OPTIONS)
             .any(|(selected, (_, _, available))| *selected && available)
         {
-            return Err("Select at least one available workload.");
+            return Err("Select at least one available workload.".into());
         }
         Ok(OPTIONS
             .iter()
@@ -106,8 +102,8 @@ impl Drop for RawMode {
 pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operation>, String> {
     enable_raw_mode().map_err(|e| format!("Cannot open workload selector: {e}. Use --workloads llm,image,video for scripted setup."))?;
     let _raw = RawMode;
-    let mut picker = Picker::new(current, budget.eligible);
-    let mut message = "";
+    let mut picker = Picker::new(current, budget.clone());
+    let mut message = String::new();
     loop {
         let mut out = io::stdout();
         execute!(out, MoveTo(0, 0), Clear(ClearType::All)).map_err(|e| e.to_string())?;
@@ -166,15 +162,53 @@ pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operati
 mod tests {
     use super::*;
     #[test]
+    fn select_all_only_enables_models_that_fit_the_capped_budget() {
+        let mut picker = Picker::new(
+            &[Operation::Llm],
+            MediaBudget::new(Some(64 * 1024 * 1024 * 1024), 50),
+        );
+        picker.cursor = 2;
+        picker.toggle();
+        picker.select_all();
+        assert_eq!(
+            picker.result().unwrap(),
+            vec![Operation::Llm, Operation::TextToImage]
+        );
+        let saved = Picker::new(
+            &[Operation::Llm, Operation::TextToVideo],
+            picker.budget.clone(),
+        );
+        assert!(saved.result().unwrap_err().contains("64 GiB"));
+        let mut big = Picker::new(
+            &[Operation::Llm],
+            MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 50),
+        );
+        big.select_all();
+        assert_eq!(
+            big.result().unwrap(),
+            vec![
+                Operation::Llm,
+                Operation::TextToImage,
+                Operation::TextToVideo
+            ]
+        );
+    }
+    #[test]
     fn small_budget_disables_media_for_toggle_and_select_all() {
-        let mut picker = Picker::new(&[Operation::Llm], false);
+        let mut picker = Picker::new(
+            &[Operation::Llm],
+            MediaBudget::new(Some(32 * 1024 * 1024 * 1024), 50),
+        );
         for index in 1..OPTIONS.len() {
             picker.cursor = index;
             picker.toggle();
         }
         picker.select_all();
         assert_eq!(picker.result().unwrap(), vec![Operation::Llm]);
-        let mut saved = Picker::new(&[Operation::Llm, Operation::TextToImage], false);
+        let mut saved = Picker::new(
+            &[Operation::Llm, Operation::TextToImage],
+            MediaBudget::new(Some(32 * 1024 * 1024 * 1024), 50),
+        );
         assert!(saved.result().is_err());
         saved.cursor = 1;
         saved.toggle();
@@ -184,7 +218,7 @@ mod tests {
     fn preserves_existing_selections_until_changed() {
         let p = Picker::new(
             &[Operation::Llm, Operation::TextToVideo, Operation::ImageEdit],
-            true,
+            MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80),
         );
         assert_eq!(
             p.result().unwrap(),
@@ -193,7 +227,10 @@ mod tests {
     }
     #[test]
     fn cannot_enable_unimplemented_operations() {
-        let mut p = Picker::new(&[Operation::Llm], true);
+        let mut p = Picker::new(
+            &[Operation::Llm],
+            MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80),
+        );
         p.cursor = 3;
         p.toggle();
         p.cursor = 4;
@@ -202,7 +239,10 @@ mod tests {
     }
     #[test]
     fn allows_media_only_but_rejects_empty_selection() {
-        let mut p = Picker::new(&[Operation::Llm], true);
+        let mut p = Picker::new(
+            &[Operation::Llm],
+            MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80),
+        );
         p.toggle();
         assert!(p.result().is_err());
         p.cursor = 1;
