@@ -31,6 +31,17 @@ pub fn unsupported_listing(body: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Accept protocol model listings, not arbitrary JSON from another service.
+pub fn valid_model_listing(body: &serde_json::Value, native_ollama: bool) -> bool {
+    if body.get("error").is_some() { return false; }
+    let field = if native_ollama { "models" } else { "data" };
+    let Some(entries) = body.get(field).and_then(serde_json::Value::as_array) else { return false; };
+    entries.iter().all(|entry| {
+        let name = if native_ollama { entry.get("name").or_else(|| entry.get("model")) } else { entry.get("id") };
+        name.and_then(serde_json::Value::as_str).is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -63,7 +63,6 @@ impl ClusterKind {
     fn probe_hint(base_url: &str) -> Self {
         match port_of(base_url) {
             Some(11434) => Self::Ollama,
-            Some(8000) => Self::Vllm,
             _ => Self::OpenAiCompatible,
         }
     }
@@ -495,6 +494,7 @@ where
                 continue;
             };
             if policy::unsupported_listing(&body) { break; }
+            if !policy::valid_model_listing(&body, path == "/api/tags") { continue; }
             let served_context_tokens = fetch(&format!("{base_url}/props"))
                 .as_ref()
                 .and_then(parse_served_context)
@@ -849,6 +849,25 @@ pub fn preferred_cluster(clusters: &[DetectedCluster]) -> Option<&DetectedCluste
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn ignores_comfyui_and_unrelated_json_on_llm_ports() {
+        for body in [
+            json!({"system":{"os":"posix"},"devices":[]}),
+            json!({"status":"ok"}), json!({"error":"not found"}),
+            json!({"models":["checkpoint.safetensors"]}),
+            json!({"data":[{"filename":"image.png"}]}),
+        ] {
+            assert!(detect_with(vec!["http://127.0.0.1:8000".into()], |_| Some(body.clone())).is_empty());
+        }
+        let body = json!({"data":[{"id":"model"}]});
+        assert_eq!(identify_kind(&body, "http://127.0.0.1:8000"), ClusterKind::OpenAiCompatible);
+        let clusters = detect_with(vec!["http://127.0.0.1:8000".into()], |url| {
+            if url.ends_with("/v1/models") { Some(body.clone()) } else { None }
+        });
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].kind, ClusterKind::OpenAiCompatible);
+    }
 
     #[test]
     fn excluded_runtime_is_not_probed_or_offered() {

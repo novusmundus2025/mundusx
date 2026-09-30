@@ -1167,21 +1167,19 @@ pub fn contributed_cluster() -> Option<crate::storage::ContributedCluster> {
 }
 
 /// A contributed cluster is healthy when its endpoint still answers a model
-/// listing. `/health` is accepted as a fallback for runtimes that do not expose
-/// `/v1/models` without auth.
+/// listing. A generic `/health` response cannot establish LLM compatibility.
 pub fn cluster_endpoint_healthy(base_url: &str) -> bool {
-    if crate::storage::cluster_policy::unsupported_runtime("", base_url) { return false; }
+    use crate::storage::cluster_policy;
+    if cluster_policy::unsupported_runtime("", base_url) { return false; }
     let base_url = base_url.trim_end_matches('/');
-    for path in ["/v1/models", "/api/tags", "/health"] {
+    for path in ["/v1/models", "/api/tags"] {
         if let Ok(response) = ureq::get(&format!("{base_url}{path}"))
             .timeout(Duration::from_secs(2)).call() {
             if response.status() >= 400 { continue; }
-            if path == "/v1/models" {
-                if let Ok(body) = response.into_json::<serde_json::Value>() {
-                    if crate::storage::cluster_policy::unsupported_listing(&body) { return false; }
-                }
+            if let Ok(body) = response.into_json::<serde_json::Value>() {
+                if cluster_policy::unsupported_listing(&body) { return false; }
+                if cluster_policy::valid_model_listing(&body, path == "/api/tags") { return true; }
             }
-            return true;
         }
     }
     false
@@ -4109,6 +4107,23 @@ fn kill_process_tree(pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn external_health_rejects_generic_services_and_malformed_listings() {
+        for body in [r#"{"status":"ok"}"#, r#"{"system":{},"devices":[]}"#, r#"{"data":[{"filename":"image.png"}]}"#] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", server.server_addr());
+            let responder = std::thread::spawn(move || {
+                for path in ["/v1/models", "/api/tags"] {
+                    let request = server.recv_timeout(std::time::Duration::from_secs(3)).unwrap().unwrap();
+                    assert_eq!(request.url(), path);
+                    request.respond(tiny_http::Response::from_string(body)).unwrap();
+                }
+            });
+            assert!(!super::cluster_endpoint_healthy(&url));
+            responder.join().unwrap();
+        }
+    }
+
     #[test]
     fn external_health_rejects_identified_unsupported_runtime() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
