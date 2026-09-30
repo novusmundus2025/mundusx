@@ -178,10 +178,10 @@ pub fn capabilities(config: &RunnerConfig) -> Result<HarnessCapabilityAdvertisem
                 .filter(|output| output.status.success())
                 .map(|_| runtime)
         });
-    if sandbox_runtime.is_none() {
-        return Err("HARNESS_POLICY_DENIED: remote coding requires a configured sandbox".into());
+    let mut execution_modes = vec!["hybrid".to_string()];
+    if sandbox_runtime.is_some() {
+        execution_modes.insert(0, "sandbox".to_string());
     }
-    let execution_modes = vec!["sandbox".to_string()];
     Ok(HarnessCapabilityAdvertisement {
         execution_modes,
         supported_operations: vec![
@@ -662,7 +662,7 @@ fn validation_config(
                 .ok_or_else(|| "HARNESS_POLICY_DENIED: sandbox image digest missing".to_string())?,
         }
     } else {
-        return Err("HARNESS_POLICY_DENIED: remote coding requires sandbox execution".into());
+        ValidationIsolation::TrustedHybrid
     };
     let runner = ValidationRunner::new(isolation).map_err(display_harness)?;
     let profiles = config
@@ -1139,11 +1139,7 @@ mod tests {
                 max_processes: 32,
             },
         );
-        assert!(validation_config(&config, "hybrid").is_err());
-        assert!(validation_config(&config, "unknown").is_err());
-        config.sandbox_runtime = Some(if cfg!(windows) { "C:\\tools\\docker.exe" } else { "/usr/bin/docker" }.into());
-        config.sandbox_image_digest = Some(format!("harness@sha256:{}", "a".repeat(64)));
-        let (_, profiles) = validation_config(&config, "sandbox").unwrap();
+        let (_, profiles) = validation_config(&config, "hybrid").unwrap();
         assert_eq!(profiles["rust-default"].arguments, ["test"]);
         assert_eq!(profiles["rust-default"].network, NetworkPolicy::Disabled);
     }

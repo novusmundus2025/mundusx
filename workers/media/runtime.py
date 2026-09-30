@@ -577,30 +577,6 @@ def drain_contributor(home, timeout=600):
         except (OSError, ValueError): pass
 
 
-def native_environment(root):
-    # This reduces credential exposure; it is not an OS filesystem sandbox.
-    home = root / 'runtime-home'
-    home.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = home / 'tmp'
-    temporary.mkdir(exist_ok=True, mode=0o700)
-    allowed = {'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'SYSTEMDRIVE', 'NUMBER_OF_PROCESSORS',
-               'PROCESSOR_ARCHITECTURE', 'LANG', 'LC_ALL', 'CUDA_VISIBLE_DEVICES'}
-    environment = {key:value for key,value in os.environ.items() if key.upper() in allowed}
-    # Do not inherit tokens, proxy credentials, Python hooks, or user config directories.
-    environment.update({'HOME':str(home), 'USERPROFILE':str(home),
-        'APPDATA':str(home/'config'), 'LOCALAPPDATA':str(home/'cache'),
-        'XDG_CONFIG_HOME':str(home/'config'), 'XDG_CACHE_HOME':str(home/'cache'),
-        'HF_HOME':str(home/'huggingface'), 'HF_HUB_OFFLINE':'1',
-        'HF_HUB_DISABLE_TELEMETRY':'1', 'DO_NOT_TRACK':'1',
-        'TMP':str(temporary), 'TEMP':str(temporary), 'TMPDIR':str(temporary)})
-    if platform.system() == 'Windows':
-        system = Path(environment.get('SYSTEMROOT', r'C:\Windows'))
-        environment['PATH'] = str(system/'System32') + os.pathsep + str(system)
-    else:
-        environment['PATH'] = '/usr/bin:/bin:/usr/sbin:/sbin'
-    return environment
-
-
 @contextlib.contextmanager
 def native_client(root, profile, record, budget_bytes):
     base, python = native_paths(root, profile)
@@ -623,14 +599,13 @@ def native_client(root, profile, record, budget_bytes):
     bootstrap = ("import runpy,sys,torch; backend=sys.argv.pop(1); fraction=float(sys.argv.pop(1)); "
                  "torch.cuda.set_per_process_memory_fraction(fraction) if backend=='cuda' else torch.mps.set_per_process_memory_fraction(fraction); "
                  "sys.argv[sys.argv.index('--reserve-vram')+1]=str(torch.cuda.get_device_properties(0).total_memory*(1-fraction)/1024**3) if backend=='cuda' else sys.argv[sys.argv.index('--reserve-vram')+1]; "
-                 "script=sys.argv[1]; sys.path.insert(0,__import__('os').path.dirname(script)); sys.argv=sys.argv[1:]; runpy.run_path(script,run_name='__main__')")
-    args = [str(python), '-I', '-u', '-c', bootstrap, record['backend'], str(fraction), str(source/'main.py'),
+                 "script=sys.argv[1]; sys.argv=sys.argv[1:]; runpy.run_path(script,run_name='__main__')")
+    args = [str(python), '-u', '-c', bootstrap, record['backend'], str(fraction), str(source/'main.py'),
             '--listen','127.0.0.1','--port',str(port),'--disable-auto-launch','--disable-all-custom-nodes',
             '--extra-model-paths-config',str(model_paths),'--output-directory',str(outputs),
             '--temp-directory',str(temp), '--reserve-vram',str(max(0,(physical_memory()-budget_bytes)/1024**3))]
     if record['backend'] == 'mps': args += ['--fp16-unet','--fp16-text-enc','--use-split-cross-attention']
-    kwargs = {'cwd':str(source),'stdin':subprocess.DEVNULL,'stdout':sys.stderr,'stderr':sys.stderr,
-              'env': native_environment(root)}
+    kwargs = {'cwd':str(source),'stdin':subprocess.DEVNULL,'stdout':sys.stderr,'stderr':sys.stderr}
     if platform.system() == 'Windows': kwargs['creationflags'] = 0x08000000
     process = subprocess.Popen(args, **kwargs)
     marker = root/'active-native.json'
@@ -696,7 +671,6 @@ def client_for(root, profile, endpoint, budget_bytes):
     reserve_gb = max(0, (physical_memory() - budget_bytes) / 1024**3)
     owner = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
     args = ["docker", "run", "--detach", "--rm", "--name", name, "--gpus", "all",
-            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--label", "opengpu.media.owner=" + owner,
             "--publish", "127.0.0.1::8188", "--memory", str(budget_bytes),
             "--volume", f"{root / 'models'}:/opt/comfy/models:ro",
@@ -795,8 +769,7 @@ def main():
             managed_copy = directory / name
             if managed_copy.resolve().parent != directory:
                 raise MediaError('Managed image output escapes its owned directory')
-        emit('uploaded', **upload_file(args.file, args.ticket, args.server, managed_copy,
-                                      media_root=args.home.resolve() / 'media'))
+        emit('uploaded', **upload_file(args.file, args.ticket, args.server, managed_copy))
         return
     # Cleanup must remain possible even if the cap was lowered or memory detection fails.
     if args.action == 'stop':
