@@ -1,4 +1,5 @@
 use crate::contribution_contract::Operation;
+use crate::media_runtime::memory::MediaBudget;
 use crossterm::{
     cursor::MoveTo,
     event::{read, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -38,24 +39,47 @@ const OPTIONS: [(Operation, &str, bool); 5] = [
 struct Picker {
     selected: [bool; 5],
     cursor: usize,
+    media_eligible: bool,
 }
 
 impl Picker {
-    fn new(current: &[Operation]) -> Self {
+    fn new(current: &[Operation], media_eligible: bool) -> Self {
         Self {
             selected: OPTIONS.map(|(operation, _, _)| current.contains(&operation)),
             cursor: 0,
+            media_eligible,
         }
     }
 
     fn toggle(&mut self) {
         // Previously saved future selections can be removed, but not newly enabled.
-        if OPTIONS[self.cursor].2 || self.selected[self.cursor] {
+        if self.available(self.cursor) || self.selected[self.cursor] {
             self.selected[self.cursor] = !self.selected[self.cursor];
         }
     }
 
+    fn available(&self, index: usize) -> bool {
+        OPTIONS[index].2 && (OPTIONS[index].0.is_llm() || self.media_eligible)
+    }
+
+    fn select_all(&mut self) {
+        for index in 0..OPTIONS.len() {
+            if self.available(index) {
+                self.selected[index] = true;
+            }
+        }
+    }
+
     fn result(&self) -> Result<Vec<Operation>, &'static str> {
+        if !self.media_eligible
+            && self
+                .selected
+                .iter()
+                .zip(OPTIONS)
+                .any(|(selected, (operation, _, _))| *selected && !operation.is_llm())
+        {
+            return Err("Media needs at least 24 GiB after the cap. Deselect media, or cancel and increase the cap.");
+        }
         if !self
             .selected
             .iter()
@@ -79,22 +103,28 @@ impl Drop for RawMode {
     }
 }
 
-pub fn prompt(current: &[Operation]) -> Result<Vec<Operation>, String> {
+pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operation>, String> {
     enable_raw_mode().map_err(|e| format!("Cannot open workload selector: {e}. Use --workloads llm,image,video for scripted setup."))?;
     let _raw = RawMode;
-    let mut picker = Picker::new(current);
+    let mut picker = Picker::new(current, budget.eligible);
     let mut message = "";
     loop {
         let mut out = io::stdout();
         execute!(out, MoveTo(0, 0), Clear(ClearType::All)).map_err(|e| e.to_string())?;
         write!(out, "Choose contribution workloads\r\n\r\n").map_err(|e| e.to_string())?;
-        for (index, (_, label, _)) in OPTIONS.iter().enumerate() {
+        writeln!(out, "{}\r", budget.description()).map_err(|e| e.to_string())?;
+        for (index, (operation, label, _)) in OPTIONS.iter().enumerate() {
             write!(
                 out,
-                "{} [{}] {}\r\n",
+                "{} [{}] {}{}\r\n",
                 if picker.cursor == index { ">" } else { " " },
                 if picker.selected[index] { "x" } else { " " },
-                label
+                label,
+                if !operation.is_llm() && !budget.eligible {
+                    " — unavailable: contributed memory below 24 GiB or unknown"
+                } else {
+                    ""
+                }
             )
             .map_err(|e| e.to_string())?;
         }
@@ -120,11 +150,7 @@ pub fn prompt(current: &[Operation]) -> Result<Vec<Operation>, String> {
                 }
                 KeyCode::Char(' ') => picker.toggle(),
                 KeyCode::Char('a' | 'A') => {
-                    for (index, (_, _, available)) in OPTIONS.iter().enumerate() {
-                        if *available {
-                            picker.selected[index] = true;
-                        }
-                    }
+                    picker.select_all();
                 }
                 KeyCode::Enter => match picker.result() {
                     Ok(result) => return Ok(result),
@@ -140,8 +166,26 @@ pub fn prompt(current: &[Operation]) -> Result<Vec<Operation>, String> {
 mod tests {
     use super::*;
     #[test]
+    fn small_budget_disables_media_for_toggle_and_select_all() {
+        let mut picker = Picker::new(&[Operation::Llm], false);
+        for index in 1..OPTIONS.len() {
+            picker.cursor = index;
+            picker.toggle();
+        }
+        picker.select_all();
+        assert_eq!(picker.result().unwrap(), vec![Operation::Llm]);
+        let mut saved = Picker::new(&[Operation::Llm, Operation::TextToImage], false);
+        assert!(saved.result().is_err());
+        saved.cursor = 1;
+        saved.toggle();
+        assert_eq!(saved.result().unwrap(), vec![Operation::Llm]);
+    }
+    #[test]
     fn preserves_existing_selections_until_changed() {
-        let p = Picker::new(&[Operation::Llm, Operation::TextToVideo, Operation::ImageEdit]);
+        let p = Picker::new(
+            &[Operation::Llm, Operation::TextToVideo, Operation::ImageEdit],
+            true,
+        );
         assert_eq!(
             p.result().unwrap(),
             vec![Operation::Llm, Operation::TextToVideo, Operation::ImageEdit]
@@ -149,7 +193,7 @@ mod tests {
     }
     #[test]
     fn cannot_enable_unimplemented_operations() {
-        let mut p = Picker::new(&[Operation::Llm]);
+        let mut p = Picker::new(&[Operation::Llm], true);
         p.cursor = 3;
         p.toggle();
         p.cursor = 4;
@@ -158,7 +202,7 @@ mod tests {
     }
     #[test]
     fn allows_media_only_but_rejects_empty_selection() {
-        let mut p = Picker::new(&[Operation::Llm]);
+        let mut p = Picker::new(&[Operation::Llm], true);
         p.toggle();
         assert!(p.result().is_err());
         p.cursor = 1;
@@ -173,7 +217,10 @@ mod tests {
     #[test]
     #[ignore = "requires an interactive terminal; exercised by PTY smoke test"]
     fn terminal_smoke() {
-        let result = prompt(&[Operation::Llm]);
+        let result = prompt(
+            &[Operation::Llm],
+            &MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80),
+        );
         println!("PICKER_RESULT={result:?}");
     }
 }

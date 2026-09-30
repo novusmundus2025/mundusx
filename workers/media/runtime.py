@@ -27,6 +27,25 @@ import zlib
 MAX_JSON = 8 * 1024 * 1024
 MAX_IMAGE = 32 * 1024 * 1024
 MAX_VIDEO = 128 * 1024 * 1024
+CONTRIBUTION_POLICY = json.loads(Path(__file__).with_name('contribution-policy.json').read_text())
+MINIMUM_MEDIA_BUDGET = CONTRIBUTION_POLICY['minimum_media_budget_bytes']
+
+
+def contribution_budget(total_bytes, cap_percent):
+    if not 1 <= cap_percent <= CONTRIBUTION_POLICY['maximum_cap_percent']:
+        raise MediaError('Contribution percentage must be between 1 and 80')
+    if total_bytes <= 0:
+        raise MediaError('Cannot determine machine memory; media eligibility is unknown')
+    return total_bytes * cap_percent // 100
+
+
+def require_media_budget(budget_bytes, profile=None):
+    if budget_bytes < MINIMUM_MEDIA_BUDGET:
+        raise MediaError(f'Image and video workloads require at least {MINIMUM_MEDIA_BUDGET/1024**3:g} GiB '
+                         f'of contributed memory after applying the cap; current budget: {budget_bytes/1024**3:.2f} GiB')
+    if profile and budget_bytes < profile['minimum_budget_bytes']:
+        raise MediaError(f"Selected model profile requires at least {profile['minimum_budget_bytes']/1024**3:g} GiB "
+                         'of contributed memory, above the general media eligibility threshold')
 
 
 def is_video(profile):
@@ -421,10 +440,9 @@ def cached_model(root, file):
 
 
 def install(root, profile, budget_bytes):
+    require_media_budget(budget_bytes, profile)
     if platform.system() != "Linux" or platform.machine().lower() not in ('aarch64', 'arm64'):
         raise MediaError("Automatic media runtime currently targets Linux ARM64 GB10/GX10; connect existing ComfyUI on other platforms")
-    if budget_bytes < profile["minimum_budget_bytes"]:
-        raise MediaError(f"Selected profile requires at least {profile['minimum_budget_bytes']/1024**3:g} GiB contribution budget")
     if not shutil.which("docker") or not shutil.which("nvidia-smi"):
         raise MediaError("Automatic setup requires Docker, NVIDIA GPU drivers, and NVIDIA Container Toolkit")
     run(["docker", "info"], timeout=30, capture=True)
@@ -604,6 +622,12 @@ def main():
         from artifact_upload import upload_file
         emit('uploaded', **upload_file(args.file, args.ticket, args.server))
         return
+    # Cleanup must remain possible even if the cap was lowered or memory detection fails.
+    if args.action == 'stop':
+        with lock(args.home.resolve() / 'media'):
+            stop_owned_container(args.home.resolve() / 'media')
+        emit('stopped')
+        return
     profile = load_json(args.profile)
     base_profile = profile
     profile = preset_profile(base_profile, args.seconds)
@@ -611,10 +635,13 @@ def main():
         args.prompt = ('A red ceramic teapot slowly rotates on a wooden table, soft daylight, steady camera'
                        if is_video(profile) else 'A red ceramic teapot on a wooden table, soft daylight, photorealistic')
     root = args.home.resolve() / 'media'
-    if not 1 <= args.cap_percent <= 100: raise MediaError("Invalid contribution percentage")
-    budget = physical_memory()*args.cap_percent//100
+    budget = contribution_budget(physical_memory(), args.cap_percent)
     plan = {"profile": profile['id'], "license": profile['license'], "license_url": profile['license_url'],
             "model_download_bytes": sum(f['size'] for f in profile['files']), "budget_bytes": budget,
+            "minimum_media_budget_bytes": MINIMUM_MEDIA_BUDGET,
+            "media_eligible": budget >= MINIMUM_MEDIA_BUDGET,
+            "profile_minimum_budget_bytes": profile['minimum_budget_bytes'],
+            "profile_fits_budget": budget >= max(MINIMUM_MEDIA_BUDGET, profile['minimum_budget_bytes']),
             "automatic_platform_supported": platform.system() == 'Linux' and platform.machine().lower() in ('aarch64','arm64'),
             "operation": profile['operation'], "width": profile['width'], "height": profile['height'],
             "frames": profile.get('frames'), "fps": profile.get('fps'), "steps": profile['steps'],
@@ -624,16 +651,18 @@ def main():
     if args.action == 'status':
         record = profile_record(root, profile, 'verified')
         certificate = load_json(record) if record.exists() else None
-        if certificate and (certificate.get('profile_hash') != profile_hash(profile) or
+        if certificate and (budget < max(MINIMUM_MEDIA_BUDGET, profile['minimum_budget_bytes']) or
+                            certificate.get('profile_hash') != profile_hash(profile) or
                             certificate.get('cap_percent') != args.cap_percent or
                             certificate.get('endpoint') != args.endpoint or
                             (root/'active-container.json').exists()):
             certificate['ready'] = False
-            certificate['reason'] = 'Configuration changed or container cleanup is pending; verify again'
-        emit('status', verified=certificate, network_dispatch_enabled=False); return
+            certificate['reason'] = 'Memory budget is insufficient, configuration changed, or cleanup is pending; verify again'
+        emit('status', verified=certificate, media_eligible=plan['media_eligible'],
+             budget_bytes=budget, minimum_media_budget_bytes=MINIMUM_MEDIA_BUDGET, network_dispatch_enabled=False); return
+    require_media_budget(budget, profile)
     with lock(root):
         stop_owned_container(root)
-        if args.action == 'stop': emit('stopped'); return
         if args.action == 'setup':
             emit('plan', **plan)
             if not args.yes: raise MediaError("Review the plan and rerun with --yes to download and install")
@@ -645,7 +674,6 @@ def main():
             else:
                 install(root, base_profile, budget)
             return
-        if budget < profile['minimum_budget_bytes']: raise MediaError("Insufficient contribution budget for this profile")
         config = load_json(args.home/'config.json') if (args.home/'config.json').exists() else {}
         if args.endpoint and config.get('connected') and not config.get('paused'):
             raise MediaError('External ComfyUI can retain GPU memory: pause contribution and let LLM work stop before verification; release external model memory before resuming contribution')

@@ -16,6 +16,8 @@ installs opengpu and opengpu-node-agent to /usr/local/bin and links them into
 the logged-in user's ~/.opengpu/bin directory during postinstall. On Apple
 Silicon, postinstall also bootstraps python3 from python.org when it is missing,
 so MLX setup can run during `opengpu install`.
+The shared `opengpu install` wizard applies the media eligibility rule: at least
+24 GiB of contributed memory after the cap, plus the selected model's memory fit.
 EOF
 }
 

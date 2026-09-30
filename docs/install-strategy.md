@@ -4,6 +4,40 @@ This page defines the recommended way to distribute `opengpu` with native one-co
 
 ## Guiding Principle
 
+- Ship a signed native binary.
+- Keep Rust as the build tool, not a user dependency.
+- Make the first install path one command wherever possible.
+
+## Image and video contribution eligibility
+
+Every installer delegates contributor choices to the shared `opengpu install`
+wizard: `install.sh` (including `scripts/install.sh`), Windows `install.ps1`
+and the clickable Windows setup, and setup after installing the macOS package.
+The wizard asks for the contribution cap before the workload checkboxes.
+
+On macOS, Windows, and Linux, image generation, image editing, video generation,
+and image-to-video require **at least 24 GiB after applying the contribution cap**.
+Eligibility uses detected physical/unified system memory in bytes multiplied by
+the cap percentage, rounded down to bytes; disk space, swap, and uncapped total
+RAM do not satisfy the requirement. Dedicated GPU/model fit is checked separately.
+For example, 32 GiB at 50% contributes 16 GiB and cannot select media; 32 GiB at
+75% contributes exactly 24 GiB and passes the general media threshold.
+
+Below this threshold, media checkboxes are unavailable while LLM remains selectable.
+Explicit `--workloads` flags (including `all` and editing operations) and saved
+media selections are validated too. Lowering the cap or moving state to a smaller
+machine invalidates media readiness; direct setup/generation and queue serving
+cannot bypass the check. Unknown memory fails closed for media, not LLM.
+Inspection and cleanup remain available. A profile may need more than 24 GiB;
+the bundled Qwen and Wan memory requirements are not reduced by this policy.
+This eligibility rule does not enable unsupported runtimes or editing features.
+
+The shared policy is `workers/media/contribution-policy.json`, embedded with the
+media helper. Shipping this change requires rebuilding the CLI used by each
+release channel; uploading the download scripts alone does not update the wizard.
+
+## Mac contributor concurrency
+
 For macOS, `install.sh --auto-start` selects the concurrent job limit from
 physical RAM: below 32 GiB uses 1 job (including 16 GiB Macs), 32 to below
 128 GiB uses 2 jobs, and 128 GiB or more uses 4 jobs. `--max-jobs` and
@@ -12,10 +46,6 @@ bootstrapper. If RAM detection fails, the script uses a limit of 1 job.
 The selected limit is passed to both contributor setup and background startup.
 Linux retains its default of 2 jobs. This policy controls concurrency; model
 memory requirements still determine whether a particular workload fits.
-
-- Ship a signed native binary.
-- Keep Rust as the build tool, not a user dependency.
-- Make the first install path one command wherever possible.
 
 ## Recommended Distribution Layers
 

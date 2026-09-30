@@ -1,5 +1,12 @@
 # Media contribution
 
+All platforms apply a 24 GiB minimum **contributed** memory budget to image,
+editing, video, and image-to-video selection. The cap is chosen before workloads;
+32 GiB at 50% is ineligible, while 32 GiB at 75% meets this general threshold.
+Model-specific minima still apply (and may be higher). Scripted selection,
+direct media setup/generation, readiness certificates and video queue serving
+enforce this rule as well. See `docs/install-strategy.md` for the distribution paths.
+
 ## Video workflow
 
 The web service queues authenticated text-to-video requests at `/video`.

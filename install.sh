@@ -152,6 +152,11 @@ Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only]
   --local-assets Install release binaries and checksums directly from DIR.
   --configure-chat-service Configure per-user Chat startup/reconnect for existing binaries.
   --help         Show this help.
+
+Guided setup: run opengpu install after downloading the binaries.
+Image/video workloads require at least 24 GiB of memory after applying your
+contribution cap, on every OS. The CLI checks eligibility before media setup;
+individual models can require more memory.
 EOF
 }
 
@@ -500,6 +505,7 @@ EOF
 }
 
 echo "MundusX installer"
+echo "Image/video workloads need at least 24 GiB after your contribution cap; model fit is checked separately."
 echo "  target: ${target}"
 echo "  source: ${release_source}"
 echo "  node agent: ${agent_asset_name}"

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import sys
 from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import zlib
@@ -20,6 +21,67 @@ media = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(media)
 PROFILE = json.loads(Path(__file__).with_name('qwen-image-v1.json').read_text())
 VIDEO_PROFILE = json.loads(Path(__file__).with_name('wan-video-v1.json').read_text())
+
+
+class ContributionMemoryTests(unittest.TestCase):
+    def test_floor_uses_exact_capped_bytes_and_preserves_profile_fit(self):
+        gib = 1024**3
+        self.assertEqual(media.MINIMUM_MEDIA_BUDGET, 24*gib)
+        for total, cap, eligible in [(32,50,False),(32,74,False),(32,75,True),(48,50,True),(64,30,False),(64,40,True),(24,80,False)]:
+            budget = media.contribution_budget(total*gib, cap)
+            if eligible:
+                media.require_media_budget(budget)
+            else:
+                with self.assertRaisesRegex(media.MediaError, 'after applying the cap'):
+                    media.require_media_budget(budget)
+        with self.assertRaises(media.MediaError):
+            media.require_media_budget(media.contribution_budget(32*gib-1,75))
+        for cap in [0,81,100]:
+            with self.assertRaises(media.MediaError): media.contribution_budget(128*gib,cap)
+        with self.assertRaisesRegex(media.MediaError, 'model profile'):
+            media.require_media_budget(24*gib, PROFILE)
+
+    def test_all_platforms_and_media_operations_reject_before_setup_or_network(self):
+        for system in ['Darwin', 'Windows', 'Linux']:
+            for operation in ['text_to_image','image_edit','text_to_video','image_to_video']:
+                for action in ['setup','verify','generate']:
+                    with self.subTest(system=system,operation=operation,action=action), tempfile.TemporaryDirectory() as directory:
+                        home = Path(directory)
+                        profile = {**PROFILE, 'operation': operation, 'minimum_budget_bytes': 0}
+                        path = home/'profile.json'; path.write_text(json.dumps(profile))
+                        args = ['runtime.py',action,'--home',directory,'--profile',str(path),'--cap-percent','50','--endpoint','http://127.0.0.1:8188','--yes']
+                        with patch.object(sys,'argv',args), patch.object(media.platform,'system',return_value=system), \
+                             patch.object(media,'physical_memory',return_value=32*1024**3), \
+                             patch.object(media,'Comfy') as comfy, patch.object(media,'install') as install:
+                            with self.assertRaisesRegex(media.MediaError,'24 GiB'): media.main()
+                            comfy.assert_not_called(); install.assert_not_called()
+                        self.assertFalse((home/'media').exists())
+
+    def test_plan_explains_ineligibility_and_stop_still_works(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = ['runtime.py','plan','--home',directory,'--profile',str(Path(__file__).with_name('qwen-image-v1.json')),'--cap-percent','50']
+            output = io.StringIO()
+            with patch.object(sys,'argv',args), patch.object(media,'physical_memory',return_value=32*1024**3), contextlib.redirect_stdout(output):
+                media.main()
+            plan = json.loads(output.getvalue())
+            self.assertFalse(plan['media_eligible'])
+            self.assertEqual(plan['budget_bytes'],16*1024**3)
+            args[1]='stop'
+            with patch.object(sys,'argv',args), patch.object(media,'physical_memory',side_effect=media.MediaError('unavailable')) as probe, \
+                 patch.object(media,'stop_owned_container') as stop, contextlib.redirect_stdout(io.StringIO()):
+                media.main()
+                probe.assert_not_called(); stop.assert_called_once()
+
+    def test_status_invalidates_matching_certificate_below_floor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory)
+            certificate={'ready':True,'profile_hash':media.profile_hash(PROFILE),'cap_percent':50,'endpoint':None}
+            media.atomic_json(home/'media/verified.json',certificate)
+            args=['runtime.py','status','--home',directory,'--profile',str(Path(__file__).with_name('qwen-image-v1.json')),'--cap-percent','50']
+            output=io.StringIO()
+            with patch.object(sys,'argv',args), patch.object(media,'physical_memory',return_value=32*1024**3), contextlib.redirect_stdout(output):
+                media.main()
+            self.assertFalse(json.loads(output.getvalue())['verified']['ready'])
 
 
 def png(width=8, height=8):

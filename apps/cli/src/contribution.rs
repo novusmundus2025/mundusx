@@ -51,14 +51,21 @@ pub fn configure(
     workloads: Option<&str>,
     endpoint: Option<&str>,
 ) -> Result<(), String> {
+    configure_with_budget(config, workloads, endpoint, &crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent))
+}
+
+fn configure_with_budget(config: &mut Config, workloads: Option<&str>, endpoint: Option<&str>, budget: &crate::media_runtime::memory::MediaBudget) -> Result<(), String> {
+    let mut selection = config.contribution.clone();
     if let Some(value) = workloads {
-        config.contribution.operations = parse_operations(value)?;
+        selection.operations = parse_operations(value)?;
     } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        config.contribution.operations = crate::workload_picker::prompt(&config.contribution.operations)?;
+        selection.operations = crate::workload_picker::prompt(&selection.operations, budget)?;
     }
+    if selection.media_enabled() { budget.require()?; }
     if let Some(value) = endpoint {
-        config.contribution.comfyui_url = Some(validate_endpoint(value)?);
+        selection.comfyui_url = Some(validate_endpoint(value)?);
     }
+    config.contribution = selection;
     Ok(())
 }
 
@@ -133,6 +140,7 @@ pub fn discover(value: &str) -> ComfyDiscovery {
 }
 
 pub fn report(config: &Config, probe: bool) -> Value {
+    let budget = crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent);
     let endpoint = config
         .contribution
         .comfyui_url
@@ -143,7 +151,8 @@ pub fn report(config: &Config, probe: bool) -> Value {
         "selected_operations": config.contribution.operations,
         "execution_support": crate::contribution_contract::ExecutionCapabilities::llm_only(config.contribution.llm_enabled()),
         "llm_readiness": "Use opengpu doctor or node health; selection alone does not establish readiness",
-        "media_status": if config.contribution.media_enabled() { "local_image_and_queued_video" } else { "disabled" },
+        "media_eligibility": budget,
+        "media_status": if !config.contribution.media_enabled() { "disabled" } else if !budget.eligible { "insufficient_contribution_memory" } else { "local_image_and_queued_video" },
         "media_reason": "Qwen image local generation and Wan video queue serving are available; image dispatch and editing remain pending",
         "local_image_verification": crate::media_runtime::verification(&crate::config::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent),
         "video_queue_supported": true,
@@ -179,6 +188,9 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
         }
     );
     if config.contribution.media_enabled() {
+        if report["media_eligibility"]["eligible"] != true {
+            println!("Media unavailable: {}", crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent).description());
+        }
         if config.contribution.operations.contains(&Operation::TextToImage) {
             println!("Local image verification: {}", if report["local_image_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media verify)" });
             println!("Image generation is local; network image dispatch is pending.");
@@ -201,6 +213,9 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
 }
 
 pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<(), String> {
+    if config.contribution.media_enabled() || requested {
+        crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent).require()?;
+    }
     let profiles: Vec<bool> = [false, true].into_iter().filter(|video| config.contribution.operations.contains(
         if *video { &Operation::TextToVideo } else { &Operation::TextToImage })).collect();
     if profiles.is_empty() {
@@ -275,6 +290,23 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
 mod tests {
     use super::*;
     #[test]
+    fn scripted_media_selections_require_capped_memory_and_are_atomic() {
+        use crate::media_runtime::memory::{MediaBudget, GIB};
+        let mut config = Config::default();
+        let original = config.contribution.clone();
+        for workloads in ["image", "image-edit", "video", "image-to-video", "all", "llm,image"] {
+            for budget in [MediaBudget::new(Some(32 * GIB), 50), MediaBudget::new(None, 80)] {
+                assert!(configure_with_budget(&mut config, Some(workloads), None, &budget).is_err());
+                assert_eq!(config.contribution, original);
+            }
+            configure_with_budget(&mut config, Some(workloads), None, &MediaBudget::new(Some(32 * GIB), 75)).unwrap();
+            config.contribution = original.clone();
+        }
+        configure_with_budget(&mut config, Some("llm"), None, &MediaBudget::new(None, 0)).unwrap();
+        config.contribution.operations.push(Operation::TextToVideo);
+        assert!(configure_with_budget(&mut config, None, None, &MediaBudget::new(Some(32 * GIB), 50)).is_err());
+    }
+    #[test]
     fn discovery_reads_only_comfy_metadata() {
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -344,21 +376,22 @@ mod tests {
             1
         );
         let mut config = Config::default();
-        configure(&mut config, Some("all"), None).unwrap();
+        configure_with_budget(&mut config, Some("all"), None, &crate::media_runtime::memory::MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80)).unwrap();
         let value = report(&config, false);
         assert_eq!(
             value["execution_support"]["operations"],
             serde_json::json!(["llm"])
         );
-        assert_eq!(value["media_status"], "local_image_and_queued_video");
+        assert_eq!(value["media_status"], "insufficient_contribution_memory");
     }
     #[test]
     fn selections_survive_config_roundtrip() {
         let mut config = Config::default();
-        configure(
+        configure_with_budget(
             &mut config,
             Some("image,image-edit"),
             Some("http://127.0.0.1:8188"),
+            &crate::media_runtime::memory::MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80),
         )
         .unwrap();
         let restored: Config =

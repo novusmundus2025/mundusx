@@ -72,6 +72,8 @@ Options:
 
 After this bootstrapper installs the binary, a fresh PowerShell window opens
 and runs `opengpu install` automatically unless -SkipContributorSetup is set.
+Guided setup checks image/video eligibility after choosing the contribution cap:
+at least 24 GiB of contributed memory is required. Models may require more.
 "@ | Write-Output
 }
 
@@ -781,6 +783,7 @@ $trayIconExpected = $null
 $runtimeExpected = $null
 
 Write-Output "MundusX Windows installer"
+Write-Output "Image/video workloads need at least 24 GiB after your contribution cap; model fit is checked separately."
 Write-Output "  target: $target"
 Write-Output "  profile: $profile"
 Write-Output "  gpu: $(if ($gpu) { $gpu.Name } else { 'none detected' })"

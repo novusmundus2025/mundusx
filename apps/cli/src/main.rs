@@ -6237,13 +6237,12 @@ fn run_install(
         std::process::exit(1);
     }
 
-    if let Err(error) =
-        contribution::configure(&mut config, workloads.as_deref(), comfyui_url.as_deref())
-    {
-        eprintln!("{error}");
-        std::process::exit(2);
-    }
-    let ranked_clusters = if config.contribution.llm_enabled() {
+    // Choose the cap before offering media: eligibility uses the capped budget.
+    let requested_llm = workloads.as_deref()
+        .and_then(|value| contribution::parse_operations(value).ok())
+        .map(|operations| operations.contains(&contribution_contract::Operation::Llm))
+        .unwrap_or(true);
+    let ranked_clusters = if requested_llm {
         cluster::servable_clusters_by_size(&detected_clusters)
     } else {
         Vec::new()
@@ -6251,7 +6250,7 @@ fn run_install(
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let mut contributed_from_menu = false;
 
-    let cluster_uses_automatic_cap = config.contribution.llm_enabled()
+    let cluster_uses_automatic_cap = !interactive && requested_llm
         && (config.contributed_cluster.is_some()
             || (cluster_choice == Some(true) && !ranked_clusters.is_empty()));
     let selected_cap = if let Some(value) = cap_percent {
@@ -6312,7 +6311,14 @@ fn run_install(
         config.contribution_percent = value;
     }
 
-    let contributing_cluster = contributed_from_menu
+    if let Err(error) =
+        contribution::configure(&mut config, workloads.as_deref(), comfyui_url.as_deref())
+    {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+
+    let contributing_cluster = (contributed_from_menu && config.contribution.llm_enabled())
         || (config.contribution.llm_enabled() && maybe_contribute_running_cluster(
             &mut config,
             cluster_choice,
