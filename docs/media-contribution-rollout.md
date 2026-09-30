@@ -182,3 +182,14 @@ still requires an admitted contributor; editing is not supported.
 This integration is source-tested with a simulated image job and failed upload,
 plus media transport tests. A rebuilt contributor and a real queued GPU generation
 are required before claiming a hardware-verified deployment.
+
+### Local image cleanup after upload
+
+A verified hosted-upload receipt (artifact ID, ready status, SHA-256 and size)
+triggers direct filesystem deletion of the local PNG, bypassing Trash/Recycle Bin.
+Queued managed images also delete their matching ComfyUI output under the owned
+`media/outputs/opengpu` directory. Copies are checked against the uploaded digest
+before deletion. Failed uploads or invalid receipts retain local files; cleanup
+errors are reported rather than silently claiming success. Videos retain their
+existing behavior. An external ComfyUI server's original output remains under
+that server's control; only the worker's downloaded copy is removed.

@@ -26,7 +26,7 @@ class UploadTests(unittest.TestCase):
 
     def save(self): self.ticket_file.write_text(json.dumps({'upload_ticket':self.ticket}))
 
-    def test_upload_sends_scoped_token_and_does_not_delete_local_image(self):
+    def test_upload_sends_scoped_token_then_permanently_deletes_local_image(self):
         self.save()
         class Opener:
             def open(inner, request, timeout):
@@ -36,8 +36,56 @@ class UploadTests(unittest.TestCase):
                 return io.BytesIO(json.dumps(self.receipt).encode())
         with patch.object(upload.urllib.request,'build_opener',return_value=Opener()):
             result=upload.upload_file(self.file,self.ticket_file,'https://images.example')
-        self.assertEqual(result['status'],'ready'); self.assertTrue(self.file.exists())
+        self.assertEqual(result['status'],'ready'); self.assertFalse(self.file.exists())
+        self.assertTrue(result['local_image_deleted']); self.assertFalse(result['local_image_preserved'])
         self.assertNotIn('upload_token',result)
+
+    def successful_opener(self, receipt=None, mutate=None):
+        value = self.receipt if receipt is None else receipt
+        class Opener:
+            def open(inner, request, timeout):
+                if mutate: mutate()
+                return io.BytesIO(json.dumps(value).encode())
+        return Opener()
+
+    def test_invalid_receipt_never_deletes_local_image(self):
+        self.save()
+        for changed in [{'status':'pending'}, {'sha256':'0'*64}, {'byte_size':0}, {'artifact_id':'other'}]:
+            with patch.object(upload.urllib.request,'build_opener',return_value=self.successful_opener({**self.receipt,**changed})):
+                with self.assertRaisesRegex(ValueError,'Invalid upload receipt'):
+                    upload.upload_file(self.file,self.ticket_file,'https://images.example')
+            self.assertTrue(self.file.exists())
+
+    def test_managed_original_and_upload_copy_are_both_deleted(self):
+        self.save()
+        original = Path(self.directory.name)/'comfy-output.png'
+        original.write_bytes(self.file.read_bytes())
+        with patch.object(upload.urllib.request,'build_opener',return_value=self.successful_opener()):
+            upload.upload_file(self.file,self.ticket_file,'https://images.example',original)
+        self.assertFalse(original.exists()); self.assertFalse(self.file.exists())
+
+    def test_changed_managed_output_is_preserved_and_no_copy_deleted(self):
+        self.save()
+        original = Path(self.directory.name)/'comfy-output.png'
+        original.write_bytes(b'other-image')
+        with patch.object(upload.urllib.request,'build_opener',return_value=self.successful_opener()):
+            with self.assertRaisesRegex(ValueError,'local copy changed'):
+                upload.upload_file(self.file,self.ticket_file,'https://images.example',original)
+        self.assertTrue(original.exists()); self.assertTrue(self.file.exists())
+
+    def test_cleanup_failure_is_reported_not_silently_ignored(self):
+        self.save()
+        with patch.object(upload.urllib.request,'build_opener',return_value=self.successful_opener()), \
+             patch.object(Path,'unlink',side_effect=PermissionError('denied')):
+            with self.assertRaisesRegex(ValueError,'permanent local cleanup failed'):
+                upload.upload_file(self.file,self.ticket_file,'https://images.example')
+        self.assertTrue(self.file.exists())
+
+    def test_video_retention_is_unchanged(self):
+        self.ticket['content_type']='video/mp4'; self.save()
+        with patch.object(upload.urllib.request,'build_opener',return_value=self.successful_opener()):
+            result=upload.upload_file(self.file,self.ticket_file,'https://images.example')
+        self.assertTrue(self.file.exists()); self.assertFalse(result['local_image_deleted'])
 
     def test_wrong_file_expired_ticket_and_path_injection_never_send(self):
         for changed in [{'sha256':'0'*64}, {'expires_at':'2000-01-01T00:00:00Z'}, {'upload_path':'https://evil.example/upload'}]:

@@ -169,21 +169,23 @@ fn execute_with(
         .join("media")
         .join(format!("upload-{}.json", uuid::Uuid::new_v4()));
     private_json(&ticket_file, &ticket)?;
-    let upload = run(
-        "upload",
-        video,
-        &[
-            "--file".into(),
-            result["artifact"]
-                .as_str()
-                .ok_or("Missing artifact")?
-                .into(),
-            "--ticket".into(),
-            ticket_file.to_string_lossy().into_owned(),
-            "--server".into(),
-            server.into(),
-        ],
-    );
+    let mut upload_args = vec![
+        "--file".into(),
+        result["artifact"]
+            .as_str()
+            .ok_or("Missing artifact")?
+            .into(),
+        "--ticket".into(),
+        ticket_file.to_string_lossy().into_owned(),
+        "--server".into(),
+        server.into(),
+    ];
+    if !video && cfg.contribution.comfyui_url.is_none() {
+        if let Some(name) = result["source_filename"].as_str() {
+            upload_args.extend(["--managed-output".into(), name.into()]);
+        }
+    }
+    let upload = run("upload", video, &upload_args);
     let _ = fs::remove_file(&ticket_file);
     upload?;
     let mut complete = lease;
@@ -419,10 +421,16 @@ mod tests {
                         private_json(
                             &home.join("media/verified.json"),
                             &json!({
-                            "artifact":home.join("image.png"),"sha256":"digest","bytes":123,"duration_ms":456}),
+                            "artifact":home.join("image.png"),"sha256":"digest","bytes":123,"duration_ms":456,
+                            "source_filename":"0123456789abcdef0123456789abcdef_00001_.png"}),
                         )?;
                     } else {
                         assert_eq!(action, "upload");
+                        assert!(args.windows(2).any(|v| v
+                            == [
+                                "--managed-output",
+                                "0123456789abcdef0123456789abcdef_00001_.png"
+                            ]));
                         let ticket = std::path::Path::new(
                             &args[args.iter().position(|v| v == "--ticket").unwrap() + 1],
                         );

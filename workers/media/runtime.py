@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 from fractions import Fraction
 import json
+import re
 import os
 from pathlib import Path
 import platform
@@ -357,7 +358,8 @@ def generate(client, profile, prompt, seed, output, timeout=None):
                         validate_png(data, profile["width"], profile["height"])
                         with output.open("xb") as stream: stream.write(data)
                     return {"artifact": str(output), "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
-                            "duration_ms": round((time.monotonic()-started)*1000), "prompt_id": prompt_id}
+                            "duration_ms": round((time.monotonic()-started)*1000), "prompt_id": prompt_id,
+                            "source_filename": filename}
             emit("progress", prompt_id=prompt_id, elapsed_seconds=round(time.monotonic()-started))
             time.sleep(2)
         raise MediaError("Generation timed out; running external ComfyUI work was not interrupted")
@@ -530,6 +532,8 @@ def client_for(root, profile, endpoint, budget_bytes):
     # Only our new container is stopped. No global stop, external unload or prune.
     name = "opengpu-media-" + uuid.uuid4().hex
     outputs = root / "outputs"; outputs.mkdir(exist_ok=True)
+    # Own the output directory on the host so container-created files can be unlinked.
+    (outputs / "opengpu").mkdir(exist_ok=True)
     reserve_gb = max(0, (physical_memory() - budget_bytes) / 1024**3)
     owner = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
     args = ["docker", "run", "--detach", "--rm", "--name", name, "--gpus", "all",
@@ -615,12 +619,22 @@ def main():
     parser.add_argument('--file', type=Path)
     parser.add_argument('--ticket', type=Path)
     parser.add_argument('--server')
+    parser.add_argument('--managed-output')
     parser.add_argument('--video', action='store_true')
     parser.add_argument('--seconds', type=int, choices=[2, 5, 10], default=2)
     args = parser.parse_args()
     if args.action == 'upload':
         from artifact_upload import upload_file
-        emit('uploaded', **upload_file(args.file, args.ticket, args.server))
+        managed_copy = None
+        if args.managed_output:
+            name = args.managed_output
+            if not re.fullmatch(r'[0-9a-f]{32}[^/\\]*\.png', name):
+                raise MediaError('Invalid managed image output name')
+            directory = args.home.resolve() / 'media' / 'outputs' / 'opengpu'
+            managed_copy = directory / name
+            if managed_copy.resolve().parent != directory:
+                raise MediaError('Managed image output escapes its owned directory')
+        emit('uploaded', **upload_file(args.file, args.ticket, args.server, managed_copy))
         return
     # Cleanup must remain possible even if the cap was lowered or memory detection fails.
     if args.action == 'stop':
