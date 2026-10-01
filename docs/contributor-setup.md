@@ -5,10 +5,8 @@ Use this after the [Windows](install-windows.md), [Linux](install-linux.md), or
 hardware, existing servers, and saved configuration; the sequence below describes
 the choices, not an exact transcript for every machine.
 
-Release 0.2.20 and newer first offers managed models, a direct engine (including LM
-Studio), or PAIR endpoint validation. See [Inference connections](inference-connections.md)
-for the updated sequence and script options. These changes are not in the
-older 0.2.19 bundle; PAIR contribution remains disabled.
+This guide follows release **0.2.20**. See [Inference connections](inference-connections.md)
+for additional script options and external-engine requirements.
 
 ## 1. Run the wizard
 
@@ -17,17 +15,55 @@ opengpu install
 ```
 
 Windows normally opens this automatically in a fresh PowerShell window.
-Setup creates or reuses the device identity and scans running model servers.
-It shows discovery progress before the configuration choices.
+Check `opengpu --version` first if upgrading; this release reports `0.2.20`.
 
-## 2. Choose the network
+## 2. Choose one inference connection
 
-Choose the public MundusX control plane for normal contribution. Choose a private
-control plane only when your operator has supplied its URL and instructions.
+For a fresh interactive setup, the first choice is:
+
+```text
+Choose one inference connection
+
+> MundusX-managed runtime
+    Download or reuse a standalone model
+  Direct local engine
+    Reuse Ollama, LM Studio, vLLM or llama.cpp
+  NVIDIA PAIR cluster
+    Validate endpoint only; contribution is not enabled yet
+
+Up/Down: move | Space or Enter: select | Esc: cancel
+```
+
+This is a single choice, not a workload checkbox list. Explicit connection flags
+skip this menu; older cluster flags can use the legacy discovery path.
+
+- **Managed:** continue to cap/workload choices, then choose a standalone model.
+- **Direct:** start your engine first, paste its actual endpoint when prompted,
+  and choose the exact model. If only one is available, it is selected automatically.
+  LM Studio must have the model loaded. Setup runs a short inference test before
+  continuing. No model weights are downloaded by MundusX for this connection.
+- **PAIR:** paste the endpoint shown by PAIR and choose a model to test. Setup
+  verifies the route, explains that contribution is unavailable, and exits with
+  code 2. It does not save a new contributor connection or continue to startup.
+
+For example, a direct engine can be selected without the first menu:
+
+```text
+opengpu install --connection direct --cluster-url http://127.0.0.1:1234
+```
+
+The port is an example. Use the engine's own address; a PAIR proxy is not a direct
+engine endpoint. See the [connection guide](inference-connections.md) for details.
+
+## 3. Configure the network
+
+Normal setup uses the public MundusX control plane. A new device identity is
+created or the saved identity is reused. To configure a private control plane,
+use `--private --control-plane-url URL` with your operator's URL and instructions.
 The public contributor path does not require a GitHub token, browser pairing,
 or pasting an account password. Development-agent Chat pairing is a separate flow.
 
-## 3. Choose the contribution cap
+## 4. Choose the contribution cap
 
 Select the percentage you want to contribute, between 1% and 80%. Saved values
 may be preselected. Cancel before provisioning if you want to stop setup.
@@ -57,7 +93,7 @@ When contributing an existing server, MundusX does not own or enforce that
 server's memory configuration. The setup displays automatic cluster contribution
 and saves a local fallback cap; configure the external server's limits separately.
 
-## 4. Select workloads
+## 5. Select workloads
 
 The checkbox screen offers LLM, Qwen images, and Wan videos. Use arrows or Tab
 to move, Space to toggle, and Enter to continue. Unavailable options remain
@@ -66,19 +102,21 @@ visible but disabled, with the reason shown. Image/video editing is unavailable.
 Start with LLM if you only need a text contributor. Image/video selection also
 requires runtime/model setup and a successful generation verification.
 
-## 5. Select an existing server or a managed model
+## 6. Prepare the chosen runtime and model
 
-An existing supported server can be offered through the contribution menu. If
-selected, its loaded model is used and local LLM provisioning is skipped.
-Concurrency may be requested for that server. Keep it running and avoid changing
-its loaded model while contributing; pause and rerun setup to change configuration.
+For a direct engine, the endpoint/model were selected earlier. Keep that engine
+running. If the selected model becomes unavailable while the agent is running,
+new job claims stop; they resume when the same model is ready again. Another
+listed model is never silently substituted. Use setup or `opengpu cluster use`
+to deliberately change the selection. An in-flight job can still fail if its
+model is unloaded after the readiness check.
 
-Otherwise, choose an offered model suitable for your hardware and budget. Setup
+For managed inference, choose an offered model suitable for your hardware and budget. Setup
 downloads missing files and prepares the managed runtime. Managed concurrency is
 capacity-sized automatically, rather than always showing a manual job-count menu.
 On Mac, the RAM ceilings are 1 below 32 GiB, 2 below 128 GiB, and 4 from 128 GiB.
 
-## 6. Wait for setup and review its summary
+## 7. Wait for setup and review its summary
 
 Downloads display progress where available. Dependency installation, Docker
 pulls/builds, and model loading may show textual logs instead of a single overall
@@ -88,7 +126,7 @@ Do not close the terminal during an active installation.
 The summary distinguishes saved settings from verified readiness. If you selected
 media, follow the [media guide](install-media.md) for setup/verification details.
 
-## 7. Start contribution
+## 8. Start contribution
 
 ```text
 opengpu start --background
@@ -104,7 +142,7 @@ normal; a connected node is not guaranteed immediate work.
 For a foreground troubleshooting session, disconnect the existing session with
 `opengpu exit`, then run `opengpu start --debug`. Do not launch duplicate agents.
 
-## 8. Daily controls and recovery
+## 9. Daily controls, reboot, and upgrading
 
 | Command | Purpose |
 | --- | --- |
@@ -117,11 +155,20 @@ For a foreground troubleshooting session, disconnect the existing session with
 | `opengpu model list` | Inspect local model choices |
 | `opengpu exit` | Disconnect; retain saved identity/configuration/models |
 
-Background startup and startup at sign-in are different. After reboot, check
-status and run `opengpu start --background` if necessary. Rerunning the installer
-downloads the current production assets; exit the existing node first, then
-rerun setup and verify readiness. Do not erase your device identity to upgrade.
+Background startup and startup at sign-in are different. After reboot, a managed
+runtime reloads the saved active model when started; it must warm up again. For
+a direct engine, start that service and load the selected model first, then run
+`opengpu start --background`. Model files and saved choices survive a reboot.
 
-Release note: the published bundle tag is 0.2.19, but its CLI package metadata
-still prints 0.2.16 with `--version`. Do not use that string alone to determine
-whether the current release assets were downloaded.
+To upgrade an existing installation:
+
+```text
+opengpu update
+opengpu --version
+opengpu install
+opengpu start --background
+opengpu status
+```
+
+Check the setup summary and readiness again. Do not erase your identity or models
+to upgrade. A running external API alone does not prove its model is warm.

@@ -73,9 +73,8 @@ opengpu media generate --prompt "A red ceramic teapot on a wooden table"
 opengpu media --video --seconds 2 generate --prompt "A red ceramic teapot slowly rotates"
 ```
 
-The published 0.2.19 CLI supports 2, 5, and 10 seconds. The newer UAT source
-supports every integer from 1 through 10 seconds with the 832×480, 16 FPS profile;
-that source change requires a subsequent binary release. Local generation reports its output
+Release 0.2.20 supports every integer from **1 through 10 seconds** with the
+832×480, 16 FPS profile. Local generation reports its output
 artifact path. It does not automatically create a public user download URL.
 
 ## 5. Start network contribution

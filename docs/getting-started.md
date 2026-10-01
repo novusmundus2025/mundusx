@@ -16,8 +16,13 @@ These guides cover compute contribution through `opengpu`, not the separate
 setup does not require Rust, Cargo, a GitHub token, or an account password.
 
 Downloads come from the [MundusX production release](https://github.com/mundusx/releases/releases/tag/opengpu-prod).
-The guides describe the 0.2.19 release bundle. Its CLI `--version` still reports
-0.2.16 because package metadata was not bumped.
+These guides describe release **0.2.20**. Check your installed CLI with
+`opengpu --version`; it should report `opengpu 0.2.20` for this release.
+
+Choose a managed standalone model or reuse a direct local engine, including
+Ollama, LM Studio, vLLM, or llama.cpp. See [Inference connections](inference-connections.md)
+for endpoint/model selection. NVIDIA PAIR currently supports endpoint validation
+only; it cannot start contribution.
 
 Installation is complete only after setup, startup, and readiness checks succeed.
 A downloaded executable or saved model selection does not prove the node is

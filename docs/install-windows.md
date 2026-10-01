@@ -25,11 +25,24 @@ This explicitly selects compute contribution and disables tray startup at sign-i
 Without `-SetupMode contributor`, the installer offers developer, contributor,
 or both. Without `-SkipTrayAutoStart`, it configures tray auto-start.
 
+**Already using a local engine?** To skip the managed CUDA/Vulkan download, use
+this command instead of the line above (replace the example URL with the actual
+engine endpoint):
+
+```powershell
+$installerPath = Join-Path $env:TEMP "mundusx-install.ps1"; Invoke-WebRequest -Uri "https://github.com/mundusx/releases/releases/download/opengpu-prod/install.ps1" -OutFile $installerPath; powershell -NoProfile -ExecutionPolicy Bypass -File $installerPath -SetupMode contributor -SkipTrayAutoStart -Connection direct -ClusterUrl http://127.0.0.1:1234
+```
+
+Start Ollama, LM Studio, vLLM, or llama.cpp before setup. LM Studio must have an
+LLM loaded and its API server enabled. The normal installer line downloads the
+managed GPU runtime before the CLI wizard, even if you later choose a direct
+engine there; use `-Connection direct` to avoid that download.
+
 Expect these six installer phases, with download progress where available:
 
 1. Downloading OpenGPU CLI.
 2. Verifying the signed release.
-3. Downloading the GPU runtime; CUDA can be a large download.
+3. Downloading the GPU runtime, or skipping it for an external connection.
 4. Downloading the OpenGPU node agent.
 5. Downloading the Windows tray application.
 6. Installing verified components.
@@ -43,9 +56,11 @@ PowerShell window opens with `opengpu install` running. If it does not, run:
 
 ## 3. Complete the setup wizard
 
-Follow the [shared setup choices](contributor-setup.md): public control plane,
-contribution cap, workloads, existing server or managed model, and any runtime
-preparation. Review the setup summary. Wait for model downloads to finish.
+Follow the [shared setup choices](contributor-setup.md): choose one connection
+(managed model, direct engine, or PAIR validation), then complete the contribution
+cap, workloads, and any managed model/runtime preparation. Direct setup verifies
+the exact selected model. PAIR currently validates only and cannot contribute.
+Review the setup summary. Wait for model downloads to finish.
 Public contribution does not ask you to paste a GitHub token or account password.
 
 ## 4. Start and verify
@@ -58,6 +73,8 @@ $opengpu = "$env:USERPROFILE\.opengpu\bin\opengpu.exe"
 & $opengpu status
 & $opengpu doctor
 ```
+
+`& $opengpu --version` should report `opengpu 0.2.20` for this release.
 
 Complete contributor onboarding if prompted. Look for `readyForJobs: yes` and
 check the reported connection/model state. A completed download or saved setup
@@ -75,7 +92,8 @@ is not the same as a connected, ready contributor. Follow any reason shown by
 ```
 
 The `$opengpu` variable lasts only in the current PowerShell window; set it again
-in a new window. After reboot, run `start --background` when you want to contribute.
+in a new window. After reboot, start an external engine and load its selected
+model first if using a direct connection, then run `start --background`.
 For installation errors, inspect `%USERPROFILE%\.opengpu\logs\installer.log`.
 For node diagnostics, run `& $opengpu logs`. Redact secrets before sharing logs.
 
