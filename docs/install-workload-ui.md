@@ -11,8 +11,11 @@ has its own selected row. Cancelling the cap menu stops before provisioning.
 
 For media, setup probes the saved ComfyUI endpoint or localhost:8188. A detected
 endpoint is offered first, but generation still requires model/workflow and
-output verification. Automatic managed setup is offered only on Linux ARM64
-with a detected GB10. Other machines can connect to existing ComfyUI.
+output verification. Managed setup is offered on Linux ARM64 with detected GB10,
+Windows x86_64 with NVIDIA CUDA, and Apple Silicon macOS. Other machines can
+connect to existing ComfyUI. Native profiles must pass real generation
+verification; build success alone does not establish hardware compatibility.
+See [media installation](install-media.md) for prerequisites and commands.
 
 Setup displays each selected profile's plan before installation. Existing
 models are checked by size and SHA-256 and reused. Required free space counts
@@ -27,8 +30,9 @@ to answer on port 8188. Selecting an operation does not start a network worker.
 
 ## Current boundaries
 
-- Images support local generation; network image dispatch is not implemented.
-- Video network serving requires an admitted LLM contributor.
+- Images and video support queued jobs through the verified media worker.
+- Network media serving requires an admitted LLM contributor and the matching
+  control-plane media service; local verification does not establish admission.
 - Existing HTTP model servers can be discovered or specified explicitly;
   Sparkrun recipe provisioning is not implemented.
 - Full GPU installation and generation must be validated separately from UI
