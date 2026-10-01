@@ -11,7 +11,7 @@ run_step() {
     elapsed=0
     while sleep 10; do
       elapsed=$((elapsed + 10))
-      echo "${label}: still running (${elapsed}s elapsed)." >&2
+      echo "${label}: waiting for this step to finish (${elapsed}s elapsed)." >&2
     done
   ) &
   progress_pid=$!

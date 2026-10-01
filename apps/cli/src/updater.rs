@@ -95,7 +95,6 @@ pub fn update_installed_binaries() -> Result<(), String> {
 }
 
 fn resolve_release_assets(target: &str, release_prefix: &str) -> Result<ReleaseAssets, String> {
-    let _progress = crate::operation_progress::OperationProgress::start("Checking available release");
     let cli_name = format!("opengpu-{target}");
     let agent_name = format!("opengpu-node-agent-{target}");
     let connector_name = format!("mundusx-{target}");
@@ -282,7 +281,9 @@ fn stage_release_binary(
 }
 
 fn download(url: &str) -> Result<Vec<u8>, String> {
-    let _progress = crate::operation_progress::OperationProgress::start("Downloading update asset");
+    let asset = url.split('?').next().unwrap_or(url).rsplit('/').next().unwrap_or("asset");
+    let label = if url == RELEASES_API_URL { "Checking release metadata".to_string() } else { format!("Downloading update: {asset}") };
+    let progress = crate::operation_progress::OperationProgress::start(format!("{label}: waiting for response"));
     let mut request = ureq::get(url).set("User-Agent", "opengpu-cli-updater");
     if let Ok(token) = env::var("OPENGPU_GITHUB_TOKEN") {
         if !token.trim().is_empty() {
@@ -293,6 +294,7 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
         .call()
         .map_err(|error| format!("download failed for {url}: {error}"))?;
     let total = response.header("Content-Length").and_then(|value| value.parse::<u64>().ok()).filter(|size| *size > 0);
+    progress.set_stage(format!("{label}: receiving bytes"));
     let mut reader = response.into_reader();
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 65536];
@@ -305,8 +307,8 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
             if let Some(total) = total {
                 let percent = (bytes.len() as u64).saturating_mul(100).checked_div(total).unwrap_or(0).min(100);
                 let filled = (percent / 5) as usize;
-                eprintln!("updateDownload: [{}{}] {} / {} bytes ({}%)", "#".repeat(filled), "-".repeat(20 - filled), bytes.len(), total, percent);
-            } else { eprintln!("updateDownload: {} bytes received", bytes.len()); }
+                progress.set_stage(format!("{label}: [{}{}] {} / {} bytes ({}%)", "#".repeat(filled), "-".repeat(20 - filled), bytes.len(), total, percent));
+            } else { progress.set_stage(format!("{label}: {} bytes received", bytes.len())); }
             last = std::time::Instant::now();
         }
     }

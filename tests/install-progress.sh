@@ -10,7 +10,7 @@ trap 'stop_progress; rm -rf "$tmp"' EXIT
 sleep() { if [ "$1" = 10 ]; then command sleep 0.1; else command sleep "$@"; fi; }
 run_step "Slow fixture" bash -c 'sleep 0.3; printf payload' > "$tmp/out" 2> "$tmp/log"
 [ "$(cat "$tmp/out")" = payload ]
-grep -Fq 'still running' "$tmp/log"
+grep -Fq 'waiting for this step to finish' "$tmp/log"
 grep -Fq 'complete.' "$tmp/log"
 [ -z "$progress_pid" ]
 status=0

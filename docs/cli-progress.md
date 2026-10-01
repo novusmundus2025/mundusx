@@ -28,3 +28,18 @@ Existing subprocess timeouts and cancellation behavior remain in force.
 
 A percentage is only shown when byte totals or shard counts are available. Model
 compilation, warmup and unknown-size network waits show elapsed activity instead.
+
+## Current-stage reporting
+
+Runtime startup has one activity reporter per runtime. Docker layer downloads and
+extraction retain their layer IDs and reported byte counts. vLLM reports model
+file download, checkpoint loading, GPU graph compilation, warmup and endpoint
+health separately when the runtime emits these events. MLX and llama.cpp report
+recognized loading and warmup stages too. Unknown work remains labelled as a wait;
+it is never presented as a measured percentage or confirmed completion.
+
+Background startup stops its initial waiting timer when agent progress arrives.
+The elapsed reminder names the last observed stage and says how long it has been
+since progress changed. It does not prove that new bytes or work are completing.
+Update downloads track the current asset and byte counts. Media helper activity
+tracks its current dependency, file checksum/download or generation step.

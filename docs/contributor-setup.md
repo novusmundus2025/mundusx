@@ -5,7 +5,7 @@ Use this after the [Windows](install-windows.md), [Linux](install-linux.md), or
 hardware, existing servers, and saved configuration; the sequence below describes
 the choices, not an exact transcript for every machine.
 
-This guide follows release **0.2.21**. See [Inference connections](inference-connections.md)
+This guide follows release **0.2.22**. See [Inference connections](inference-connections.md)
 for additional script options and external-engine requirements.
 
 ## 1. Run the wizard
@@ -15,7 +15,7 @@ opengpu install
 ```
 
 Windows normally opens this automatically in a fresh PowerShell window.
-Check `opengpu --version` first if upgrading; this release reports `0.2.21`.
+Check `opengpu --version` first if upgrading; this release reports `0.2.22`.
 
 ## 2. Choose one inference connection
 
@@ -175,6 +175,6 @@ to upgrade. A running external API alone does not prove its model is warm.
 
 ## Startup progress
 
-Release 0.2.21 shows runtime startup and warmup activity, including background mode.
+Release 0.2.22 shows runtime startup and warmup activity, including background mode.
 See [CLI and agent progress](cli-progress.md) for download bars, byte totals, and
 elapsed-time feedback across Windows, Linux, and macOS.

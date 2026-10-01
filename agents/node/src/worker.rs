@@ -1391,10 +1391,11 @@ fn percentage_token(line: &str) -> Option<&str> {
     line.split_whitespace().rev().find_map(|token| {
         let percent_index = token.find('%')?;
         let start = token[..percent_index]
-            .rfind(|ch: char| !ch.is_ascii_digit())
+            .rfind(|ch: char| !ch.is_ascii_digit() && ch != '.')
             .map(|index| index + 1)
             .unwrap_or(0);
-        (start < percent_index).then(|| &token[start..=percent_index])
+        let value = token[start..percent_index].parse::<f64>().ok()?;
+        (value.is_finite() && (0.0..=100.0).contains(&value)).then(|| &token[start..=percent_index])
     })
 }
 
@@ -1408,8 +1409,30 @@ fn shard_fraction(line: &str) -> Option<&str> {
 }
 
 fn vllm_startup_progress(line: &str) -> Option<String> {
-    if line.contains("Pulling from") || line.contains("Pulling fs layer") || line.contains("Download complete") || line.contains("Extracting") {
-        return Some("preparing Docker image layers".to_string());
+    // Only forward Docker's structured layer status, never arbitrary log text.
+    if let Some((layer, detail)) = line.trim().split_once(": ") {
+        if layer.len() == 12 && layer.chars().all(|c| c.is_ascii_hexdigit()) {
+            for status in ["Pulling fs layer", "Waiting", "Downloading", "Verifying Checksum", "Download complete", "Extracting", "Pull complete", "Already exists"] {
+                if detail.starts_with(status) {
+                    return Some(format!("Downloading runtime image: layer {layer}: {detail}"));
+                }
+            }
+        }
+    }
+    if line.contains("Pulling from") {
+        return Some("Downloading runtime image: requesting Docker layers".into());
+    }
+    if line.starts_with("Digest: sha256:") || line.contains("Status: Downloaded newer image") || line.contains("Status: Image is up to date") {
+        return Some("Starting vLLM container: runtime image ready".into());
+    }
+    if line.contains("Starting to load model") {
+        return Some("Loading model: resolving cached weights or downloading missing files".into());
+    }
+    if line.contains("Capturing CUDA graphs") || line.contains("Capturing cudagraphs") {
+        return Some(format!("Warming model: capturing CUDA graphs{}", percentage_token(line).map(|p| format!(" ({p})")).unwrap_or_default()));
+    }
+    if line.contains("torch.compile") || line.contains("Compiling a graph") {
+        return Some("Preparing model: compiling GPU execution graphs".into());
     }
     if line.contains("Loading safetensors checkpoint shards:") {
         let percent = percentage_token(line)?;
@@ -1438,10 +1461,25 @@ fn vllm_startup_progress(line: &str) -> Option<String> {
     None
 }
 
-fn emit_vllm_startup_progress(
+fn local_runtime_progress(line: &str) -> Option<String> {
+    if line.contains("load_tensors:") || line.contains("load_weights") {
+        Some("Loading model weights into memory".into())
+    } else if line.contains("warmup") || line.contains("warming up") {
+        Some("Warming model: running initial inference".into())
+    } else if line.contains("listening on") || line.contains("Uvicorn running") {
+        Some("Server listening: checking endpoint health".into())
+    } else {
+        vllm_startup_progress(line)
+    }
+}
+
+fn emit_runtime_startup_progress(
     log_path: &Path,
     log_offset: &mut u64,
     last_progress: &mut Option<String>,
+    reporter: &crate::operation_progress::OperationProgress,
+    runtime: &str,
+    parse: fn(&str) -> Option<String>,
 ) {
     let Ok(mut file) = OpenOptions::new().read(true).open(log_path) else {
         return;
@@ -1453,25 +1491,30 @@ fn emit_vllm_startup_progress(
     if file.read_to_end(&mut bytes).is_err() {
         return;
     }
-    *log_offset = log_offset.saturating_add(bytes.len() as u64);
-    let text = String::from_utf8_lossy(&bytes);
+    // Keep an unfinished log line for the next poll (writes may be split).
+    let Some(end) = bytes.iter().rposition(|b| matches!(b, b'\r' | b'\n')) else { return; };
+    *log_offset = log_offset.saturating_add((end + 1) as u64);
+    let text = String::from_utf8_lossy(&bytes[..=end]);
+    let mut latest = None;
     for line in text.split(['\r', '\n']) {
-        let Some(progress) = vllm_startup_progress(line) else {
+        let Some(progress) = parse(line) else {
             continue;
         };
         if last_progress.as_ref() == Some(&progress) {
             continue;
         }
-        println!("vllmStartup: {progress}");
+        latest = Some(progress.clone());
         *last_progress = Some(progress);
     }
+    // One current status per poll, rather than a burst of every layer event.
+    if let Some(progress) = latest { reporter.set_stage(format!("{runtime}: {progress}")); }
 }
 
 fn start_vllm_runtime(
     model_dir: &Path,
     model_name: Option<&str>,
 ) -> Result<Option<PersistentRuntimeHandle>, String> {
-    let _progress = crate::operation_progress::OperationProgress::start("Starting vLLM container, loading model and checking health");
+    let progress = crate::operation_progress::OperationProgress::start("Checking existing vLLM endpoint");
     if !cfg!(target_os = "linux") {
         return Err("vLLM persistent runtime is supported only on Linux".to_string());
     }
@@ -1575,6 +1618,7 @@ fn start_vllm_runtime(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
 
+    progress.set_stage("Preparing vLLM container: checking/downloading runtime image");
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to launch vLLM container: {error}"))?;
@@ -1589,7 +1633,7 @@ fn start_vllm_runtime(
     .unwrap_or(1800);
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
-        emit_vllm_startup_progress(&log_path, &mut log_offset, &mut last_progress);
+        emit_runtime_startup_progress(&log_path, &mut log_offset, &mut last_progress, &progress, "vLLM", vllm_startup_progress);
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("failed to poll vLLM container: {error}"))?
@@ -1602,7 +1646,7 @@ fn start_vllm_runtime(
         }
         if vllm_health_ok(&url) {
             if last_progress.as_deref() != Some("ready (100%)") {
-                println!("vllmStartup: ready (100%)");
+                progress.set_stage("vLLM ready: endpoint health confirmed");
             }
             return Ok(Some(PersistentRuntimeHandle::new(
                 child,
@@ -1631,7 +1675,6 @@ pub fn start_persistent_runtime(
     backend: Backend,
     parallel_slots: u8,
 ) -> Result<Option<PersistentRuntimeHandle>, String> {
-    let _progress = crate::operation_progress::OperationProgress::start("Preparing persistent model runtime");
     if env::var("OPENGPU_PERSISTENT_RUNTIME")
         .map(|value| value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
@@ -1646,6 +1689,7 @@ pub fn start_persistent_runtime(
             return Ok(None);
         };
         if let Ok(python) = probe_mlx_available() {
+            let progress = crate::operation_progress::OperationProgress::start("Starting MLX server: waiting for HTTP endpoint");
             let timeout_seconds = env::var("OPENGPU_MLX_START_TIMEOUT_SECONDS")
                 .ok().and_then(|value| value.parse::<u64>().ok())
                 .filter(|seconds| *seconds > 0).unwrap_or(300);
@@ -1659,6 +1703,7 @@ pub fn start_persistent_runtime(
             if mlx_server_health_ok(&url) {
                 // A reused local server may be live but still cold.
                 env::remove_var("OPENGPU_MLX_SERVER_URL");
+                drop(progress);
                 warm_mlx_runtime(&url, model_name, deadline.saturating_duration_since(Instant::now()))?;
                 env::set_var("OPENGPU_MLX_SERVER_URL", &url);
                 return Ok(None);
@@ -1672,6 +1717,8 @@ pub fn start_persistent_runtime(
                 fs::create_dir_all(parent)
                     .map_err(|error| format!("failed to create MLX runtime directory: {error}"))?;
             }
+            let mut log_offset = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+            let mut last_progress = None;
             let log = OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -1697,6 +1744,7 @@ pub fn start_persistent_runtime(
                 .spawn()
                 .map_err(|error| format!("failed to launch persistent MLX runtime: {error}"))?;
             while Instant::now() < deadline {
+                emit_runtime_startup_progress(&log_path, &mut log_offset, &mut last_progress, &progress, "MLX", local_runtime_progress);
                 if let Some(status) = child
                     .try_wait()
                     .map_err(|error| format!("failed to poll persistent MLX runtime: {error}"))?
@@ -1715,6 +1763,7 @@ pub fn start_persistent_runtime(
                         None,
                     );
                     // On warm-up failure, dropping our handle stops the owned server.
+                    drop(progress);
                     warm_mlx_runtime(runtime.url(), model_name, deadline.saturating_duration_since(Instant::now()))?;
                     return Ok(Some(runtime));
                 }
@@ -1747,6 +1796,13 @@ pub fn start_persistent_runtime(
         return Ok(None);
     }
 
+    let progress = crate::operation_progress::OperationProgress::start("Starting llama.cpp: opening GGUF model");
+    let log_path = opengpu_home_dir().join("runtimes").join("llama").join("server.log");
+    fs::create_dir_all(log_path.parent().unwrap()).map_err(|e| format!("Cannot create llama.cpp log directory: {e}"))?;
+    let mut log_offset = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let mut last_progress = None;
+    let log = OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| format!("Cannot open llama.cpp log: {e}"))?;
+    let stdout = log.try_clone().map_err(|e| format!("Cannot clone llama.cpp log: {e}"))?;
     let mut command = Command::new(llama_server);
     command
         .arg("-m")
@@ -1762,8 +1818,8 @@ pub fn start_persistent_runtime(
         .arg("--threads")
         .arg("2")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(log));
     if matches!(backend, Backend::Cuda) {
         command.arg("--device").arg("CUDA0");
     } else if matches!(backend, Backend::Vulkan) {
@@ -1779,6 +1835,7 @@ pub fn start_persistent_runtime(
         .map_err(|error| format!("failed to launch llama-server: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
+        emit_runtime_startup_progress(&log_path, &mut log_offset, &mut last_progress, &progress, "llama.cpp", local_runtime_progress);
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("failed to poll llama-server: {error}"))?
@@ -4908,6 +4965,34 @@ mod tests {
             vllm_startup_progress("INFO: Application startup complete.").as_deref(),
             Some("server started; checking endpoint health")
         );
+    }
+
+    #[test]
+    fn runtime_progress_preserves_docker_stage_details() {
+        assert_eq!(percentage_token("Downloading: 64.5%"), Some("64.5%"));
+        assert_eq!(vllm_startup_progress("144058e9dff7: Download complete").as_deref(), Some("Downloading runtime image: layer 144058e9dff7: Download complete"));
+        assert!(vllm_startup_progress("144058e9dff7: Extracting [==>] 4MB/8MB").unwrap().contains("4MB/8MB"));
+        assert!(vllm_startup_progress("Digest: sha256:abc").unwrap().contains("runtime image ready"));
+        assert!(vllm_startup_progress("Capturing CUDA graphs: 50%").unwrap().contains("50%"));
+        assert!(vllm_startup_progress("Authorization: Bearer secret").is_none());
+        assert!(local_runtime_progress("load_tensors: loading model tensors").unwrap().contains("weights"));
+        assert!(local_runtime_progress("warming up the model").unwrap().contains("Warming"));
+    }
+
+    #[test]
+    fn runtime_progress_retains_partial_log_lines() {
+        let path = std::env::temp_dir().join(format!("opengpu-progress-{}.log", uuid::Uuid::new_v4()));
+        fs::write(&path, "144058e9dff7: Down").unwrap();
+        let reporter = crate::operation_progress::OperationProgress::start("test");
+        let mut offset = 0;
+        let mut last = None;
+        emit_runtime_startup_progress(&path, &mut offset, &mut last, &reporter, "vLLM", vllm_startup_progress);
+        assert_eq!(offset, 0);
+        fs::write(&path, "144058e9dff7: Download complete\n").unwrap();
+        emit_runtime_startup_progress(&path, &mut offset, &mut last, &reporter, "vLLM", vllm_startup_progress);
+        assert!(last.unwrap().contains("Download complete"));
+        assert_eq!(offset, fs::metadata(&path).unwrap().len());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

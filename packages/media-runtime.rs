@@ -57,7 +57,7 @@ pub fn run_profile(
     video: bool,
     extra: &[String],
 ) -> Result<(), String> {
-    let _progress = matches!(action, "setup" | "verify" | "generate").then(||
+    let progress = matches!(action, "setup" | "verify" | "generate").then(||
         operation_progress::OperationProgress::start(format!("Media {action}")));
     if matches!(action, "setup" | "verify" | "generate") {
         memory::MediaBudget::detect(cap).require_operation(if video {
@@ -105,6 +105,8 @@ pub fn run_profile(
     if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
         command.env("OPENGPU_MEDIA_HUMAN_PROGRESS", "1");
     }
+    command.env("OPENGPU_MEDIA_ACTIVITY", "1");
+    drop(progress); // The helper owns stage reporting after launch.
     let status = command
         .stdin(Stdio::null())
         .status()

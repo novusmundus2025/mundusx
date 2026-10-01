@@ -23,6 +23,18 @@ PROFILE = json.loads(Path(__file__).with_name('qwen-image-v1.json').read_text())
 VIDEO_PROFILE = json.loads(Path(__file__).with_name('wan-video-v1.json').read_text())
 
 
+class ProgressStageTests(unittest.TestCase):
+    def test_current_stage_tracks_file_and_generation_without_polluting_json(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            media.emit('download_progress', file='weights.bin', downloaded_bytes=4, total_bytes=8)
+        self.assertEqual(media._activity_label, 'Downloading weights.bin: 4 / 8 bytes')
+        self.assertEqual(json.loads(output.getvalue())['downloaded_bytes'], 4)
+        with contextlib.redirect_stdout(io.StringIO()):
+            media.emit('waiting_for_llm', timeout_seconds=30)
+        self.assertIn('release memory', media._activity_label)
+
+
 class ContributionMemoryTests(unittest.TestCase):
     def test_floor_uses_exact_capped_bytes_and_preserves_profile_fit(self):
         gib = 1024**3

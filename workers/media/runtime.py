@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -61,8 +62,52 @@ class MediaError(Exception):
     pass
 
 
+# A single reporter follows the latest helper stage, including blocked network
+# and subprocess waits. Keep activity on stderr so JSON events remain parseable.
+_activity_lock = threading.Lock()
+_activity_label = "Starting media helper"
+_activity_changed = time.monotonic()
+
+def activity_stage(label):
+    global _activity_label, _activity_changed
+    with _activity_lock:
+        _activity_label, _activity_changed = label, time.monotonic()
+
+def activity_loop():
+    while True:
+        time.sleep(10)
+        with _activity_lock:
+            age = int(time.monotonic() - _activity_changed)
+            if age >= 10:
+                print(f"operationProgress: {_activity_label} ({age}s since last progress; waiting for next update)", file=sys.stderr, flush=True)
+
+if os.environ.get('OPENGPU_MEDIA_ACTIVITY') == '1':
+    threading.Thread(target=activity_loop, daemon=True).start()
+
+
 def emit(event, **fields):
+    stage = {
+        'checking_cache': 'Checking media model checksum', 'cached': 'Reusing media model',
+        'download': 'Downloading media model', 'download_verified': 'Media model verified',
+        'submitted': 'Media request submitted; waiting for generation',
+        'progress': 'Generating media; waiting for ComfyUI result',
+        'waiting_for_llm': 'Waiting for LLM jobs to finish and release memory',
+        'installed': 'Media runtime installed; awaiting verification',
+        'connected': 'Checking media endpoint', 'completed': 'Media operation complete',
+        'failed': 'Media operation failed',
+    }.get(event)
+    if event == 'download_progress':
+        stage = f"Downloading {fields.get('file', 'media model')}: {fields.get('downloaded_bytes', 0)} / {fields.get('total_bytes', 0)} bytes"
+    elif event == 'command':
+        stage = f"Media dependency setup: {Path(fields.get('program', '')).name} {fields.get('action', '')}"
+    elif stage and fields.get('file'):
+        stage += ': ' + fields['file']
+    if stage:
+        activity_stage(stage)
     if os.environ.get('OPENGPU_MEDIA_HUMAN_PROGRESS') == '1':
+        if event in ('command', 'waiting_for_llm'):
+            print(stage, file=sys.stderr, flush=True)
+            return
         if event == 'download_progress':
             return
         if event in ('checking_cache', 'cached', 'download', 'download_verified'):

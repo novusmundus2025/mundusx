@@ -3555,7 +3555,7 @@ fn terminal_line_endings(bytes: &[u8], previous_was_carriage_return: &mut bool) 
     rendered
 }
 
-fn relay_background_startup_output(log_path: &Path, offset: &mut u64) -> Result<(), String> {
+fn relay_background_startup_output(log_path: &Path, offset: &mut u64, waiting: &mut Option<operation_progress::OperationProgress>) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .read(true)
         .open(log_path)
@@ -3566,12 +3566,14 @@ fn relay_background_startup_output(log_path: &Path, offset: &mut u64) -> Result<
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|error| format!("failed to tail agent log `{}`: {error}", log_path.display()))?;
-    *offset = offset.saturating_add(bytes.len() as u64);
+    let Some(end) = bytes.iter().rposition(|b| matches!(b, b'\r' | b'\n')) else { return Ok(()); };
+    *offset = offset.saturating_add((end + 1) as u64);
 
-    for line in String::from_utf8_lossy(&bytes).split(['\r', '\n']) {
+    for line in String::from_utf8_lossy(&bytes[..=end]).split(['\r', '\n']) {
         let line = line.trim();
         if line.starts_with("vllmStartup:") || line.starts_with("operationProgress:") {
-            println!("{line}");
+            drop(waiting.take());
+            eprintln!("{line}");
         }
     }
     Ok(())
@@ -3599,7 +3601,7 @@ fn wait_for_background_agent_startup(
     mut log_offset: u64,
     previous_state: Option<&str>,
 ) -> Result<(), String> {
-    let _progress = operation_progress::OperationProgress::start("Waiting for runtime/model startup and health verification");
+    let mut waiting = Some(operation_progress::OperationProgress::start("Waiting for first startup report from node agent"));
     let mut error_offset = std::fs::metadata(error_log_path).map(|meta| meta.len()).unwrap_or_default();
     let timeout_seconds = env::var("OPENGPU_AGENT_START_TIMEOUT_SECONDS")
         .ok()
@@ -3608,8 +3610,8 @@ fn wait_for_background_agent_startup(
         .unwrap_or(1800);
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
-        relay_background_startup_output(log_path, &mut log_offset)?;
-        relay_background_startup_output(error_log_path, &mut error_offset)?;
+        relay_background_startup_output(log_path, &mut log_offset, &mut waiting)?;
+        relay_background_startup_output(error_log_path, &mut error_offset, &mut waiting)?;
         if background_worker_is_healthy(previous_state) {
             theme::field("agent", theme::status("ready"));
             return Ok(());
@@ -7890,6 +7892,22 @@ mod tests {
     fn exit_alias_maps_to_disconnect() {
         let cli = Cli::try_parse_from(["opengpu", "exit"]).expect("exit alias should parse");
         assert!(matches!(cli.command, Commands::Disconnect));
+    }
+
+    #[test]
+    fn startup_relay_hands_activity_to_agent_and_keeps_partial_lines() {
+        let path = std::env::temp_dir().join(format!("startup-progress-{}.log", uuid::Uuid::new_v4()));
+        let mut waiting = Some(super::operation_progress::OperationProgress::start("Waiting for agent"));
+        let mut offset = 0;
+        std::fs::write(&path, "operationProgress: Downloading").unwrap();
+        super::relay_background_startup_output(&path, &mut offset, &mut waiting).unwrap();
+        assert!(waiting.is_some());
+        assert_eq!(offset, 0);
+        std::fs::write(&path, "operationProgress: Downloading runtime image\n").unwrap();
+        super::relay_background_startup_output(&path, &mut offset, &mut waiting).unwrap();
+        assert!(waiting.is_none());
+        assert_eq!(offset, std::fs::metadata(&path).unwrap().len());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
