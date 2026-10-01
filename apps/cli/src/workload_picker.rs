@@ -2,7 +2,7 @@ use crate::contribution_contract::Operation;
 use crate::media_runtime::memory::MediaBudget;
 use crossterm::{
     cursor::MoveTo,
-    event::{read, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
@@ -51,11 +51,25 @@ impl Picker {
         }
     }
 
-    fn toggle(&mut self) {
+    fn toggle(&mut self) -> String {
         // Previously saved future selections can be removed, but not newly enabled.
         if self.available(self.cursor) || self.selected[self.cursor] {
             self.selected[self.cursor] = !self.selected[self.cursor];
+            return format!("{}: {}", if self.selected[self.cursor] { "Selected" } else { "Deselected" }, OPTIONS[self.cursor].1);
         }
+        self.disabled_reason(self.cursor).unwrap_or_default()
+    }
+
+    fn disabled_reason(&self, index: usize) -> Option<String> {
+        if !OPTIONS[index].2 {
+            return Some("Unavailable in this release.".into());
+        }
+        self.budget.require_operation(OPTIONS[index].0).err()
+    }
+
+    fn space_key(&mut self, key: &KeyEvent) -> Option<String> {
+        (key.code == KeyCode::Char(' ') && key.kind == KeyEventKind::Press)
+            .then(|| self.toggle())
     }
 
     fn available(&self, index: usize) -> bool {
@@ -109,25 +123,32 @@ pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operati
         execute!(out, MoveTo(0, 0), Clear(ClearType::All)).map_err(|e| e.to_string())?;
         write!(out, "Choose contribution workloads\r\n\r\n").map_err(|e| e.to_string())?;
         writeln!(out, "{}\r", budget.description()).map_err(|e| e.to_string())?;
-        for (index, (operation, label, _)) in OPTIONS.iter().enumerate() {
+        for (index, (_, label, _)) in OPTIONS.iter().enumerate() {
             write!(
                 out,
                 "{} [{}] {}{}\r\n",
                 if picker.cursor == index { ">" } else { " " },
                 if picker.selected[index] { "x" } else { " " },
                 label,
-                if !operation.is_llm() && !budget.eligible {
-                    " — unavailable: contributed memory below 24 GiB or unknown"
+                if !picker.available(index) {
+                    " — disabled"
                 } else {
                     ""
                 }
             )
             .map_err(|e| e.to_string())?;
         }
+        if let Some(reason) = picker.disabled_reason(picker.cursor) {
+            write!(out, "\r\n{reason}\r\n").map_err(|e| e.to_string())?;
+        }
         write!(out, "\r\nUp/Down or Tab: move | Space: toggle | A: all available | Enter: continue | Esc: cancel\r\nSelections do not start services or download models.\r\n{message}\r\n").map_err(|e| e.to_string())?;
         out.flush().map_err(|e| e.to_string())?;
         if let Event::Key(key) = read().map_err(|e| e.to_string())? {
             if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            if let Some(feedback) = picker.space_key(&key) {
+                message = feedback;
                 continue;
             }
             match key.code {
@@ -144,7 +165,7 @@ pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operati
                 KeyCode::Down | KeyCode::Tab => {
                     picker.cursor = (picker.cursor + 1).min(OPTIONS.len() - 1)
                 }
-                KeyCode::Char(' ') => picker.toggle(),
+                KeyCode::Char(' ') => {}, // Ignore repeat events; toggle once per press.
                 KeyCode::Char('a' | 'A') => {
                     picker.select_all();
                 }
@@ -161,6 +182,39 @@ pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operati
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn space_selects_and_deselects_once_per_press() {
+        let mut picker = Picker::new(&[Operation::Llm], MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80));
+        picker.cursor = 1;
+        let press = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(picker.space_key(&press).unwrap().starts_with("Selected:"));
+        assert!(picker.selected[1]);
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            let mut event = press;
+            event.kind = kind;
+            assert!(picker.space_key(&event).is_none());
+            assert!(picker.selected[1]);
+        }
+        assert!(picker.space_key(&press).unwrap().starts_with("Deselected:"));
+        assert!(!picker.selected[1]);
+        assert_eq!(picker.result().unwrap(), vec![Operation::Llm]);
+    }
+
+    #[test]
+    fn space_explains_model_specific_budget_and_unavailable_operations() {
+        let mut picker = Picker::new(&[Operation::Llm], MediaBudget::new(Some(32 * 1024 * 1024 * 1024), 80));
+        let press = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        for (index, required) in [(1, "32 GiB"), (2, "64 GiB")] {
+            picker.cursor = index;
+            let feedback = picker.space_key(&press).unwrap();
+            assert!(feedback.contains(required));
+            assert!(feedback.contains("25.60 GiB"));
+            assert!(!picker.selected[index]);
+        }
+        picker.cursor = 3;
+        assert_eq!(picker.space_key(&press).unwrap(), "Unavailable in this release.");
+        assert!(!picker.selected[3]);
+    }
     #[test]
     fn select_all_only_enables_models_that_fit_the_capped_budget() {
         let mut picker = Picker::new(

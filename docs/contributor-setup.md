@@ -5,6 +5,11 @@ Use this after the [Windows](install-windows.md), [Linux](install-linux.md), or
 hardware, existing servers, and saved configuration; the sequence below describes
 the choices, not an exact transcript for every machine.
 
+New source builds first offer managed models, a direct engine (including LM
+Studio), or PAIR endpoint validation. See [Inference connections](inference-connections.md)
+for the updated sequence and script options. These changes are not yet in the
+published 0.2.19 bundle; PAIR contribution remains disabled.
+
 ## 1. Run the wizard
 
 ```text

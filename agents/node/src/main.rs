@@ -1504,6 +1504,9 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
 }
 
 fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<JobRecord> {
+    if config.contributed_cluster.as_ref().is_some_and(|cluster| !worker::cluster_selected_model_ready(cluster)) {
+        return None;
+    }
     let path = format!("/v1/jobs/next?node_id={}", config.device_id);
     // Hermes tool turns carry the conversation and tool schemas in the claim
     // response. A remote cluster needs more than the generic five-second HTTP
@@ -2043,6 +2046,7 @@ fn probe_contributed_tool_capability(config: &AgentConfig) -> bool {
     let Some(cluster) = config.contributed_cluster.as_ref() else {
         return false;
     };
+    if !worker::cluster_selected_model_ready(cluster) { return false; }
     if cluster.supports_tool_calls {
         return true;
     }
