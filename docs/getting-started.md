@@ -16,8 +16,8 @@ These guides cover compute contribution through `opengpu`, not the separate
 setup does not require Rust, Cargo, a GitHub token, or an account password.
 
 Downloads come from the [MundusX production release](https://github.com/mundusx/releases/releases/tag/opengpu-prod).
-These guides describe release **0.2.22**. Check your installed CLI with
-`opengpu --version`; it should report `opengpu 0.2.22` for this release.
+These guides describe release **0.2.23**. Check your installed CLI with
+`opengpu --version`; it should report `opengpu 0.2.23` for this release.
 
 Choose a managed standalone model or reuse a direct local engine, including
 Ollama, LM Studio, vLLM, or llama.cpp. See [Inference connections](inference-connections.md)

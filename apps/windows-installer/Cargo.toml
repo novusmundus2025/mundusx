@@ -1,6 +1,6 @@
 [package]
 name = "mundusx-windows-installer"
-version = "0.2.22"
+version = "0.2.23"
 edition = "2021"
 description = "Clickable MundusX Windows installer"
 license = "Apache-2.0"

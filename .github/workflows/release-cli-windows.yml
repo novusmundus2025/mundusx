@@ -58,6 +58,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Progress test failed" }
           cargo test -p opengpu --bin opengpu local_readiness --target ${{ env.TARGET }}
           if ($LASTEXITCODE -ne 0) { throw "Progress test failed" }
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent download_progress --target ${{ env.TARGET }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p opengpu-node-agent --bin opengpu-node-agent runtime_progress --target ${{ env.TARGET }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p opengpu --bin opengpu startup_relay --target ${{ env.TARGET }}

@@ -94,7 +94,7 @@ opengpu doctor
 opengpu model list
 ```
 
-This release reports `opengpu 0.2.22`. Complete onboarding if requested.
+This release reports `opengpu 0.2.23`. Complete onboarding if requested.
 Confirm `readyForJobs: yes` and the expected
 model/connection state. Inspect any reported failure reason before considering
 the machine connected and ready. Keep an external model server running while

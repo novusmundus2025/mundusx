@@ -43,3 +43,16 @@ The elapsed reminder names the last observed stage and says how long it has been
 since progress changed. It does not prove that new bytes or work are completing.
 Update downloads track the current asset and byte counts. Media helper activity
 tracks its current dependency, file checksum/download or generation step.
+
+## Managed vLLM model download percentage
+
+The model-weight download stage compares repository weight sizes with the local
+Hugging Face blob cache. The bar shows estimated cached bytes, GiB totals and
+completed weight-file counts. Retry fragments are not added together, sparse
+preallocation is excluded on Linux, and incomplete downloads stay below 100%.
+Metadata is fetched in the background with a timeout; unavailable totals are
+reported explicitly instead of guessed. Reading progress never deletes cache files.
+
+This percentage applies only to model-weight download, not total startup. After
+weights download, checkpoint loading, compilation, warmup and endpoint health
+have their own status. A cached model download at 100% does not mean ready for jobs.

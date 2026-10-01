@@ -1,3 +1,5 @@
+#[path = "download_progress.rs"]
+mod download_progress;
 #[path = "native_stream.rs"]
 mod native_stream;
 use crate::contracts::{
@@ -1425,7 +1427,7 @@ fn vllm_startup_progress(line: &str) -> Option<String> {
     if line.starts_with("Digest: sha256:") || line.contains("Status: Downloaded newer image") || line.contains("Status: Image is up to date") {
         return Some("Starting vLLM container: runtime image ready".into());
     }
-    if line.contains("Starting to load model") {
+    if line.contains("Starting to load model") || line.contains("Loading model from scratch") || line.contains("Resolved architecture:") || line.contains("Initializing a V1 LLM engine") {
         return Some("Loading model: resolving cached weights or downloading missing files".into());
     }
     if line.contains("Capturing CUDA graphs") || line.contains("Capturing cudagraphs") {
@@ -1459,6 +1461,10 @@ fn vllm_startup_progress(line: &str) -> Option<String> {
         return Some("server started; checking endpoint health".to_string());
     }
     None
+}
+
+fn is_model_download_stage(stage: &str) -> bool {
+    stage.starts_with("Loading model: resolving") || stage.starts_with("downloading model files") || stage.starts_with("fetching model files")
 }
 
 fn local_runtime_progress(line: &str) -> Option<String> {
@@ -1632,8 +1638,12 @@ fn start_vllm_runtime(
     .filter(|seconds| *seconds > 0)
     .unwrap_or(1800);
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    let mut download = download_progress::DownloadProgress::new(model_name, model_dir);
     while Instant::now() < deadline {
         emit_runtime_startup_progress(&log_path, &mut log_offset, &mut last_progress, &progress, "vLLM", vllm_startup_progress);
+        if last_progress.as_deref().is_some_and(is_model_download_stage) {
+            if let Some(label) = download.as_mut().and_then(|d| d.poll()) { progress.set_stage(label); }
+        }
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("failed to poll vLLM container: {error}"))?
@@ -4969,6 +4979,11 @@ mod tests {
 
     #[test]
     fn runtime_progress_preserves_docker_stage_details() {
+        assert!(is_model_download_stage(&vllm_startup_progress("(EngineCore pid=150) Loading model from scratch...").unwrap()));
+        assert!(is_model_download_stage(&vllm_startup_progress("Resolved architecture: MuseGlimmerForConditionalGeneration").unwrap()));
+        assert!(!is_model_download_stage("loading checkpoint shards 1/2 (50%)"));
+        assert!(!is_model_download_stage("model weights loaded; preparing KV cache"));
+        assert!(!is_model_download_stage("server started; checking endpoint health"));
         assert_eq!(percentage_token("Downloading: 64.5%"), Some("64.5%"));
         assert_eq!(vllm_startup_progress("144058e9dff7: Download complete").as_deref(), Some("Downloading runtime image: layer 144058e9dff7: Download complete"));
         assert!(vllm_startup_progress("144058e9dff7: Extracting [==>] 4MB/8MB").unwrap().contains("4MB/8MB"));

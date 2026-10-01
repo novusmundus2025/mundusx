@@ -68,7 +68,7 @@ opengpu doctor
 opengpu model list
 ```
 
-This release reports `opengpu 0.2.22`. Complete onboarding when prompted.
+This release reports `opengpu 0.2.23`. Complete onboarding when prompted.
 Check for `readyForJobs: yes`, a connected
 node, and the intended active model. MLX attempts to launch a persistent server
 and runs a small inference warmup. Startup/model loading can take time. If the
