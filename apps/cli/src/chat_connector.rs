@@ -186,6 +186,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 }
 
 fn bootstrap_token(chat_url: &str, device_name: &str, device_id: &str) -> Result<String, String> {
+    let _progress = crate::operation_progress::OperationProgress::start("Waiting for browser approval");
     let bootstrap: Value = ureq::post(&format!("{chat_url}/api/agent/bootstrap/sessions"))
         .send_json(json!({"device_name": device_name, "device_id": device_id}))
         .map_err(|e| format!("could not start browser approval: {e}"))?

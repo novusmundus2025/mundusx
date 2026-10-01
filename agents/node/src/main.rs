@@ -1,3 +1,5 @@
+#[path = "../../../packages/operation-progress.rs"]
+mod operation_progress;
 mod media_process;
 #[path = "../../../packages/vllm-model-profile.rs"]
 mod vllm_model_profile;

@@ -524,10 +524,12 @@ fn download_model_from_option(
     if is_local_source {
         let source_path = option.source_url.trim_start_matches("file://");
         eprintln!("model download: copying `{name}` from {source_path}");
+        let _progress = crate::operation_progress::OperationProgress::start("Copying local model");
         fs::copy(source_path, &tmp)?;
     } else {
         eprintln!("model download: starting `{name}`");
         eprintln!("model download: {}", option.source_url);
+        let _progress = crate::operation_progress::OperationProgress::start("Downloading model");
         let status = Command::new("curl")
             .args([
                 "-fL",
@@ -566,6 +568,7 @@ fn download_model_from_option(
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
+    let _progress = crate::operation_progress::OperationProgress::start("Verifying model checksum");
     let expected = expected.trim();
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();

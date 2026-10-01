@@ -95,6 +95,7 @@ pub fn update_installed_binaries() -> Result<(), String> {
 }
 
 fn resolve_release_assets(target: &str, release_prefix: &str) -> Result<ReleaseAssets, String> {
+    let _progress = crate::operation_progress::OperationProgress::start("Checking available release");
     let cli_name = format!("opengpu-{target}");
     let agent_name = format!("opengpu-node-agent-{target}");
     let connector_name = format!("mundusx-{target}");
@@ -248,6 +249,7 @@ fn stage_release_binary(
     checksum_url: &str,
     target: &Path,
 ) -> Result<StagedBinary, String> {
+    eprintln!("updateAsset: {asset_name}");
     let bytes = download(asset_url)?;
     let checksum = String::from_utf8(download(checksum_url)?)
         .map_err(|_| format!("invalid UTF-8 checksum for {asset_name}"))?;
@@ -280,6 +282,7 @@ fn stage_release_binary(
 }
 
 fn download(url: &str) -> Result<Vec<u8>, String> {
+    let _progress = crate::operation_progress::OperationProgress::start("Downloading update asset");
     let mut request = ureq::get(url).set("User-Agent", "opengpu-cli-updater");
     if let Ok(token) = env::var("OPENGPU_GITHUB_TOKEN") {
         if !token.trim().is_empty() {
@@ -289,11 +292,25 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
     let response = request
         .call()
         .map_err(|error| format!("download failed for {url}: {error}"))?;
+    let total = response.header("Content-Length").and_then(|value| value.parse::<u64>().ok()).filter(|size| *size > 0);
+    let mut reader = response.into_reader();
     let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("failed reading {url}: {error}"))?;
+    let mut buffer = [0u8; 65536];
+    let mut last = std::time::Instant::now();
+    loop {
+        let count = reader.read(&mut buffer).map_err(|error| format!("failed reading update: {error}"))?;
+        if count == 0 { break; }
+        bytes.extend_from_slice(&buffer[..count]);
+        if last.elapsed() >= std::time::Duration::from_secs(1) {
+            if let Some(total) = total {
+                let percent = (bytes.len() as u64).saturating_mul(100).checked_div(total).unwrap_or(0).min(100);
+                let filled = (percent / 5) as usize;
+                eprintln!("updateDownload: [{}{}] {} / {} bytes ({}%)", "#".repeat(filled), "-".repeat(20 - filled), bytes.len(), total, percent);
+            } else { eprintln!("updateDownload: {} bytes received", bytes.len()); }
+            last = std::time::Instant::now();
+        }
+    }
+    eprintln!("updateDownload: complete ({} bytes)", bytes.len());
     Ok(bytes)
 }
 

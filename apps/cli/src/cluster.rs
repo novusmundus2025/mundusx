@@ -387,6 +387,7 @@ pub fn lmstudio_model_loaded(base: &str, model: &str) -> bool {
 }
 
 pub fn verify_inference(base: &str, model: &str) -> Result<(), String> {
+    let _progress = crate::operation_progress::OperationProgress::start("Verifying selected external model");
     let response = ureq::post(&format!("{base}/v1/chat/completions"))
         .timeout(Duration::from_secs(120))
         .send_json(serde_json::json!({"model": model, "messages": [{"role": "user", "content": "Reply OK"}],

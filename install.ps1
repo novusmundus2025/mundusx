@@ -475,14 +475,14 @@ function Copy-ReleaseFile {
       [void]$request.Headers.TryAddWithoutValidation($name, [string]$headers[$name])
     }
 
-    $response = $client.SendAsync(
+    $response = Wait-InstallerDownloadTask -Task ($client.SendAsync(
       $request,
       [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
-    ).GetAwaiter().GetResult()
+    )) -Label "Connecting to $Label download"
     [void]$response.EnsureSuccessStatusCode()
 
     $totalBytes = $response.Content.Headers.ContentLength
-    $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $inputStream = Wait-InstallerDownloadTask -Task ($response.Content.ReadAsStreamAsync()) -Label "Opening $Label download"
     $outputStream = [System.IO.File]::Open(
       $Destination,
       [System.IO.FileMode]::Create,
@@ -494,7 +494,7 @@ function Copy-ReleaseFile {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $lastUpdateMs = [long]-1000
 
-    while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    while (($read = Wait-InstallerDownloadTask -Task ($inputStream.ReadAsync($buffer, 0, $buffer.Length)) -Label "Downloading $Label") -gt 0) {
       $outputStream.Write($buffer, 0, $read)
       $receivedBytes += $read
       if (($stopwatch.ElapsedMilliseconds - $lastUpdateMs) -lt 250 -and
@@ -638,6 +638,20 @@ function Write-InstallerPhase {
   $overallPercent = [int][Math]::Floor((($Current - 1) * 100.0) / $Total)
   Write-Output ""
   Write-Output "[$Current/$Total - overall $overallPercent%] $Message"
+}
+
+function Wait-InstallerDownloadTask {
+  param($Task, [string]$Label)
+  $activityTimer = [System.Diagnostics.Stopwatch]::StartNew()
+  $nextUpdate = 10
+  while (-not $Task.IsCompleted) {
+    Start-Sleep -Milliseconds 200
+    if ($activityTimer.Elapsed.TotalSeconds -ge $nextUpdate) {
+      Write-Host "$Label - waiting for network ($([int]$activityTimer.Elapsed.TotalSeconds)s elapsed)..."
+      $nextUpdate += 10
+    }
+  }
+  return $Task.GetAwaiter().GetResult()
 }
 
 function Verify-ReleaseAsset {
@@ -923,7 +937,11 @@ try {
     New-Item -ItemType Directory -Force -Path $runtimeInstallDir | Out-Null
     $selectedRuntimeArchive = if ($cudaRuntimeRequired) { $tempCudaRuntime } else { $tempVulkanRuntime }
     $selectedRuntimeLabel = if ($cudaRuntimeRequired) { "CUDA" } else { "Vulkan" }
-    Expand-Archive -LiteralPath $selectedRuntimeArchive -DestinationPath $runtimeInstallDir -Force
+    Write-Output "Extracting GPU runtime; this can take several minutes..."
+    Write-Progress -Id 2 -Activity "Extracting GPU runtime" -Status "Preparing installed runtime files" -PercentComplete -1
+    try { Expand-Archive -LiteralPath $selectedRuntimeArchive -DestinationPath $runtimeInstallDir -Force }
+    finally { Write-Progress -Id 2 -Activity "Extracting GPU runtime" -Completed }
+    Write-Output "GPU runtime extraction complete."
     if (-not (Test-Path -LiteralPath $finalCudaRuntime)) {
       $foundRuntime = Get-ChildItem -Path $runtimeInstallDir -Recurse -Filter "llama-cli.exe" | Select-Object -First 1
       if (-not $foundRuntime) {
