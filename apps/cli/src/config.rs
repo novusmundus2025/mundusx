@@ -199,7 +199,7 @@ pub fn load_config() -> std::io::Result<Option<Config>> {
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let removed_cluster = remove_unsupported_cluster(&mut config);
     if removed_cluster {
-        eprintln!("LM Studio contribution is no longer supported. Removed the saved connection; run `opengpu install` to choose a supported runtime.");
+        eprintln!("PAIR contribution is not enabled. Removed the unsupported connection; run `opengpu install` to choose a direct engine.");
     }
     if migrate_control_plane_url(&mut config.control_plane_url) || removed_cluster {
         save_config(&config)?;
@@ -284,8 +284,8 @@ mod control_plane_url_tests {
     #[test]
     fn removes_legacy_connection_but_preserves_supported_configs() {
         for (kind, url, excluded) in [
-            ("lm-studio", "http://localhost:9999", true),
-            ("openai-compatible", "http://localhost:1234", true),
+            ("lm-studio", "http://localhost:9999", false),
+            ("openai-compatible", "http://localhost:1234", false),
             ("vllm", "http://localhost:8000", false),
         ] {
             let mut value = serde_json::to_value(Config::default()).unwrap();

@@ -97,6 +97,9 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum InferenceConnection { Managed, Direct, Pair }
+
 #[derive(Subcommand, Debug)]
 enum MediaCommands {
     /// Serve queued image and video requests using this contributor identity
@@ -141,6 +144,12 @@ enum Commands {
         /// Probe this cluster endpoint instead of the well-known local ports
         #[arg(long)]
         cluster_url: Option<String>,
+        /// Choose managed models, a direct engine, or PAIR endpoint validation.
+        #[arg(long, value_enum, conflicts_with_all = ["contribute_cluster", "no_contribute_cluster"])]
+        connection: Option<InferenceConnection>,
+        /// Exact external model ID; never substituted by another model.
+        #[arg(long, requires = "connection")]
+        cluster_model: Option<String>,
         /// Concurrent jobs to accept on a contributed cluster (skips the prompt)
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=64))]
         max_jobs: Option<u32>,
@@ -4753,7 +4762,7 @@ fn select_menu_option(
                     }
                     render_menu(selected);
                 }
-                KeyCode::Enter => break Some(selected),
+                KeyCode::Enter | KeyCode::Char(' ') => break Some(selected),
                 KeyCode::Esc => break None,
                 _ => {}
             },
@@ -5784,6 +5793,11 @@ fn contribute_detected_cluster(
     cluster: &DetectedCluster,
     max_jobs: Option<u32>,
 ) {
+    let selected = choose_and_verify_model(cluster, None);
+    record_detected_cluster(config, &selected, max_jobs);
+}
+
+fn record_detected_cluster(config: &mut Config, cluster: &DetectedCluster, max_jobs: Option<u32>) {
     let contributed = contributed_cluster_from(cluster, None);
     if let Some(jobs) = max_jobs.filter(|value| *value > 0) {
         config.max_jobs = Some(jobs);
@@ -5971,21 +5985,8 @@ fn run_cluster_use(url: &str, model: Option<String>, max_jobs: Option<u32>) {
         std::process::exit(1);
     };
 
-    if let Some(requested) = model.as_ref() {
-        if !detected.models.is_empty()
-            && !detected.models.iter().any(|entry| &entry.name == requested)
-        {
-            eprintln!("clusterError: `{requested}` is not served by {base_url}");
-            eprintln!("clusterModels: {}", detected.model_names().join(", "));
-            std::process::exit(1);
-        }
-    }
-
-    if !detected.is_servable() && model.is_none() {
-        eprintln!("clusterError: {base_url} is running but advertises no model");
-        eprintln!("clusterHint: load a model in that runtime, or pass `--model <name>`");
-        std::process::exit(1);
-    }
+    let detected = choose_and_verify_model(&detected, model.as_deref());
+    let model = detected.primary_model().map(str::to_string);
 
     let mut config = current_config_or_default();
     let contributed = contributed_cluster_from(&detected, model);
@@ -6151,7 +6152,90 @@ fn run_init() -> Config {
     config
 }
 
+fn choose_inference_connection(
+    connection: Option<InferenceConnection>, mut url: Option<String>, legacy: Option<bool>,
+) -> (Option<InferenceConnection>, Option<String>) {
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let connection = connection.or_else(|| {
+        if !interactive || legacy.is_some() || url.is_some() { return None; }
+        let options = vec![
+            ("MundusX-managed runtime".into(), "Download or reuse a standalone model".into()),
+            ("Direct local engine".into(), "Reuse Ollama, LM Studio, vLLM or llama.cpp".into()),
+            ("NVIDIA PAIR cluster".into(), "Validate endpoint only; contribution is not enabled yet".into()),
+        ];
+        match select_menu_option(&["Choose one inference connection".into()], &options,
+            "Up/Down: move | Space or Enter: select | Esc: cancel", 0) {
+            Some(0) => Some(InferenceConnection::Managed),
+            Some(1) => Some(InferenceConnection::Direct),
+            Some(2) => Some(InferenceConnection::Pair),
+            _ => std::process::exit(0),
+        }
+    });
+    if connection == Some(InferenceConnection::Managed) && url.is_some() {
+        eprintln!("Managed runtime cannot be combined with --cluster-url.");
+        std::process::exit(2);
+    }
+    if matches!(connection, Some(InferenceConnection::Direct | InferenceConnection::Pair)) && url.is_none() {
+        if !interactive {
+            eprintln!("This connection requires --cluster-url <endpoint>.");
+            std::process::exit(2);
+        }
+        println!("Paste the endpoint URL (for PAIR, copy it from Endpoints):");
+        let mut line = String::new();
+        io::stdin().read_line(&mut line).expect("read endpoint");
+        url = cluster::normalize_base_url(&line);
+        if url.is_none() { eprintln!("A full http:// or https:// URL is required."); std::process::exit(2); }
+    }
+    (connection, url)
+}
+
+fn choose_and_verify_model(endpoint: &DetectedCluster, requested: Option<&str>) -> DetectedCluster {
+    let model = if let Some(model) = requested {
+        model.to_string()
+    } else if endpoint.models.len() == 1 {
+        endpoint.models[0].name.clone()
+    } else if !endpoint.models.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal() {
+        let options = endpoint.models.iter().map(|model| (model.label(), "Use this exact model".into())).collect::<Vec<_>>();
+        let index = select_menu_option(&["Choose the contribution model".into()], &options,
+            "Up/Down: move | Space or Enter: select | Esc: cancel", 0).unwrap_or_else(|| std::process::exit(0));
+        endpoint.models[index].name.clone()
+    } else {
+        eprintln!("Select an available model explicitly with --cluster-model (install) or --model (cluster use). For LM Studio, load the model first.");
+        std::process::exit(2);
+    };
+    if !endpoint.models.iter().any(|entry| entry.name == model) {
+        eprintln!("Selected model is not available: {model}"); std::process::exit(1);
+    }
+    if endpoint.kind == cluster::ClusterKind::LmStudio && !cluster::lmstudio_model_loaded(&endpoint.base_url, &model) {
+        eprintln!("LM Studio must report the selected model as loaded. Load it and enable its native model API.");
+        std::process::exit(1);
+    }
+    println!("Verifying selected model {model} with a short inference request...");
+    if let Err(error) = cluster::verify_inference(&endpoint.base_url, &model) {
+        eprintln!("Model verification failed: {error}"); std::process::exit(1);
+    }
+    let mut selected = endpoint.clone();
+    selected.models.retain(|entry| entry.name == model);
+    cluster::actively_verify_native_tools(std::slice::from_mut(&mut selected));
+    println!("Model responds successfully. External engine lifecycle remains under your control.");
+    selected
+}
+
+fn validate_pair_endpoint(url: Option<&str>, model: Option<&str>) {
+    let mut endpoint = url.and_then(cluster::probe_cluster).unwrap_or_else(|| {
+        eprintln!("PAIR endpoint did not return a model listing. Copy its URL from PAIR Endpoints.");
+        std::process::exit(1);
+    });
+    endpoint.kind = cluster::ClusterKind::OpenAiCompatible;
+    let selected = choose_and_verify_model(&endpoint, model);
+    println!("PAIR route verified: {} / {}", selected.base_url, selected.primary_model().unwrap_or(""));
+    eprintln!("PAIR contribution is not enabled: serving-node capacity and overlapping contributors cannot yet be enforced. Existing configuration was not changed. Use one direct local engine per contributor instead.");
+    std::process::exit(2);
+}
+
 fn run_install(
+    connection: Option<InferenceConnection>,
+    cluster_model: Option<String>,
     public: bool,
     private: bool,
     control_plane_url: Option<String>,
@@ -6186,6 +6270,19 @@ fn run_install(
         eprintln!("{error}");
         std::process::exit(2);
     }
+    if connection == Some(InferenceConnection::Managed) && cluster_model.is_some() {
+        eprintln!("--cluster-model applies only to external connections."); std::process::exit(2);
+    }
+    let (connection, cluster_url) = choose_inference_connection(connection, cluster_url, cluster_choice);
+    if connection == Some(InferenceConnection::Pair) {
+        validate_pair_endpoint(cluster_url.as_deref(), cluster_model.as_deref());
+        return;
+    }
+    let cluster_choice = match connection {
+        Some(InferenceConnection::Managed) => Some(false),
+        Some(InferenceConnection::Direct) => Some(true),
+        _ => cluster_choice,
+    };
     let profile = detect_machine_profile();
     // A previous or interrupted setup can leave config.json behind without an
     // identity. Always create/validate secure identity independently, then make
@@ -6212,9 +6309,24 @@ fn run_install(
         config.max_jobs = Some(jobs);
     }
 
+    if connection == Some(InferenceConnection::Managed) {
+        config.contributed_cluster = None;
+        config.cluster_prompt_declined = true;
+    }
     // Probe up front so the cluster step after the cap has results ready.
     theme::note("Checking for running model servers and clusters...");
-    let detected_clusters = detect_clusters_for_setup(cluster_url.as_deref());
+    let mut detected_clusters = if connection == Some(InferenceConnection::Managed) {
+        Vec::new()
+    } else { detect_clusters_for_setup(cluster_url.as_deref()) };
+    if connection == Some(InferenceConnection::Direct) {
+        let Some(endpoint) = cluster::preferred_cluster(&detected_clusters).cloned() else {
+            eprintln!("No model endpoint answered. Start the engine and check --cluster-url.");
+            std::process::exit(1);
+        };
+        let selected = choose_and_verify_model(&endpoint, cluster_model.as_deref());
+        detected_clusters = vec![selected];
+        config.contributed_cluster = Some(contributed_cluster_from(&detected_clusters[0], None));
+    }
     theme::note(format!("Discovery complete: {} server(s) found", detected_clusters.len()));
 
     config.control_plane_url =
@@ -6269,7 +6381,7 @@ fn run_install(
         // The cluster list is reached from this menu, and Esc or "None" inside it
         // comes back here so the cap can still be chosen.
         loop {
-            match prompt_contribution_percent(default_percent, ranked_clusters.len()) {
+            match prompt_contribution_percent(default_percent, if connection.is_some() { 0 } else { ranked_clusters.len() }) {
                 PromptOutcome::Selected(value) => break Some(value),
                 PromptOutcome::Cancelled => {
                     theme::note("Setup cancelled before model provisioning.");
@@ -6313,7 +6425,7 @@ fn run_install(
     let contributing_cluster = (contributed_from_menu && config.contribution.llm_enabled())
         || (config.contribution.llm_enabled() && maybe_contribute_running_cluster(
             &mut config,
-            cluster_choice,
+            if connection == Some(InferenceConnection::Direct) { None } else { cluster_choice },
             cluster_url.as_deref(),
             Some(&detected_clusters),
             // Interactive installs ask through the contribution level menu.
@@ -6490,6 +6602,10 @@ fn verify_contributed_cluster(config: &mut Config) -> bool {
         return true;
     };
 
+    if cluster::policy::unsupported_runtime(&recorded.kind, &recorded.base_url) {
+        eprintln!("PAIR contribution is blocked until serving-node limits can be enforced.");
+        return false;
+    }
     let probe = cluster::probe_cluster(&recorded.base_url);
     let check = classify_contributed_cluster(Some(&recorded), probe);
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -6832,12 +6948,16 @@ fn main() {
             contribute_cluster,
             no_contribute_cluster,
             cluster_url,
+            connection,
+            cluster_model,
             max_jobs,
             workloads,
             comfyui_url,
             setup_media,
             yes,
         } => run_install(
+            connection,
+            cluster_model,
             public,
             private,
             control_plane_url,
@@ -7623,7 +7743,7 @@ fn main() {
 mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, classify_contributed_cluster,
-        cluster, cluster_choice_flag, contribute_detected_cluster, contributed_cluster_from,
+        cluster, cluster_choice_flag, record_detected_cluster, contributed_cluster_from,
         control_plane_endpoint, cuda_doctor_payload, doctor_payload, effective_active_model,
         graph_progress_counts, handles_terminal_key, is_hugging_face_model_id,
         job_degradation_message, job_is_terminal, job_status_path, job_wait_progress_signature,
@@ -8098,7 +8218,7 @@ mod tests {
         };
 
         let mut config = Config::default();
-        contribute_detected_cluster(&mut config, &detected, Some(8));
+        record_detected_cluster(&mut config, &detected, Some(8));
 
         // The runtime says 71; the contributor said 8, and that is a property
         // of the node rather than of the cluster record.

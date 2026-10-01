@@ -1187,6 +1187,26 @@ pub fn cluster_endpoint_healthy(base_url: &str) -> bool {
     false
 }
 
+/// Rechecked by readiness and immediately before execution. A different listed
+/// model must never make a missing selected model appear ready.
+pub fn cluster_selected_model_ready(cluster: &crate::storage::ContributedCluster) -> bool {
+    use crate::storage::cluster_policy as policy;
+    if policy::unsupported_runtime(&cluster.kind, &cluster.base_url) { return false; }
+    let Some(model) = cluster.model.as_deref().or_else(|| cluster.models.first().map(String::as_str)) else { return false; };
+    let base = cluster.base_url.trim_end_matches('/');
+    let fetch = |path: &str| ureq::get(&format!("{base}{path}"))
+        .timeout(Duration::from_secs(2)).call().ok()
+        .and_then(|r| r.into_json::<serde_json::Value>().ok());
+    if cluster.kind.replace('-', "").to_ascii_lowercase() == "lmstudio" {
+        return ["/api/v1/models", "/api/v0/models"].iter()
+            .find_map(|path| fetch(path).and_then(|body| policy::lmstudio_loaded_listing(&body)))
+            .is_some_and(|body| policy::listing_contains(&body, false, model));
+    }
+    ["/v1/models", "/api/tags"].iter().any(|path| fetch(path)
+        .is_some_and(|body| !policy::unsupported_listing(&body)
+            && policy::listing_contains(&body, *path == "/api/tags", model)))
+}
+
 fn vllm_health_ok(url: &str) -> bool {
     ureq::get(&format!("{url}/health"))
         .timeout(Duration::from_secs(2))
@@ -3077,7 +3097,7 @@ fn contributed_cluster_health(
 ) -> WorkerHealthReport {
     let power_state = probe_power_state();
     let cuda = probe_cuda_diagnostics();
-    let reachable = !crate::storage::cluster_policy::unsupported_runtime(&cluster.kind, &cluster.base_url) && cluster_endpoint_healthy(&cluster.base_url);
+    let reachable = cluster_selected_model_ready(cluster);
     let model_name = cluster
         .model
         .clone()
@@ -3091,7 +3111,7 @@ fn contributed_cluster_health(
         ));
     } else {
         notes.push(format!(
-            "contributed {} cluster at {} is not answering; start it or run `opengpu cluster forget`",
+            "contributed {} cluster at {} is unavailable or its selected model is not loaded; waiting for the same model",
             cluster.kind, cluster.base_url
         ));
     }
@@ -3114,7 +3134,7 @@ fn contributed_cluster_health(
         model_path: None,
         llama_cli_available: false,
         llama_server_available: false,
-        persistent_runtime_warm: reachable,
+        persistent_runtime_warm: reachable && cluster.kind == "lm-studio",
         persistent_runtime_url: Some(cluster.base_url.clone()),
         runtime_kind: if reachable {
             "contributed-cluster".to_string()
@@ -3557,9 +3577,9 @@ fn run_contributed_cluster_request(
     cluster: &crate::storage::ContributedCluster,
 ) -> Result<WorkerLaunchResponse, String> {
     if crate::storage::cluster_policy::unsupported_runtime(&cluster.kind, &cluster.base_url) {
-        return Err("LM Studio contribution is no longer supported; run `opengpu install`.".into());
+        return Err("PAIR contribution is blocked until serving-node capacity can be enforced.".into());
     }
-    if !cluster_endpoint_healthy(&cluster.base_url) {
+    if !cluster_selected_model_ready(cluster) {
         return Err(format!(
             "contributed {} cluster is not answering at {}",
             cluster.kind, cluster.base_url
@@ -3579,32 +3599,14 @@ fn run_contributed_cluster_request(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        if requested != advertised && !cluster.models.iter().any(|entry| entry == requested) {
+        if requested != advertised {
             return Err(format!(
                 "contributed cluster serves {advertised}, not {requested}"
             ));
         }
     }
     let speakai = is_speakai_request(request);
-    let model = request
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            speakai.then(|| {
-                cluster
-                    .models
-                    .iter()
-                    .find(|name| {
-                        let name = name.to_ascii_lowercase();
-                        name.contains("qwen") || name.contains("phi-4") || name.contains("gemma")
-                    })
-                    .map(String::as_str)
-                    .unwrap_or(&advertised)
-            })
-        })
-        .unwrap_or(&advertised);
+    let model = advertised.as_str();
 
     if is_native_openai_tool_turn(request) {
         if !cluster.supports_tool_calls {
@@ -4127,7 +4129,7 @@ mod tests {
     }
 
     #[test]
-    fn external_health_rejects_identified_unsupported_runtime() {
+    fn external_health_accepts_lmstudio_protocol() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let url = format!("http://{}", server.server_addr());
         let responder = std::thread::spawn(move || {
@@ -4136,7 +4138,28 @@ mod tests {
             request.respond(tiny_http::Response::from_string(r#"{"data":[{"id":"test", "owned_by":"lmstudio"}]}"#)).unwrap();
             assert!(server.recv_timeout(std::time::Duration::from_millis(100)).unwrap().is_none());
         });
-        assert!(!super::cluster_endpoint_healthy(&url));
+        assert!(super::cluster_endpoint_healthy(&url));
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn external_selected_model_pauses_on_unload_and_recovers_without_substitution() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", server.server_addr());
+        let cluster: crate::storage::ContributedCluster = serde_json::from_value(serde_json::json!({
+            "kind":"lm-studio", "base_url":url, "model":"chosen", "models":["chosen","other"]
+        })).unwrap();
+        let responder = std::thread::spawn(move || {
+            for id in ["chosen", "other", "chosen"] {
+                let request = server.recv_timeout(Duration::from_secs(5)).unwrap().expect("model probe");
+                assert_eq!(request.url(), "/api/v1/models");
+                let body = serde_json::json!({"models":[{"key":"file", "type":"llm", "loaded_instances":[{"id":id}]}]});
+                request.respond(tiny_http::Response::from_string(body.to_string())).unwrap();
+            }
+        });
+        assert!(super::cluster_selected_model_ready(&cluster));
+        assert!(!super::cluster_selected_model_ready(&cluster));
+        assert!(super::cluster_selected_model_ready(&cluster));
         responder.join().unwrap();
     }
 

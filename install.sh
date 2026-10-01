@@ -19,6 +19,9 @@ cap_percent="${OPENGPU_CAP_PERCENT:-30}"
 max_jobs="${OPENGPU_MAX_JOBS:-}"
 local_assets=""
 configure_service_only=0
+connection=""
+cluster_url=""
+cluster_model=""
 
 # BEGIN MUNDUSX CHAT SERVICE
 # Embedded in install.sh so curl-based installations need no extra downloads.
@@ -143,6 +146,9 @@ usage() {
 Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only] [--cap-percent N] [--max-jobs N] [--runtime-only] [--local-assets DIR] [--help]
 
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
+  --connection MODE  managed, direct, or pair (PAIR validates only; no contribution).
+  --cluster-url URL  External endpoint; /v1 suffix is accepted.
+  --cluster-model ID Exact external model ID.
   --without-vllm Skip automatic vLLM installation on detected GB10/GX10 hosts.
   --auto-start   Unattended mode: configure safe defaults and start the node.
   --install-only Install binaries/runtime only (default; retained for scripts).
@@ -164,6 +170,15 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --configure-chat-service)
       configure_service_only=1
+      ;;
+    --connection|--cluster-url|--cluster-model)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "$1 requires a value" >&2; exit 2; }
+      case "$1" in
+        --connection) connection="$2" ;;
+        --cluster-url) cluster_url="$2" ;;
+        --cluster-model) cluster_model="$2" ;;
+      esac
+      shift
       ;;
     --with-vllm)
       with_vllm=1
@@ -218,6 +233,21 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ -z "$connection" ] && { [ -n "$cluster_url" ] || [ -n "$cluster_model" ]; }; then
+  echo "--cluster-url and --cluster-model require --connection direct or pair" >&2; exit 2
+fi
+case "$connection" in
+  ""|managed) ;;
+  direct|pair)
+    [ "$with_vllm" -eq 0 ] || { echo "External connections cannot use --with-vllm or --runtime-only" >&2; exit 2; }
+    without_vllm=1
+    ;;
+  *) echo "--connection must be managed, direct, or pair" >&2; exit 2 ;;
+esac
+if [ "$connection" = managed ] && [ -n "$cluster_url" ]; then
+  echo "Managed connection cannot use --cluster-url" >&2; exit 2
+fi
 
 if [ "$configure_service_only" -eq 1 ]; then
   configure_chat_service
@@ -565,19 +595,27 @@ fi
 if [ "$runtime_only" -eq 0 ] && [ "$install_only" -eq 0 ]; then
   echo
   echo "Configuring this machine as a public MundusX contributor..."
+  connection_args=(--no-contribute-cluster)
+  if [ -n "$connection" ]; then
+    connection_args=(--connection "$connection")
+    [ -z "$cluster_url" ] || connection_args+=(--cluster-url "$cluster_url")
+    [ -z "$cluster_model" ] || connection_args+=(--cluster-model "$cluster_model")
+  fi
   "$INSTALL_DIR/$BIN_NAME" install \
     --public \
     --cap-percent "$cap_percent" \
     --max-jobs "$max_jobs" \
-    --no-contribute-cluster </dev/null
+    "${connection_args[@]}" </dev/null
   "$INSTALL_DIR/$BIN_NAME" onboarding --complete
 
   echo
   echo "Starting the OpenGPU node in the background..."
+  start_connection_args=()
+  [ -n "$connection" ] || start_connection_args=(--no-contribute-cluster)
   "$INSTALL_DIR/$BIN_NAME" start \
     --background \
     --max-jobs "$max_jobs" \
-    --no-contribute-cluster </dev/null
+    "${start_connection_args[@]}" </dev/null
 
   echo
   echo "OpenGPU is installed and contributing."
@@ -585,6 +623,6 @@ if [ "$runtime_only" -eq 0 ] && [ "$install_only" -eq 0 ]; then
 elif [ "$runtime_only" -eq 0 ]; then
   echo
   echo "Next steps:"
-  echo "  opengpu install"
+  printf "  opengpu install"; [ -z "$connection" ] || printf " --connection %q" "$connection"; [ -z "$cluster_url" ] || printf " --cluster-url %q" "$cluster_url"; [ -z "$cluster_model" ] || printf " --cluster-model %q" "$cluster_model"; printf "\n"
   echo "  opengpu start"
 fi

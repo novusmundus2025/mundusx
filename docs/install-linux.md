@@ -64,7 +64,7 @@ opengpu install --cluster-url http://127.0.0.1:8000
 The URL above is an example, not a requirement. Use the actual listening address.
 A service listening on port 8000 is not automatically an LLM; ComfyUI or another
 service on that port must not be selected as one. Detection validates the model
-API. LM Studio is excluded. MundusX does not provision Sparkrun recipes.
+API. Source builds also support direct LM Studio with a loaded model; see [Inference connections](inference-connections.md). MundusX does not provision Sparkrun recipes.
 
 For managed GB10/GX10 vLLM, follow the offered managed model path instead.
 For general Linux x64, do not assume the installer also installed a local LLM

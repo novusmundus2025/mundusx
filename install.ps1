@@ -6,6 +6,10 @@ param(
   [switch]$InstallCudaRuntime,
   [switch]$InstallVulkanRuntime,
   [switch]$SkipModelRuntime,
+  [ValidateSet("managed", "direct", "pair")]
+  [string]$Connection,
+  [string]$ClusterUrl,
+  [string]$ClusterModel,
   [switch]$SkipTrayAutoStart,
   [switch]$SkipPathUpdate,
   [switch]$SkipContributorSetup,
@@ -56,6 +60,9 @@ Options:
   -InstallVulkanRuntime    Force Vulkan llama runtime installation instead of CUDA.
                           By default, the installer detects NVIDIA/CUDA and
                           otherwise installs the Vulkan runtime for Windows.
+  -Connection <mode>      managed, direct, or pair (PAIR validates only).
+  -ClusterUrl <url>       External inference endpoint.
+  -ClusterModel <id>      Exact external model ID.
   -SkipModelRuntime        Agent-only install: do not download llama.cpp or a GPU runtime.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
@@ -581,8 +588,12 @@ function Start-ContributorSetup {
   }
 
   $escapedCliPath = $CliPath.Replace("'", "''")
+  $connectionArgs = ""
+  foreach ($item in @(@("--connection", $Connection), @("--cluster-url", $ClusterUrl), @("--cluster-model", $ClusterModel))) {
+    if ($item[1]) { $connectionArgs += " " + $item[0] + " '" + $item[1].Replace("'", "''") + "'" }
+  }
   $setupCommand = @"
-& '$escapedCliPath' install
+& '$escapedCliPath' install$connectionArgs
 `$setupExit = `$LASTEXITCODE
 Write-Host ''
 if (`$setupExit -eq 0) {
@@ -721,6 +732,9 @@ if (-not $agentModeWasProvided -and $SetupMode -ne "contributor") {
 if ($InstallCudaRuntime -and $InstallVulkanRuntime) {
   throw "choose only one runtime override: -InstallCudaRuntime or -InstallVulkanRuntime"
 }
+if (-not $Connection -and ($ClusterUrl -or $ClusterModel)) { throw "-ClusterUrl and -ClusterModel require -Connection direct or pair" }
+if ($Connection -in @("direct", "pair")) { $SkipModelRuntime = $true }
+if ($Connection -eq "managed" -and $ClusterUrl) { throw "Managed connection cannot use -ClusterUrl" }
 if ($SkipModelRuntime -and ($InstallCudaRuntime -or $InstallVulkanRuntime)) {
   throw "-SkipModelRuntime cannot be combined with a GPU runtime override"
 }
