@@ -1127,6 +1127,7 @@ fn mlx_server_health_ok(url: &str) -> bool {
 /// A model listing proves liveness, not that the first inference has executed.
 /// Exercise prefill and one decode step before publishing the managed MLX URL.
 fn warm_mlx_runtime(url: &str, model: &str, timeout: Duration) -> Result<(), String> {
+    let _progress = crate::operation_progress::OperationProgress::start("Warming MLX model");
     if timeout.is_zero() {
         return Err("MLX startup deadline elapsed before model warm-up".into());
     }
@@ -1407,6 +1408,9 @@ fn shard_fraction(line: &str) -> Option<&str> {
 }
 
 fn vllm_startup_progress(line: &str) -> Option<String> {
+    if line.contains("Pulling from") || line.contains("Pulling fs layer") || line.contains("Download complete") || line.contains("Extracting") {
+        return Some("preparing Docker image layers".to_string());
+    }
     if line.contains("Loading safetensors checkpoint shards:") {
         let percent = percentage_token(line)?;
         let shards = shard_fraction(line)?;
@@ -1429,7 +1433,7 @@ fn vllm_startup_progress(line: &str) -> Option<String> {
         return Some("CUDA and KV-cache warm-up complete".to_string());
     }
     if line.contains("Application startup complete") {
-        return Some("ready (100%)".to_string());
+        return Some("server started; checking endpoint health".to_string());
     }
     None
 }
@@ -1467,6 +1471,7 @@ fn start_vllm_runtime(
     model_dir: &Path,
     model_name: Option<&str>,
 ) -> Result<Option<PersistentRuntimeHandle>, String> {
+    let _progress = crate::operation_progress::OperationProgress::start("Starting vLLM container, loading model and checking health");
     if !cfg!(target_os = "linux") {
         return Err("vLLM persistent runtime is supported only on Linux".to_string());
     }
@@ -1626,6 +1631,7 @@ pub fn start_persistent_runtime(
     backend: Backend,
     parallel_slots: u8,
 ) -> Result<Option<PersistentRuntimeHandle>, String> {
+    let _progress = crate::operation_progress::OperationProgress::start("Preparing persistent model runtime");
     if env::var("OPENGPU_PERSISTENT_RUNTIME")
         .map(|value| value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
@@ -4900,7 +4906,7 @@ mod tests {
         );
         assert_eq!(
             vllm_startup_progress("INFO: Application startup complete.").as_deref(),
-            Some("ready (100%)")
+            Some("server started; checking endpoint health")
         );
     }
 

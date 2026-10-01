@@ -1,4 +1,6 @@
-//! Embedded media helper used by the CLI and local node worker.
+#[path = "operation-progress.rs"]
+mod operation_progress;
+// Embedded media helper used by the CLI and local node worker.
 #[path = "contribution-memory.rs"]
 pub mod memory;
 use serde_json::Value;
@@ -55,6 +57,8 @@ pub fn run_profile(
     video: bool,
     extra: &[String],
 ) -> Result<(), String> {
+    let _progress = matches!(action, "setup" | "verify" | "generate").then(||
+        operation_progress::OperationProgress::start(format!("Media {action}")));
     if matches!(action, "setup" | "verify" | "generate") {
         memory::MediaBudget::detect(cap).require_operation(if video {
             crate::contribution_contract::Operation::TextToVideo

@@ -1,3 +1,5 @@
+#[path = "../../../packages/operation-progress.rs"]
+mod operation_progress;
 #[path = "../../../packages/media-runtime.rs"]
 mod media_runtime;
 #[path = "../../../packages/vllm-model-profile.rs"]
@@ -3018,7 +3020,7 @@ fn local_readiness(
             .clone()
             .or_else(|| Some("active model is not compatible with this node".to_string()))
     } else {
-        None
+        Some("runtime readiness has not been confirmed by the node agent".to_string())
     };
 
     LocalReadiness {
@@ -3568,7 +3570,7 @@ fn relay_background_startup_output(log_path: &Path, offset: &mut u64) -> Result<
 
     for line in String::from_utf8_lossy(&bytes).split(['\r', '\n']) {
         let line = line.trim();
-        if line.starts_with("vllmStartup:") {
+        if line.starts_with("vllmStartup:") || line.starts_with("operationProgress:") {
             println!("{line}");
         }
     }
@@ -3597,6 +3599,8 @@ fn wait_for_background_agent_startup(
     mut log_offset: u64,
     previous_state: Option<&str>,
 ) -> Result<(), String> {
+    let _progress = operation_progress::OperationProgress::start("Waiting for runtime/model startup and health verification");
+    let mut error_offset = std::fs::metadata(error_log_path).map(|meta| meta.len()).unwrap_or_default();
     let timeout_seconds = env::var("OPENGPU_AGENT_START_TIMEOUT_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -3605,6 +3609,7 @@ fn wait_for_background_agent_startup(
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
         relay_background_startup_output(log_path, &mut log_offset)?;
+        relay_background_startup_output(error_log_path, &mut error_offset)?;
         if background_worker_is_healthy(previous_state) {
             theme::field("agent", theme::status("ready"));
             return Ok(());
@@ -4316,6 +4321,7 @@ fn install_macos_python3_if_missing() -> Result<(), String> {
 }
 
 fn run_checked_command(mut command: Command, action: &str) -> Result<(), String> {
+    let _progress = operation_progress::OperationProgress::start(action);
     let output = command
         .output()
         .map_err(|error| format!("{action} failed to launch: {error}"))?;
@@ -4334,6 +4340,7 @@ fn run_checked_command(mut command: Command, action: &str) -> Result<(), String>
 }
 
 fn run_streaming_command(mut command: Command, action: &str) -> Result<(), String> {
+    let _progress = operation_progress::OperationProgress::start(action);
     let status = command
         .status()
         .map_err(|error| format!("{action} failed to launch: {error}"))?;
@@ -7902,12 +7909,12 @@ mod tests {
     }
 
     #[test]
-    fn local_readiness_reports_ready_node() {
+    fn local_readiness_requires_agent_confirmation() {
         let config = ready_config();
         let readiness = local_readiness(&config, &ac_power(), config.active_model.as_deref(), true);
 
-        assert!(readiness.ready_for_jobs);
-        assert_eq!(readiness.readiness_reason, None);
+        assert!(!readiness.ready_for_jobs);
+        assert_eq!(readiness.readiness_reason.as_deref(), Some("runtime readiness has not been confirmed by the node agent"));
     }
 
     #[test]
