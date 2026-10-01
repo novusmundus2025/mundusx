@@ -74,7 +74,7 @@ $opengpu = "$env:USERPROFILE\.opengpu\bin\opengpu.exe"
 & $opengpu doctor
 ```
 
-`& $opengpu --version` should report `opengpu 0.2.20` for this release.
+`& $opengpu --version` should report `opengpu 0.2.21` for this release.
 
 Complete contributor onboarding if prompted. Look for `readyForJobs: yes` and
 check the reported connection/model state. A completed download or saved setup
