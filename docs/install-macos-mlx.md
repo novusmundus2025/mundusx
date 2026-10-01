@@ -12,10 +12,10 @@ disk space for the selected model. Do not run the entire installer with `sudo`.
 ## 2. Install the commands
 
 ```bash
-curl -fsSL https://github.com/mundusx/releases/releases/download/opengpu-prod/install.sh | bash
+curl -fL --progress-bar --connect-timeout 20 https://github.com/mundusx/releases/releases/download/opengpu-prod/install.sh | bash
 ```
 
-The script downloads the CLI, node agent, MundusX command, and agent server,
+The script downloads the OpenGPU CLI and node agent,
 and displays download/checksum progress. The default is install-only; it prints
 the next commands rather than immediately starting contribution.
 
@@ -31,12 +31,24 @@ export PATH="$HOME/.local/bin:$PATH"
 opengpu install
 ```
 
-Follow the [shared wizard guide](contributor-setup.md). Select an offered
-MLX-compatible managed model to use the native MLX path. If you choose an
-existing supported model server instead, that server remains the runtime.
-Release 0.2.20 and newer also supports direct LM Studio with a loaded model; see [Inference connections](inference-connections.md). The older 0.2.19 bundle does not include this change.
+Follow the [shared wizard guide](contributor-setup.md). First choose
+**MundusX-managed runtime**, then select workloads and an offered MLX-compatible
+model to use the native MLX path. The explicit command is
+`opengpu install --connection managed`.
 
-Setup prepares an isolated Python virtual environment and MLX dependencies and
+To reuse Ollama or LM Studio instead, start that engine first. Load an LLM in
+LM Studio and enable its API server, then run (using your actual endpoint):
+
+```bash
+opengpu install --connection direct --cluster-url http://127.0.0.1:1234
+```
+
+Select the exact model and wait for its verification request. This uses the
+external engine and skips MundusX MLX/model provisioning. See
+[Inference connections](inference-connections.md) for details. PAIR is currently
+validation-only and cannot start contribution.
+
+For managed MLX, setup prepares an isolated Python virtual environment and dependencies and
 downloads the selected model. A Python virtual environment separates packages;
 it is not an OS security sandbox.
 
@@ -49,13 +61,15 @@ Enter any OS password only in the local OS/terminal prompt, never in Chat.
 ## 4. Start and check readiness
 
 ```bash
+opengpu --version
 opengpu start --background
 opengpu status
 opengpu doctor
 opengpu model list
 ```
 
-Complete onboarding when prompted. Check for `readyForJobs: yes`, a connected
+This release reports `opengpu 0.2.20`. Complete onboarding when prompted.
+Check for `readyForJobs: yes`, a connected
 node, and the intended active model. MLX attempts to launch a persistent server
 and runs a small inference warmup. Startup/model loading can take time. If the
 persistent path fails, fallback execution can be used; do not assume every
@@ -73,9 +87,19 @@ opengpu exit
 ```
 
 Background execution does not itself promise automatic startup after reboot.
-Run `opengpu start --background` again when needed. Configuration and models
+For direct connections, start the external engine and load its selected model
+before `opengpu start --background`. Managed MLX reloads and warms its saved
+active model on startup. Configuration and models
 remain saved. The separate `mundusx connect` Chat workflow is not required here.
 
 For images/video, see [media setup](install-media.md). On Mac, ComfyUI uses
 PyTorch MPS/Metal, not MLX. Native setup is implemented, but the bundled models
 must pass real verification on the specific Mac before media readiness is claimed.
+
+## Installation progress
+
+The initial script download shows curl progress. The installer then prints its
+current step and download progress. Slow download, GPU checks, and Docker steps
+print an elapsed-time update every 10 seconds; elapsed time is not a percentage
+or an estimate of remaining time. A step failure prints its exit status.
+Do not launch a second installer while one is still running.

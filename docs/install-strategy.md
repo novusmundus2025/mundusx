@@ -152,7 +152,7 @@ Every supported release target must publish a platform-matched node-agent asset 
 - `opengpu-node-agent-x86_64-unknown-linux-gnu`
 - `opengpu-node-agent-x86_64-pc-windows-msvc.exe`
 
-The POSIX bootstrapper installs `opengpu-node-agent` beside `opengpu` and fails if the node-agent asset or checksum is missing. It also writes a `mundusx` compatibility alias that points at `opengpu` while OpenGPU is the primary command. That keeps macOS and Linux contributor installs from looking complete while the executable needed for `opengpu start` is absent. Windows follows the same rule through `install.ps1`, which installs `opengpu-node-agent.exe` beside `opengpu.exe` and copies `mundusx.exe` as the compatibility command.
+The default POSIX bootstrapper installs only `opengpu` and `opengpu-node-agent`. It does not install a `mundusx` alias, pair with Chat, or configure Chat auto-start. The separate Chat connector is opt-in with `--with-chat-connector`; only that path installs `mundusx` and `mundusx-agent-server`. Windows setup modes remain explicit in `install.ps1`. Slow POSIX download and runtime checks display elapsed-time activity updates every 10 seconds, in addition to download progress.
 
 Runtime bundles remain platform-specific release assets:
 
