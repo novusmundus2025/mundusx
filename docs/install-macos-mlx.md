@@ -34,7 +34,7 @@ opengpu install
 Follow the [shared wizard guide](contributor-setup.md). Select an offered
 MLX-compatible managed model to use the native MLX path. If you choose an
 existing supported model server instead, that server remains the runtime.
-Source builds also support direct LM Studio with a loaded model; see [Inference connections](inference-connections.md). The published 0.2.19 bundle does not include this change.
+Release 0.2.20 and newer also supports direct LM Studio with a loaded model; see [Inference connections](inference-connections.md). The older 0.2.19 bundle does not include this change.
 
 Setup prepares an isolated Python virtual environment and MLX dependencies and
 downloads the selected model. A Python virtual environment separates packages;

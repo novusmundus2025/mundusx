@@ -1,7 +1,7 @@
 # Inference connections
 
-These changes require a new CLI/node-agent build. They are not included in the
-published 0.2.19 bundle. Use matching CLI, agent, and installer versions.
+Available in release 0.2.20 and newer. Use matching CLI, agent, and installer
+versions. The older 0.2.19 bundle does not include these changes.
 
 `opengpu install` offers one connection mode. Arrow keys move; Space or Enter
 chooses a mode. Workload checkboxes still use Space to toggle and Enter to continue.
