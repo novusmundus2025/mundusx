@@ -51,14 +51,21 @@ pub fn configure(
     workloads: Option<&str>,
     endpoint: Option<&str>,
 ) -> Result<(), String> {
+    configure_with_budget(config, workloads, endpoint, &crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent))
+}
+
+fn configure_with_budget(config: &mut Config, workloads: Option<&str>, endpoint: Option<&str>, budget: &crate::media_runtime::memory::MediaBudget) -> Result<(), String> {
+    let mut selection = config.contribution.clone();
     if let Some(value) = workloads {
-        config.contribution.operations = parse_operations(value)?;
+        selection.operations = parse_operations(value)?;
     } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        config.contribution.operations = crate::workload_picker::prompt(&config.contribution.operations)?;
+        selection.operations = crate::workload_picker::prompt(&selection.operations, budget)?;
     }
+    for operation in &selection.operations { budget.require_operation(*operation)?; }
     if let Some(value) = endpoint {
-        config.contribution.comfyui_url = Some(validate_endpoint(value)?);
+        selection.comfyui_url = Some(validate_endpoint(value)?);
     }
+    config.contribution = selection;
     Ok(())
 }
 
@@ -133,6 +140,9 @@ pub fn discover(value: &str) -> ComfyDiscovery {
 }
 
 pub fn report(config: &Config, probe: bool) -> Value {
+    let budget = crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent);
+    let memory_reason = config.contribution.operations.iter()
+        .find_map(|operation| budget.require_operation(*operation).err());
     let endpoint = config
         .contribution
         .comfyui_url
@@ -143,10 +153,18 @@ pub fn report(config: &Config, probe: bool) -> Value {
         "selected_operations": config.contribution.operations,
         "execution_support": crate::contribution_contract::ExecutionCapabilities::llm_only(config.contribution.llm_enabled()),
         "llm_readiness": "Use opengpu doctor or node health; selection alone does not establish readiness",
-        "media_status": if config.contribution.media_enabled() { "queued_image_and_video" } else { "disabled" },
-        "media_reason": "Qwen image and Wan video queue serving are available; editing remains pending",
+        "media_eligibility": budget,
+        "image_eligible": budget.allows(Operation::TextToImage),
+        "video_eligible": budget.allows(Operation::TextToVideo),
+        "image_minimum_budget_bytes": budget.minimum_for(Operation::TextToImage),
+        "video_minimum_budget_bytes": budget.minimum_for(Operation::TextToVideo),
+        "media_memory_reason": memory_reason,
+        "media_status": if !config.contribution.media_enabled() { "disabled" } else if memory_reason.is_some() { "insufficient_contribution_memory" } else { "queued_image_and_video" },
+        "media_reason": "Qwen image and Wan video queue serving are available after verification and admission; editing remains unavailable",
         "local_image_verification": crate::media_runtime::verification(&crate::config::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent),
         "image_queue_supported": true,
+        "image_queue_requires": "selected image workload, current verification, capped memory, and control-plane admission",
+        "image_queue_command": "opengpu media serve --server https://chat.mundusx.ai",
         "video_queue_supported": true,
         "video_queue_requires": "selected video workload, current verification, and control-plane admission",
         "video_queue_command": "opengpu media serve --server https://chat.mundusx.ai",
@@ -180,9 +198,12 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
         }
     );
     if config.contribution.media_enabled() {
+        if let Some(reason) = report["media_memory_reason"].as_str() {
+            println!("Media unavailable: {reason}");
+        }
         if config.contribution.operations.contains(&Operation::TextToImage) {
             println!("Local image verification: {}", if report["local_image_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media verify)" });
-            println!("Image queue serving requires a running, admitted contributor and an updated media server.");
+            println!("Image queue serving requires current verification and control-plane admission.");
         }
         if config.contribution.operations.contains(&Operation::TextToVideo) {
             println!("Local video verification: {}", if report["local_video_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media --video verify)" });
@@ -202,6 +223,8 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
 }
 
 pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<(), String> {
+    let budget = crate::media_runtime::memory::MediaBudget::detect(config.contribution_percent);
+    for operation in &config.contribution.operations { budget.require_operation(*operation)?; }
     let profiles: Vec<bool> = [false, true].into_iter().filter(|video| config.contribution.operations.contains(
         if *video { &Operation::TextToVideo } else { &Operation::TextToImage })).collect();
     if profiles.is_empty() {
@@ -214,8 +237,10 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
         let candidate = config.contribution.comfyui_url.as_deref().unwrap_or("http://127.0.0.1:8188");
         println!("Checking for ComfyUI at {candidate}...");
         let discovery = discover(candidate);
-        let managed = cfg!(all(target_os = "linux", target_arch = "aarch64"))
-            && crate::detect_cuda_gpu_name().is_some_and(|name| name.contains("GB10"));
+        let managed = (cfg!(all(target_os = "linux", target_arch = "aarch64"))
+            && crate::detect_cuda_gpu_name().is_some_and(|name| name.contains("GB10")))
+            || cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            || (cfg!(all(target_os = "windows", target_arch = "x86_64")) && crate::detect_cuda_gpu_name().is_some());
         let mut options = Vec::new();
         if managed {
             options.push(("Set up managed ComfyUI".to_string(), "Reuse cached models; download missing files and verify".to_string()));
@@ -275,6 +300,38 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scripted_media_selections_require_capped_memory_and_are_atomic() {
+        use crate::media_runtime::memory::{MediaBudget, GIB};
+        let mut config = Config::default();
+        let original = config.contribution.clone();
+        for workloads in ["image", "image-edit", "video", "image-to-video", "all", "llm,image"] {
+            for budget in [MediaBudget::new(Some(32 * GIB), 50), MediaBudget::new(None, 80)] {
+                assert!(configure_with_budget(&mut config, Some(workloads), None, &budget).is_err());
+                assert_eq!(config.contribution, original);
+            }
+            configure_with_budget(&mut config, Some(workloads), None, &MediaBudget::new(Some(128 * GIB), 80)).unwrap();
+            config.contribution = original.clone();
+        }
+        configure_with_budget(&mut config, Some("llm"), None, &MediaBudget::new(None, 0)).unwrap();
+        config.contribution.operations.push(Operation::TextToVideo);
+        assert!(configure_with_budget(&mut config, None, None, &MediaBudget::new(Some(32 * GIB), 50)).is_err());
+    }
+    #[test]
+    fn scripted_selection_checks_each_model_before_saving() {
+        use crate::media_runtime::memory::{MediaBudget, GIB};
+        let mut config = Config::default();
+        let budget = MediaBudget::new(Some(64 * GIB),50);
+        configure_with_budget(&mut config, Some("llm,image"), None, &budget).unwrap();
+        let saved = config.contribution.clone();
+        for value in ["video", "all", "llm,image,video"] {
+            assert!(configure_with_budget(&mut config, Some(value), None, &budget).unwrap_err().contains("64 GiB"));
+            assert_eq!(config.contribution, saved);
+        }
+        let budget = MediaBudget::new(Some(32 * GIB),75);
+        assert!(configure_with_budget(&mut config, Some("image"), None, &budget).unwrap_err().contains("32 GiB"));
+        assert!(configure_with_budget(&mut config, None, None, &budget).is_err());
+    }
     #[test]
     fn discovery_reads_only_comfy_metadata() {
         use std::net::TcpListener;
@@ -345,21 +402,22 @@ mod tests {
             1
         );
         let mut config = Config::default();
-        configure(&mut config, Some("all"), None).unwrap();
+        configure_with_budget(&mut config, Some("all"), None, &crate::media_runtime::memory::MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80)).unwrap();
         let value = report(&config, false);
         assert_eq!(
             value["execution_support"]["operations"],
             serde_json::json!(["llm"])
         );
-        assert_eq!(value["media_status"], "queued_image_and_video");
+        assert_eq!(value["media_status"], "insufficient_contribution_memory");
     }
     #[test]
     fn selections_survive_config_roundtrip() {
         let mut config = Config::default();
-        configure(
+        configure_with_budget(
             &mut config,
             Some("image,image-edit"),
             Some("http://127.0.0.1:8188"),
+            &crate::media_runtime::memory::MediaBudget::new(Some(128 * 1024 * 1024 * 1024), 80),
         )
         .unwrap();
         let restored: Config =

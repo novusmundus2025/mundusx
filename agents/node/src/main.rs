@@ -430,7 +430,7 @@ fn build_capabilities(
     if !config.contribution.llm_enabled() {
         ready_for_jobs = false;
         readiness_reason = Some(
-            "LLM contribution disabled; video jobs use the media queue".into(),
+            "LLM contribution disabled; image/video jobs use the media queue".into(),
         );
     }
 

@@ -163,7 +163,7 @@ enum Commands {
         #[arg(long, global = true)]
         video: bool,
         /// Video duration: any integer from 1 to 10 seconds
-        #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(2..=10))]
+        #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=10))]
         seconds: u8,
         #[command(subcommand)]
         command: MediaCommands,
@@ -652,13 +652,6 @@ fn cuda_doctor_payload(
         );
     }
 
-    if os == "windows" {
-        notes.push(
-            "LM Studio can be used on Windows without the full CUDA developer toolkit when its local OpenAI-compatible endpoint and loaded model probe successfully"
-                .to_string(),
-        );
-    }
-
     if backend != Backend::Cuda {
         notes.push(format!(
             "selected backend is {}; CUDA diagnostics are informational unless CUDA is selected",
@@ -689,7 +682,6 @@ fn cuda_doctor_payload(
         "cuda_vram_mb": memory_mb,
         "cuda_low_vram_profile": low_vram_profile,
         "runtime_readiness": readiness,
-        "lm_studio_without_cuda_toolkit_supported": os == "windows",
         "notes": notes,
         "name_probe_error": name_query.err(),
         "memory_probe_error": memory_query.err(),
@@ -5324,7 +5316,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
             raw_println!(
                 "{marker} {}",
                 theme::menu_label(
-                    format!("{}. Import local GGUF / LM Studio model", options.len() + 1),
+                    format!("{}. Import local GGUF model", options.len() + 1),
                     is_selected
                 )
             );
@@ -6237,13 +6229,12 @@ fn run_install(
         std::process::exit(1);
     }
 
-    if let Err(error) =
-        contribution::configure(&mut config, workloads.as_deref(), comfyui_url.as_deref())
-    {
-        eprintln!("{error}");
-        std::process::exit(2);
-    }
-    let ranked_clusters = if config.contribution.llm_enabled() {
+    // Choose the cap before offering media: eligibility uses the capped budget.
+    let requested_llm = workloads.as_deref()
+        .and_then(|value| contribution::parse_operations(value).ok())
+        .map(|operations| operations.contains(&contribution_contract::Operation::Llm))
+        .unwrap_or(true);
+    let ranked_clusters = if requested_llm {
         cluster::servable_clusters_by_size(&detected_clusters)
     } else {
         Vec::new()
@@ -6251,7 +6242,7 @@ fn run_install(
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let mut contributed_from_menu = false;
 
-    let cluster_uses_automatic_cap = config.contribution.llm_enabled()
+    let cluster_uses_automatic_cap = !interactive && requested_llm
         && (config.contributed_cluster.is_some()
             || (cluster_choice == Some(true) && !ranked_clusters.is_empty()));
     let selected_cap = if let Some(value) = cap_percent {
@@ -6312,7 +6303,14 @@ fn run_install(
         config.contribution_percent = value;
     }
 
-    let contributing_cluster = contributed_from_menu
+    if let Err(error) =
+        contribution::configure(&mut config, workloads.as_deref(), comfyui_url.as_deref())
+    {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+
+    let contributing_cluster = (contributed_from_menu && config.contribution.llm_enabled())
         || (config.contribution.llm_enabled() && maybe_contribute_running_cluster(
             &mut config,
             cluster_choice,
@@ -6406,7 +6404,7 @@ fn run_install(
                 if config.contribution.llm_enabled() {
                     "next step: run `opengpu start`".to_string()
                 } else {
-                    "media selections saved; local generation is available after verification; network video needs LLM admission".to_string()
+                    "media selections saved; local generation is available after verification; network image/video serving needs LLM admission".to_string()
                 },
             ];
             if let Err(error) = contribution::install_media(&mut config, setup_media, yes) {
@@ -6427,7 +6425,7 @@ fn run_install(
             if config.contribution.llm_enabled() {
                 theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
             } else {
-                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Network video serving currently requires LLM node admission.");
+                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Network image/video serving currently requires LLM node admission.");
             }
         }
         Err(error) => {
@@ -8148,7 +8146,7 @@ mod tests {
             "opengpu",
             "cluster",
             "use",
-            "http://127.0.0.1:1234",
+            "http://127.0.0.1:8080",
             "--model",
             "qwen2.5-7b",
         ])
@@ -8157,7 +8155,7 @@ mod tests {
             Commands::Cluster {
                 command: ClusterCommands::Use { url, model, .. },
             } => {
-                assert_eq!(url, "http://127.0.0.1:1234");
+                assert_eq!(url, "http://127.0.0.1:8080");
                 assert_eq!(model.as_deref(), Some("qwen2.5-7b"));
             }
             other => panic!("unexpected command: {other:?}"),
@@ -8415,8 +8413,8 @@ mod tests {
     fn explicit_cluster_model_wins_over_the_first_listed_model() {
         let mut config = Config::default();
         config.contributed_cluster = Some(ContributedCluster {
-            kind: "lm-studio".to_string(),
-            base_url: "http://127.0.0.1:1234".to_string(),
+            kind: "openai-compatible".to_string(),
+            base_url: "http://127.0.0.1:8080".to_string(),
             capacity_class: "server".to_string(),
             models: vec!["a".to_string(), "b".to_string()],
             model: Some("b".to_string()),
@@ -8579,6 +8577,12 @@ mod tests {
 
     #[test]
     fn media_video_selects_profile_without_changing_image_default() {
+        for seconds in ["1", "3", "10"] {
+            assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--seconds", seconds, "plan"]).is_ok());
+        }
+        for seconds in ["0", "11"] {
+            assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--seconds", seconds, "plan"]).is_err());
+        }
         for args in [vec!["opengpu", "media", "--video", "plan"], vec!["opengpu", "media", "verify", "--video"]] {
             assert!(matches!(Cli::try_parse_from(args).unwrap().command, Commands::Media { video: true, .. }));
         }
@@ -9638,9 +9642,6 @@ mod tests {
             payload["runtime_readiness"].as_str(),
             Some("cuda-prerequisites-detected")
         );
-        assert!(payload["lm_studio_without_cuda_toolkit_supported"]
-            .as_bool()
-            .unwrap_or(false));
     }
 
     #[test]

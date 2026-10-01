@@ -72,6 +72,8 @@ Options:
 
 After this bootstrapper installs the binary, a fresh PowerShell window opens
 and runs `opengpu install` automatically unless -SkipContributorSetup is set.
+Guided setup checks image/video eligibility after choosing the contribution cap:
+Images (Qwen Image) require 32 GiB; videos (Wan 14B) require 64 GiB.
 "@ | Write-Output
 }
 
@@ -781,6 +783,7 @@ $trayIconExpected = $null
 $runtimeExpected = $null
 
 Write-Output "MundusX Windows installer"
+Write-Output "Images require 32 GiB and videos require 64 GiB after applying your contribution cap."
 Write-Output "  target: $target"
 Write-Output "  profile: $profile"
 Write-Output "  gpu: $(if ($gpu) { $gpu.Name } else { 'none detected' })"

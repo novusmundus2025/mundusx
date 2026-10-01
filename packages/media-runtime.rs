@@ -1,4 +1,6 @@
 //! Embedded media helper used by the CLI and local node worker.
+#[path = "contribution-memory.rs"]
+pub mod memory;
 use serde_json::Value;
 use std::fs;
 use std::io::IsTerminal;
@@ -26,6 +28,10 @@ pub fn prepare(home: &Path) -> Result<(PathBuf, PathBuf), String> {
     let profile = dir.join("qwen-image-v1.json");
     write_if_changed(&helper, HELPER.as_bytes())?;
     write_if_changed(&dir.join("artifact_upload.py"), UPLOADER.as_bytes())?;
+    write_if_changed(
+        &dir.join("contribution-policy.json"),
+        memory::POLICY.as_bytes(),
+    )?;
     write_if_changed(&profile, PROFILE.as_bytes())?;
     write_if_changed(&dir.join("wan-video-v1.json"), VIDEO_PROFILE.as_bytes())?;
     Ok((helper, profile))
@@ -49,6 +55,13 @@ pub fn run_profile(
     video: bool,
     extra: &[String],
 ) -> Result<(), String> {
+    if matches!(action, "setup" | "verify" | "generate") {
+        memory::MediaBudget::detect(cap).require_operation(if video {
+            crate::contribution_contract::Operation::TextToVideo
+        } else {
+            crate::contribution_contract::Operation::TextToImage
+        })?;
+    }
     let (helper, profile) = prepare(home)?;
     let profile = if video {
         helper.with_file_name("wan-video-v1.json")
@@ -113,6 +126,16 @@ fn profile_verification(
     cap: u8,
     video: bool,
 ) -> Option<Value> {
+    profile_verification_with_memory(home, endpoint, cap, video, memory::physical_memory_bytes())
+}
+
+fn profile_verification_with_memory(
+    home: &Path,
+    endpoint: Option<&str>,
+    cap: u8,
+    video: bool,
+    total: Option<u64>,
+) -> Option<Value> {
     use sha2::{Digest, Sha256};
     let mut value: Value = serde_json::from_slice(
         &fs::read(home.join(if video {
@@ -129,10 +152,19 @@ fn profile_verification(
     let matches = value["profile_hash"].as_str() == Some(&hash)
         && value["cap_percent"].as_u64() == Some(u64::from(cap))
         && endpoint_matches
-        && !home.join("media/active-container.json").exists();
+        && !home.join("media/active-container.json").exists()
+        && !home.join("media/active-native.json").exists();
     if !matches {
         value["ready"] = Value::Bool(false);
         value["reason"] = "Configuration or bundled profile changed; verify again".into();
+    }
+    let budget = memory::MediaBudget::new(total, cap);
+    if let Err(reason) = budget.require() {
+        value["ready"] = Value::Bool(false);
+        value["reason"] = reason.into();
+    } else if budget.contribution_budget_bytes < profile["minimum_budget_bytes"].as_u64() {
+        value["ready"] = Value::Bool(false);
+        value["reason"] = "Insufficient contributed memory for the selected model profile".into();
     }
     Some(value)
 }
@@ -163,10 +195,38 @@ mod tests {
         )
         .unwrap();
         assert!(verification(&home, None, 65).is_none());
-        assert_eq!(video_verification(&home, None, 65).unwrap()["ready"], true);
-        assert_eq!(video_verification(&home, None, 70).unwrap()["ready"], false);
+        assert_eq!(
+            profile_verification_with_memory(&home, None, 65, true, Some(128 * memory::GIB))
+                .unwrap()["ready"],
+            true
+        );
+        // A matching certificate cannot authorize work on a smaller replacement host.
+        assert_eq!(
+            profile_verification_with_memory(&home, None, 65, true, Some(32 * memory::GIB))
+                .unwrap()["ready"],
+            false
+        );
+        assert_eq!(
+            profile_verification_with_memory(&home, None, 65, true, None).unwrap()["ready"],
+            false
+        );
+        // General media eligibility does not waive the larger video model requirement.
+        assert_eq!(
+            profile_verification_with_memory(&home, None, 65, true, Some(64 * memory::GIB))
+                .unwrap()["ready"],
+            false
+        );
+        assert_eq!(
+            profile_verification_with_memory(&home, None, 70, true, Some(128 * memory::GIB))
+                .unwrap()["ready"],
+            false
+        );
         fs::write(home.join("media/active-container.json"), "{}").unwrap();
-        assert_eq!(video_verification(&home, None, 65).unwrap()["ready"], false);
+        assert_eq!(
+            profile_verification_with_memory(&home, None, 65, true, Some(128 * memory::GIB))
+                .unwrap()["ready"],
+            false
+        );
         fs::remove_dir_all(&home).unwrap();
     }
 }

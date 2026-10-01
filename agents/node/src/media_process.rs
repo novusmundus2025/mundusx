@@ -13,13 +13,7 @@ impl MediaProcess {
     }
 
     pub fn start(config: &AgentConfig) -> Self {
-        if !config.contribution.operations.iter().any(|operation| {
-            matches!(
-                operation,
-                crate::contribution_contract::Operation::TextToVideo
-                    | crate::contribution_contract::Operation::TextToImage
-            )
-        }) {
+        if !media_selected(config) {
             return Self(None, std::time::Instant::now());
         }
         let server = std::env::var("MUNDUSX_MEDIA_SERVER_URL").ok().or_else(|| {
@@ -69,6 +63,35 @@ impl Drop for MediaProcess {
         if let Some(child) = self.0.as_mut() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+    }
+}
+
+fn media_selected(config: &AgentConfig) -> bool {
+    config.contribution.operations.iter().any(|operation| {
+        matches!(
+            operation,
+            crate::contribution_contract::Operation::TextToVideo
+                | crate::contribution_contract::Operation::TextToImage
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contribution_contract::Operation;
+    #[test]
+    fn starts_for_image_or_video_but_not_llm_or_editing_only() {
+        let mut cfg = AgentConfig::default();
+        for (operation, expected) in [
+            (Operation::TextToImage, true),
+            (Operation::TextToVideo, true),
+            (Operation::Llm, false),
+            (Operation::ImageEdit, false),
+        ] {
+            cfg.contribution.operations = vec![operation];
+            assert_eq!(media_selected(&cfg), expected);
         }
     }
 }

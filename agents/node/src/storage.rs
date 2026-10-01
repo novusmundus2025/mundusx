@@ -1,3 +1,6 @@
+#[path = "../../../packages/cluster-policy.rs"]
+pub mod cluster_policy;
+
 use crate::contracts::Backend;
 use crate::contracts::Heartbeat;
 use serde::{Deserialize, Serialize};
@@ -182,6 +185,12 @@ pub fn load_agent_config() -> std::io::Result<Option<AgentConfig>> {
     let raw = fs::read_to_string(path)?;
     let mut config: AgentConfig = serde_json::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if config.contributed_cluster.as_ref().map(|cluster|
+        cluster_policy::unsupported_runtime(&cluster.kind, &cluster.base_url)
+    ).unwrap_or(false) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+            "LM Studio contribution is no longer supported; run `opengpu install` to choose a supported runtime."));
+    }
     if migrate_control_plane_url(&mut config.control_plane_url) {
         save_agent_config(&config)?;
     }
@@ -309,6 +318,21 @@ mod tests {
             None => std::env::remove_var("OPENGPU_HOME"),
         }
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn refuses_saved_unsupported_cluster_without_rewriting_it() {
+        with_temp_home(|| {
+            let mut value = serde_json::to_value(AgentConfig::default()).unwrap();
+            value["contributed_cluster"] = serde_json::json!({
+                "kind": "lm-studio", "base_url": "http://localhost:9999"
+            });
+            let original = serde_json::to_string(&value).unwrap();
+            fs::write(config_path(), &original).unwrap();
+            let error = load_agent_config().unwrap_err();
+            assert!(error.to_string().contains("no longer supported"));
+            assert_eq!(fs::read_to_string(config_path()).unwrap(), original);
+        });
     }
 
     fn heartbeat(updated_at: &str) -> Heartbeat {

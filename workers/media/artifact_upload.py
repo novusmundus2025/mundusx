@@ -16,7 +16,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def upload_file(file, ticket_path, server):
+def upload_file(file, ticket_path, server, managed_copy=None):
     if not file or not ticket_path or not server:
         raise ValueError('Upload requires an image file, upload ticket and web server URL')
     origin = urllib.parse.urlsplit(server)
@@ -63,6 +63,29 @@ def upload_file(file, ticket_path, server):
     if (receipt.get('artifact_id') != identity or receipt.get('status') != 'ready' or
             receipt.get('sha256') != digest or receipt.get('byte_size') != len(data)):
         raise ValueError('Invalid upload receipt; local image preserved')
+    deleted = False
+    if content_type == 'image/png':
+        paths = [path]
+        if managed_copy is not None and Path(managed_copy) != path:
+            paths.insert(0, Path(managed_copy))
+        # Revalidate all copies before deletion: a changed file is not this upload.
+        for candidate in paths:
+            if not candidate.exists():
+                if candidate == path:
+                    raise ValueError('Hosted image is ready, but the local image disappeared before cleanup')
+                continue
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ValueError('Hosted image is ready; refusing to delete a non-regular local copy')
+            with candidate.open('rb') as stream:
+                current = stream.read(maximum + 1)
+            if len(current) != len(data) or hashlib.sha256(current).hexdigest() != digest:
+                raise ValueError('Hosted image is ready; local copy changed, so cleanup was refused')
+        try:
+            for candidate in paths:
+                candidate.unlink(missing_ok=True)  # Direct filesystem deletion; no Trash/Recycle Bin.
+        except OSError as error:
+            raise ValueError('Hosted image is ready, but permanent local cleanup failed; check file permissions') from error
+        deleted = True
     # The requesting user already owns the download link. Never expose the upload secret.
     return {'artifact_id': identity, 'status': 'ready', 'sha256': digest,
-            'byte_size': len(data), 'expires_at': receipt.get('expires_at'), 'local_image_preserved': True}
+            'byte_size': len(data), 'expires_at': receipt.get('expires_at'), 'local_image_preserved': not deleted, 'local_image_deleted': deleted}

@@ -1,5 +1,17 @@
 # Media contribution
 
+The installer enables **Images at 32 GiB** and **Videos at 64 GiB** of memory
+after the contribution cap, matching the bundled Qwen Image and Wan 14B profiles.
+The picker, scripted workload options, setup, and readiness checks all enforce
+these model-specific thresholds on macOS, Windows, and Linux.
+
+All platforms apply a 24 GiB minimum **contributed** memory budget to image,
+editing, video, and image-to-video selection. The cap is chosen before workloads;
+32 GiB at 50% is ineligible, while 32 GiB at 75% meets this general threshold.
+Model-specific minima still apply (and may be higher). Scripted selection,
+direct media setup/generation, readiness certificates and video queue serving
+enforce this rule as well. See `docs/install-strategy.md` for the distribution paths.
+
 ## Video workflow
 
 The web service queues authenticated text-to-video requests at `/video`.
@@ -152,3 +164,57 @@ lease expiry, MP4 validation, downloads, reward idempotency, and file expiry wit
 retained job/credit records. Hardware testing of every OS, arbitrary external
 ComfyUI installation, editing, and longer-than-10-second workflows remains outside
 this release.
+
+## Image queue integration
+
+The node agent starts the media worker when image or video generation is selected.
+The worker claims only selected, memory-eligible profiles with a current verification
+certificate. Images use chat's `qwen-image-fp8-832x480-v1` profile (832 x 480,
+30 steps); existing 1024-profile certificates must be renewed with
+`opengpu media verify`. The image contribution-memory minimum remains 32 GiB.
+
+Image jobs generate a PNG, reserve a scoped upload, upload the file, and only then
+report completion. Failed uploads never complete a job. Chat's completed-result
+endpoint supplies an expiring preview URL and download URL; contributor-local paths
+and upload credentials are not returned as user download links. Queue admission
+still requires an admitted contributor; editing is not supported.
+
+This integration is source-tested with a simulated image job and failed upload,
+plus media transport tests. A rebuilt contributor and a real queued GPU generation
+are required before claiming a hardware-verified deployment.
+
+### Local image cleanup after upload
+
+A verified hosted-upload receipt (artifact ID, ready status, SHA-256 and size)
+triggers direct filesystem deletion of the local PNG, bypassing Trash/Recycle Bin.
+Queued managed images also delete their matching ComfyUI output under the owned
+`media/outputs/opengpu` directory. Copies are checked against the uploaded digest
+before deletion. Failed uploads or invalid receipts retain local files; cleanup
+errors are reported rather than silently claiming success. Videos retain their
+existing behavior. An external ComfyUI server's original output remains under
+that server's control; only the worker's downloaded copy is removed.
+
+## Native managed ComfyUI setup (Windows and Apple Silicon)
+
+Guided setup now offers a managed native environment on Windows x64 with an
+NVIDIA driver and Apple Silicon macOS. Linux ARM64 GB10/GX10 retains Docker.
+Native setup requires Python 3.12/3.13 and installs PyTorch 2.9.1, torchvision
+0.24.1 and torchaudio 2.9.1 inside a contributor-owned virtual environment.
+Windows uses the CUDA 12.8 wheel index; macOS uses MPS, not MLX. No existing
+ComfyUI installation or system Python package environment is modified.
+
+The pinned ComfyUI source and checksummed models are shared with the managed
+workflow. A CUDA/MPS tensor probe must pass before model downloads. The runtime
+binds to a dynamic loopback port, uses owned model/output directories, disables
+custom nodes, applies the contribution fraction to the GPU allocator and stops
+after the job. Mac runs with FP16 model/text-encoder settings. The advertised
+32/64 GiB limits remain eligibility floors, not a guarantee the model fits a
+particular device. FP8 conversion, driver compatibility, and real output must pass
+`opengpu media verify` (or `--video verify`) before queue claims are enabled.
+Video additionally requires ffmpeg and ffprobe on PATH.
+
+Native setup/start/cleanup are covered by mocked platform and process tests.
+Neither Windows GPU nor Apple Silicon generation has been validated in this
+change; these paths are provisional until real generation verification succeeds.
+Official references: https://docs.comfy.org/installation/manual_install and
+https://pytorch.org/get-started/previous-versions/ .

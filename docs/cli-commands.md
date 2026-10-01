@@ -31,7 +31,7 @@ pause, resume, or disconnect workflows.
 - `opengpu cluster scan` - probe the well-known local ports for a running LLM cluster and show what answered
 - `opengpu cluster use <url>` - contribute a running local cluster without waiting for the setup prompt
 - `opengpu cluster forget` - stop contributing the recorded cluster and allow the setup prompt again
-- `opengpu doctor` - inspect config paths, writability, CUDA prerequisite state, low-VRAM profile, Windows LM Studio runtime guidance, and opt-in Linux vLLM readiness
+- `opengpu doctor` - inspect config paths, writability, CUDA prerequisite state, low-VRAM profile, opt-in Linux vLLM readiness
 - `opengpu logs` - show local log source information
 - `opengpu update` - show the local install page and release preview URLs
 
@@ -69,7 +69,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - Community contribution quick picks are `20%`, `30%`, `50%`, `65%`, and `80%`; custom caps can be any whole percent from `1%` through `80%`.
 - `install` is the guided setup command after the binary is installed. Public mode saves the hosted MundusX control plane; private mode asks for a full custom URL; blank URL means public. The wizard also asks for the model and refuses choices that do not fit the selected contribution cap and detected machine capacity.
 - MundusX-managed runtimes do not ask contributors to guess a concurrency value. The node derives a safe ceiling from the cap-applied memory and selected model; CUDA budgets up to 8 GB are fixed to one active job and additional requests wait in the control-plane queue. A configured limit may lower this ceiling but cannot raise it.
-- `install` and `start` probe the machine for a local LLM cluster that is already running (Ollama on `11434`, LM Studio on `1234`, vLLM on `8000`, and any OpenAI-compatible server on `8080`). When one answers with at least one model, the contributor is asked whether to contribute that running cluster instead of provisioning a MundusX runtime and downloading another copy of the weights. The MundusX-managed `llama-server` port `8789` is never treated as a foreign cluster.
+- `install` and `start` probe the machine for a local LLM cluster that is already running (Ollama on `11434`, vLLM on `8000`, and any OpenAI-compatible server on `8080`). When one answers with at least one model, the contributor is asked whether to contribute that running cluster instead of provisioning a MundusX runtime and downloading another copy of the weights. The MundusX-managed `llama-server` port `8789` is never treated as a foreign cluster.
 - The cluster question lives on the contribution level menu as a final `Clusters detected (N)` row. Choosing it lists every running cluster, biggest model first, plus a `None` row; picking one contributes it, saves the default cap for local policy, and skips model selection entirely. `None` or `Esc` returns to the contribution level menu.
 - The runtime is identified from its own model listing (`owned_by`, llama.cpp `meta` fields, Ollama `details`/`digest`), not from the port, so a llama.cpp server on `8000` is reported as llama.cpp rather than vLLM.
 - A contributed cluster advertises `runtime_mode: contributed-cluster`, a capacity class derived from the advertised model's size, no host-derived VRAM budget, and parallel slots bounded by the runtime's reported scheduler/KV capacity. A contributor may choose a lower limit but cannot exceed that runtime ceiling. Heavy/synthesis clusters receive `reducer`/`synthesizer` roles.
@@ -82,3 +82,7 @@ These remain available, but they are hidden from the default `--help` output so 
 - A detected endpoint that is running but advertises no model is reported as detected-but-idle and is not offered for contribution, because it cannot serve work yet.
 - `start` only marks the node ready when the secure device identity is available.
 - Config inspection now happens through `status` and `doctor`; dedicated `config` subcommands are not part of the current CLI surface.
+
+LM Studio contribution is no longer supported. Its default port is excluded from discovery and explicit cluster adoption, and model listings identifying LM Studio are rejected on custom ports. The CLI removes legacy saved LM Studio connections with a notice; a directly launched node agent rejects them until setup is rerun. Generic OpenAI-compatible endpoints that conceal their runtime identity cannot reliably be distinguished. Local GGUF import remains supported independently.
+
+Cluster discovery validates the `/v1/models` or Ollama `/api/tags` response before offering a server. Port 8000 alone does not identify vLLM. ComfyUI and unrelated JSON health endpoints are excluded; contributed-node health uses the same listing validation.

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import sys
 from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import zlib
@@ -20,6 +21,67 @@ media = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(media)
 PROFILE = json.loads(Path(__file__).with_name('qwen-image-v1.json').read_text())
 VIDEO_PROFILE = json.loads(Path(__file__).with_name('wan-video-v1.json').read_text())
+
+
+class ContributionMemoryTests(unittest.TestCase):
+    def test_floor_uses_exact_capped_bytes_and_preserves_profile_fit(self):
+        gib = 1024**3
+        self.assertEqual(media.MINIMUM_MEDIA_BUDGET, 24*gib)
+        for total, cap, eligible in [(32,50,False),(32,74,False),(32,75,True),(48,50,True),(64,30,False),(64,40,True),(24,80,False)]:
+            budget = media.contribution_budget(total*gib, cap)
+            if eligible:
+                media.require_media_budget(budget)
+            else:
+                with self.assertRaisesRegex(media.MediaError, 'after applying the cap'):
+                    media.require_media_budget(budget)
+        with self.assertRaises(media.MediaError):
+            media.require_media_budget(media.contribution_budget(32*gib-1,75))
+        for cap in [0,81,100]:
+            with self.assertRaises(media.MediaError): media.contribution_budget(128*gib,cap)
+        with self.assertRaisesRegex(media.MediaError, 'model profile'):
+            media.require_media_budget(24*gib, PROFILE)
+
+    def test_all_platforms_and_media_operations_reject_before_setup_or_network(self):
+        for system in ['Darwin', 'Windows', 'Linux']:
+            for operation in ['text_to_image','image_edit','text_to_video','image_to_video']:
+                for action in ['setup','verify','generate']:
+                    with self.subTest(system=system,operation=operation,action=action), tempfile.TemporaryDirectory() as directory:
+                        home = Path(directory)
+                        profile = {**PROFILE, 'operation': operation, 'minimum_budget_bytes': 0}
+                        path = home/'profile.json'; path.write_text(json.dumps(profile))
+                        args = ['runtime.py',action,'--home',directory,'--profile',str(path),'--cap-percent','50','--endpoint','http://127.0.0.1:8188','--yes']
+                        with patch.object(sys,'argv',args), patch.object(media.platform,'system',return_value=system), \
+                             patch.object(media,'physical_memory',return_value=32*1024**3), \
+                             patch.object(media,'Comfy') as comfy, patch.object(media,'install') as install:
+                            with self.assertRaisesRegex(media.MediaError,'24 GiB'): media.main()
+                            comfy.assert_not_called(); install.assert_not_called()
+                        self.assertFalse((home/'media').exists())
+
+    def test_plan_explains_ineligibility_and_stop_still_works(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = ['runtime.py','plan','--home',directory,'--profile',str(Path(__file__).with_name('qwen-image-v1.json')),'--cap-percent','50']
+            output = io.StringIO()
+            with patch.object(sys,'argv',args), patch.object(media,'physical_memory',return_value=32*1024**3), contextlib.redirect_stdout(output):
+                media.main()
+            plan = json.loads(output.getvalue())
+            self.assertFalse(plan['media_eligible'])
+            self.assertEqual(plan['budget_bytes'],16*1024**3)
+            args[1]='stop'
+            with patch.object(sys,'argv',args), patch.object(media,'physical_memory',side_effect=media.MediaError('unavailable')) as probe, \
+                 patch.object(media,'stop_owned_container') as stop, contextlib.redirect_stdout(io.StringIO()):
+                media.main()
+                probe.assert_not_called(); stop.assert_called_once()
+
+    def test_status_invalidates_matching_certificate_below_floor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory)
+            certificate={'ready':True,'profile_hash':media.profile_hash(PROFILE),'cap_percent':50,'endpoint':None}
+            media.atomic_json(home/'media/verified.json',certificate)
+            args=['runtime.py','status','--home',directory,'--profile',str(Path(__file__).with_name('qwen-image-v1.json')),'--cap-percent','50']
+            output=io.StringIO()
+            with patch.object(sys,'argv',args), patch.object(media,'physical_memory',return_value=32*1024**3), contextlib.redirect_stdout(output):
+                media.main()
+            self.assertFalse(json.loads(output.getvalue())['verified']['ready'])
 
 
 def png(width=8, height=8):
@@ -197,8 +259,94 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(media.MediaError):
                 with media.drain_contributor(home):self.fail('must not enter')
 
+    def test_native_backend_selection(self):
+        for system, machine, expected in [('Windows','AMD64','cuda'), ('Darwin','arm64','mps'),
+                                          ('Darwin','x86_64',None), ('Linux','aarch64',None)]:
+            with patch.object(media.platform,'system',return_value=system), patch.object(media.platform,'machine',return_value=machine):
+                self.assertEqual(media.native_backend(),expected)
+
+    def test_native_install_is_isolated_probes_gpu_before_model_download_and_needs_verification(self):
+        for backend in ['cuda','mps']:
+            with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+                root=Path(directory); source=root/'source'; source.mkdir()
+                commands=[]; downloads=[]
+                def command(args, **kwargs): commands.append(args); return ''
+                def download(*args):
+                    self.assertTrue(any('-c' in cmd for cmd in commands))
+                    downloads.append(args)
+                with patch.object(media,'native_backend',return_value=backend), \
+                     patch.object(media.shutil,'which',return_value='nvidia-smi'), \
+                     patch.object(media.shutil,'disk_usage',return_value=type('Disk',(),{'free':10**12})()), \
+                     patch.object(media,'cached_model',return_value=True), \
+                     patch.object(media,'prepare_source',return_value=source), \
+                     patch.object(media,'run',side_effect=command), \
+                     patch.object(media,'download',side_effect=download), \
+                     patch.object(media,'drain_contributor',return_value=contextlib.nullcontext()), \
+                     patch.object(media.sys,'version_info',(3,13,0)):
+                    media.install_native(root,PROFILE,64*1024**3)
+                self.assertEqual(commands[0][1:3],['-m','venv'])
+                self.assertIn('torch==2.9.1',commands[1])
+                self.assertEqual('--index-url' in commands[1],backend=='cuda')
+                self.assertIn('-c',commands[2]); self.assertIn('-r',commands[2])
+                self.assertEqual(len(downloads),len(PROFILE['files']))
+                record=media.load_json(media.profile_record(root,PROFILE,'runtime'))
+                self.assertEqual(record['kind'],'managed_native_comfyui')
+                self.assertEqual(record['backend'],backend)
+                self.assertFalse(media.profile_record(root,PROFILE,'verified').exists())
+
+    def test_native_missing_gpu_fails_before_model_download(self):
+        with patch.object(media,'native_backend',return_value='cuda'), \
+             patch.object(media.shutil,'which',return_value=None), patch.object(media,'download') as download:
+            with self.assertRaisesRegex(media.MediaError,'NVIDIA'):
+                media.install_native(Path('.'),PROFILE,64*1024**3)
+            download.assert_not_called()
+
+    def test_native_runtime_uses_owned_paths_loopback_and_stops_on_generation_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); base,python=media.native_paths(root,PROFILE)
+            python.parent.mkdir(parents=True); python.touch()
+            source=root/('build-'+PROFILE['comfy_revision'])/('ComfyUI-'+PROFILE['comfy_revision'])
+            source.mkdir(parents=True); (source/'main.py').touch()
+            calls=[]
+            class Process:
+                pid=123; stopped=False
+                def poll(self): return 0 if self.stopped else None
+                def terminate(self): self.stopped=True
+                def wait(self,timeout): return 0
+            process=Process()
+            def launch(args,**kwargs): calls.append((args,kwargs)); return process
+            class Client:
+                def __init__(self,url): self.url=url
+                def inspect(self,profile): return {},{}
+            record={'backend':'mps'}
+            with patch.object(media,'native_backend',return_value='mps'), \
+                 patch.object(media,'physical_memory',return_value=128*1024**3), \
+                 patch.object(media.subprocess,'Popen',side_effect=launch), patch.object(media,'Comfy',Client):
+                with self.assertRaisesRegex(RuntimeError,'generation failed'):
+                    with media.native_client(root,PROFILE,record,64*1024**3) as client:
+                        self.assertTrue(client.url.startswith('http://127.0.0.1:'))
+                        self.assertTrue((root/'active-native.json').exists())
+                        raise RuntimeError('generation failed')
+            self.assertTrue(process.stopped); self.assertFalse((root/'active-native.json').exists())
+            args,kwargs=calls[0]
+            self.assertIn('--disable-all-custom-nodes',args)
+            self.assertIn('--fp16-unet',args)
+            self.assertIn('--fp16-text-enc',args)
+            self.assertEqual(args[args.index('--output-directory')+1],str(root/'outputs'))
+            self.assertEqual(args[args.index('--listen')+1],'127.0.0.1')
+            self.assertEqual(args[args.index('mps')+1],'0.5')
+
+    def test_invalid_native_cleanup_marker_never_runs_a_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); media.atomic_json(root/'active-native.json',{'pid':1,'token':'invalid','python':'outside'})
+            with patch.object(media,'run') as run:
+                with self.assertRaisesRegex(media.MediaError,'ownership'):
+                    media.stop_owned_native(root)
+                run.assert_not_called()
+            self.assertTrue((root/'active-native.json').exists())
+
     def test_unsupported_platform_does_not_install_dependencies(self):
-        with patch.object(media.platform,'system',return_value='Windows'),patch.object(media,'run') as run:
+        with patch.object(media.platform,'system',return_value='Darwin'),patch.object(media.platform,'machine',return_value='x86_64'),patch.object(media,'run') as run:
             with self.assertRaisesRegex(media.MediaError,'Linux ARM64'):
                 media.install(Path('.'),PROFILE,64*1024**3)
             run.assert_not_called()

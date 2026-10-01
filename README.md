@@ -47,45 +47,27 @@ Rust workspace:
 - `Cargo.toml` at the repo root
 - `apps/cli` is the first compiled Rust crate
 
-## One-Click Install
+## Install a contributor
 
-Users should install the CLI from the localhost release preview and never need Rust locally:
+Use the public production release; no Rust toolchain is required:
 
-```bash
-RELEASE_BASE_URL=http://127.0.0.1:8788/releases/latest/download bash install.sh
-```
+- [Windows step-by-step installation](docs/install-windows.md)
+- [Linux and GB10/GX10 step-by-step installation](docs/install-linux.md)
+- [Apple Silicon macOS and MLX installation](docs/install-macos-mlx.md)
+- [Setup choices, caps, and connection checks](docs/contributor-setup.md)
+- [Optional image and video installation](docs/install-media.md)
 
-On Apple Silicon macOS, use the macOS-specific release. Replace `v0.1.10` with the current published Mac release version:
+Start with the [installation index](docs/getting-started.md). The default shell
+installer installs binaries first; guided setup and contribution startup are
+separate steps. Model downloads and runtime preparation depend on your choices.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/mundusx/mundusx/uat/install.sh | RELEASE_BASE_URL=https://github.com/mundusx/mundusx/releases/download/cli-macos-v0.1.11 bash
-```
+The public release bundle is 0.2.19; the embedded CLI package version still
+reports 0.2.16. Media eligibility is calculated after the contribution cap:
+32 GiB for images and 64 GiB for video. Successful generation verification and
+control-plane admission are separate requirements.
 
-On Windows, use the native PowerShell bootstrapper:
-
-```powershell
-.\install.ps1 -ReleaseBaseUrl https://github.com/mundusx/mundusx/releases/download/cli-windows-v0.1.11
-```
-
-On Linux ARM64 GB10/GX10, the same POSIX installer automatically installs the
-CLI, node agent, and pinned NVIDIA vLLM runtime. Contributor choices remain in
-the interactive `opengpu install` wizard:
-
-```bash
-curl -fsSL https://github.com/mundusx/releases/releases/download/opengpu-prod/install.sh | bash
-opengpu install
-```
-
-The wizard asks for the control plane, contribution cap, concurrency, model,
-and whether to contribute an existing local cluster. Fully unattended setup
-remains available with `--auto-start`; its defaults are a 30% cap and two jobs.
-
-The installer downloads the matching release binary for the user's operating system and CPU architecture from the local release preview, then verifies the checksum when available. After the binary is installed, `opengpu install` detects the machine profile, control-plane choice, community contribution cap, and model fit.
-
-See [docs/install-page.md](/Users/DBATALL/Documents/mundusx/docs/install-page.md) for the localhost install wording and [docs/install-strategy.md](/Users/DBATALL/Documents/mundusx/docs/install-strategy.md) for the distribution plan.
-For enterprise Windows rollout controls, see [docs/enterprise-windows-policy.md](/Users/DBATALL/Documents/mundusx/docs/enterprise-windows-policy.md).
-The local install page also exposes a machine-readable manifest at `http://127.0.0.1:3002/install.json` for tooling and future public rollout work. The same dashboard also mirrors the future public-endpoint shape at `http://127.0.0.1:3002/public/install` and `http://127.0.0.1:3002/public/install.json`. The matching local release preview is also manifest-driven and serves `release-manifest.json` from `http://127.0.0.1:8788/releases/latest/download/`.
-For a repo-owned public docs artifact, run `npm run build:docs-site` to generate the static site into `dist/public-docs-site`. That same build is what the GitHub Pages workflow deploys from `uat` and `main`, including the reviewable public mirror paths at `/public/docs`, `/public/install`, `/public/install.json`, `/public/install.sh`, `/public/release`, and `/public/release.json`.
+For development-only release previews and docs-site tooling, see
+[installation strategy](docs/install-strategy.md) and [public docs site](docs/public-docs-site.md).
 
 Release builds for the CLI are published from GitHub Actions on `cli-v*` tags with checksums and a signed manifest attached to each release artifact set.
 

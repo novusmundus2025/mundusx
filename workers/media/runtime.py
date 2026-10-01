@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 from fractions import Fraction
 import json
+import re
 import os
 from pathlib import Path
 import platform
@@ -27,6 +28,25 @@ import zlib
 MAX_JSON = 8 * 1024 * 1024
 MAX_IMAGE = 32 * 1024 * 1024
 MAX_VIDEO = 128 * 1024 * 1024
+CONTRIBUTION_POLICY = json.loads(Path(__file__).with_name('contribution-policy.json').read_text())
+MINIMUM_MEDIA_BUDGET = CONTRIBUTION_POLICY['minimum_media_budget_bytes']
+
+
+def contribution_budget(total_bytes, cap_percent):
+    if not 1 <= cap_percent <= CONTRIBUTION_POLICY['maximum_cap_percent']:
+        raise MediaError('Contribution percentage must be between 1 and 80')
+    if total_bytes <= 0:
+        raise MediaError('Cannot determine machine memory; media eligibility is unknown')
+    return total_bytes * cap_percent // 100
+
+
+def require_media_budget(budget_bytes, profile=None):
+    if budget_bytes < MINIMUM_MEDIA_BUDGET:
+        raise MediaError(f'Image and video workloads require at least {MINIMUM_MEDIA_BUDGET/1024**3:g} GiB '
+                         f'of contributed memory after applying the cap; current budget: {budget_bytes/1024**3:.2f} GiB')
+    if profile and budget_bytes < profile['minimum_budget_bytes']:
+        raise MediaError(f"Selected model profile requires at least {profile['minimum_budget_bytes']/1024**3:g} GiB "
+                         'of contributed memory, above the general media eligibility threshold')
 
 
 def is_video(profile):
@@ -338,7 +358,8 @@ def generate(client, profile, prompt, seed, output, timeout=None):
                         validate_png(data, profile["width"], profile["height"])
                         with output.open("xb") as stream: stream.write(data)
                     return {"artifact": str(output), "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
-                            "duration_ms": round((time.monotonic()-started)*1000), "prompt_id": prompt_id}
+                            "duration_ms": round((time.monotonic()-started)*1000), "prompt_id": prompt_id,
+                            "source_filename": filename}
             emit("progress", prompt_id=prompt_id, elapsed_seconds=round(time.monotonic()-started))
             time.sleep(2)
         raise MediaError("Generation timed out; running external ComfyUI work was not interrupted")
@@ -420,22 +441,7 @@ def cached_model(root, file):
     return path.is_file() and path.stat().st_size == file["size"] and digest_file(path) == file["sha256"]
 
 
-def install(root, profile, budget_bytes):
-    if platform.system() != "Linux" or platform.machine().lower() not in ('aarch64', 'arm64'):
-        raise MediaError("Automatic media runtime currently targets Linux ARM64 GB10/GX10; connect existing ComfyUI on other platforms")
-    if budget_bytes < profile["minimum_budget_bytes"]:
-        raise MediaError(f"Selected profile requires at least {profile['minimum_budget_bytes']/1024**3:g} GiB contribution budget")
-    if not shutil.which("docker") or not shutil.which("nvidia-smi"):
-        raise MediaError("Automatic setup requires Docker, NVIDIA GPU drivers, and NVIDIA Container Toolkit")
-    run(["docker", "info"], timeout=30, capture=True)
-    gpu = run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], timeout=30, capture=True)
-    if 'GB10' not in gpu or len(gpu.splitlines()) != 1:
-        raise MediaError("Managed profile requires one GB10 GPU; use an existing ComfyUI endpoint for other hardware")
-    # Existing valid files are reused, so only reserve space for missing/replaced files.
-    total = sum(file["size"] for file in profile["files"]
-                if not cached_model(root, file))
-    if shutil.disk_usage(root).free < total + 15*1024**3:
-        raise MediaError("Insufficient disk space: models plus 15 GiB runtime/build headroom required")
+def prepare_source(root, profile):
     revision = profile["comfy_revision"]
     archive = root / (revision + ".tar.gz")
     download("https://codeload.github.com/Comfy-Org/ComfyUI/tar.gz/" + revision, archive, 6829774, profile["comfy_archive_sha256"])
@@ -449,6 +455,76 @@ def install(root, profile, budget_bytes):
                 raise MediaError("Unsafe entry in runtime source archive")
         tar.extractall(build, filter="data")
     source = build / ("ComfyUI-" + revision)
+    return source
+
+
+def native_backend():
+    system, machine = platform.system(), platform.machine().lower()
+    if system == 'Windows' and machine in ('amd64', 'x86_64'):
+        return 'cuda'
+    if system == 'Darwin' and machine in ('arm64', 'aarch64'):
+        return 'mps'
+    return None
+
+
+def native_paths(root, profile):
+    base = root / ('native-' + profile['comfy_revision'])
+    python = base / 'venv' / ('Scripts/python.exe' if platform.system() == 'Windows' else 'bin/python')
+    return base, python
+
+
+def install_native(root, profile, budget_bytes):
+    backend = native_backend()
+    if backend is None: raise MediaError('Native setup needs Windows x64/NVIDIA or an Apple Silicon Mac')
+    if backend == 'cuda' and not shutil.which('nvidia-smi'):
+        raise MediaError('Native Windows setup requires an NVIDIA GPU and driver')
+    if not (3, 12) <= sys.version_info[:2] <= (3, 13):
+        raise MediaError('Native ComfyUI setup requires Python 3.12 or 3.13')
+    total = sum(file['size'] for file in profile['files'] if not cached_model(root, file))
+    if shutil.disk_usage(root).free < total + 15*1024**3:
+        raise MediaError('Insufficient disk space: models plus 15 GiB runtime headroom required')
+    source = prepare_source(root, profile)
+    base, python = native_paths(root, profile)
+    base.mkdir(exist_ok=True)
+    run([sys.executable, '-m', 'venv', str(base/'venv')])
+    pins = ['torch==2.9.1', 'torchvision==0.24.1', 'torchaudio==2.9.1']
+    command = [str(python), '-m', 'pip', 'install', *pins]
+    if backend == 'cuda': command += ['--index-url', 'https://download.pytorch.org/whl/cu128']
+    run(command)
+    constraints = base/'constraints.txt'; constraints.write_text('\n'.join(pins)+'\n')
+    run([str(python), '-m', 'pip', 'install', '-c', str(constraints), '-r', str(source/'requirements.txt')])
+    probe = ("import torch; assert torch.cuda.is_available(), 'CUDA unavailable'; "
+             "x=torch.ones(16,device='cuda'); assert x.sum().item()==16" if backend == 'cuda' else
+             "import torch; assert torch.backends.mps.is_available(), 'MPS unavailable'; "
+             "x=torch.ones(16,device='mps'); assert x.sum().item()==16")
+    with drain_contributor(root.parent): run([str(python), '-c', probe], timeout=120)
+    for file in profile['files']:
+        url = f"https://huggingface.co/{profile['models_repo']}/resolve/{profile['models_revision']}/split_files/{file['path']}"
+        download(url, root/'models'/file['path'], file['size'], file['sha256'])
+    record = {'kind':'managed_native_comfyui', 'backend':backend,
+              'profile_hash':profile_hash(profile), 'budget_bytes':budget_bytes, 'installed_at':int(time.time())}
+    atomic_json(profile_record(root, profile, 'runtime'), record)
+    emit('installed', runtime=record, verification_required=True)
+
+
+def install(root, profile, budget_bytes):
+    require_media_budget(budget_bytes, profile)
+    if native_backend():
+        return install_native(root, profile, budget_bytes)
+    if platform.system() != "Linux" or platform.machine().lower() not in ('aarch64', 'arm64'):
+        raise MediaError("Automatic setup supports Linux ARM64 GB10/GX10, Windows x64/NVIDIA and Apple Silicon Mac")
+    if not shutil.which("docker") or not shutil.which("nvidia-smi"):
+        raise MediaError("Automatic setup requires Docker, NVIDIA GPU drivers, and NVIDIA Container Toolkit")
+    run(["docker", "info"], timeout=30, capture=True)
+    gpu = run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], timeout=30, capture=True)
+    if 'GB10' not in gpu or len(gpu.splitlines()) != 1:
+        raise MediaError("Managed profile requires one GB10 GPU; use an existing ComfyUI endpoint for other hardware")
+    # Existing valid files are reused, so only reserve space for missing/replaced files.
+    total = sum(file["size"] for file in profile["files"]
+                if not cached_model(root, file))
+    if shutil.disk_usage(root).free < total + 15*1024**3:
+        raise MediaError("Insufficient disk space: models plus 15 GiB runtime/build headroom required")
+    source = prepare_source(root, profile)
     run(["docker", "pull", profile["container_base"]])
     digest = json.loads(run(["docker", "image", "inspect", profile["container_base"], "--format", "{{json .RepoDigests}}"], capture=True))[0]
     # Existing NGC torch/torchvision stay pinned by the base image's constraints.
@@ -502,6 +578,81 @@ def drain_contributor(home, timeout=600):
 
 
 @contextlib.contextmanager
+def native_client(root, profile, record, budget_bytes):
+    base, python = native_paths(root, profile)
+    source = root / ('build-' + profile['comfy_revision']) / ('ComfyUI-' + profile['comfy_revision'])
+    if not python.is_file() or not (source/'main.py').is_file():
+        raise MediaError('Native ComfyUI files are missing; run media setup again')
+    if record.get('backend') != native_backend():
+        raise MediaError('Native GPU backend changed; run media setup again')
+    outputs = root/'outputs'; (outputs/'opengpu').mkdir(parents=True, exist_ok=True)
+    # JSON is valid YAML; paths with spaces/backslashes remain correctly escaped.
+    model_paths = base/'model-paths.json'
+    atomic_json(model_paths, {'mundusx': {'base_path':str((root/'models').resolve()),
+        **{name:name for name in ('diffusion_models','text_encoders','vae')}}})
+    with socket.socket() as reservation:
+        reservation.bind(('127.0.0.1',0)); port = reservation.getsockname()[1]
+    token = uuid.uuid4().hex
+    temp = root/('native-temp-'+token)
+    fraction = min(0.8, budget_bytes / physical_memory())
+    if not 0 < fraction <= 0.8: raise MediaError('Invalid native memory budget')
+    bootstrap = ("import runpy,sys,torch; backend=sys.argv.pop(1); fraction=float(sys.argv.pop(1)); "
+                 "torch.cuda.set_per_process_memory_fraction(fraction) if backend=='cuda' else torch.mps.set_per_process_memory_fraction(fraction); "
+                 "sys.argv[sys.argv.index('--reserve-vram')+1]=str(torch.cuda.get_device_properties(0).total_memory*(1-fraction)/1024**3) if backend=='cuda' else sys.argv[sys.argv.index('--reserve-vram')+1]; "
+                 "script=sys.argv[1]; sys.argv=sys.argv[1:]; runpy.run_path(script,run_name='__main__')")
+    args = [str(python), '-u', '-c', bootstrap, record['backend'], str(fraction), str(source/'main.py'),
+            '--listen','127.0.0.1','--port',str(port),'--disable-auto-launch','--disable-all-custom-nodes',
+            '--extra-model-paths-config',str(model_paths),'--output-directory',str(outputs),
+            '--temp-directory',str(temp), '--reserve-vram',str(max(0,(physical_memory()-budget_bytes)/1024**3))]
+    if record['backend'] == 'mps': args += ['--fp16-unet','--fp16-text-enc','--use-split-cross-attention']
+    kwargs = {'cwd':str(source),'stdin':subprocess.DEVNULL,'stdout':sys.stderr,'stderr':sys.stderr}
+    if platform.system() == 'Windows': kwargs['creationflags'] = 0x08000000
+    process = subprocess.Popen(args, **kwargs)
+    marker = root/'active-native.json'
+    try:
+        atomic_json(marker, {'pid':process.pid,'token':token,'python':str(python.resolve())})
+        client = Comfy('http://127.0.0.1:'+str(port))
+        deadline = time.monotonic()+180
+        while True:
+            if process.poll() is not None: raise MediaError('Native ComfyUI exited during startup; inspect the log above')
+            try:
+                client.inspect(profile); break
+            except MediaError:
+                if time.monotonic() >= deadline: raise MediaError('Native ComfyUI startup timed out')
+                time.sleep(2)
+        yield client
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try: process.wait(timeout=15)
+            except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=15)
+        marker.unlink(missing_ok=True)
+
+
+def stop_owned_native(root):
+    marker = root/'active-native.json'
+    if not marker.exists(): return
+    record = load_json(marker)
+    token = record.get('token','')
+    python = Path(record.get('python','')).resolve()
+    if not re.fullmatch('[0-9a-f]{32}', token) or not python.is_relative_to(root.resolve()):
+        raise MediaError('Invalid native runtime ownership marker')
+    # Check a unique command-line token before terminating a potentially reused PID.
+    script = """import psutil,sys
+pid=int(sys.argv[1]); token=sys.argv[2]
+try: process=psutil.Process(pid)
+except psutil.NoSuchProcess: sys.exit(0)
+if not any(arg.endswith('native-temp-'+token) for arg in process.cmdline()):
+    raise RuntimeError('Native runtime ownership mismatch; refusing cleanup')
+process.terminate()
+try: process.wait(timeout=15)
+except psutil.TimeoutExpired: process.kill(); process.wait(timeout=15)
+"""
+    run([str(python),'-c',script,str(record['pid']),token],timeout=40,capture=True)
+    marker.unlink()
+
+
+@contextlib.contextmanager
 def client_for(root, profile, endpoint, budget_bytes):
     if endpoint:
         yield Comfy(endpoint)
@@ -509,9 +660,14 @@ def client_for(root, profile, endpoint, budget_bytes):
     record = load_json(profile_record(root, profile, 'runtime'))
     if record.get("profile_hash") != profile_hash(profile):
         raise MediaError("Managed runtime profile changed; run media setup again")
+    if record.get('kind') == 'managed_native_comfyui':
+        with native_client(root, profile, record, budget_bytes) as client: yield client
+        return
     # Only our new container is stopped. No global stop, external unload or prune.
     name = "opengpu-media-" + uuid.uuid4().hex
     outputs = root / "outputs"; outputs.mkdir(exist_ok=True)
+    # Own the output directory on the host so container-created files can be unlinked.
+    (outputs / "opengpu").mkdir(exist_ok=True)
     reserve_gb = max(0, (physical_memory() - budget_bytes) / 1024**3)
     owner = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
     args = ["docker", "run", "--detach", "--rm", "--name", name, "--gpus", "all",
@@ -542,6 +698,7 @@ def client_for(root, profile, endpoint, budget_bytes):
 
 
 def stop_owned_container(root):
+    stop_owned_native(root)
     marker = root/'active-container.json'
     if not marker.exists(): return
     record = load_json(marker)
@@ -597,12 +754,28 @@ def main():
     parser.add_argument('--file', type=Path)
     parser.add_argument('--ticket', type=Path)
     parser.add_argument('--server')
+    parser.add_argument('--managed-output')
     parser.add_argument('--video', action='store_true')
     parser.add_argument('--seconds', type=int, choices=range(1, 11), default=2)
     args = parser.parse_args()
     if args.action == 'upload':
         from artifact_upload import upload_file
-        emit('uploaded', **upload_file(args.file, args.ticket, args.server))
+        managed_copy = None
+        if args.managed_output:
+            name = args.managed_output
+            if not re.fullmatch(r'[0-9a-f]{32}[^/\\]*\.png', name):
+                raise MediaError('Invalid managed image output name')
+            directory = args.home.resolve() / 'media' / 'outputs' / 'opengpu'
+            managed_copy = directory / name
+            if managed_copy.resolve().parent != directory:
+                raise MediaError('Managed image output escapes its owned directory')
+        emit('uploaded', **upload_file(args.file, args.ticket, args.server, managed_copy))
+        return
+    # Cleanup must remain possible even if the cap was lowered or memory detection fails.
+    if args.action == 'stop':
+        with lock(args.home.resolve() / 'media'):
+            stop_owned_container(args.home.resolve() / 'media')
+        emit('stopped')
         return
     profile = load_json(args.profile)
     base_profile = profile
@@ -611,11 +784,14 @@ def main():
         args.prompt = ('A red ceramic teapot slowly rotates on a wooden table, soft daylight, steady camera'
                        if is_video(profile) else 'A red ceramic teapot on a wooden table, soft daylight, photorealistic')
     root = args.home.resolve() / 'media'
-    if not 1 <= args.cap_percent <= 100: raise MediaError("Invalid contribution percentage")
-    budget = physical_memory()*args.cap_percent//100
+    budget = contribution_budget(physical_memory(), args.cap_percent)
     plan = {"profile": profile['id'], "license": profile['license'], "license_url": profile['license_url'],
             "model_download_bytes": sum(f['size'] for f in profile['files']), "budget_bytes": budget,
-            "automatic_platform_supported": platform.system() == 'Linux' and platform.machine().lower() in ('aarch64','arm64'),
+            "minimum_media_budget_bytes": MINIMUM_MEDIA_BUDGET,
+            "media_eligible": budget >= MINIMUM_MEDIA_BUDGET,
+            "profile_minimum_budget_bytes": profile['minimum_budget_bytes'],
+            "profile_fits_budget": budget >= max(MINIMUM_MEDIA_BUDGET, profile['minimum_budget_bytes']),
+            "automatic_platform_supported": bool(native_backend()) or (platform.system() == 'Linux' and platform.machine().lower() in ('aarch64','arm64')),
             "operation": profile['operation'], "width": profile['width'], "height": profile['height'],
             "frames": profile.get('frames'), "fps": profile.get('fps'), "steps": profile['steps'],
             "local_video_tools_available": bool(shutil.which('ffprobe') and shutil.which('ffmpeg')) if is_video(profile) else None,
@@ -624,16 +800,18 @@ def main():
     if args.action == 'status':
         record = profile_record(root, profile, 'verified')
         certificate = load_json(record) if record.exists() else None
-        if certificate and (certificate.get('profile_hash') != profile_hash(profile) or
+        if certificate and (budget < max(MINIMUM_MEDIA_BUDGET, profile['minimum_budget_bytes']) or
+                            certificate.get('profile_hash') != profile_hash(profile) or
                             certificate.get('cap_percent') != args.cap_percent or
                             certificate.get('endpoint') != args.endpoint or
-                            (root/'active-container.json').exists()):
+                            ((root/'active-container.json').exists() or (root/'active-native.json').exists())):
             certificate['ready'] = False
-            certificate['reason'] = 'Configuration changed or container cleanup is pending; verify again'
-        emit('status', verified=certificate, network_dispatch_enabled=False); return
+            certificate['reason'] = 'Memory budget is insufficient, configuration changed, or cleanup is pending; verify again'
+        emit('status', verified=certificate, media_eligible=plan['media_eligible'],
+             budget_bytes=budget, minimum_media_budget_bytes=MINIMUM_MEDIA_BUDGET, network_dispatch_enabled=False); return
+    require_media_budget(budget, profile)
     with lock(root):
         stop_owned_container(root)
-        if args.action == 'stop': emit('stopped'); return
         if args.action == 'setup':
             emit('plan', **plan)
             if not args.yes: raise MediaError("Review the plan and rerun with --yes to download and install")
@@ -645,7 +823,6 @@ def main():
             else:
                 install(root, base_profile, budget)
             return
-        if budget < profile['minimum_budget_bytes']: raise MediaError("Insufficient contribution budget for this profile")
         config = load_json(args.home/'config.json') if (args.home/'config.json').exists() else {}
         if args.endpoint and config.get('connected') and not config.get('paused'):
             raise MediaError('External ComfyUI can retain GPU memory: pause contribution and let LLM work stop before verification; release external model memory before resuming contribution')

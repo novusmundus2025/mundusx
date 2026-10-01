@@ -104,12 +104,47 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
 }
 
 fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Result<(), String> {
+    execute_with(
+        cfg,
+        job,
+        &config::config_dir(),
+        server,
+        |action, video, extra| {
+            media_runtime::run_profile(
+                &config::config_dir(),
+                cfg.contribution_percent,
+                if action == "upload" {
+                    None
+                } else {
+                    cfg.contribution.comfyui_url.as_deref()
+                },
+                action,
+                video,
+                extra,
+            )
+        },
+        |action, body| request(server, id, &cfg.device_id, action, body),
+    )
+}
+
+fn execute_with(
+    cfg: &Config,
+    job: &Value,
+    home: &std::path::Path,
+    server: &str,
+    mut run: impl FnMut(&str, bool, &[String]) -> Result<(), String>,
+    mut call: impl FnMut(&str, Value) -> Result<Value, String>,
+) -> Result<(), String> {
     let (video, seconds, name) = execution_profile(job)?;
-    let home = config::config_dir();
-    media_runtime::run_profile(
-        &home,
-        cfg.contribution_percent,
-        cfg.contribution.comfyui_url.as_deref(),
+    let operation = if video {
+        crate::contribution_contract::Operation::TextToVideo
+    } else {
+        crate::contribution_contract::Operation::TextToImage
+    };
+    if !cfg.contribution.operations.contains(&operation) {
+        return Err("Claimed media workload is not selected by this contributor".into());
+    }
+    run(
         "generate",
         video,
         &[
@@ -128,29 +163,28 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
     let lease = json!({"job_id":job["job_id"],"lease_token":job["lease_token"]});
     let mut reserve = lease.clone();
     reserve["metadata"] = json!({"sha256":result["sha256"],"byte_size":result["bytes"]});
-    let ticket = request(server, id, &cfg.device_id, "reserve", reserve)?;
+    let ticket = call("reserve", reserve)?;
     let ticket_file = home
         .join("media")
         .join(format!("upload-{}.json", uuid::Uuid::new_v4()));
     private_json(&ticket_file, &ticket)?;
-    let upload = media_runtime::run_profile(
-        &home,
-        cfg.contribution_percent,
-        None,
-        "upload",
-        video,
-        &[
-            "--file".into(),
-            result["artifact"]
-                .as_str()
-                .ok_or("Missing artifact")?
-                .into(),
-            "--ticket".into(),
-            ticket_file.to_string_lossy().into_owned(),
-            "--server".into(),
-            server.into(),
-        ],
-    );
+    let mut upload_args = vec![
+        "--file".into(),
+        result["artifact"]
+            .as_str()
+            .ok_or("Missing artifact")?
+            .into(),
+        "--ticket".into(),
+        ticket_file.to_string_lossy().into_owned(),
+        "--server".into(),
+        server.into(),
+    ];
+    if !video && cfg.contribution.comfyui_url.is_none() {
+        if let Some(name) = result["source_filename"].as_str() {
+            upload_args.extend(["--managed-output".into(), name.into()]);
+        }
+    }
+    let upload = run("upload", video, &upload_args);
     let _ = fs::remove_file(&ticket_file);
     upload?;
     let mut complete = lease;
@@ -158,7 +192,7 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
     let pending = home.join("media/pending-completion.json");
     private_json(&pending, &complete)?;
     for attempt in 0..4 {
-        match request(server, id, &cfg.device_id, "complete", complete.clone()) {
+        match call("complete", complete.clone()) {
             Ok(_) => {
                 let _ = fs::remove_file(&pending);
                 println!("Media job completed and credits settled");
@@ -214,6 +248,11 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
                 crate::contribution_contract::Operation::TextToImage
             };
             if !cfg.contribution.operations.contains(&operation) {
+                continue;
+            }
+            if !media_runtime::memory::MediaBudget::detect(cfg.contribution_percent)
+                .allows(operation)
+            {
                 continue;
             }
             let verified = if video {
@@ -293,7 +332,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
                         if let Err(e) =
                             request(&server2, &identity2, &node, "heartbeat", heartbeat.clone())
                         {
-                            eprintln!("Video lease heartbeat: {e}");
+                            eprintln!("Media lease heartbeat: {e}");
                         }
                     }
                 }
@@ -302,7 +341,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             done.store(true, Ordering::Relaxed);
             let _ = thread.join();
             if let Err(e) = result {
-                eprintln!("Video job failed: {e}");
+                eprintln!("Media job failed: {e}");
                 if !pending.exists() {
                     let _ = request(&server, &id, &cfg.device_id, "fail", lease);
                 } else {
@@ -339,7 +378,102 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     #[test]
-    fn chooses_image_and_all_integer_video_profiles_and_rejects_mismatch() {
+    fn unselected_image_job_never_generates_or_uploads() {
+        let cfg = Config::default();
+        let profile: Value = serde_json::from_str(media_runtime::PROFILE).unwrap();
+        let job = json!({"profile_id":profile["id"],"quote":{"operation":"text_to_image"}});
+        assert!(execute_with(
+            &cfg,
+            &job,
+            std::path::Path::new("."),
+            "https://chat.example",
+            |_, _, _| panic!("unselected workload must not generate"),
+            |_, _| panic!("unselected workload must not upload")
+        )
+        .unwrap_err()
+        .contains("not selected"));
+    }
+
+    #[test]
+    fn image_job_generates_uploads_then_completes_and_never_completes_failed_upload() {
+        for fail_upload in [false, true] {
+            let home = std::env::temp_dir().join(format!("image-job-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(home.join("media")).unwrap();
+            let mut cfg = Config::default();
+            cfg.contribution.operations =
+                vec![crate::contribution_contract::Operation::TextToImage];
+            let profile: Value = serde_json::from_str(media_runtime::PROFILE).unwrap();
+            let job = json!({"job_id":"test-job", "lease_token":"test-lease", "profile_id":profile["id"],
+                "quote":{"operation":"text_to_image"}, "prompt":"a blue bird", "seed":17});
+            let events = std::cell::RefCell::new(Vec::new());
+            let result = execute_with(
+                &cfg,
+                &job,
+                &home,
+                "https://chat.example",
+                |action, video, args| {
+                    assert!(!video);
+                    events.borrow_mut().push(action.to_string());
+                    if action == "generate" {
+                        assert!(args.windows(2).any(|v| v == ["--prompt", "a blue bird"]));
+                        private_json(
+                            &home.join("media/verified.json"),
+                            &json!({
+                            "artifact":home.join("image.png"),"sha256":"digest","bytes":123,"duration_ms":456,
+                            "source_filename":"0123456789abcdef0123456789abcdef_00001_.png"}),
+                        )?;
+                    } else {
+                        assert_eq!(action, "upload");
+                        assert!(args.windows(2).any(|v| v
+                            == [
+                                "--managed-output",
+                                "0123456789abcdef0123456789abcdef_00001_.png"
+                            ]));
+                        let ticket = std::path::Path::new(
+                            &args[args.iter().position(|v| v == "--ticket").unwrap() + 1],
+                        );
+                        assert!(ticket.exists());
+                        if fail_upload {
+                            return Err("Upload failed".into());
+                        }
+                    }
+                    Ok(())
+                },
+                |action, body| {
+                    events.borrow_mut().push(action.to_string());
+                    assert_eq!(body["job_id"], "test-job");
+                    assert_eq!(body["lease_token"], "test-lease");
+                    if action == "reserve" {
+                        assert_eq!(body["metadata"]["byte_size"], 123);
+                        Ok(json!({"upload_ticket":{"artifact_id":"test-artifact"}}))
+                    } else {
+                        assert_eq!(action, "complete");
+                        assert_eq!(body["generation_ms"], 456);
+                        Ok(json!({"status":"completed"}))
+                    }
+                },
+            );
+            assert_eq!(result.is_err(), fail_upload);
+            assert_eq!(
+                *events.borrow(),
+                if fail_upload {
+                    vec!["generate", "reserve", "upload"]
+                } else {
+                    vec!["generate", "reserve", "upload", "complete"]
+                }
+            );
+            assert!(!home.join("media/pending-completion.json").exists());
+            assert!(!fs::read_dir(home.join("media")).unwrap().any(|p| p
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("upload-")));
+            fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[test]
+    fn chooses_image_and_supported_video_profiles_and_rejects_mismatch() {
         let image: Value = serde_json::from_str(media_runtime::PROFILE).unwrap();
         let image_job = json!({"profile_id":image["id"],"quote":{"operation":"text_to_image"}});
         assert_eq!(
@@ -349,7 +483,9 @@ mod tests {
         let profiles = bundled_video_profiles().unwrap();
         assert_eq!(profiles.len(), 10);
         for seconds in 1..=10_u64 {
-            let id = format!("wan22-14b-480p-{}f-v1", seconds * 16 + 1);
+            let id = bundled_video_profiles().unwrap()
+                [(seconds - 1) as usize]
+            .clone();
             assert!(profiles.contains(&id));
             let mut job = json!({"profile_id":id,"quote":{"operation":"text_to_video","fps":16,"frames":seconds*16+1}});
             let result = execution_profile(&job).unwrap();
