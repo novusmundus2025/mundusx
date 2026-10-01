@@ -162,8 +162,8 @@ enum Commands {
         /// Select the bounded Wan video profile instead of Qwen image
         #[arg(long, global = true)]
         video: bool,
-        /// Video duration preset: 2, 5 or 10 seconds
-        #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(2..=10))]
+        /// Video duration: any integer from 1 to 10 seconds
+        #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=10))]
         seconds: u8,
         #[command(subcommand)]
         command: MediaCommands,
@@ -6851,7 +6851,7 @@ fn main() {
             yes,
         ),
         Commands::Media { command, video, seconds } => {
-            if ![2, 5, 10].contains(&seconds) { eprintln!("Video seconds must be 2, 5 or 10"); std::process::exit(2); }
+            if !(1..=10).contains(&seconds) { eprintln!("Video seconds must be an integer from 1 to 10"); std::process::exit(2); }
             if let MediaCommands::Serve { server, once } = command {
                 if let Err(error) = media_worker::serve(server, once) { eprintln!("{error}"); std::process::exit(1); }
                 return;
@@ -8577,6 +8577,12 @@ mod tests {
 
     #[test]
     fn media_video_selects_profile_without_changing_image_default() {
+        for seconds in ["1", "3", "10"] {
+            assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--seconds", seconds, "plan"]).is_ok());
+        }
+        for seconds in ["0", "11"] {
+            assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--seconds", seconds, "plan"]).is_err());
+        }
         for args in [vec!["opengpu", "media", "--video", "plan"], vec!["opengpu", "media", "verify", "--video"]] {
             assert!(matches!(Cli::try_parse_from(args).unwrap().command, Commands::Media { video: true, .. }));
         }

@@ -74,8 +74,7 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
             serde_json::from_str(media_runtime::VIDEO_PROFILE).map_err(|e| e.to_string())?;
         let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
         let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
-        let seconds = [2, 5, 10]
-            .into_iter()
+        let seconds = (1..=10)
             .find(|s| s * fps + 1 == frames)
             .ok_or("Unsupported video preset")?;
         let expected = profile["id"]
@@ -365,8 +364,7 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
         .ok_or("Missing bundled video profile")?;
     let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
     let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
-    Ok([2, 5, 10]
-        .into_iter()
+    Ok((1..=10)
         .map(|seconds| {
             id.replace(
                 &format!("-{base_frames}f-"),
@@ -483,10 +481,10 @@ mod tests {
             (false, 2, "verified.json".into())
         );
         let profiles = bundled_video_profiles().unwrap();
-        assert_eq!(profiles.len(), 3);
-        for seconds in [2, 5, 10_u64] {
+        assert_eq!(profiles.len(), 10);
+        for seconds in 1..=10_u64 {
             let id = bundled_video_profiles().unwrap()
-                [[2, 5, 10].iter().position(|s| *s == seconds).unwrap()]
+                [(seconds - 1) as usize]
             .clone();
             assert!(profiles.contains(&id));
             let mut job = json!({"profile_id":id,"quote":{"operation":"text_to_video","fps":16,"frames":seconds*16+1}});

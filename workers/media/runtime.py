@@ -732,8 +732,8 @@ def physical_memory():
 
 
 def preset_profile(profile, seconds):
-    if seconds not in (2, 5, 10):
-        raise MediaError('Video seconds must be 2, 5 or 10')
+    if not isinstance(seconds, int) or not 1 <= seconds <= 10:
+        raise MediaError('Video seconds must be an integer from 1 to 10')
     if not is_video(profile) or seconds == 2:
         return profile
     frames = seconds * profile['fps'] + 1
@@ -756,7 +756,7 @@ def main():
     parser.add_argument('--server')
     parser.add_argument('--managed-output')
     parser.add_argument('--video', action='store_true')
-    parser.add_argument('--seconds', type=int, choices=[2, 5, 10], default=2)
+    parser.add_argument('--seconds', type=int, choices=range(1, 11), default=2)
     args = parser.parse_args()
     if args.action == 'upload':
         from artifact_upload import upload_file
