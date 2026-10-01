@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "MundusX installer starting: checking this machine..." >&2
+progress_pid=""
+run_step() {
+  local label="$1" status=0
+  shift
+  echo "${label}..." >&2
+  (
+    elapsed=0
+    while sleep 10; do
+      elapsed=$((elapsed + 10))
+      echo "${label}: still running (${elapsed}s elapsed)." >&2
+    done
+  ) &
+  progress_pid=$!
+  "$@" || status=$?
+  kill "$progress_pid" 2>/dev/null || true
+  wait "$progress_pid" 2>/dev/null || true
+  progress_pid=""
+  if [ "$status" -eq 0 ]; then
+    echo "${label}: complete." >&2
+  else
+    echo "${label}: failed (exit ${status})." >&2
+  fi
+  return "$status"
+}
+stop_progress() {
+  if [ -n "$progress_pid" ]; then
+    kill "$progress_pid" 2>/dev/null || true
+    wait "$progress_pid" 2>/dev/null || true
+  fi
+}
+trap stop_progress EXIT
+
 BIN_NAME="opengpu"
 COMPAT_BIN_NAME="mundusx"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
@@ -19,6 +52,7 @@ cap_percent="${OPENGPU_CAP_PERCENT:-30}"
 max_jobs="${OPENGPU_MAX_JOBS:-}"
 local_assets=""
 configure_service_only=0
+with_chat_connector=0
 connection=""
 cluster_url=""
 cluster_model=""
@@ -156,6 +190,7 @@ Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only]
   --max-jobs     Concurrent job limit used with --auto-start (Mac: RAM-capped; others: 2).
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
   --local-assets Install release binaries and checksums directly from DIR.
+  --with-chat-connector Also install the separate MundusX Chat connector and login service.
   --configure-chat-service Configure per-user Chat startup/reconnect for existing binaries.
   --help         Show this help.
 
@@ -168,6 +203,9 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --with-chat-connector)
+      with_chat_connector=1
+      ;;
     --configure-chat-service)
       configure_service_only=1
       ;;
@@ -307,7 +345,7 @@ if [ "$without_vllm" -eq 0 ] \
   && [ "$os" = "linux" ] \
   && { [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; } \
   && command -v nvidia-smi >/dev/null 2>&1 \
-  && nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -Fq "GB10"; then
+  && run_step "Detecting NVIDIA GPU" nvidia-smi --query-gpu=name --format=csv,noheader | grep -Fq "GB10"; then
   with_vllm=1
   echo "Detected NVIDIA GB10/GX10; including the pinned vLLM runtime."
 fi
@@ -360,6 +398,7 @@ tmp_mundusx_checksum="${tmp_dir}/${mundusx_asset_name}.sha256"
 tmp_agent_server="${tmp_dir}/${agent_server_asset_name}"
 tmp_agent_server_checksum="${tmp_dir}/${agent_server_asset_name}.sha256"
 cleanup() {
+  stop_progress
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
@@ -387,16 +426,19 @@ download_to() {
     fi
     cp "$source" "$output"
   elif command -v curl >/dev/null 2>&1; then
-    curl \
+    run_step "Downloading ${label}" curl \
       --fail \
       --location \
       --retry 3 \
+      --connect-timeout 20 \
+      --speed-limit 1 \
+      --speed-time 60 \
       --progress-bar \
       --show-error \
       "$source" \
       -o "$output"
   elif command -v wget >/dev/null 2>&1; then
-    wget --progress=bar:force:noscroll -O "$output" "$source"
+    run_step "Downloading ${label}" wget --timeout=60 --tries=3 --progress=bar:force:noscroll -O "$output" "$source"
   else
     echo "curl or wget is required" >&2
     exit 1
@@ -422,17 +464,15 @@ verify_checksum() {
 }
 
 smoke_installed_binary() {
-  local binary="$1"
-  local label="$2"
-
-  if [ "${OPENGPU_SKIP_INSTALL_SMOKE:-}" = "1" ]; then
-    return 0
-  fi
-
-  if ! "$binary" --version >/dev/null 2>&1; then
-    echo "installed ${label} failed to run: ${binary} --version" >&2
-    echo "This usually means the downloaded release asset does not match this machine." >&2
-    exit 1
+  local binary="$1" label="$2" probe="${3:---version}" status=0
+  if [ "${OPENGPU_SKIP_INSTALL_SMOKE:-}" = "1" ]; then return 0; fi
+  echo "Checking ${label} (${probe})..."
+  "$binary" "$probe" >"$tmp_dir/smoke-output" 2>&1 || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "${label} check failed (exit ${status}): ${binary} ${probe}" >&2
+    cat "$tmp_dir/smoke-output" >&2
+    echo "See the command error above; installation is not complete." >&2
+    exit "$status"
   fi
 }
 
@@ -458,14 +498,18 @@ expose_installed_commands() {
   echo "Making opengpu available immediately through ${GLOBAL_BIN_DIR}..."
   if [ -d "$GLOBAL_BIN_DIR" ] && [ -w "$GLOBAL_BIN_DIR" ]; then
     ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
+    if [ "$with_chat_connector" -eq 1 ]; then
     ln -sf "$INSTALL_DIR/mundusx" "$GLOBAL_BIN_DIR/mundusx"
     ln -sf "$INSTALL_DIR/mundusx-agent-server" "$GLOBAL_BIN_DIR/mundusx-agent-server"
+    fi
     ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
   elif command -v sudo >/dev/null 2>&1; then
     sudo mkdir -p "$GLOBAL_BIN_DIR"
     sudo ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
+    if [ "$with_chat_connector" -eq 1 ]; then
     sudo ln -sf "$INSTALL_DIR/mundusx" "$GLOBAL_BIN_DIR/mundusx"
     sudo ln -sf "$INSTALL_DIR/mundusx-agent-server" "$GLOBAL_BIN_DIR/mundusx-agent-server"
+    fi
     sudo ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
   else
     echo "Cannot write ${GLOBAL_BIN_DIR}; rerun with ${INSTALL_DIR} on PATH." >&2
@@ -494,11 +538,11 @@ install_vllm_runtime() {
     echo "NVIDIA Container Toolkit is required (nvidia-ctk was not found)" >&2
     exit 1
   fi
-  if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi >/dev/null 2>&1; then
+  if ! command -v nvidia-smi >/dev/null 2>&1 || ! run_step "Checking NVIDIA driver" nvidia-smi >/dev/null; then
     echo "the NVIDIA driver is not ready: nvidia-smi could not access a GPU" >&2
     exit 1
   fi
-  if ! docker info >/dev/null 2>&1; then
+  if ! run_step "Checking Docker daemon access" docker info >/dev/null; then
     echo "Docker is installed, but the current user cannot access the Docker daemon" >&2
     echo "On DGX Spark/GX10, add the user to the docker group or run the installer with an accessible daemon." >&2
     exit 1
@@ -507,13 +551,13 @@ install_vllm_runtime() {
   echo
   echo "[runtime 1/2] Validating NVIDIA GPU access inside Docker..."
   echo "Docker shows image-layer download progress if the CUDA image is not cached."
-  docker run --rm --gpus all \
+  run_step "Validating GPU access inside Docker" docker run --rm --gpus all \
     nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 \
     nvidia-smi >/dev/null
 
   echo "[runtime 2/2] Pulling pinned NVIDIA vLLM runtime (${VLLM_IMAGE_TAG})..."
   echo "Docker reports every layer and shows what remains before completion."
-  docker pull "$VLLM_IMAGE"
+  run_step "Pulling vLLM runtime" docker pull "$VLLM_IMAGE"
 
   mkdir -p "$runtime_dir" "${OPENGPU_HOME}/models"
   cat >"$config_path" <<EOF
@@ -556,35 +600,41 @@ if [ "$runtime_only" -eq 0 ]; then
   echo "Verifying node agent checksum..."
   verify_checksum "$tmp_agent_checksum"
 
-  echo "Fetching MundusX agent..."
-  download_to "$mundusx_url" "$tmp_mundusx" "MundusX CLI"
-  download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum" "MundusX CLI checksum"
-  verify_checksum "$tmp_mundusx_checksum"
-  download_to "$agent_server_url" "$tmp_agent_server" "MundusX agent server"
-  download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum" "MundusX agent-server checksum"
-  verify_checksum "$tmp_agent_server_checksum"
+  if [ "$with_chat_connector" -eq 1 ]; then
+    echo "Fetching MundusX agent..."
+    download_to "$mundusx_url" "$tmp_mundusx" "MundusX CLI"
+    download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum" "MundusX CLI checksum"
+    verify_checksum "$tmp_mundusx_checksum"
+    download_to "$agent_server_url" "$tmp_agent_server" "MundusX agent server"
+    download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum" "MundusX agent-server checksum"
+    verify_checksum "$tmp_agent_server_checksum"
+  fi
 
   chmod +x "$tmp_bin"
   chmod +x "$tmp_agent"
-  chmod +x "$tmp_mundusx"
-  chmod +x "$tmp_agent_server"
   mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
   mv "$tmp_agent" "$INSTALL_DIR/opengpu-node-agent"
-  mv "$tmp_mundusx" "$INSTALL_DIR/mundusx"
-  mv "$tmp_agent_server" "$INSTALL_DIR/mundusx-agent-server"
+  if [ "$with_chat_connector" -eq 1 ]; then
+    chmod +x "$tmp_mundusx" "$tmp_agent_server"
+    mv "$tmp_mundusx" "$INSTALL_DIR/mundusx"
+    mv "$tmp_agent_server" "$INSTALL_DIR/mundusx-agent-server"
+  fi
   expose_installed_commands
-  configure_chat_service
 
   echo "Running installed binary smoke checks..."
+  echo "Checking installed command..."
   smoke_installed_binary "$INSTALL_DIR/$BIN_NAME" "$BIN_NAME"
+  echo "Checking installed command..."
   smoke_installed_binary "$INSTALL_DIR/opengpu-node-agent" "opengpu-node-agent"
-  smoke_installed_binary "$INSTALL_DIR/mundusx" "mundusx"
-  smoke_installed_binary "$INSTALL_DIR/mundusx-agent-server" "mundusx-agent-server"
+  if [ "$with_chat_connector" -eq 1 ]; then
+    smoke_installed_binary "$INSTALL_DIR/mundusx" "MundusX Chat connector"
+    smoke_installed_binary "$INSTALL_DIR/mundusx-agent-server" "MundusX Chat agent server" --help
+    echo "Configuring optional Chat service and reconnect support..."
+    configure_chat_service
+  fi
 
   echo
   echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
-  echo "Installed MundusX agent to ${INSTALL_DIR}/mundusx"
-  echo "Installed MundusX agent server to ${INSTALL_DIR}/mundusx-agent-server"
   echo "Installed opengpu-node-agent to ${INSTALL_DIR}/opengpu-node-agent"
 fi
 
