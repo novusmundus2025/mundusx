@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 const LEGACY_CONTROL_PLANE_URL: &str = "https://mundusx.ai";
 
 /// A local LLM cluster the contributor already runs and has agreed to

@@ -1,10 +1,12 @@
 use crate::types::Backend;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelOption {
+    #[serde(default)]
+    pub capabilities: serde_json::Value,
     pub name: String,
     pub label: String,
     pub notes: String,
@@ -19,7 +21,7 @@ pub struct ModelOption {
     pub estimated_vram_mb: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelPreset {
     pub backend: Backend,
     pub min_memory_gb: u64,
@@ -28,7 +30,7 @@ pub struct ModelPreset {
     pub recommended: ModelOption,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelCatalog {
     pub version: u32,
     pub presets: Vec<ModelPreset>,
@@ -57,7 +59,86 @@ pub fn load_catalog() -> Result<ModelCatalog, serde_json::Error> {
         return serde_json::from_str(&raw);
     }
 
+    #[cfg(not(test))]
+    {
+        let config = crate::config::load_config().ok().flatten().unwrap_or_default();
+        let base = config.control_plane_url.trim_end_matches('/');
+        // Per-process cache avoids repeated HTTP calls during one model picker.
+        static CATALOGS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, ModelCatalog>>> = std::sync::OnceLock::new();
+        let mut catalogs = CATALOGS.get_or_init(Default::default).lock().expect("catalog cache");
+        if let Some(catalog) = catalogs.get(base) { return Ok(catalog.clone()); }
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(base.as_bytes()));
+        let path = crate::config::config_dir().join(format!("model-catalog-{key}.json"));
+        match fetch_catalog(base) {
+            Ok(catalog) => {
+                if let Ok(raw) = serde_json::to_vec(&catalog) {
+                    let _ = fs::create_dir_all(crate::config::config_dir());
+                    // Invalid/partial caches are rejected by parse_catalog on the next run.
+                    let _ = fs::write(&path, raw);
+                }
+                catalogs.insert(base.to_string(), catalog.clone());
+                return Ok(catalog);
+            }
+            Err(_) => {
+                if let Some(catalog) = fs::read_to_string(&path).ok().and_then(|raw| parse_catalog(&raw).ok()) {
+                    eprintln!("Model catalog unavailable; using cached allowed models for {base}.");
+                    catalogs.insert(base.to_string(), catalog.clone());
+                    return Ok(catalog);
+                }
+                // Never silently replace an admin allowlist with bundled choices.
+                eprintln!("Model catalog unavailable and no cached allowlist exists. Retry when the control plane is reachable.");
+                return Ok(ModelCatalog { version: 1, presets: Vec::new() });
+            }
+        }
+    }
+    #[cfg(test)]
     serde_json::from_str(include_str!("../config/official-models.json"))
+}
+
+fn parse_catalog(raw: &str) -> Result<ModelCatalog, String> {
+    let catalog: ModelCatalog = serde_json::from_str(raw).map_err(|error| error.to_string())?;
+    if catalog.version != 1 || catalog.presets.len() > 3000 { return Err("Unsupported model catalog".into()); }
+    for model in catalog.presets.iter().flat_map(|p| [&p.lighter, &p.recommended]) {
+        if model.name.is_empty() || !model.source_url.starts_with("https://huggingface.co/") { return Err("Invalid model catalog entry".into()); }
+    }
+    Ok(catalog)
+}
+
+fn fetch_catalog(base: &str) -> Result<ModelCatalog, String> {
+    use std::io::Read;
+    if !(base.starts_with("https://") || base.starts_with("http://localhost:") || base.starts_with("http://127.0.0.1:")) {
+        return Err("Catalog requires HTTPS".into());
+    }
+    let response = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(5)).redirects(0).build()
+        .get(&format!("{}/v1/model-catalog", base.trim_end_matches('/'))).call().map_err(|error| error.to_string())?;
+    let mut raw = String::new();
+    response.into_reader().take(2_000_001).read_to_string(&mut raw).map_err(|error| error.to_string())?;
+    if raw.len() > 2_000_000 { return Err("Model catalog too large".into()); }
+    parse_catalog(&raw)
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    #[test]
+    fn fetches_catalog_endpoint_and_preserves_an_empty_allowlist() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0; 2048];
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(String::from_utf8_lossy(&buffer[..count]).starts_with("GET /v1/model-catalog "));
+            let body = r#"{"version":1,"presets":[]}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let catalog = fetch_catalog(&format!("http://{address}")).unwrap();
+        assert!(options_for_machine(&catalog, Backend::M, 64, Some(65536)).is_empty());
+        server.join().unwrap();
+        assert!(parse_catalog(r#"{"version":99,"presets":[]}"#).is_err());
+    }
 }
 
 fn preset_for(catalog: &ModelCatalog, backend: Backend, memory_gb: u64) -> ModelPreset {
@@ -100,34 +181,17 @@ pub fn options_for_machine(
     memory_gb: u64,
     available_vram_mb: Option<u64>,
 ) -> Vec<ModelOption> {
-    let preset = preset_for(catalog, backend, memory_gb);
     let mut options = Vec::new();
-
-    for option in [preset.lighter, preset.recommended] {
-        if options
-            .iter()
-            .any(|existing: &ModelOption| existing.name == option.name)
-        {
-            continue;
+    for option in unique_catalog_options(catalog) {
+        if !option.supports_backend(backend) { continue; }
+        if backend == Backend::Vllm && option.source_kind != "huggingface-vllm" { continue; }
+        let budget = available_vram_mb.or_else(|| (backend == Backend::M).then_some(memory_gb.saturating_mul(1024)));
+        if matches!(backend, Backend::Cuda | Backend::Vllm | Backend::M) {
+            if !matches!((option.estimated_vram_mb, budget), (Some(required), Some(available)) if required <= available) { continue; }
         }
-
-        if !option.supports_backend(backend) {
-            continue;
+        if !options.iter().any(|existing: &ModelOption| existing.name == option.name && existing.source_url == option.source_url) {
+            options.push(option);
         }
-
-        if matches!(backend, Backend::Cuda | Backend::Vllm) {
-            let Some(estimated_vram_mb) = option.estimated_vram_mb else {
-                continue;
-            };
-            let Some(available_vram_mb) = available_vram_mb else {
-                continue;
-            };
-            if estimated_vram_mb > available_vram_mb {
-                continue;
-            }
-        }
-
-        options.push(option);
     }
 
     options
@@ -152,7 +216,7 @@ fn unique_catalog_options(catalog: &ModelCatalog) -> Vec<ModelOption> {
     {
         if options
             .iter()
-            .any(|existing: &ModelOption| existing.name == option.name)
+            .any(|existing: &ModelOption| existing.name == option.name && existing.source_url == option.source_url && existing.backend_compatibility == option.backend_compatibility)
         {
             continue;
         }
@@ -178,7 +242,7 @@ pub fn selectable_catalog_options_for(
         .fold(Vec::new(), |mut options, option| {
             if !options
                 .iter()
-                .any(|existing: &ModelOption| existing.name == option.name)
+                .any(|existing: &ModelOption| existing.name == option.name && existing.source_url == option.source_url)
             {
                 options.push(option);
             }
@@ -220,6 +284,7 @@ fn fallback_preset() -> ModelPreset {
         min_memory_gb: 0,
         max_memory_gb: u64::MAX,
         lighter: ModelOption {
+            capabilities: serde_json::Value::Null,
             name: "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
             label: "SmolLM2 135M".to_string(),
             notes: "fallback lighter preset".to_string(),
@@ -231,6 +296,7 @@ fn fallback_preset() -> ModelPreset {
             estimated_vram_mb: Some(800),
         },
         recommended: ModelOption {
+            capabilities: serde_json::Value::Null,
             name: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
             label: "Qwen 2.5 0.5B".to_string(),
             notes: "fallback recommended preset".to_string(),
@@ -478,6 +544,7 @@ mod tests {
     #[test]
     fn missing_vram_metadata_excludes_cuda_catalog_option() {
         let option_without_vram = ModelOption {
+            capabilities: serde_json::Value::Null,
             name: "Test/MissingVram".to_string(),
             label: "Missing VRAM".to_string(),
             notes: "should not be offered for CUDA".to_string(),
