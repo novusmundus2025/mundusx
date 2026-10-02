@@ -936,6 +936,7 @@ mod tests {
         fs::write(&source_path, b"model-bytes").expect("write source");
 
         let option = crate::model_catalog::ModelOption {
+            supported_os: Vec::new(),
             capabilities: serde_json::Value::Null,
             name: "Test/OpenModel".to_string(),
             label: "Test Open Model".to_string(),
@@ -997,6 +998,7 @@ mod tests {
         let (config, temp_dir) = temp_config();
 
         let option = crate::model_catalog::ModelOption {
+            supported_os: Vec::new(),
             capabilities: serde_json::Value::Null,
             name: "Test/RemoteModel".to_string(),
             label: "Test Remote Model".to_string(),
