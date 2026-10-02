@@ -5,7 +5,7 @@ Use this after the [Windows](install-windows.md), [Linux](install-linux.md), or
 hardware, existing servers, and saved configuration; the sequence below describes
 the choices, not an exact transcript for every machine.
 
-This guide follows release **0.2.23**. See [Inference connections](inference-connections.md)
+This guide follows release **0.2.27**. Model choices are fetched from the admin-managed control-plane catalog and filtered by OS, backend and contribution memory budget. Windows shows GGUF variants, macOS MLX variants, and Linux compatible GGUF/vLLM variants. See [Inference connections](inference-connections.md)
 for additional script options and external-engine requirements.
 
 ## 1. Run the wizard
@@ -15,7 +15,7 @@ opengpu install
 ```
 
 Windows normally opens this automatically in a fresh PowerShell window.
-Check `opengpu --version` first if upgrading; this release reports `0.2.23`.
+Check `opengpu --version` first if upgrading; this release reports `0.2.27`.
 
 ## 2. Choose one inference connection
 
