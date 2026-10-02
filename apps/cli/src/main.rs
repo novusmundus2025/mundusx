@@ -504,6 +504,9 @@ fn drain_pending_terminal_events() {
 }
 
 fn resolved_backend(config: &Config) -> Backend {
+    if config.contributed_cluster.as_ref().is_some_and(|cluster| cluster.kind.eq_ignore_ascii_case("vllm")) {
+        return Backend::Vllm;
+    }
     if config.backend_preference.is_auto() {
         detect_backend()
     } else {
@@ -523,6 +526,22 @@ fn display_public_key_fingerprint(config: &Config) -> String {
         })
         .or_else(identity_metadata_fingerprint)
         .unwrap_or_else(|| "unset".to_string())
+}
+
+#[cfg(test)]
+mod contributed_backend_tests {
+    use super::*;
+    #[test]
+    fn vllm_connection_takes_precedence_over_host_backend() {
+        let mut config = Config::default();
+        config.backend_preference = Backend::Cuda;
+        config.contributed_cluster = Some(serde_json::from_value(serde_json::json!({
+            "kind":"vllm", "base_url":"http://127.0.0.1:8000"
+        })).unwrap());
+        assert_eq!(resolved_backend(&config), Backend::Vllm);
+        config.contributed_cluster = None;
+        assert_eq!(resolved_backend(&config), Backend::Cuda);
+    }
 }
 
 fn display_public_key_hex(config: &Config) -> String {
