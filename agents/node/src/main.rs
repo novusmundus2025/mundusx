@@ -638,6 +638,14 @@ fn node_roles_for(
     roles
 }
 
+fn apply_served_model_context(models: &mut [contracts::ModelCapability], model: &str, context: u32) {
+    for entry in models.iter_mut().filter(|entry| entry.name == model) {
+        entry.context_tokens = Some(context);
+        entry.max_output_tokens = None;
+        entry.output_capacity_mode = Some("context_window".to_string());
+    }
+}
+
 fn build_scheduler_capabilities(
     config: &AgentConfig,
     health: &WorkerHealthReport,
@@ -707,6 +715,13 @@ fn build_scheduler_capabilities(
             cluster.and_then(|entry| entry.model_context_tokens),
             cluster_supports_tools,
         );
+    }
+    if cluster.is_none() && health.runtime_mode == "vllm" && health.healthy {
+        if let Some(model) = health.model_name.as_deref() {
+            if let Some(context) = worker::served_vllm_context_tokens(model) {
+                apply_served_model_context(&mut models, model, context);
+            }
+        }
     }
     let context_tokens = models.iter().filter_map(|entry| entry.context_tokens).max();
     let available_vram_mb = capabilities
@@ -2610,6 +2625,24 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn served_context_replaces_guesses_only_for_the_running_model() {
+        let mut models = vec![contracts::ModelCapability {
+            name: "Muse".into(), context_tokens: Some(4096), max_output_tokens: Some(4096),
+            ..Default::default()
+        }, contracts::ModelCapability {
+            name: "other".into(), context_tokens: Some(32768), ..Default::default()
+        }];
+        apply_served_model_context(&mut models, "Muse", 16384);
+        assert_eq!(models[0].context_tokens, Some(16384));
+        assert_eq!(models[0].max_output_tokens, None);
+        assert_eq!(models[0].output_capacity_mode.as_deref(), Some("context_window"));
+        assert_eq!(models[1].context_tokens, Some(32768));
+        // A smaller server limit must also override an optimistic model guess.
+        apply_served_model_context(&mut models, "Muse", 2048);
+        assert_eq!(models[0].context_tokens, Some(2048));
+    }
 
     #[test]
     fn native_tool_probe_requires_the_expected_openai_tool_call() {

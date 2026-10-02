@@ -1,5 +1,25 @@
 # vLLM backend
 
+## Muse context and chat latency (0.2.24)
+
+Managed Muse-Glimmer runtimes now start with a 16,384-token context window.
+Set `VLLM_MAX_MODEL_LEN` in `~/.opengpu/runtimes/vllm/runtime.conf`, or
+`OPENGPU_VLLM_MAX_MODEL_LEN` in the agent environment, to choose a different
+positive limit. The agent reads the selected model's actual `max_model_len`
+from `/v1/models` when publishing scheduler capacity. Existing servers retain
+their current limit until restarted; changing the advertisement alone does
+not increase the model's serving capacity.
+
+After upgrading an agent-managed runtime, run `opengpu disconnect`, then
+`opengpu start`. For a separately managed container, change its
+`--max-model-len` and restart it, then run
+`opengpu cluster use http://127.0.0.1:8000 --max-jobs 4` and
+`opengpu start --background` to discover its served capacity.
+
+Ordinary Muse completion requests use the model template's `reasoning_strength:
+low` setting. High reasoning previously delayed visible text even for greetings.
+Native tool turns and structured-output requests retain their existing settings.
+
 MundusX treats `vllm` as an explicit Linux NVIDIA backend. It is not selected by
 `auto`, and it is not part of the Windows contributor path.
 

@@ -1126,6 +1126,29 @@ fn mlx_server_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Use the running server's limit, not a guess based on the model name.
+pub fn served_vllm_context_tokens(model: &str) -> Option<u32> {
+    served_vllm_context_at(&configured_vllm_url()?, model)
+}
+
+fn served_vllm_context_at(url: &str, model: &str) -> Option<u32> {
+    let response = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(Duration::from_secs(2))
+        .build()
+        .get(&format!("{}/v1/models", url.trim_end_matches('/')))
+        .call().ok()?;
+    let mut bytes = Vec::new();
+    response.into_reader().take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 1024 * 1024 { return None; }
+    let listing: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    listing.get("data")?.as_array()?.iter()
+        .find(|entry| entry.get("id").and_then(|id| id.as_str()) == Some(model))?
+        .get("max_model_len")?.as_u64()
+        .and_then(|limit| u32::try_from(limit).ok())
+        .filter(|limit| *limit > 0)
+}
+
 /// A model listing proves liveness, not that the first inference has executed.
 /// Exercise prefill and one decode step before publishing the managed MLX URL.
 fn warm_mlx_runtime(url: &str, model: &str, timeout: Duration) -> Result<(), String> {
@@ -1607,10 +1630,16 @@ fn start_vllm_runtime(
         command.arg(&image).args(["vllm", "serve"]);
     }
     if crate::vllm_model_profile::is_muse_glimmer(model_name) {
+        let max_model_len = vllm_setting(
+            "OPENGPU_VLLM_MAX_MODEL_LEN", "VLLM_MAX_MODEL_LEN", "16384",
+        );
+        if max_model_len.parse::<u32>().ok().filter(|limit| *limit > 0).is_none() {
+            return Err("VLLM_MAX_MODEL_LEN must be a positive 32-bit integer".into());
+        }
         command.args([
             "--enable-auto-tool-choice", "--tool-call-parser", "muse_glimmer",
             "--reasoning-parser", "muse_glimmer", "--generation-config", "auto",
-            "--max-model-len", "8192",
+            "--max-model-len", &max_model_len,
         ]);
     }
     command
@@ -2245,6 +2274,11 @@ fn run_vllm_completion(
         "seed": seed,
     });
     let live_stream = live_delta_enabled() && !structured;
+    // Muse's template defaults to high reasoning, even for a simple greeting.
+    // This completion path is ordinary chat; native tool turns use their own path.
+    if !structured && crate::vllm_model_profile::is_muse_glimmer(model) {
+        payload["chat_template_kwargs"] = serde_json::json!({"reasoning_strength": "low"});
+    }
     if live_stream {
         payload["stream"] = serde_json::Value::Bool(true);
         payload["stream_options"] = serde_json::json!({"include_usage": true});
@@ -4294,6 +4328,44 @@ mod tests {
     use std::io::Write;
     use std::net::TcpListener;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn served_vllm_context_reads_matching_model_and_rejects_invalid_limits() {
+        for (limit, expected) in [(serde_json::json!(16384), Some(16384)),
+            (serde_json::json!(0), None), (serde_json::json!(-1), None),
+            (serde_json::json!(u64::MAX), None), (serde_json::Value::Null, None)] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", server.server_addr());
+            let handler = thread::spawn(move || {
+                let request = server.recv().unwrap();
+                assert_eq!(request.url(), "/v1/models");
+                request.respond(tiny_http::Response::from_string(serde_json::json!({
+                    "data": [{"id":"other", "max_model_len":131072},
+                             {"id":"Muse", "max_model_len":limit}]
+                }).to_string())).unwrap();
+            });
+            assert_eq!(served_vllm_context_at(&url, "Muse"), expected);
+            handler.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn muse_plain_chat_requests_low_reasoning() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", server.server_addr());
+        let handler = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            let payload: serde_json::Value = serde_json::from_reader(request.as_reader()).unwrap();
+            assert_eq!(payload["chat_template_kwargs"]["reasoning_strength"], "low");
+            assert_eq!(payload["messages"][0]["content"], "Hello");
+            request.respond(tiny_http::Response::from_string(serde_json::json!({
+                "choices":[{"message":{"content":"Hello!"},"finish_reason":"stop"}]
+            }).to_string())).unwrap();
+        });
+        assert_eq!(run_vllm_completion(&url, crate::vllm_model_profile::MUSE_GLIMMER_FP8_MODEL,
+            "", "Hello", 128, 0.0, 1.0, 42, false).unwrap(), "Hello!");
+        handler.join().unwrap();
+    }
 
     #[test]
     fn worker_timeout_is_idle_based_with_a_separate_hard_limit() {
