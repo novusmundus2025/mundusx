@@ -776,7 +776,20 @@ fn write_models(config: &Config, models: &[ModelRecord]) -> io::Result<()> {
 
     for model in models {
         let path = manifest_path(config, &model.name);
-        let data = serde_json::to_string_pretty(model).expect("model serialization");
+        let mut metadata = serde_json::to_value(model).expect("model serialization");
+        if let Some(previous) = fs::read_to_string(&path).ok().and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) {
+            for field in ["task_capabilities", "supports_vision", "supports_embeddings", "supports_tools"] {
+                if let Some(value) = previous.get(field) { metadata[field] = value.clone(); }
+            }
+        }
+        if let Some(option) = lookup_model_for_backend(&model.name, config.backend_preference) {
+            if let Some(capabilities) = option.capabilities.as_object() {
+                for field in ["task_capabilities", "supports_vision", "supports_embeddings", "supports_tools"] {
+                    if let Some(value) = capabilities.get(field) { metadata[field] = value.clone(); }
+                }
+            }
+        }
+        let data = serde_json::to_string_pretty(&metadata).expect("model serialization");
         fs::write(&path, format!("{data}\n"))?;
     }
 
@@ -923,6 +936,7 @@ mod tests {
         fs::write(&source_path, b"model-bytes").expect("write source");
 
         let option = crate::model_catalog::ModelOption {
+            capabilities: serde_json::Value::Null,
             name: "Test/OpenModel".to_string(),
             label: "Test Open Model".to_string(),
             notes: "local test source".to_string(),
@@ -983,6 +997,7 @@ mod tests {
         let (config, temp_dir) = temp_config();
 
         let option = crate::model_catalog::ModelOption {
+            capabilities: serde_json::Value::Null,
             name: "Test/RemoteModel".to_string(),
             label: "Test Remote Model".to_string(),
             notes: "remote test source".to_string(),
