@@ -564,7 +564,8 @@ fn enrich_model_capability(
         tasks.push("reasoning".to_string());
     }
     if !name.contains("embed") || coding {
-        tasks.push("small_coding".to_string());
+        // General code generation is not a measured small-project ceiling.
+        tasks.push("coding".to_string());
         roles.push(NodeRole::Coding);
     }
     if rank >= capacity_rank("performance") {
@@ -864,6 +865,9 @@ fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> 
 }
 
 fn resolved_backend(config: &AgentConfig) -> Backend {
+    if config.contributed_cluster.as_ref().is_some_and(|cluster| cluster.kind.eq_ignore_ascii_case("vllm")) {
+        return Backend::Vllm;
+    }
     if config.backend_preference == Backend::Auto {
         #[cfg(target_os = "macos")]
         {
@@ -2664,6 +2668,23 @@ mod tests {
     }
 
     #[test]
+    fn contributed_vllm_advertises_serving_backend_and_general_coding() {
+        let mut config = cluster_config("muse-glimmer", Some(30_000_000_000), None);
+        config.backend_preference = Backend::Cuda;
+        let cluster = config.contributed_cluster.as_mut().unwrap();
+        cluster.kind = "vllm".into();
+        cluster.model_context_tokens = Some(90_000);
+        assert_eq!(resolved_backend(&config), Backend::Vllm);
+        let health = cluster_health("muse-glimmer");
+        let capabilities = build_capabilities(&config, &health, true);
+        assert_eq!(capabilities.backend, Backend::Vllm);
+        let profile = build_scheduler_capabilities(&config, &health, &capabilities, 99640, 80);
+        assert_eq!(profile.models[0].context_tokens, Some(90_000));
+        assert!(profile.models[0].task_capabilities.contains(&"coding".into()));
+        assert!(!profile.models[0].task_capabilities.contains(&"small_coding".into()));
+    }
+
+    #[test]
     fn classification_requires_specialization_for_large_coding() {
         for (name, coding) in [("general-32b", false), ("qwen3-coder-30b", true)] {
             let model = enrich_model_capability(contracts::ModelCapability {
@@ -3706,13 +3727,13 @@ mod tests {
         assert!(small.warm);
         assert!(small
             .task_capabilities
-            .contains(&"small_coding".to_string()));
+            .contains(&"coding".to_string()));
         assert!(!small
             .task_capabilities
             .contains(&"large_coding".to_string()));
         assert!(large
             .task_capabilities
-            .contains(&"small_coding".to_string()));
+            .contains(&"coding".to_string()));
         assert!(!large
             .task_capabilities
             .contains(&"large_coding".to_string()));
