@@ -6,6 +6,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelOption {
     #[serde(default)]
+    pub supported_os: Vec<String>,
+    #[serde(default)]
     pub capabilities: serde_json::Value,
     pub name: String,
     pub label: String,
@@ -54,6 +56,35 @@ impl ModelOption {
 }
 
 pub fn load_catalog() -> Result<ModelCatalog, serde_json::Error> {
+    let catalog = load_unfiltered_catalog()?;
+    #[cfg(not(test))]
+    return Ok(catalog_for_platform(catalog, std::env::consts::OS));
+    #[cfg(test)]
+    Ok(catalog)
+}
+
+fn catalog_for_platform(mut catalog: ModelCatalog, platform: &str) -> ModelCatalog {
+    catalog.presets = catalog.presets.into_iter().filter_map(|mut preset| {
+        let allowed = |model: &ModelOption| {
+            let runtime_fits = match platform {
+                "macos" => model.source_kind == "huggingface-mlx",
+                "windows" => model.source_kind == "huggingface-open",
+                "linux" => matches!(model.source_kind.as_str(), "huggingface-open" | "huggingface-vllm"),
+                _ => false,
+            };
+            runtime_fits && (model.supported_os.is_empty() || model.supported_os.iter().any(|os| os == platform))
+        };
+        match (allowed(&preset.lighter), allowed(&preset.recommended)) {
+            (false, false) => None,
+            (false, true) => { preset.lighter = preset.recommended.clone(); Some(preset) },
+            (true, false) => { preset.recommended = preset.lighter.clone(); Some(preset) },
+            (true, true) => Some(preset),
+        }
+    }).collect();
+    catalog
+}
+
+fn load_unfiltered_catalog() -> Result<ModelCatalog, serde_json::Error> {
     if let Some(path) = std::env::var_os("OPENGPU_MODEL_CATALOG_PATH") {
         let raw = fs::read_to_string(PathBuf::from(path)).map_err(serde_json::Error::io)?;
         return serde_json::from_str(&raw);
@@ -122,6 +153,22 @@ fn fetch_catalog(base: &str) -> Result<ModelCatalog, String> {
 mod api_tests {
     use super::*;
     #[test]
+    fn installation_catalog_is_filtered_by_os_and_admin_restrictions() {
+        let catalog: ModelCatalog = serde_json::from_str(include_str!("../config/official-models.json")).unwrap();
+        for (os, kinds) in [("windows", vec!["huggingface-open"]), ("macos", vec!["huggingface-mlx"]), ("linux", vec!["huggingface-open", "huggingface-vllm"])] {
+            let filtered = catalog_for_platform(catalog.clone(), os);
+            assert!(!filtered.presets.is_empty());
+            assert!(filtered.presets.iter().flat_map(|p| [&p.lighter, &p.recommended]).all(|m| kinds.contains(&m.source_kind.as_str())));
+        }
+        let mut restricted = catalog_for_platform(catalog, "windows");
+        for preset in &mut restricted.presets {
+            preset.lighter.supported_os = vec!["linux".into()];
+            preset.recommended.supported_os = vec!["linux".into()];
+        }
+        assert!(catalog_for_platform(restricted, "windows").presets.is_empty());
+    }
+
+    #[test]
     fn fetches_catalog_endpoint_and_preserves_an_empty_allowlist() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -163,7 +210,7 @@ fn preset_for(catalog: &ModelCatalog, backend: Backend, memory_gb: u64) -> Model
 }
 
 pub fn selection_for(backend: Backend, memory_gb: u64) -> ModelSelection {
-    let catalog = load_catalog().unwrap_or_else(|_| fallback_catalog());
+    let catalog = load_catalog().unwrap_or_else(|_| ModelCatalog { version: 1, presets: Vec::new() });
     let _catalog_version = catalog.version;
     let preset = preset_for(&catalog, backend, memory_gb);
 
@@ -202,7 +249,7 @@ pub fn selectable_options_for(
     memory_gb: u64,
     available_vram_mb: Option<u64>,
 ) -> Vec<ModelOption> {
-    let catalog = load_catalog().unwrap_or_else(|_| fallback_catalog());
+    let catalog = load_catalog().unwrap_or_else(|_| ModelCatalog { version: 1, presets: Vec::new() });
     options_for_machine(&catalog, backend, memory_gb, available_vram_mb)
 }
 
@@ -230,7 +277,7 @@ pub fn selectable_catalog_options_for(
     backend: Backend,
     available_vram_mb: Option<u64>,
 ) -> Vec<ModelOption> {
-    let catalog = load_catalog().unwrap_or_else(|_| fallback_catalog());
+    let catalog = load_catalog().unwrap_or_else(|_| ModelCatalog { version: 1, presets: Vec::new() });
     catalog
         .presets
         .into_iter()
@@ -284,6 +331,7 @@ fn fallback_preset() -> ModelPreset {
         min_memory_gb: 0,
         max_memory_gb: u64::MAX,
         lighter: ModelOption {
+            supported_os: Vec::new(),
             capabilities: serde_json::Value::Null,
             name: "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
             label: "SmolLM2 135M".to_string(),
@@ -296,6 +344,7 @@ fn fallback_preset() -> ModelPreset {
             estimated_vram_mb: Some(800),
         },
         recommended: ModelOption {
+            supported_os: Vec::new(),
             capabilities: serde_json::Value::Null,
             name: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
             label: "Qwen 2.5 0.5B".to_string(),
@@ -544,6 +593,7 @@ mod tests {
     #[test]
     fn missing_vram_metadata_excludes_cuda_catalog_option() {
         let option_without_vram = ModelOption {
+            supported_os: Vec::new(),
             capabilities: serde_json::Value::Null,
             name: "Test/MissingVram".to_string(),
             label: "Missing VRAM".to_string(),

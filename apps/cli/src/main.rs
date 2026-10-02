@@ -5264,8 +5264,12 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     } else {
         selectable_options_for(backend, gb, available_vram_mb)
     };
-    let allow_local_gguf = backend != Backend::Vllm;
+    let allow_local_gguf = !cfg!(target_os = "macos") && backend != Backend::Vllm;
     let choice_count = options.len() + usize::from(allow_local_gguf);
+    if choice_count == 0 {
+        eprintln!("No admin-allowed model variants fit this operating system, runtime and contribution budget.");
+        std::process::exit(1);
+    }
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return options
