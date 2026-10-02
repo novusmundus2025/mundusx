@@ -6,7 +6,8 @@ pub const MUSE_GLIMMER_IMAGE: &str =
     "vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14";
 
 pub fn is_muse_glimmer(model: &str) -> bool {
-    matches!(model, MUSE_GLIMMER_MODEL | MUSE_GLIMMER_FP8_MODEL)
+    [MUSE_GLIMMER_MODEL, MUSE_GLIMMER_FP8_MODEL, "muse-glimmer"]
+        .iter().any(|name| model.eq_ignore_ascii_case(name))
 }
 
 pub fn image_for(
@@ -23,6 +24,13 @@ pub fn image_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn served_glimmer_alias_uses_the_same_model_profile() {
+        assert!(is_muse_glimmer("muse-glimmer"));
+        assert!(is_muse_glimmer("Muse-Glimmer"));
+        assert!(!is_muse_glimmer("unrelated-glimmer-model"));
+    }
 
     #[test]
     fn muse_uses_compatible_image_instead_of_older_installer_default() {
