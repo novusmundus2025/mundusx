@@ -42,7 +42,7 @@ CLI and node-agent signing may decrypt protected key material locally only for t
 
 Official remote model downloads must be reviewable and integrity checked:
 
-- Official presets live in `apps/cli/config/official-models.json`.
+- Official installation choices come from the configured control plane's `/v1/model-catalog` API. Administrators manage enabled variants and OS restrictions in `/model-catalog`; the bundled JSON is a test fixture, not the production allowlist.
 - Remote official catalog entries must include a non-empty SHA-256 before they are eligible for automatic download.
 - The CLI must fail closed when an official remote model lacks a checksum or fails checksum verification.
 - Local `file://` imports and test fixtures must stay explicit and separate from official remote presets.
