@@ -397,6 +397,10 @@ pub struct ModelCapability {
     pub supports_tools: bool,
     #[serde(default)]
     pub supports_structured_output: bool,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_embeddings: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

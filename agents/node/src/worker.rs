@@ -223,6 +223,12 @@ struct CachedModelRecord {
     languages: Vec<String>,
     #[serde(default)]
     supports_structured_output: bool,
+    #[serde(default)]
+    task_capabilities: Vec<String>,
+    #[serde(default)]
+    supports_vision: bool,
+    #[serde(default)]
+    supports_embeddings: bool,
 }
 
 const SPEAKAI_MAX_ATTEMPTS: u32 = 3;
@@ -878,6 +884,9 @@ pub fn available_model_capabilities(model_dir: &Path) -> Vec<ModelCapability> {
                 languages: record.languages.clone(),
                 specialties: record.specialties.clone(),
                 supports_structured_output: record.supports_structured_output,
+                task_capabilities: record.task_capabilities.clone(),
+                supports_vision: record.supports_vision,
+                supports_embeddings: record.supports_embeddings,
                 ..ModelCapability::default()
             });
         }

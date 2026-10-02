@@ -545,9 +545,21 @@ fn enrich_model_capability(
             .any(|value| value.to_ascii_lowercase().contains(needle))
     };
     let rank = capacity_rank(&model.capacity_class);
-    let coding = name.contains("code") || name.contains("coder") || declared("code");
-    let mut tasks = vec!["chat".to_string(), "math".to_string()];
-    let mut roles = vec![NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis];
+    let coding = name.contains("code") || name.contains("coder") || declared("code") || declared("coding");
+    // Keep reviewed/runtime-declared skills. Enrichment must not erase them.
+    let mut tasks = model.task_capabilities.iter().map(|task| task.trim().to_ascii_lowercase())
+        .filter(|task| !task.is_empty()).collect::<Vec<_>>();
+    let mut roles = model.roles.clone();
+    let embedding_only = (model.supports_embeddings || declared("embed") || name.contains("embed"))
+        && !tasks.iter().any(|task| task == "chat") && !declared("chat");
+    if embedding_only {
+        model.supports_embeddings = true;
+        model.task_capabilities = vec!["embedding".to_string()];
+        model.roles = vec![NodeRole::Embedding];
+        return model;
+    }
+    tasks.extend(["chat".to_string(), "math".to_string()]);
+    roles.extend([NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis]);
     if rank >= capacity_rank("standard") {
         tasks.push("reasoning".to_string());
     }
@@ -556,11 +568,13 @@ fn enrich_model_capability(
         roles.push(NodeRole::Coding);
     }
     if rank >= capacity_rank("performance") {
-        tasks.extend(["medium_coding".to_string(), "research".to_string()]);
+        if coding { tasks.push("medium_coding".to_string()); }
+        tasks.push("research".to_string());
         roles.push(NodeRole::Reducer);
     }
     if rank >= capacity_rank("heavy") {
-        tasks.extend(["large_coding".to_string(), "synthesizer".to_string()]);
+        if coding { tasks.push("large_coding".to_string()); }
+        tasks.push("synthesizer".to_string());
         roles.push(NodeRole::Synthesizer);
     }
     model.supports_tools |= cluster_supports_tools || declared("tool");
@@ -568,17 +582,27 @@ fn enrich_model_capability(
         tasks.push("tool_use".to_string());
         roles.push(NodeRole::ToolUse);
     }
-    if declared("vision") {
+    if model.supports_vision || declared("vision") {
+        model.supports_vision = true;
         tasks.push("vision".to_string());
         roles.push(NodeRole::Vision);
     }
-    if declared("embed") || name.contains("embed") {
+    if model.supports_embeddings || declared("embed") || name.contains("embed") {
+        model.supports_embeddings = true;
         tasks.push("embedding".to_string());
         roles.push(NodeRole::Embedding);
     }
     if model.supports_structured_output || declared("structured") || declared("json") {
         tasks.push("structured_output".to_string());
         model.supports_structured_output = true;
+    }
+    for task in &tasks {
+        match task.as_str() {
+            "small_coding" | "medium_coding" | "large_coding" => roles.push(NodeRole::Coding),
+            "research" => roles.push(NodeRole::ChunkAnalysis),
+            "synthesizer" => roles.extend([NodeRole::Reducer, NodeRole::Synthesizer]),
+            _ => {}
+        }
     }
     tasks.sort();
     tasks.dedup();
@@ -730,14 +754,6 @@ fn build_scheduler_capabilities(
         .or(health.cuda_memory_mb);
     let total_vram_mb = capabilities.physical_vram_mb.or(health.cuda_memory_mb);
     let current_load_percent = Some(100_u8.saturating_sub(available_gpu_percent.min(100) as u8));
-    // A contributed cluster node has no local active model, so the name-derived
-    // flags must come from the model the cluster advertises.
-    let active_model_name = model
-        .as_ref()
-        .map(|entry| entry.name.clone())
-        .or_else(|| config.active_model.clone())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
     // The runtime tells us what its model can do, so prefer that over guesswork.
     let advertised_capabilities: Vec<String> = cluster
         .map(|cluster| {
@@ -777,11 +793,10 @@ fn build_scheduler_capabilities(
         supported_tools.push("tool_use".to_string());
         supported_tools.push("native_tool_calls_v1".to_string());
     }
-    if roles.contains(&NodeRole::Coding) {
-        supported_tools.push("repository".to_string());
-    }
     supported_tools.sort();
     supported_tools.dedup();
+    let supports_vision = models.iter().any(|model| model.supports_vision);
+    let supports_embeddings = models.iter().any(|model| model.supports_embeddings);
 
     NodeCapabilityProfile {
         execution: Some(contribution_contract::ExecutionCapabilities::llm_only(
@@ -798,8 +813,8 @@ fn build_scheduler_capabilities(
         kv_cache_size_tokens: cluster.and_then(|entry| entry.kv_cache_tokens),
         total_vram_mb,
         available_vram_mb,
-        supports_vision: advertises("vision"),
-        supports_embeddings: advertises("embed") || active_model_name.contains("embed"),
+        supports_vision,
+        supports_embeddings,
         supports_tools,
         max_parallel_jobs: health.parallel_slots.max(1) as u32,
         current_load_percent,
@@ -2627,6 +2642,43 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn classification_keeps_embeddings_out_of_chat_and_coding() {
+        let model = enrich_model_capability(contracts::ModelCapability {
+            name: "large-embedding-32b".into(), ..Default::default()
+        }, "server", &[], Some(32768), false);
+        assert_eq!(model.task_capabilities, vec!["embedding"]);
+        assert_eq!(model.roles, vec![NodeRole::Embedding]);
+        assert!(model.supports_embeddings);
+    }
+
+    #[test]
+    fn classification_preserves_declared_skills_and_model_modalities() {
+        let model = enrich_model_capability(contracts::ModelCapability {
+            name: "custom-model".into(), task_capabilities: vec!["large_coding".into()],
+            supports_vision: true, ..Default::default()
+        }, "server", &[], Some(32768), false);
+        assert!(model.task_capabilities.contains(&"large_coding".into()));
+        assert!(model.roles.contains(&NodeRole::Coding));
+        assert!(model.roles.contains(&NodeRole::Vision));
+        assert!(model.supports_vision);
+    }
+
+    #[test]
+    fn classification_requires_specialization_for_large_coding() {
+        for (name, coding) in [("general-32b", false), ("qwen3-coder-30b", true)] {
+            let model = enrich_model_capability(contracts::ModelCapability {
+                name: name.into(), ..Default::default()
+            }, "server", &[], Some(32768), false);
+            assert_eq!(model.task_capabilities.contains(&"large_coding".into()), coding);
+        }
+        let config = cluster_config("qwen3-coder-30b", Some(30_000_000_000), None);
+        let health = cluster_health("qwen3-coder-30b");
+        let advertised = build_capabilities(&config, &health, true);
+        let profile = build_scheduler_capabilities(&config, &health, &advertised, 65536, 80);
+        assert!(!profile.supported_tools.contains(&"repository".into()));
+    }
+
+    #[test]
     fn served_context_replaces_guesses_only_for_the_running_model() {
         let mut models = vec![contracts::ModelCapability {
             name: "Muse".into(), context_tokens: Some(4096), max_output_tokens: Some(4096),
@@ -3661,7 +3713,7 @@ mod tests {
         assert!(large
             .task_capabilities
             .contains(&"small_coding".to_string()));
-        assert!(large
+        assert!(!large
             .task_capabilities
             .contains(&"large_coding".to_string()));
         assert!(large.task_capabilities.contains(&"synthesizer".to_string()));

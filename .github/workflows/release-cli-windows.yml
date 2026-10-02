@@ -65,6 +65,7 @@ jobs:
           cargo test -p opengpu --bin opengpu startup_relay --target ${{ env.TARGET }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p opengpu-node-agent --bin opengpu-node-agent parses_vllm_startup_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
           if ($LASTEXITCODE -ne 0) { throw "Progress test failed" }
 
       - name: Build CLI

@@ -1,5 +1,21 @@
 # Agent / Worker Contract
 
+## Task classification at startup
+
+The node agent preserves declared model tasks and normalizes them during startup
+and health refresh. Cached model manifests may supply `task_capabilities`,
+`supports_vision`, and `supports_embeddings`. Model-level modality flags and the
+node profile agree. Embedding-only models advertise embedding rather than chat or
+coding. Advanced coding requires a coding specialization or explicit task metadata;
+model size alone no longer grants it. General generation models retain basic chat
+and small-code compatibility.
+
+Generating code does not grant repository access. Repository operations belong to
+the separately registered execution runner. Advertised skills are capability hints;
+the control plane ranks eligible workers using task/model-specific execution history
+and exposes a live directory at `/v1/nodes/capabilities` plus ranked candidates at
+`/v1/jobs/{job_id}/candidates`.
+
 This page defines the interface the CLI, node agent, and worker should share when the next phase starts.
 
 ## Goal
