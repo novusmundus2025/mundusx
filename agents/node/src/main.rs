@@ -583,7 +583,7 @@ fn enrich_model_capability(
         tasks.push("tool_use".to_string());
         roles.push(NodeRole::ToolUse);
     }
-    if model.supports_vision || declared("vision") {
+    if model.supports_vision || declared("vision") || vllm_model_profile::is_muse_glimmer(&model.name) {
         model.supports_vision = true;
         tasks.push("vision".to_string());
         roles.push(NodeRole::Vision);
@@ -2046,7 +2046,7 @@ fn print_status(json: bool) {
     println!("heartbeatLogPath: {}", heartbeat_log_path().display());
     println!("nodeId: {}", config.device_id);
     println!("publicKeyFingerprint: {}", identity.fingerprint);
-    println!("backend: {}", config.backend_preference);
+    println!("backend: {}", resolved_backend(&config));
     println!("state: {}", state);
     println!("connected: {}", if config.connected { "yes" } else { "no" });
     println!("paused: {}", if config.paused { "yes" } else { "no" });
@@ -2062,7 +2062,7 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    should_agent_run(config) && config.contribution.llm_enabled() && media_drain::request(&storage::config_dir()).is_none()
+    config.contributed_cluster.is_none() && should_agent_run(config) && config.contribution.llm_enabled() && media_drain::request(&storage::config_dir()).is_none()
 }
 
 fn should_agent_run(config: &AgentConfig) -> bool {
@@ -2256,7 +2256,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     println!("agentVersion: {}", env!("CARGO_PKG_VERSION"));
     println!("nodeId: {}", config.device_id);
     println!("publicKeyFingerprint: {}", identity.fingerprint);
-    println!("backend: {}", config.backend_preference);
+    println!("backend: {}", resolved_backend(&config));
     println!("state: {}", state);
     println!("intervalSeconds: {}", interval);
     println!("agentStatePath: {}", agent_state_path().display());
@@ -2268,6 +2268,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         persistent_runtime
             .as_ref()
             .map(|runtime| runtime.url())
+            .or_else(|| config.contributed_cluster.as_ref().map(|cluster| cluster.base_url.as_str()))
             .unwrap_or("batch")
     );
 
@@ -2675,12 +2676,14 @@ mod tests {
         cluster.kind = "vllm".into();
         cluster.model_context_tokens = Some(90_000);
         assert_eq!(resolved_backend(&config), Backend::Vllm);
+        assert!(!should_keep_runtime_warm(&config));
         let health = cluster_health("muse-glimmer");
         let capabilities = build_capabilities(&config, &health, true);
         assert_eq!(capabilities.backend, Backend::Vllm);
         let profile = build_scheduler_capabilities(&config, &health, &capabilities, 99640, 80);
         assert_eq!(profile.models[0].context_tokens, Some(90_000));
         assert!(profile.models[0].task_capabilities.contains(&"coding".into()));
+        assert!(profile.models[0].supports_vision);
         assert!(!profile.models[0].task_capabilities.contains(&"small_coding".into()));
     }
 

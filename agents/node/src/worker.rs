@@ -4359,7 +4359,7 @@ mod tests {
     }
 
     #[test]
-    fn muse_plain_chat_requests_low_reasoning() {
+    fn muse_served_alias_plain_chat_requests_low_reasoning() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let url = format!("http://{}", server.server_addr());
         let handler = thread::spawn(move || {
@@ -4371,7 +4371,7 @@ mod tests {
                 "choices":[{"message":{"content":"Hello!"},"finish_reason":"stop"}]
             }).to_string())).unwrap();
         });
-        assert_eq!(run_vllm_completion(&url, crate::vllm_model_profile::MUSE_GLIMMER_FP8_MODEL,
+        assert_eq!(run_vllm_completion(&url, "muse-glimmer",
             "", "Hello", 128, 0.0, 1.0, 42, false).unwrap(), "Hello!");
         handler.join().unwrap();
     }
