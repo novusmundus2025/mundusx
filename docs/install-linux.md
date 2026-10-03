@@ -1,5 +1,7 @@
 # Linux contributor installation
 
+**Important for GB10/GX10:** prepare SparkRun and verify your external vLLM model before starting MundusX. Follow the [SparkRun guide and recipes](https://mundusx.github.io/mundusx/install-sparkrun/), then choose a direct connection to avoid provisioning a second engine. Other NVIDIA systems need architecture-compatible recipes.
+
 The public channel includes Linux x86_64 and ARM64 binaries. Run these commands
 in a Linux terminal on the contributing machine, under your normal user account.
 
@@ -94,7 +96,7 @@ opengpu doctor
 opengpu model list
 ```
 
-This release reports `opengpu 0.2.23`. Complete onboarding if requested.
+Check your installed version against the public release channel. Complete onboarding if requested.
 Confirm `readyForJobs: yes` and the expected
 model/connection state. Inspect any reported failure reason before considering
 the machine connected and ready. Keep an external model server running while

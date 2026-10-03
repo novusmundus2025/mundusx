@@ -49,6 +49,8 @@ Rust workspace:
 
 ## Install a contributor
 
+**GB10/GX10 installation announcement:** start SparkRun and verify your external vLLM model before starting MundusX. Follow the [SparkRun guide and recipes](https://mundusx.github.io/mundusx/install-sparkrun/) and choose a direct connection to reuse the runtime. Other NVIDIA systems need architecture-compatible recipes.
+
 Use the public production release; no Rust toolchain is required:
 
 - [Windows step-by-step installation](docs/install-windows.md)
@@ -61,8 +63,7 @@ Start with the [installation index](docs/getting-started.md). The default shell
 installer installs binaries first; guided setup and contribution startup are
 separate steps. Model downloads and runtime preparation depend on your choices.
 
-The public release bundle is 0.2.19; the embedded CLI package version still
-reports 0.2.16. Media eligibility is calculated after the contribution cap:
+Use `opengpu --version` to check your installed release. Media eligibility is calculated after the contribution cap:
 32 GiB for images and 64 GiB for video. Successful generation verification and
 control-plane admission are separate requirements.
 

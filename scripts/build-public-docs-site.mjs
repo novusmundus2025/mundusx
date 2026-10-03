@@ -13,6 +13,12 @@ const installPowershellContents = fs.readFileSync(path.join(repoRoot, "install.p
 
 const pages = [
   {
+    slug: "install-sparkrun",
+    title: "SparkRun before MundusX: GB10/GX10",
+    sourcePath: path.join(repoRoot, "docs/install-sparkrun.md"),
+    intro: "Prepare a single-machine model runtime, verify it, then connect MundusX.",
+  },
+  {
     slug: "",
     title: "MundusX Docs",
     sourcePath: null,
@@ -55,6 +61,7 @@ writeDocsVariant({
     "GitHub Pages mirror of the public docs shape so install, device identity, and release pages can be reviewed before the final domain is wired up.",
 });
 writePublicInstallSurface();
+fs.cpSync(path.join(repoRoot, "docs/recipes"), path.join(outputDir, "recipes"), { recursive: true });
 writePublicReleaseSurface();
 
 fs.writeFileSync(path.join(outputDir, ".nojekyll"), "\n");
@@ -591,6 +598,7 @@ function renderPublicInstallPage() {
       <section class="hero">
         <span class="eyebrow">Public Install Endpoint</span>
         <h1>Install MundusX</h1>
+        <p><strong>GB10/GX10 contributors:</strong> start SparkRun and verify your model before starting MundusX. <a href="../docs/install-sparkrun/">Step-by-step guide and recipes</a>. Choose a direct connection to reuse that runtime.</p>
         <p class="lead">This Pages-backed install surface mirrors the future public endpoint shape. It hosts the reviewed installer scripts from this repo and points them at the latest signed GitHub release artifacts.</p>
         <div class="actions">
           <a class="primary" href="../install.sh">Download install.sh</a>

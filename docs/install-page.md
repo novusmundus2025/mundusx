@@ -1,5 +1,7 @@
 # Local Install Page Preview
 
+**GB10/GX10 installation announcement:** start SparkRun and verify your external model before starting MundusX. Use the [step-by-step guide and recipes](https://mundusx.github.io/mundusx/install-sparkrun/) and select a direct connection to reuse the runtime.
+
 This page defines the localhost-first install touch for MundusX while we keep the public domain for later.
 
 ## Purpose
