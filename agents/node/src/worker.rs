@@ -2625,6 +2625,8 @@ fn char_prefix_bytes(value: &str, chars: usize) -> usize {
 
 fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
     let mut raw_content = String::new();
+    let mut reasoning_only = false;
+    let mut usage = serde_json::Value::Null;
     let mut emitted_chars = 0usize;
     let mut finish_reason = String::new();
     let mut saw_done = false;
@@ -2646,6 +2648,13 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
         }
         let value: serde_json::Value = serde_json::from_str(data)
             .map_err(|error| format!("OpenAI-compatible stream returned invalid json: {error}"))?;
+        reasoning_only |= value.pointer("/choices/0/delta/reasoning_content")
+            .or_else(|| value.pointer("/choices/0/delta/reasoning"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty());
+        if value.get("usage").is_some_and(|value| !value.is_null()) {
+            usage = value["usage"].clone();
+        }
         if let Some(message) = value
             .pointer("/error/message")
             .and_then(serde_json::Value::as_str)
@@ -2681,12 +2690,17 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
         }
     }
 
-    let content = raw_content.trim();
-    if content.is_empty() {
-        return Err("OpenAI-compatible stream did not include content".to_string());
-    }
     if !saw_done && finish_reason.is_empty() {
         return Err("OpenAI-compatible stream ended before a terminal event".to_string());
+    }
+    let content = raw_content.trim();
+    if content.is_empty() {
+        return Err(empty_completion_error(&serde_json::json!({
+            "choices": [{"finish_reason": finish_reason, "message": {
+                "content": "", "reasoning_content": if reasoning_only { "present" } else { "" }
+            }}],
+            "usage": usage
+        })));
     }
     // The terminal event confirms the full response. Flush the validation tail
     // through the live channel before job completion so clients do not freeze
@@ -4412,6 +4426,17 @@ mod tests {
             ),
             Some(WorkerTimeoutKind::Hard)
         );
+    }
+
+    #[test]
+    fn empty_stream_reports_reasoning_budget_without_exposing_reasoning() {
+        let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"private thought\"},\"finish_reason\":\"length\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":128}}\n\ndata: [DONE]\n\n";
+        let error = parse_openai_stream(Cursor::new(body)).unwrap_err();
+        assert!(error.contains("whole budget on reasoning"));
+        assert!(error.contains("128 tokens"));
+        assert!(!error.contains("private thought"));
+        assert!(parse_openai_stream(Cursor::new("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n")).unwrap_err().contains("generation limit"));
+        assert!(parse_openai_stream(Cursor::new("data: {\"choices\":[{\"delta\":{}}]}\n\n")).unwrap_err().contains("before a terminal event"));
     }
 
     #[test]
