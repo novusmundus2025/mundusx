@@ -1,0 +1,62 @@
+# Single GX10 reference. See ../install-sparkrun.md for validation status and limits.
+recipe_version: "2"
+
+model: RedHatAI/Muse-Glimmer-30B-FP8-block
+
+runtime: eugr-vllm
+
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly@sha256:22df040ea23a7d85c8d6b30a1aa067947368e71441ad3c4c39ce2cbea838b5e9
+
+min_nodes: 1
+max_nodes: 1
+
+metadata:
+  description: "Muse Glimmer 30B FP8 - single GX10 multimodal inference"
+  model_params: 30B
+  model_dtype: fp8
+
+defaults:
+  host: 127.0.0.1
+  port: 8000
+
+  tensor_parallel: 1
+  served_model_name: muse-glimmer
+
+  gpu_memory_utilization: 0.80
+  max_model_len: 90000
+  max_num_seqs: 16
+  max_num_batched_tokens: 8192
+
+  kv_cache_dtype: fp8
+
+  tool_call_parser: muse_glimmer
+  reasoning_parser: muse_glimmer
+
+env:
+  VLLM_USE_DEEP_GEMM: "0"
+  VLLM_MOE_USE_DEEP_GEMM: "0"
+  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+
+executor_config:
+  restart_policy: unless-stopped
+
+command: |
+  vllm serve \
+    {model} \
+    --host {host} \
+    --port {port} \
+    --served-model-name {served_model_name} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --generation-config auto \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --trust-remote-code

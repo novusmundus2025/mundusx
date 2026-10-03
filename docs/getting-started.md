@@ -1,5 +1,7 @@
 # Install a MundusX OpenGPU contributor
 
+**GB10/GX10 contributors:** start SparkRun and verify the model first, then connect MundusX to the existing runtime. Use the [SparkRun installation guide and recipe files](https://mundusx.github.io/mundusx/install-sparkrun/).
+
 Choose the guide for the computer that will contribute:
 
 | Machine | Step-by-step guide |
