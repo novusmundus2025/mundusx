@@ -6561,7 +6561,7 @@ fn run_install(
                 if config.contribution.llm_enabled() {
                     "next step: run `opengpu start`".to_string()
                 } else {
-                    "media selections saved; local generation is available after verification; network image/video serving needs LLM admission".to_string()
+                    "media selections saved; verify profiles, then run opengpu start for media-only admission".to_string()
                 },
             ];
             if let Err(error) = contribution::install_media(&mut config, setup_media, yes) {
