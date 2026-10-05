@@ -2,6 +2,21 @@
 
 Deploy the companion mundusx/control-plane change first. Update both the CLI and node agent.
 
+For the public plane, `https://control.mundusx.ai` is registration/admission,
+`https://chat.mundusx.ai` is chat/media requests and uploads, and `mundusx.ai`
+is the public website. The public install automatically selects the associated
+chat service:
+
+```bash
+opengpu install --public --cap-percent 80 --workloads image,video,image-to-video --no-contribute-cluster
+```
+
+Use a dedicated media GX10, or stop its existing vLLM workload before verification.
+Do not configure media-only serving on a machine that must keep contributing LLM
+requests. Installation retains device identity; it changes workload selection.
+
+For a private plane, use:
+
 ```bash
 opengpu install --private --control-plane-url https://YOUR_CONTROL_PLANE --cap-percent 80 --workloads image,video,image-to-video --no-contribute-cluster
 opengpu media setup --yes

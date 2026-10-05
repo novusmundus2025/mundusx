@@ -16,8 +16,9 @@ enforce this rule as well. See `docs/install-strategy.md` for the distribution p
 
 The web service queues authenticated text-to-video requests at `/video`.
 Contributors use Wan2.2-T2V-A14B through a pinned ComfyUI workflow. Qwen-Image
-remains the separate image model; neither image editing nor image-to-video is
-implemented by the video worker.
+remains the separate image model. The companion deployment also supports
+four-step Lightning image-to-video with owned PNG references; image editing
+is not implemented by this worker.
 
 ```sh
 opengpu install --workloads llm,image,video --setup-media --yes
@@ -36,8 +37,10 @@ The node launches the video listener for the production control plane. A custom
 control plane must explicitly set `MUNDUSX_MEDIA_SERVER_URL` to its corresponding
 web service. UAT is not silently mapped to production. An admitted, registered
 contributor can also run `opengpu media serve --server https://chat.mundusx.ai`.
-The current admission contract still requires a healthy LLM runtime; standalone
-media-only network admission is not implemented.
+With the companion control-plane deployment, verified media-only contributors
+can be admitted without an LLM runtime. They expose one media execution slot
+and cannot claim LLM jobs. See [media-only contribution](media-only-contribution.md)
+for installation and verification commands.
 
 ## Scheduling and compatibility
 
