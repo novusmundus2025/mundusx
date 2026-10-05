@@ -11,6 +11,9 @@ use std::process::{Command, Stdio};
 
 pub const PROFILE: &str = include_str!("../workers/media/qwen-image-v1.json");
 pub const VIDEO_PROFILE: &str = include_str!("../workers/media/wan-video-v1.json");
+pub const I2V_PROFILE: &str = include_str!("../workers/media/wan-i2v-v1.json");
+pub const I2V_FAST_PROFILE: &str = include_str!("../workers/media/wan-i2v-fast-v1.json");
+const BOOTSTRAP: &str = include_str!("../workers/media/unified_memory.py");
 const HELPER: &str = include_str!("../workers/media/runtime.py");
 const UPLOADER: &str = include_str!("../workers/media/artifact_upload.py");
 
@@ -36,6 +39,9 @@ pub fn prepare(home: &Path) -> Result<(PathBuf, PathBuf), String> {
     )?;
     write_if_changed(&profile, PROFILE.as_bytes())?;
     write_if_changed(&dir.join("wan-video-v1.json"), VIDEO_PROFILE.as_bytes())?;
+    write_if_changed(&dir.join("wan-i2v-v1.json"), I2V_PROFILE.as_bytes())?;
+    write_if_changed(&dir.join("wan-i2v-fast-v1.json"), I2V_FAST_PROFILE.as_bytes())?;
+    write_if_changed(&dir.join("unified_memory.py"), BOOTSTRAP.as_bytes())?;
     Ok((helper, profile))
 }
 
@@ -67,7 +73,11 @@ pub fn run_profile(
         })?;
     }
     let (helper, profile) = prepare(home)?;
-    let profile = if video {
+    let profile = if extra.iter().any(|arg| arg == "--fast") {
+        helper.with_file_name("wan-i2v-fast-v1.json")
+    } else if extra.iter().any(|arg| arg == "--image-to-video") {
+        helper.with_file_name("wan-i2v-v1.json")
+    } else if video {
         helper.with_file_name("wan-video-v1.json")
     } else {
         profile
@@ -173,6 +183,35 @@ fn profile_verification_with_memory(
         value["reason"] = "Insufficient contributed memory for the selected model profile".into();
     }
     Some(value)
+}
+
+/// Exact duration/profile certificates eligible for queue advertisement.
+pub fn verified_profiles(home: &Path, endpoint: Option<&str>, cap: u8) -> Vec<String> {
+    use sha2::{Digest, Sha256};
+    let budget = memory::MediaBudget::detect(cap);
+    let mut profiles = vec![];
+    for (source, suffix) in [(PROFILE, ""), (VIDEO_PROFILE, "-video"), (I2V_FAST_PROFILE, "-i2v-fast")] {
+        let Ok(base) = serde_json::from_str::<Value>(source) else { continue; };
+        if budget.require().is_err() || budget.contribution_budget_bytes < base["minimum_budget_bytes"].as_u64() { continue; }
+        let video = !suffix.is_empty();
+        for seconds in 1..=if video {10} else {1} {
+            let mut profile = base.clone();
+            let frames = seconds * 16 + 1;
+            if video {
+                profile["frames"] = frames.into();
+                profile["id"] = base["id"].as_str().unwrap().replace("-33f-", &format!("-{frames}f-")).into();
+                if seconds != 2 { profile["timeout_seconds"] = 7200.into(); }
+            }
+            let duration_suffix = if video && seconds != 2 { format!("-{frames}f") } else { String::new() };
+            let path = home.join(format!("media/verified{suffix}{duration_suffix}.json"));
+            let Some(cert) = fs::read(path).ok().and_then(|data| serde_json::from_slice::<Value>(&data).ok()) else { continue; };
+            let hash = hex::encode(Sha256::digest(serde_json::to_vec(&profile).unwrap()));
+            if cert["ready"] == true && cert["profile_hash"].as_str() == Some(&hash) && cert["cap_percent"].as_u64() == Some(cap.into()) && cert["endpoint"].as_str() == endpoint {
+                profiles.push(profile["id"].as_str().unwrap().into());
+            }
+        }
+    }
+    profiles
 }
 
 #[cfg(test)]

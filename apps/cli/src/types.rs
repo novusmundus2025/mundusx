@@ -172,6 +172,10 @@ pub struct AgentRegistration {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerHealthReport {
+    #[serde(default)]
+    pub media_profiles: Vec<String>,
+    #[serde(default)]
+    pub media_budget_bytes: u64,
     pub healthy: bool,
     pub model_dir: String,
     #[serde(skip_serializing_if = "Option::is_none")]

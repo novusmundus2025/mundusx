@@ -71,7 +71,8 @@ fn media_selected(config: &AgentConfig) -> bool {
     config.contribution.operations.iter().any(|operation| {
         matches!(
             operation,
-            crate::contribution_contract::Operation::TextToVideo
+            crate::contribution_contract::Operation::ImageToVideo
+                | crate::contribution_contract::Operation::TextToVideo
                 | crate::contribution_contract::Operation::TextToImage
         )
     })
@@ -87,6 +88,7 @@ mod tests {
         for (operation, expected) in [
             (Operation::TextToImage, true),
             (Operation::TextToVideo, true),
+            (Operation::ImageToVideo, true),
             (Operation::Llm, false),
             (Operation::ImageEdit, false),
         ] {

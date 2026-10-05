@@ -303,6 +303,10 @@ pub struct WorkerLaunchResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerHealthReport {
+    #[serde(default)]
+    pub media_profiles: Vec<String>,
+    #[serde(default)]
+    pub media_budget_bytes: u64,
     pub healthy: bool,
     pub model_dir: String,
     pub model_name: Option<String>,

@@ -3166,6 +3166,7 @@ pub fn probe_worker_health(
     };
 
     WorkerHealthReport {
+        media_profiles: vec![], media_budget_bytes: 0,
         healthy,
         model_dir: model_dir.display().to_string(),
         model_name: model_name.map(|name| name.to_string()),
@@ -3258,6 +3259,7 @@ fn contributed_cluster_health(
     let healthy = reachable && model_name.is_some();
 
     WorkerHealthReport {
+        media_profiles: vec![], media_budget_bytes: 0,
         healthy,
         model_dir: model_dir.display().to_string(),
         model_name,

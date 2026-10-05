@@ -352,6 +352,7 @@ mod tests {
             policy_allowed: true,
             policy_reason: None,
             worker_health: WorkerHealthReport {
+            media_profiles: vec![], media_budget_bytes: 0,
                 healthy: true,
                 model_dir: "/tmp/models".to_string(),
                 model_name: Some("llama3.1:8b".to_string()),
