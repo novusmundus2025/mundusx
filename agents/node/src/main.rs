@@ -1066,10 +1066,19 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
 
 fn build_heartbeat(config: &AgentConfig) -> Heartbeat {
     let mut heartbeat = build_heartbeat_with_state(config, resolved_state(config));
-    if !heartbeat.capabilities.ready_for_jobs {
+    if heartbeat.agent_state == AgentState::Ready && !heartbeat_runtime_ready(&heartbeat) {
         heartbeat.agent_state = AgentState::Paused;
     }
     heartbeat
+}
+
+fn heartbeat_runtime_ready(heartbeat: &Heartbeat) -> bool {
+    heartbeat.capabilities.ready_for_jobs
+        || (heartbeat.worker_health.runtime_mode == "media"
+            && heartbeat.policy_allowed
+            && heartbeat.worker_health.healthy
+            && !heartbeat.worker_health.media_profiles.is_empty()
+            && heartbeat.worker_health.media_budget_bytes > 0)
 }
 
 fn heartbeat_from_snapshot(
@@ -1079,7 +1088,7 @@ fn heartbeat_from_snapshot(
 ) -> Heartbeat {
     let mut heartbeat = snapshot.clone();
     heartbeat.agent_state =
-        if agent_state == AgentState::Ready && !heartbeat.capabilities.ready_for_jobs {
+        if agent_state == AgentState::Ready && !heartbeat_runtime_ready(&heartbeat) {
             AgentState::Paused
         } else {
             agent_state
@@ -3277,6 +3286,37 @@ mod tests {
             .capabilities
             .supported_roles
             .contains(&NodeRole::ToolUse));
+    }
+
+    #[test]
+    fn media_heartbeat_ready_without_llm_preserves_explicit_pause() {
+        let config = cluster_config("qwen3-coder", Some(80_000_000_000), None);
+        let mut health = cluster_health("qwen3-coder");
+        health.runtime_mode = "media".into();
+        health.healthy = true;
+        health.media_profiles = vec!["qwen-image-fp8-832x480-v1".into()];
+        health.media_budget_bytes = 100_000_000_000;
+        let mut capabilities = build_capabilities(&config, &health, true);
+        capabilities.ready_for_jobs = false;
+        let mut snapshot = Heartbeat {
+            node_id: config.device_id.clone(), backend: Backend::Cuda,
+            agent_state: AgentState::Ready, available_memory_mb: 8192,
+            available_gpu_percent: 100, updated_at: now_unix_seconds(),
+            contribution_percent: 80, hostname: "gx10-test".into(),
+            identity_trust_path: "test".into(), power_source: "ac".into(),
+            on_battery: false, battery_percent: None, policy_allowed: true,
+            policy_reason: None, worker_health: health, capabilities,
+        };
+        assert!(heartbeat_runtime_ready(&snapshot));
+        assert_eq!(heartbeat_from_snapshot(&snapshot, &config, AgentState::Ready).agent_state, AgentState::Ready);
+        assert_eq!(heartbeat_from_snapshot(&snapshot, &config, AgentState::Paused).agent_state, AgentState::Paused);
+        snapshot.policy_allowed = false;
+        assert!(!heartbeat_runtime_ready(&snapshot));
+        snapshot.policy_allowed = true;
+        snapshot.worker_health.media_profiles.clear();
+        assert!(!heartbeat_runtime_ready(&snapshot));
+        snapshot.worker_health.runtime_mode = "vllm".into();
+        assert!(!heartbeat_runtime_ready(&snapshot));
     }
 
     #[test]

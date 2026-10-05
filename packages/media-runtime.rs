@@ -200,7 +200,9 @@ pub fn verified_profiles(home: &Path, endpoint: Option<&str>, cap: u8) -> Vec<St
             if video {
                 profile["frames"] = frames.into();
                 profile["id"] = base["id"].as_str().unwrap().replace("-33f-", &format!("-{frames}f-")).into();
-                if seconds != 2 { profile["timeout_seconds"] = 7200.into(); }
+                if seconds != 2 {
+                    profile["timeout_seconds"] = base["timeout_seconds"].as_u64().unwrap_or(0).max(7200).into();
+                }
             }
             let duration_suffix = if video && seconds != 2 { format!("-{frames}f") } else { String::new() };
             let path = home.join(format!("media/verified{suffix}{duration_suffix}.json"));
