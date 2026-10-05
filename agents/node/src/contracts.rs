@@ -233,6 +233,8 @@ pub struct JobClaimResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobCompletion {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_usage: Vec<serde_json::Value>,
     pub job_id: String,
     pub node_id: String,
     pub worker_id: String,
@@ -290,6 +292,8 @@ pub struct WorkerLaunchRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLaunchResponse {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_usage: Vec<serde_json::Value>,
     pub job_id: String,
     pub worker_id: String,
     pub status: String,

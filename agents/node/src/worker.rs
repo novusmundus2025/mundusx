@@ -26,7 +26,17 @@ const STREAM_DELTA_PREFIX: &str = "MUNDUSX_STREAM_DELTA:";
 const STREAM_TAIL_HOLD_CHARS: usize = 32;
 
 thread_local! {
+    static RUNTIME_TOKEN_USAGE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
     static STREAM_DELTA_SENDER: RefCell<Option<mpsc::Sender<String>>> = const { RefCell::new(None) };
+}
+
+fn record_runtime_usage(usage: &serde_json::Value) {
+    let Some(completion) = usage.get("completion_tokens").and_then(serde_json::Value::as_u64) else { return; };
+    let prompt = usage.get("prompt_tokens").and_then(serde_json::Value::as_u64);
+    RUNTIME_TOKEN_USAGE.with(|slot| slot.borrow_mut().push(serde_json::json!({
+        "call_id":uuid::Uuid::new_v4().to_string(),"completion_tokens":completion,
+        "prompt_tokens":prompt,"source":"runtime",
+    })));
 }
 
 fn with_stream_delta_sender<T>(
@@ -2324,6 +2334,7 @@ fn run_vllm_completion(
     let value = response
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("OpenAI-compatible runtime returned invalid json: {error}"))?;
+    record_runtime_usage(&value["usage"]);
     let finish_reason = value
         .pointer("/choices/0/finish_reason")
         .and_then(|value| value.as_str())
@@ -2368,6 +2379,7 @@ fn run_native_openai_tool_turn(
     payload["model"] = serde_json::Value::String(model.to_string());
     let streaming = live_delta_enabled();
     payload["stream"] = serde_json::Value::Bool(streaming);
+    if streaming { payload["stream_options"] = serde_json::json!({"include_usage":true}); }
     run_native_tool_attempts(payload, |payload, output, retry| {
         let response = ureq::post(&format!(
             "{}/v1/chat/completions",
@@ -2394,6 +2406,7 @@ fn run_native_openai_tool_turn(
         let value = response.into_json::<serde_json::Value>().map_err(|error| {
             format!("native OpenAI tool completion returned invalid JSON: {error}")
         })?;
+        record_runtime_usage(&value["usage"]);
         validate_native_tool_message(
             &value["choices"][0]["message"],
             value["choices"][0]["finish_reason"].as_str(),
@@ -2509,6 +2522,7 @@ fn parse_native_openai_stream_with_output<R: BufRead>(
     retry: bool,
 ) -> Result<String, String> {
     let mut assembled = native_stream::NativeStream::default();
+    let mut usage = serde_json::Value::Null;
     let mut pending_tools = Vec::new();
     let mut reason = None;
     let mut done = false;
@@ -2527,6 +2541,7 @@ fn parse_native_openai_stream_with_output<R: BufRead>(
         }
         let chunk: serde_json::Value =
             serde_json::from_str(data).map_err(|e| format!("invalid native stream JSON: {e}"))?;
+        if chunk.get("usage").is_some_and(|value| !value.is_null()) { usage=chunk["usage"].clone(); }
         if let Some(error) = chunk.get("error") {
             return Err(format!("native stream error: {error}"));
         }
@@ -2558,6 +2573,7 @@ fn parse_native_openai_stream_with_output<R: BufRead>(
             }
         }
     }
+    record_runtime_usage(&usage);
     if !done || reason.is_none() {
         return Err("native stream ended before terminal event".into());
     }
@@ -2690,6 +2706,7 @@ fn parse_openai_stream<R: BufRead>(reader: R) -> Result<String, String> {
         }
     }
 
+    record_runtime_usage(&usage);
     if !saw_done && finish_reason.is_empty() {
         return Err("OpenAI-compatible stream ended before a terminal event".to_string());
     }
@@ -3498,6 +3515,7 @@ fn run_llama_request(
             };
             match generated {
                 Ok((generated, runtime_mode, metrics)) => {
+                    record_runtime_usage(&serde_json::json!({"completion_tokens":metrics.eval_count,"prompt_tokens":metrics.prompt_eval_count}));
                     mlx_started = true;
                     match normalize_generated_output(request, &generated) {
                         Ok(generated) => {
@@ -3511,6 +3529,7 @@ fn run_llama_request(
                                 })
                                 .unwrap_or_default();
                             return Ok(WorkerLaunchResponse {
+                                token_usage: Vec::new(),
                                 job_id: request.job_id.clone(),
                                 worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
                                 status: "completed".to_string(),
@@ -3588,6 +3607,7 @@ fn run_llama_request(
                 speakai.then_some(SPEAKAI_JSON_GRAMMAR),
             )?,
         };
+        record_runtime_usage(&serde_json::json!({"completion_tokens":metrics.eval_count,"prompt_tokens":metrics.prompt_eval_count}));
         match normalize_generated_output(request, &generated) {
             Ok(generated) => {
                 let runtime_metrics = metrics.to_output_fragment().unwrap_or_default();
@@ -3600,6 +3620,7 @@ fn run_llama_request(
                     })
                     .unwrap_or_default();
                 return Ok(WorkerLaunchResponse {
+                    token_usage: Vec::new(),
                     job_id: request.job_id.clone(),
                     worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
                     status: "completed".to_string(),
@@ -3681,6 +3702,7 @@ fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespons
                     })
                     .unwrap_or_default();
                 return Ok(WorkerLaunchResponse {
+                    token_usage: Vec::new(),
                     job_id: request.job_id.clone(),
                     worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
                     status: "completed".to_string(),
@@ -3749,6 +3771,7 @@ fn run_contributed_cluster_request(
         }
         let generated = run_native_openai_tool_turn(&cluster.base_url, model, request)?;
         return Ok(WorkerLaunchResponse {
+            token_usage: Vec::new(),
             job_id: request.job_id.clone(),
             worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
             status: "completed".to_string(),
@@ -3805,6 +3828,7 @@ fn run_contributed_cluster_request(
                     })
                     .unwrap_or_default();
                 return Ok(WorkerLaunchResponse {
+                    token_usage: Vec::new(),
                     job_id: request.job_id.clone(),
                     worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
                     status: "completed".to_string(),
@@ -3838,6 +3862,18 @@ fn execute_request_with_cluster(
     request: &WorkerLaunchRequest,
     contributed_cluster: Option<&crate::storage::ContributedCluster>,
 ) -> WorkerLaunchResponse {
+    RUNTIME_TOKEN_USAGE.with(|slot| {
+        let previous=slot.replace(Vec::new());
+        let mut response=execute_request_with_cluster_inner(request,contributed_cluster);
+        response.token_usage=slot.replace(previous);
+        response
+    })
+}
+
+fn execute_request_with_cluster_inner(
+    request: &WorkerLaunchRequest,
+    contributed_cluster: Option<&crate::storage::ContributedCluster>,
+) -> WorkerLaunchResponse {
     let backend = resolved_backend(request.backend);
 
     // A contributed cluster serves every job for this node, whatever the
@@ -3846,6 +3882,7 @@ fn execute_request_with_cluster(
         return match run_contributed_cluster_request(request, cluster) {
             Ok(response) => response,
             Err(error) => WorkerLaunchResponse {
+                token_usage: Vec::new(),
                 job_id: request.job_id.clone(),
                 worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
                 status: "failed".to_string(),
@@ -3863,6 +3900,7 @@ fn execute_request_with_cluster(
         return match run_vllm_request(request) {
             Ok(response) => response,
             Err(error) => WorkerLaunchResponse {
+                token_usage: Vec::new(),
                 job_id: request.job_id.clone(),
                 worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
                 status: "failed".to_string(),
@@ -3882,6 +3920,7 @@ fn execute_request_with_cluster(
         return match run_llama_request(request, backend) {
             Ok(response) => response,
             Err(error) => WorkerLaunchResponse {
+                token_usage: Vec::new(),
                 job_id: request.job_id.clone(),
                 worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
                 status: "failed".to_string(),
@@ -3896,6 +3935,7 @@ fn execute_request_with_cluster(
     }
 
     WorkerLaunchResponse {
+        token_usage: Vec::new(),
         job_id: request.job_id.clone(),
         worker_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
         status: "failed".to_string(),
@@ -5571,6 +5611,21 @@ mod tests {
         let message = empty_completion_error(&body);
         assert!(message.contains("spent its whole budget on reasoning"));
         assert!(message.contains("context size"), "message: {message}");
+    }
+
+    #[test]
+    fn streamed_usage_counts_the_final_runtime_total_once_and_never_estimates() {
+        super::RUNTIME_TOKEN_USAGE.with(|slot| slot.borrow_mut().clear());
+        let stream="data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":2}}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n";
+        super::parse_openai_stream(std::io::Cursor::new(stream)).unwrap();
+        super::record_runtime_usage(&serde_json::json!({"total_tokens":1000}));
+        super::RUNTIME_TOKEN_USAGE.with(|slot| {
+            let records=slot.replace(Vec::new());
+            assert_eq!(records.len(),1);
+            assert_eq!(records[0]["completion_tokens"],3);
+            assert_eq!(records[0]["prompt_tokens"],5);
+            assert_eq!(records[0]["source"],"runtime");
+        });
     }
 
     #[test]

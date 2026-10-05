@@ -1771,6 +1771,7 @@ fn build_completion_from_worker_response(
 ) -> JobCompletion {
     let is_completed = response.status == "completed";
     JobCompletion {
+        token_usage: response.token_usage,
         job_id: response.job_id,
         node_id: response.node_id,
         worker_id: response.worker_id,
@@ -1805,6 +1806,7 @@ fn build_worker_error_completion(
     duration_ms: u64,
 ) -> JobCompletion {
     JobCompletion {
+        token_usage: Vec::new(),
         job_id: job.job_id.clone(),
         node_id: config.device_id.clone(),
         worker_id: "worker-failed".to_string(),
@@ -3577,6 +3579,7 @@ mod tests {
     #[test]
     fn completion_preserves_success_runtime_metadata() {
         let response = WorkerLaunchResponse {
+            token_usage: Vec::new(),
             job_id: "job-1".to_string(),
             worker_id: "worker-1".to_string(),
             status: "completed".to_string(),
@@ -3601,6 +3604,7 @@ mod tests {
     #[test]
     fn completion_converts_worker_failure_to_actionable_error() {
         let response = WorkerLaunchResponse {
+            token_usage: Vec::new(),
             job_id: "job-1".to_string(),
             worker_id: "worker-1".to_string(),
             status: "failed".to_string(),
@@ -3627,6 +3631,7 @@ mod tests {
     fn control_plane_completion_message_includes_reported_status() {
         let job = test_job();
         let completion = JobCompletion {
+            token_usage: Vec::new(),
             job_id: "job-1".to_string(),
             node_id: "node-1".to_string(),
             worker_id: "worker-1".to_string(),
