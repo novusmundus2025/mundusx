@@ -260,7 +260,9 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
     health.media_budget_bytes = media_runtime::memory::MediaBudget::detect(config.contribution_percent).contribution_budget_bytes.unwrap_or(0);
     if !config.contribution.llm_enabled() {
         health.runtime_mode = "media".into();
-        health.healthy = !health.media_profiles.is_empty();
+        let device_ready = (health.cuda_driver_available && health.cuda_device_available)
+            || (resolved_backend(config) == Backend::M && (health.blas_device_available || health.mlx_available));
+        health.healthy = !health.media_profiles.is_empty() && device_ready;
         health.parallel_slots = 1;
         health.model_name = None; health.model_path = None;
         health.notes = vec!["Media-only runtime; verified profiles determine readiness".into()];
@@ -417,6 +419,7 @@ fn build_capabilities(
         }),
     };
 
+    let active_model = active_model.filter(|_| config.contribution.llm_enabled());
     let mut ready_for_jobs = policy_allowed && health.healthy;
     let mut readiness_reason = None;
     match active_model.as_ref() {
@@ -827,7 +830,7 @@ fn build_scheduler_capabilities(
             },
         }),
         schema_version: capabilities.schema_version,
-        models,
+        models: if config.contribution.llm_enabled() { models } else { vec![] },
         physical_memory_mb: capabilities.physical_memory_mb,
         usable_memory_mb: capabilities.usable_memory_mb,
         available_memory_mb: capabilities.available_memory_mb,
