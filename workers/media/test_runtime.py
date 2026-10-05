@@ -441,3 +441,145 @@ class IntegerDurationTests(unittest.TestCase):
         for seconds in (0, 11, 1.5):
             with self.assertRaises(media.MediaError):
                 media.preset_profile(VIDEO_PROFILE, seconds)
+
+
+class ImageToVideoTests(unittest.TestCase):
+    def setUp(self):
+        self.profile = json.loads(Path(__file__).with_name('wan-i2v-v1.json').read_text())
+
+    def test_conditioning_and_both_samplers_use_input_image(self):
+        graph = media.workflow(self.profile, 'a teapot rotates', 42, 'test', 'input.png')
+        self.assertEqual(graph['15']['inputs']['image'], 'input.png')
+        self.assertEqual(graph['6']['class_type'], 'WanImageToVideo')
+        self.assertEqual(graph['6']['inputs']['start_image'], ['15', 0])
+        for key in ('8', '14'):
+            self.assertEqual(graph[key]['inputs']['positive'], ['6', 0])
+            self.assertEqual(graph[key]['inputs']['negative'], ['6', 1])
+        self.assertEqual(graph['8']['inputs']['latent_image'], ['6', 2])
+        self.assertEqual(graph['14']['inputs']['latent_image'], ['8', 0])
+
+    def test_records_do_not_collide_with_text_video(self):
+        for name in ('runtime', 'verified'):
+            self.assertNotEqual(media.profile_record(Path('.'), self.profile, name),
+                                media.profile_record(Path('.'), VIDEO_PROFILE, name))
+
+    def test_invalid_input_rejected_before_contacting_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'input.png'
+            path.write_bytes(b'not an image')
+            with self.assertRaises(media.MediaError): media.read_input_png(path)
+            path.write_bytes(png())
+            self.assertEqual(media.read_input_png(path), png())
+            with self.assertRaises(media.MediaError):
+                media.generate(None, self.profile, 'test', 42, Path(tmp)/'out.mp4')
+
+    def test_duration_presets_preserve_i2v_and_model_pins(self):
+        for seconds in (2, 5, 10):
+            profile = media.preset_profile(self.profile, seconds)
+            self.assertEqual(profile['operation'], 'image_to_video')
+            self.assertEqual(profile['frames'], seconds * profile['fps'] + 1)
+            for file in profile['files']:
+                self.assertEqual(len(file['sha256']), 64)
+
+
+    def test_upload_is_multipart_and_checks_identity(self):
+        class Opener:
+            wrong = False
+            def open(self, request, timeout):
+                self.request = request
+                name = request.data.split(b'filename="')[1].split(b'"')[0].decode()
+                return contextlib.closing(io.BytesIO(json.dumps({'name': 'wrong.png' if self.wrong else name,
+                                                               'subfolder': '', 'type': 'input'}).encode()))
+        client = media.Comfy('http://127.0.0.1:8188')
+        client.opener = Opener()
+        name = client.upload_image(png())
+        self.assertTrue(name.startswith('opengpu-input-'))
+        self.assertEqual(client.opener.request.full_url, 'http://127.0.0.1:8188/upload/image')
+        self.assertIn(png(), client.opener.request.data)
+        client.opener.wrong = True
+        with self.assertRaisesRegex(media.MediaError, 'identity'):
+            client.upload_image(png())
+
+
+class FastImageToVideoTests(unittest.TestCase):
+    def setUp(self):
+        self.profile = json.loads(Path(__file__).with_name('wan-i2v-fast-v1.json').read_text())
+
+    def test_official_four_step_loras_condition_both_experts(self):
+        graph = media.workflow(self.profile, 'test motion', 42, 'test', 'input.png')
+        self.assertEqual((self.profile['width'], self.profile['height']), (832, 480))
+        for key in ('8', '14'):
+            self.assertEqual(graph[key]['inputs']['steps'], 4)
+            self.assertEqual(graph[key]['inputs']['cfg'], 1.0)
+            self.assertEqual(graph[key]['inputs']['positive'], ['6', 0])
+        self.assertEqual(graph['8']['inputs']['end_at_step'], 2)
+        self.assertEqual(graph['14']['inputs']['start_at_step'], 2)
+        self.assertEqual(graph['7']['inputs']['model'], ['16', 0])
+        self.assertEqual(graph['13']['inputs']['model'], ['17', 0])
+        self.assertEqual(graph['16']['class_type'], 'LoraLoaderModelOnly')
+        self.assertEqual(graph['16']['inputs']['strength_model'], 1.0)
+        self.assertIn('high', graph['16']['inputs']['lora_name'])
+        self.assertIn('low', graph['17']['inputs']['lora_name'])
+
+    @unittest.skipUnless(shutil.which('ffmpeg'), 'ffmpeg required')
+    def test_portrait_input_is_padded_without_cropping(self):
+        source = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                                 'color=red:s=64x128', '-frames:v', '1', '-threads', '1',
+                                 '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'],
+                                stdout=subprocess.PIPE, check=True).stdout
+        fitted = media.fit_input_image(source, self.profile)
+        media.validate_png(fitted, 832, 480)
+        pixels = subprocess.run(['ffmpeg', '-v', 'error', '-i', 'pipe:0', '-frames:v', '1',
+                                 '-threads', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+                                input=fitted, stdout=subprocess.PIPE, check=True).stdout
+        def pixel(x, y):
+            index = (y * 832 + x) * 3
+            return pixels[index:index+3]
+        self.assertEqual(pixel(0, 240), bytes([0, 0, 0]))
+        self.assertEqual(pixel(831, 240), bytes([0, 0, 0]))
+        for y in (0, 240, 479):
+            self.assertGreater(pixel(416, y)[0], 240)
+        self.assertEqual(media.fit_input_image(source, {}), source)
+
+    def test_fast_records_and_download_sources_are_separate_and_pinned(self):
+        standard = json.loads(Path(__file__).with_name('wan-i2v-v1.json').read_text())
+        for name in ('runtime', 'verified'):
+            self.assertNotEqual(media.profile_record(Path('.'), self.profile, name),
+                                media.profile_record(Path('.'), standard, name))
+        for index in (4, 5):
+            file = self.profile['files'][index]
+            url = media.model_url(self.profile, file)
+            self.assertIn('lightx2v/Wan2.2-Lightning/resolve/' + file['revision'], url)
+            self.assertEqual(len(file['sha256']), 64)
+            self.assertEqual(len(file['revision']), 40)
+        self.assertIn('/split_files/', media.model_url(self.profile, self.profile['files'][0]))
+
+
+class UnifiedMemoryTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('unified_memory', Path(__file__).with_name('unified_memory.py'))
+        self.bootstrap = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.bootstrap)
+
+    def fake(self, name='NVIDIA GB10', free=10, total=128, available=100):
+        from types import SimpleNamespace
+        cuda = SimpleNamespace(is_available=lambda:True, get_device_name=lambda device=None:name,
+                               mem_get_info=lambda device=None:(free,total))
+        return SimpleNamespace(cuda=cuda), SimpleNamespace(virtual_memory=lambda:SimpleNamespace(total=128,available=available))
+
+    def test_gb10_includes_reclaimable_cache_but_never_exceeds_total(self):
+        torch, system = self.fake()
+        self.assertTrue(self.bootstrap.install_gb10_memory_accounting(torch,system))
+        self.assertEqual(torch.cuda.mem_get_info(), (100,128))
+        torch, system = self.fake(available=200)
+        self.bootstrap.install_gb10_memory_accounting(torch,system)
+        self.assertEqual(torch.cuda.mem_get_info(), (128,128))
+
+    def test_discrete_gpu_and_other_device_are_unchanged(self):
+        torch, system = self.fake(name='NVIDIA RTX 4090')
+        self.assertFalse(self.bootstrap.install_gb10_memory_accounting(torch,system))
+        self.assertEqual(torch.cuda.mem_get_info(), (10,128))
+        torch, system = self.fake()
+        torch.cuda.get_device_name = lambda device=None:'NVIDIA RTX 4090' if device==1 else 'NVIDIA GB10'
+        self.bootstrap.install_gb10_memory_accounting(torch,system)
+        self.assertEqual(torch.cuda.mem_get_info(1), (10,128))

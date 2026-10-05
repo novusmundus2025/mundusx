@@ -4,6 +4,7 @@ use crate::{
     media_runtime,
 };
 use serde_json::{json, Value};
+use std::io::Read;
 use std::{
     fs,
     sync::{
@@ -46,9 +47,10 @@ fn request(
             ureq::Error::Status(code, _) => format!("Media server returned HTTP {code}"),
             _ => "Media server connection failed".into(),
         })?;
-    response
-        .into_json()
-        .map_err(|_| "Invalid media server response".into())
+    let mut bytes = Vec::new();
+    response.into_reader().take(46 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|_| "Cannot read media server response")?;
+    if bytes.len() > 46 * 1024 * 1024 { return Err("Media server response too large".into()); }
+    serde_json::from_slice(&bytes).map_err(|_| "Invalid media server response".into())
 }
 fn private_json(path: &std::path::Path, value: &Value) -> Result<(), String> {
     use std::io::Write;
@@ -65,13 +67,14 @@ fn private_json(path: &std::path::Path, value: &Value) -> Result<(), String> {
     file.sync_all().map_err(|e| e.to_string())
 }
 fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
-    let video = job["quote"]["operation"] == "text_to_video";
+    let i2v = job["quote"]["operation"] == "image_to_video";
+    let video = i2v || job["quote"]["operation"] == "text_to_video";
     let (seconds, name) = if video {
         let frames = job["quote"]["frames"]
             .as_u64()
             .ok_or("Missing video frames")?;
         let profile: Value =
-            serde_json::from_str(media_runtime::VIDEO_PROFILE).map_err(|e| e.to_string())?;
+            serde_json::from_str(if i2v { media_runtime::I2V_FAST_PROFILE } else { media_runtime::VIDEO_PROFILE }).map_err(|e| e.to_string())?;
         let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
         let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
         let seconds = (1..=10)
@@ -86,11 +89,8 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
         {
             return Err("Job model does not match the installed video workflow".into());
         }
-        let name = if frames == base_frames {
-            "verified-video.json".to_string()
-        } else {
-            format!("verified-video-{frames}f.json")
-        };
+        let suffix = if i2v { "-i2v-fast" } else { "-video" };
+        let name = if frames == base_frames { format!("verified{suffix}.json") } else { format!("verified{suffix}-{frames}f.json") };
         (seconds, name)
     } else {
         let profile: Value =
@@ -136,7 +136,8 @@ fn execute_with(
     mut call: impl FnMut(&str, Value) -> Result<Value, String>,
 ) -> Result<(), String> {
     let (video, seconds, name) = execution_profile(job)?;
-    let operation = if video {
+    let i2v = job["quote"]["operation"] == "image_to_video";
+    let operation = if i2v { crate::contribution_contract::Operation::ImageToVideo } else if video {
         crate::contribution_contract::Operation::TextToVideo
     } else {
         crate::contribution_contract::Operation::TextToImage
@@ -144,18 +145,23 @@ fn execute_with(
     if !cfg.contribution.operations.contains(&operation) {
         return Err("Claimed media workload is not selected by this contributor".into());
     }
-    run(
-        "generate",
-        video,
-        &[
-            "--seconds".into(),
-            seconds.to_string(),
-            "--prompt".into(),
-            job["prompt"].as_str().ok_or("Missing prompt")?.into(),
-            "--seed".into(),
-            job["seed"].as_u64().unwrap_or(42).to_string(),
-        ],
-    )?;
+    let mut generation_args = vec!["--seconds".into(), seconds.to_string(), "--prompt".into(),
+        job["prompt"].as_str().ok_or("Missing prompt")?.into(), "--seed".into(), job["seed"].as_u64().unwrap_or(42).to_string()];
+    let reference_path = home.join("media").join(format!("reference-{}.png", uuid::Uuid::new_v4()));
+    if i2v {
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        let reference = call("input", json!({"job_id":job["job_id"], "lease_token":job["lease_token"]}))?;
+        let encoded = reference["data"].as_str().ok_or("Missing reference image")?;
+        if encoded.len() > 45 * 1024 * 1024 { return Err("Reference image too large".into()); }
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| "Invalid reference image")?;
+        if hex::encode(Sha256::digest(&bytes)) != reference["sha256"].as_str().unwrap_or("") { return Err("Reference image checksum mismatch".into()); }
+        fs::write(&reference_path, bytes).map_err(|e| e.to_string())?;
+        generation_args.extend(["--image-to-video".into(), "--fast".into(), "--input-image".into(), reference_path.to_string_lossy().into_owned()]);
+    }
+    let generated = run("generate", video, &generation_args);
+    if i2v { let _ = fs::remove_file(&reference_path); }
+    generated?;
     let result: Value = serde_json::from_slice(
         &fs::read(home.join("media").join(name)).map_err(|e| e.to_string())?,
     )
@@ -240,49 +246,10 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         {
             return Ok(());
         }
-        let mut profiles = Vec::new();
-        for video in [false, true] {
-            let operation = if video {
-                crate::contribution_contract::Operation::TextToVideo
-            } else {
-                crate::contribution_contract::Operation::TextToImage
-            };
-            if !cfg.contribution.operations.contains(&operation) {
-                continue;
-            }
-            if !media_runtime::memory::MediaBudget::detect(cfg.contribution_percent)
-                .allows(operation)
-            {
-                continue;
-            }
-            let verified = if video {
-                media_runtime::video_verification(
-                    &home,
-                    cfg.contribution.comfyui_url.as_deref(),
-                    cfg.contribution_percent,
-                )
-            } else {
-                media_runtime::verification(
-                    &home,
-                    cfg.contribution.comfyui_url.as_deref(),
-                    cfg.contribution_percent,
-                )
-            };
-            if verified.is_some_and(|value| value["ready"] == true) {
-                if video {
-                    profiles.extend(bundled_video_profiles()?);
-                } else {
-                    let profile: Value =
-                        serde_json::from_str(media_runtime::PROFILE).map_err(|e| e.to_string())?;
-                    profiles.push(
-                        profile["id"]
-                            .as_str()
-                            .ok_or("Missing image profile")?
-                            .to_string(),
-                    );
-                }
-            }
-        }
+        let profiles: Vec<_> = media_runtime::verified_profiles(&home, cfg.contribution.comfyui_url.as_deref(), cfg.contribution_percent).into_iter().filter(|profile| {
+            let op = if profile.starts_with("qwen-") { crate::contribution_contract::Operation::TextToImage } else if profile.starts_with("wan22-i2v-") { crate::contribution_contract::Operation::ImageToVideo } else { crate::contribution_contract::Operation::TextToVideo };
+            cfg.contribution.operations.contains(&op)
+        }).collect();
         if profiles.is_empty() {
             return Err(
                 "Select image/video workloads and verify at least one profile before serving media"
@@ -503,4 +470,32 @@ mod tests {
         )
         .is_err());
     }
+    #[test]
+    fn lightning_i2v_uses_matching_duration_and_cleans_reference_after_failure() {
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        let home = std::env::temp_dir().join(format!("i2v-job-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(home.join("media")).unwrap();
+        let mut cfg = Config::default();
+        cfg.contribution.operations = vec![crate::contribution_contract::Operation::ImageToVideo];
+        let job = json!({"job_id":"test", "lease_token":"lease", "profile_id":"wan22-i2v-lightning-14b-480p-161f-v3",
+            "quote":{"operation":"image_to_video", "frames":161, "fps":16}, "prompt":"move"});
+        assert_eq!(execution_profile(&job).unwrap(), (true, 10, "verified-i2v-fast-161f.json".into()));
+        let bytes = b"reference fixture";
+        let result = execute_with(&cfg, &job, &home, "https://chat.example", |action, video, args| {
+            assert_eq!(action, "generate"); assert!(video);
+            assert!(args.iter().any(|arg| arg == "--fast"));
+            assert!(args.iter().any(|arg| arg == "--image-to-video"));
+            let path = &args[args.iter().position(|arg| arg == "--input-image").unwrap() + 1];
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            Err("simulated generation failure".into())
+        }, |action, body| {
+            assert_eq!(action, "input"); assert_eq!(body["lease_token"], "lease");
+            Ok(json!({"data":base64::engine::general_purpose::STANDARD.encode(bytes), "sha256":hex::encode(Sha256::digest(bytes))}))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_dir(home.join("media")).unwrap().count(), 0);
+        fs::remove_dir_all(home).unwrap();
+    }
+
 }

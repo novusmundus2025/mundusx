@@ -51,11 +51,11 @@ def require_media_budget(budget_bytes, profile=None):
 
 
 def is_video(profile):
-    return profile.get('operation') == 'text_to_video'
+    return profile.get('operation') in ('text_to_video', 'image_to_video')
 
 
 def profile_record(root, profile, name):
-    return root / (name + ('-video' if is_video(profile) else '') + (('-' + str(profile['frames']) + 'f') if name == 'verified' and is_video(profile) and profile['frames'] != profile['fps'] * 2 + 1 else '') + '.json')
+    return root / (name + ('-i2v' if profile.get('operation') == 'image_to_video' else '-video' if is_video(profile) else '') + ('-fast' if profile.get('variant') == 'lightning' else '') + (('-' + str(profile['frames']) + 'f') if name == 'verified' and is_video(profile) and profile['frames'] != profile['fps'] * 2 + 1 else '') + '.json')
 
 
 class MediaError(Exception):
@@ -190,6 +190,25 @@ class Comfy:
         except (ValueError, UnicodeError) as error:
             raise MediaError("ComfyUI returned invalid JSON") from error
 
+    def upload_image(self, data):
+        name = "opengpu-input-" + uuid.uuid4().hex + ".png"
+        boundary = uuid.uuid4().hex
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{name}"\r\n'
+                'Content-Type: image/png\r\n\r\n').encode() + data + f'\r\n--{boundary}--\r\n'.encode()
+        request = urllib.request.Request(self.endpoint + "/upload/image", data=body,
+                                         headers={"Content-Type": "multipart/form-data; boundary=" + boundary})
+        try:
+            with self.opener.open(request, timeout=30) as response:
+                raw = response.read(MAX_JSON + 1)
+            if len(raw) > MAX_JSON:
+                raise MediaError('Image upload response exceeds size limit')
+            result = json.loads(raw)
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            raise MediaError('ComfyUI input image upload failed') from error
+        if result.get('name') != name or result.get('subfolder', '') or result.get('type') != 'input':
+            raise MediaError('Unexpected uploaded image identity')
+        return name
+
     def inspect(self, profile):
         stats = self.request("/system_stats")
         info = self.request("/object_info")
@@ -200,8 +219,10 @@ class Comfy:
         if missing:
             raise MediaError("Missing ComfyUI nodes: " + ", ".join(missing))
         models = [("UNETLoader", "unet_name", 0), ("CLIPLoader", "clip_name", 1), ("VAELoader", "vae_name", 2)]
-        if profile.get('architecture') == 'wan22_t2v_a14b':
+        if profile.get('architecture') in ('wan22_t2v_a14b', 'wan22_i2v_a14b'):
             models.append(("UNETLoader", "unet_name", 3))
+        if profile.get('variant') == 'lightning':
+            models.extend([("LoraLoaderModelOnly", "lora_name", 4), ("LoraLoaderModelOnly", "lora_name", 5)])
         for node, field, index in models:
             name = Path(profile["files"][index]["path"]).name
             choices = info[node].get("input", {}).get("required", {}).get(field, [[]])[0]
@@ -217,7 +238,7 @@ class Comfy:
             raise MediaError("ComfyUI is busy; verification deferred until its queue is empty")
 
 
-def workflow(profile, prompt, seed, prefix):
+def workflow(profile, prompt, seed, prefix, input_image=None):
     if not prompt.strip() or len(prompt) > 16000:
         raise MediaError("Prompt must contain 1 to 16000 characters")
     if not isinstance(seed, int) or not 0 <= seed < 2**63:
@@ -225,22 +246,22 @@ def workflow(profile, prompt, seed, prefix):
     def node(kind, **inputs):
         return {"class_type": kind, "inputs": inputs}
     if is_video(profile):
-        if profile.get('architecture') == 'wan22_t2v_a14b':
+        if profile.get('architecture') in ('wan22_t2v_a14b', 'wan22_i2v_a14b'):
             common = dict(positive=["4", 0], negative=["5", 0], steps=profile["steps"],
                           cfg=profile["cfg"], sampler_name="euler", scheduler="simple")
             split = profile["switch_step"]
             if not 0 < split < profile["steps"]:
                 raise MediaError("Invalid high/low noise sampler boundary")
-            return {
+            graph = {
                 "1": node("UNETLoader", unet_name=Path(profile["files"][0]["path"]).name, weight_dtype="default"),
                 "2": node("CLIPLoader", clip_name=Path(profile["files"][1]["path"]).name, type="wan", device="default"),
                 "3": node("VAELoader", vae_name=Path(profile["files"][2]["path"]).name),
                 "4": node("CLIPTextEncode", text=prompt, clip=["2", 0]),
                 "5": node("CLIPTextEncode", text="blur, low quality, still frame, subtitles, watermark, distorted motion", clip=["2", 0]),
                 "6": node("EmptyHunyuanLatentVideo", width=profile["width"], height=profile["height"], length=profile["frames"], batch_size=1),
-                "7": node("ModelSamplingSD3", model=["1", 0], shift=8.0),
+                "7": node("ModelSamplingSD3", model=["1", 0], shift=5.0 if profile.get("operation") == "image_to_video" else 8.0),
                 "12": node("UNETLoader", unet_name=Path(profile["files"][3]["path"]).name, weight_dtype="default"),
-                "13": node("ModelSamplingSD3", model=["12", 0], shift=8.0),
+                "13": node("ModelSamplingSD3", model=["12", 0], shift=5.0 if profile.get("operation") == "image_to_video" else 8.0),
                 "8": node("KSamplerAdvanced", model=["7", 0], latent_image=["6", 0], add_noise="enable",
                           noise_seed=seed, start_at_step=0, end_at_step=split, return_with_leftover_noise="enable", **common),
                 "14": node("KSamplerAdvanced", model=["13", 0], latent_image=["8", 0], add_noise="disable",
@@ -249,6 +270,22 @@ def workflow(profile, prompt, seed, prefix):
                 "11": node("CreateVideo", images=["9", 0], fps=profile["fps"]),
                 "10": node("SaveVideo", video=["11", 0], filename_prefix="opengpu/" + prefix, format="auto", codec="h264"),
             }
+            if profile.get('operation') == 'image_to_video':
+                graph["15"] = node("LoadImage", image=input_image or "opengpu-probe.png")
+                graph["6"] = node("WanImageToVideo", positive=["4", 0], negative=["5", 0],
+                                  vae=["3", 0], start_image=["15", 0], width=profile["width"],
+                                  height=profile["height"], length=profile["frames"], batch_size=1)
+                for sampler in ("8", "14"):
+                    graph[sampler]["inputs"].update(positive=["6", 0], negative=["6", 1])
+                graph["8"]["inputs"]["latent_image"] = ["6", 2]
+            if profile.get('variant') == 'lightning':
+                graph["16"] = node("LoraLoaderModelOnly", model=["1", 0],
+                                   lora_name=Path(profile["files"][4]["path"]).name, strength_model=1.0)
+                graph["17"] = node("LoraLoaderModelOnly", model=["12", 0],
+                                   lora_name=Path(profile["files"][5]["path"]).name, strength_model=1.0)
+                graph["7"]["inputs"]["model"] = ["16", 0]
+                graph["13"]["inputs"]["model"] = ["17", 0]
+            return graph
         return {
             "1": node("UNETLoader", unet_name=Path(profile["files"][0]["path"]).name, weight_dtype="default"),
             "2": node("CLIPLoader", clip_name=Path(profile["files"][1]["path"]).name, type="wan", device="default"),
@@ -256,7 +293,7 @@ def workflow(profile, prompt, seed, prefix):
             "4": node("CLIPTextEncode", text=prompt, clip=["2", 0]),
             "5": node("CLIPTextEncode", text="blur, low quality, still frame, subtitles, watermark, distorted motion", clip=["2", 0]),
             "6": node("Wan22ImageToVideoLatent", vae=["3", 0], width=profile["width"], height=profile["height"], length=profile["frames"], batch_size=1),
-            "7": node("ModelSamplingSD3", model=["1", 0], shift=8.0),
+            "7": node("ModelSamplingSD3", model=["1", 0], shift=5.0 if profile.get("operation") == "image_to_video" else 8.0),
             "8": node("KSampler", model=["7", 0], positive=["4", 0], negative=["5", 0], latent_image=["6", 0],
                       seed=seed, steps=profile["steps"], cfg=profile["cfg"], sampler_name="uni_pc", scheduler="simple", denoise=1.0),
             "9": node("VAEDecode", samples=["8", 0], vae=["3", 0]),
@@ -322,6 +359,18 @@ def validate_png(data, width, height):
         raise MediaError("Invalid or oversized PNG scanline data")
 
 
+def read_input_png(path):
+    with Path(path).open('rb') as stream:
+        data = stream.read(MAX_IMAGE + 1)
+    if len(data) < 33 or len(data) > MAX_IMAGE or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise MediaError('Input must be a bounded RGB/RGBA PNG image')
+    width, height = struct.unpack('>II', data[16:24])
+    if not 1 <= width <= 8192 or not 1 <= height <= 8192 or width * height > 16777216:
+        raise MediaError('Input image dimensions exceed limits')
+    validate_png(data, width, height)
+    return data
+
+
 def validate_video(path, profile):
     if not shutil.which('ffprobe') or not shutil.which('ffmpeg'):
         raise MediaError('Video verification requires ffprobe and ffmpeg on PATH')
@@ -356,13 +405,38 @@ def validate_video(path, profile):
         raise MediaError('Video does not completely decode')
 
 
-def generate(client, profile, prompt, seed, output, timeout=None):
+def fit_input_image(data, profile):
+    """Fit the complete input inside the video canvas, without cropping."""
+    if profile.get('input_fit') != 'contain':
+        return data
+    width, height = profile['width'], profile['height']
+    filters = (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+               f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1')
+    result = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-i', 'pipe:0',
+                             '-vf', filters, '-frames:v', '1', '-threads', '1',
+                             '-f', 'image2pipe', '-c:v', 'png', '-pix_fmt', 'rgb24', 'pipe:1'],
+                            input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    if result.returncode:
+        raise MediaError('Input image fitting failed: ' + result.stderr.decode(errors='replace')[:1000])
+    validate_png(result.stdout, width, height)
+    return result.stdout
+
+
+def generate(client, profile, prompt, seed, output, timeout=None, input_image=None):
     if is_video(profile) and (not shutil.which('ffprobe') or not shutil.which('ffmpeg')):
         raise MediaError('Video generation requires ffprobe and ffmpeg on PATH for validation')
+    if profile.get('operation') == 'image_to_video' and input_image is None:
+        raise MediaError('Image-to-video requires --input-image pointing to a PNG')
+    if input_image is not None and profile.get('operation') != 'image_to_video':
+        raise MediaError('--input-image requires the image-to-video profile')
+    image_data = read_input_png(input_image) if input_image is not None else None
+    if image_data is not None:
+        image_data = fit_input_image(image_data, profile)
     client.inspect(profile)
     client.ensure_idle()
+    uploaded = client.upload_image(image_data) if image_data is not None else None
     token = uuid.uuid4().hex
-    result = client.request("/prompt", {"prompt": workflow(profile, prompt, seed, token), "client_id": token})
+    result = client.request("/prompt", {"prompt": workflow(profile, prompt, seed, token, uploaded), "client_id": token})
     prompt_id = result.get("prompt_id")
     if not isinstance(prompt_id, str) or not prompt_id or result.get("node_errors"):
         raise MediaError("ComfyUI rejected the bundled workflow: " + json.dumps(result.get("node_errors", {}))[:2000])
@@ -544,12 +618,19 @@ def install_native(root, profile, budget_bytes):
              "x=torch.ones(16,device='mps'); assert x.sum().item()==16")
     with drain_contributor(root.parent): run([str(python), '-c', probe], timeout=120)
     for file in profile['files']:
-        url = f"https://huggingface.co/{profile['models_repo']}/resolve/{profile['models_revision']}/split_files/{file['path']}"
+        url = model_url(profile, file)
         download(url, root/'models'/file['path'], file['size'], file['sha256'])
     record = {'kind':'managed_native_comfyui', 'backend':backend,
               'profile_hash':profile_hash(profile), 'budget_bytes':budget_bytes, 'installed_at':int(time.time())}
     atomic_json(profile_record(root, profile, 'runtime'), record)
     emit('installed', runtime=record, verification_required=True)
+
+
+def model_url(profile, file):
+    repo = file.get('repo', profile['models_repo'])
+    revision = file.get('revision', profile['models_revision'])
+    path = file.get('source_path', 'split_files/' + file['path'])
+    return f"https://huggingface.co/{repo}/resolve/{revision}/{path}"
 
 
 def install(root, profile, budget_bytes):
@@ -585,7 +666,7 @@ def install(root, profile, budget_bytes):
         run(["docker", "run", "--rm", "--gpus", "all", "--entrypoint", "python", image_id, "-c",
              "import torch; assert torch.cuda.is_available(); x=torch.ones(16,device='cuda'); assert x.sum().item()==16; print(torch.cuda.get_device_name())"], timeout=120)
     for file in profile["files"]:
-        url = f"https://huggingface.co/{profile['models_repo']}/resolve/{profile['models_revision']}/split_files/{file['path']}"
+        url = model_url(profile, file)
         download(url, root / "models" / file["path"], file["size"], file["sha256"])
     record = {"kind": "managed_comfyui", "image_id": image_id, "base_digest": digest,
               "profile_hash": profile_hash(profile), "budget_bytes": budget_bytes, "installed_at": int(time.time())}
@@ -715,11 +796,15 @@ def client_for(root, profile, endpoint, budget_bytes):
     (outputs / "opengpu").mkdir(exist_ok=True)
     reserve_gb = max(0, (physical_memory() - budget_bytes) / 1024**3)
     owner = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
-    args = ["docker", "run", "--detach", "--rm", "--name", name, "--gpus", "all",
+    bootstrap = Path(__file__).with_name("unified_memory.py").resolve()
+    if not bootstrap.is_file(): raise MediaError("Managed runtime bootstrap is missing; update CLI")
+    args = ["docker", "run", "--detach", "--rm", "--name", name, "--gpus", "all", "--entrypoint", "python",
             "--label", "opengpu.media.owner=" + owner,
             "--publish", "127.0.0.1::8188", "--memory", str(budget_bytes),
             "--volume", f"{root / 'models'}:/opt/comfy/models:ro",
-            "--volume", f"{outputs}:/opt/comfy/output", record["image_id"],
+            "--volume", f"{outputs}:/opt/comfy/output",
+            "--volume", f"{bootstrap}:/opt/opengpu/unified_memory.py:ro", record["image_id"],
+            "-u", "/opt/opengpu/unified_memory.py",
             "--listen", "0.0.0.0", "--port", "8188", "--disable-all-custom-nodes",
             "--reserve-vram", str(round(reserve_gb, 2))]
     atomic_json(root/'active-container.json', {"name": name, "owner": owner})
@@ -800,6 +885,9 @@ def main():
     parser.add_argument('--ticket', type=Path)
     parser.add_argument('--server')
     parser.add_argument('--managed-output')
+    parser.add_argument('--input-image', type=Path)
+    parser.add_argument('--image-to-video', action='store_true')
+    parser.add_argument('--fast', action='store_true')
     parser.add_argument('--video', action='store_true')
     parser.add_argument('--seconds', type=int, choices=range(1, 11), default=2)
     args = parser.parse_args()
@@ -855,6 +943,11 @@ def main():
         emit('status', verified=certificate, media_eligible=plan['media_eligible'],
              budget_bytes=budget, minimum_media_budget_bytes=MINIMUM_MEDIA_BUDGET, network_dispatch_enabled=False); return
     require_media_budget(budget, profile)
+    if profile.get('operation') == 'image_to_video' and args.action in ('verify', 'generate'):
+        if args.input_image is None: raise MediaError('Image-to-video requires --input-image pointing to a PNG')
+        read_input_png(args.input_image)
+    elif args.input_image is not None:
+        raise MediaError('--input-image requires image-to-video verify or generate')
     with lock(root):
         stop_owned_container(root)
         if args.action == 'setup':
@@ -876,7 +969,7 @@ def main():
         with drain_contributor(args.home), client_for(root, base_profile, args.endpoint, budget) as client:
             stats, _ = client.inspect(profile)
             output = root/'artifacts'/(uuid.uuid4().hex + ('.mp4' if is_video(profile) else '.png'))
-            result = generate(client, profile, args.prompt, args.seed, output)
+            result = generate(client, profile, args.prompt, args.seed, output, input_image=args.input_image)
             certificate = {"ready": True, "profile": profile['id'], "profile_hash": profile_hash(profile),
                            "operation": profile['operation'], "width": profile['width'], "height": profile['height'],
                            "steps": profile['steps'], "budget_bytes": budget, "cap_percent": args.cap_percent, "verified_at": int(time.time()),

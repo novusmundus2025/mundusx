@@ -87,8 +87,11 @@ opengpu capabilities --probe
 
 The node agent starts the media queue worker for selected image/video workloads.
 The worker claims only verified, memory-eligible profiles. Network media also
-depends on control-plane admission; the current admission path requires an
-admitted LLM contributor. Media-only local generation is not proof of admission.
+depends on control-plane admission. With the companion media-only admission
+deployment, a healthy media-only contributor reports exact verified profiles,
+memory budget and one execution slot; it does not need an LLM runtime.
+Media-only local generation is not proof of admission. Update both the CLI and
+node agent, and follow [media-only contribution](media-only-contribution.md).
 Custom deployments must configure their matching media service; normal public
 nodes use `https://chat.mundusx.ai`.
 

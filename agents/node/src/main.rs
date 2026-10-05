@@ -1,3 +1,5 @@
+#[path = "../../../packages/media-runtime.rs"]
+mod media_runtime;
 #[path = "../../../packages/operation-progress.rs"]
 mod operation_progress;
 mod media_process;
@@ -225,9 +227,9 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
     let model_dir = config.effective_model_dir();
     let mut health = worker::probe_worker_health(
         &model_dir,
-        config.active_model.as_deref(),
+        config.active_model.as_deref().filter(|_| config.contribution.llm_enabled()),
         resolved_backend(config),
-        config.contributed_cluster.as_ref(),
+        config.contributed_cluster.as_ref().filter(|_| config.contribution.llm_enabled()),
     );
     // A contributor limit can donate fewer slots, but it must never raise the
     // safe capacity derived from memory or reported by an external runtime.
@@ -251,6 +253,21 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
         .map(|requested| requested.min(u32::from(runtime_ceiling)) as u8)
         .unwrap_or(runtime_ceiling)
         .max(1);
+    let verified = media_runtime::verified_profiles(&storage::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent);
+    health.media_profiles = verified.into_iter().filter(|id| {
+        config.contribution.operations.contains(&if id.starts_with("qwen-") { contribution_contract::Operation::TextToImage } else if id.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo })
+    }).collect();
+    health.media_budget_bytes = media_runtime::memory::MediaBudget::detect(config.contribution_percent).contribution_budget_bytes.unwrap_or(0);
+    if !config.contribution.llm_enabled() {
+        health.runtime_mode = "media".into();
+        let device_ready = (health.cuda_driver_available && health.cuda_device_available)
+            || (resolved_backend(config) == Backend::M && (health.blas_device_available || health.mlx_available));
+        health.healthy = !health.media_profiles.is_empty() && device_ready;
+        health.parallel_slots = 1;
+        health.model_name = None; health.model_path = None;
+        health.notes = vec!["Media-only runtime; verified profiles determine readiness".into()];
+        health.supported_runtime_modes.clear();
+    }
     let policy = worker::probe_worker_policy(&health, config.contribution_percent);
     (health, policy)
 }
@@ -402,6 +419,7 @@ fn build_capabilities(
         }),
     };
 
+    let active_model = active_model.filter(|_| config.contribution.llm_enabled());
     let mut ready_for_jobs = policy_allowed && health.healthy;
     let mut readiness_reason = None;
     match active_model.as_ref() {
@@ -800,11 +818,19 @@ fn build_scheduler_capabilities(
     let supports_embeddings = models.iter().any(|model| model.supports_embeddings);
 
     NodeCapabilityProfile {
-        execution: Some(contribution_contract::ExecutionCapabilities::llm_only(
-            config.contribution.llm_enabled(),
-        )),
+        execution: Some(contribution_contract::ExecutionCapabilities {
+            contract_version: 1,
+            operations: {
+                let mut operations = if config.contribution.llm_enabled() { vec![contribution_contract::Operation::Llm] } else { vec![] };
+                for profile in &health.media_profiles {
+                    let operation = if profile.starts_with("qwen-") { contribution_contract::Operation::TextToImage } else if profile.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo };
+                    if !operations.contains(&operation) { operations.push(operation); }
+                }
+                operations
+            },
+        }),
         schema_version: capabilities.schema_version,
-        models,
+        models: if config.contribution.llm_enabled() { models } else { vec![] },
         physical_memory_mb: capabilities.physical_memory_mb,
         usable_memory_mb: capabilities.usable_memory_mb,
         available_memory_mb: capabilities.available_memory_mb,
@@ -2402,7 +2428,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                         Err(error) => { eprintln!("mediaDrain: {error}"); false }
                     }
                 } else {
-                    !worker::external_runtime_blocks_media()
+                    !latest_config.contribution.llm_enabled() || !worker::external_runtime_blocks_media()
                 };
                 if !media_release_confirmed {
                     eprintln!("mediaDrain: runtime memory release is unconfirmed; withholding media handoff");
@@ -3390,6 +3416,7 @@ mod tests {
 
     fn test_health(backend: Backend) -> WorkerHealthReport {
         WorkerHealthReport {
+            media_profiles: vec![], media_budget_bytes: 0,
             healthy: true,
             model_dir: "/tmp/models".to_string(),
             model_name: Some("tiny-cuda".to_string()),

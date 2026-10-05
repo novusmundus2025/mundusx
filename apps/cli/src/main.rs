@@ -114,8 +114,8 @@ enum MediaCommands {
     },
     Plan,
     Setup { #[arg(long)] yes: bool },
-    Verify,
-    Generate { #[arg(long)] prompt: String, #[arg(long, default_value_t = 42)] seed: u64 },
+    Verify { #[arg(long)] input_image: Option<PathBuf> },
+    Generate { #[arg(long)] prompt: String, #[arg(long, default_value_t = 42)] seed: u64, #[arg(long)] input_image: Option<PathBuf> },
     Status,
     /// Stop only an OpenGPU-owned media container left after an interrupted run
     Stop,
@@ -173,6 +173,12 @@ enum Commands {
         /// Select the bounded Wan video profile instead of Qwen image
         #[arg(long, global = true)]
         video: bool,
+        /// Select Wan image-to-video with PNG input
+        #[arg(long, global = true, conflicts_with = "video")]
+        image_to_video: bool,
+        /// Four-step Lightning I2V at 832x480
+        #[arg(long, global = true, requires = "image_to_video")]
+        fast: bool,
         /// Video duration: any integer from 1 to 10 seconds
         #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=10))]
         seconds: u8,
@@ -531,6 +537,13 @@ fn display_public_key_fingerprint(config: &Config) -> String {
 #[cfg(test)]
 mod contributed_backend_tests {
     use super::*;
+    #[test]
+    fn fast_media_requires_image_to_video() {
+        assert!(Cli::try_parse_from(["opengpu", "media", "--fast", "plan"]).is_err());
+        let cli = Cli::try_parse_from(["opengpu", "media", "--image-to-video", "--fast", "plan"]).unwrap();
+        assert!(matches!(cli.command, Commands::Media { image_to_video: true, fast: true, .. }));
+    }
+
     #[test]
     fn vllm_connection_takes_precedence_over_host_backend() {
         let mut config = Config::default();
@@ -6569,7 +6582,7 @@ fn run_install(
             if config.contribution.llm_enabled() {
                 theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
             } else {
-                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Network image/video serving currently requires LLM node admission.");
+                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Media-only network serving requires verified profiles and control-plane admission. Set MUNDUSX_MEDIA_SERVER_URL for a private plane.");
             }
         }
         Err(error) => {
@@ -6836,10 +6849,6 @@ fn run_start_or_connect(
     }
 
     let mut config = current_config_or_default();
-    if !config.contribution.llm_enabled() {
-        eprintln!("No executable workload enabled: media selections are saved, but this build only executes LLM jobs. Enable llm with opengpu install --workloads llm,image or wait for media execution support.");
-        std::process::exit(1);
-    }
     let identity_ready = match load_or_create_identity() {
         Ok((identity, _, _)) => {
             config.device_id = device_id_for_identity(&identity);
@@ -6888,14 +6897,14 @@ fn run_start_or_connect(
         std::process::exit(1);
     }
 
-    maybe_contribute_running_cluster(
+    if config.contribution.llm_enabled() { maybe_contribute_running_cluster(
         &mut config,
         cluster_choice,
         cluster_url.as_deref(),
         None,
         false,
         max_jobs,
-    );
+    ); }
 
     if config.contributed_cluster.is_none() {
         let backend = resolved_backend(&config);
@@ -6911,12 +6920,12 @@ fn run_start_or_connect(
         }
     }
 
-    if should_prompt_model_selection(&config) {
+    if config.contribution.llm_enabled() && should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
         let choice = prompt_model_selection(&config, backend);
         apply_model_choice(&mut config, choice, true);
     }
-    if let Some(active_model) = active_model_name(&config) {
+    if let Some(active_model) = active_model_name(&config).filter(|_| config.contribution.llm_enabled()) {
         let backend = resolved_backend(&config);
         if let Err(error) = ensure_catalog_model_fits_machine(&active_model, backend, &config) {
             eprintln!("{error}");
@@ -7002,7 +7011,7 @@ fn main() {
             setup_media,
             yes,
         ),
-        Commands::Media { command, video, seconds } => {
+        Commands::Media { command, video, image_to_video, fast, seconds } => {
             if !(1..=10).contains(&seconds) { eprintln!("Video seconds must be an integer from 1 to 10"); std::process::exit(2); }
             if let MediaCommands::Serve { server, once } = command {
                 if let Err(error) = media_worker::serve(server, once) { eprintln!("{error}"); std::process::exit(1); }
@@ -7018,11 +7027,17 @@ fn main() {
                 ]),
                 MediaCommands::Plan => ("plan", vec![]),
                 MediaCommands::Setup { yes } => ("setup", if yes { vec!["--yes".into()] } else { vec![] }),
-                MediaCommands::Verify => ("verify", vec![]),
+                MediaCommands::Verify { input_image } => ("verify", input_image.map(|p| vec!["--input-image".into(), p.to_string_lossy().into_owned()]).unwrap_or_default()),
                 MediaCommands::Status => ("status", vec![]),
                 MediaCommands::Stop => ("stop", vec![]),
-                MediaCommands::Generate { prompt, seed } => ("generate", vec!["--prompt".into(), prompt, "--seed".into(), seed.to_string()]),
+                MediaCommands::Generate { prompt, seed, input_image } => {
+                    let mut args = vec!["--prompt".into(), prompt, "--seed".into(), seed.to_string()];
+                    if let Some(path) = input_image { args.extend(["--input-image".into(), path.to_string_lossy().into_owned()]); }
+                    ("generate", args)
+                },
             };
+            if image_to_video { extra.push("--image-to-video".into()); }
+            if fast { extra.push("--fast".into()); }
             extra.extend(["--seconds".into(), seconds.to_string()]);
             if let Err(error) = media_runtime::run_profile(&config_dir(), config.contribution_percent, config.contribution.comfyui_url.as_deref(), action, video, &extra) {
                 eprintln!("{error}"); std::process::exit(1);
@@ -7803,6 +7818,13 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn image_to_video_cli_accepts_png_and_rejects_conflicting_profile() {
+        let cli = Cli::try_parse_from(["opengpu", "media", "--image-to-video", "generate", "--input-image", "input.png", "--prompt", "a teapot turns"]).unwrap();
+        assert!(matches!(cli.command, Commands::Media { image_to_video: true, command: super::MediaCommands::Generate { input_image: Some(_), .. }, .. }));
+        assert!(Cli::try_parse_from(["opengpu", "media", "--image-to-video", "--video", "status"]).is_err());
     }
 
     #[test]

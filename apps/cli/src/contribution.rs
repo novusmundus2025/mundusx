@@ -151,6 +151,9 @@ pub fn report(config: &Config, probe: bool) -> Value {
     serde_json::json!({
         "contract_version": 1,
         "selected_operations": config.contribution.operations,
+        "verified_media_profiles": crate::media_runtime::verified_profiles(&crate::config::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent),
+        "media_only_network_supported": true,
+        "image_to_video_queue_supported": true,
         "execution_support": crate::contribution_contract::ExecutionCapabilities::llm_only(config.contribution.llm_enabled()),
         "llm_readiness": "Use opengpu doctor or node health; selection alone does not establish readiness",
         "media_eligibility": budget,
@@ -207,7 +210,7 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
         }
         if config.contribution.operations.contains(&Operation::TextToVideo) {
             println!("Local video verification: {}", if report["local_video_verification"]["ready"] == true { "passed" } else { "needs verification (opengpu media --video verify)" });
-            println!("Video queue serving also requires a running, admitted LLM contributor.");
+            println!("Video queue serving requires an admitted contributor and a verified matching profile.");
         }
         if config.contribution.comfyui_url.is_none() {
             println!("Managed ComfyUI starts on demand; no always-running endpoint is required.");
