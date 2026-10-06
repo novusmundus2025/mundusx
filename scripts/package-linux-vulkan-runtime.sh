@@ -7,6 +7,8 @@ cmake -S "$work/source" -B "$work/build" -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML
 cmake --build "$work/build" --config Release -j 2 --target llama-cli llama-server
 mkdir "$work/bundle"
 cp -L "$work/build/bin/llama-cli" "$work/build/bin/llama-server" "$work/bundle/"
-find "$work/build" -type f -name '*.so*' -exec cp -L {} "$work/bundle/" \;
+find "$work/build" -name '*.so*' -exec cp -L {} "$work/bundle/" \;
+"$work/bundle/llama-cli" --version
+"$work/bundle/llama-server" --version
 tar -czf "$output" -C "$work/bundle" .
 sha256sum "$output" > "$output.sha256"
