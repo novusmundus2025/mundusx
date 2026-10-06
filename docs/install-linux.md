@@ -122,3 +122,5 @@ current step and download progress. Slow download, GPU checks, and Docker steps
 print an elapsed-time update every 10 seconds; elapsed time is not a percentage
 or an estimate of remaining time. A step failure prints its exit status.
 Do not launch a second installer while one is still running.
+
+AMD shared-memory contributors: see [Strix Halo setup](install-strix-halo.md).

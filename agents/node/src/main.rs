@@ -909,7 +909,7 @@ fn resolved_backend(config: &AgentConfig) -> Backend {
             return Backend::Cuda;
         }
 
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         if worker::probe_vulkan_device().is_ok() {
             return Backend::Vulkan;
         }

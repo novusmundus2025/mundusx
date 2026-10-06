@@ -12,6 +12,7 @@ const installScriptContents = fs.readFileSync(path.join(repoRoot, "install.sh"),
 const installPowershellContents = fs.readFileSync(path.join(repoRoot, "install.ps1"), "utf8");
 
 const pages = [
+  { slug: "install-strix-halo", title: "AMD Strix Halo", sourcePath: path.join(repoRoot, "docs/install-strix-halo.md"), intro: "Qwen3-Coder on Windows and Linux through Vulkan." },
   {
     slug: "install-sparkrun",
     title: "SparkRun before MundusX: GB10/GX10",
