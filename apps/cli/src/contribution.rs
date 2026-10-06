@@ -279,7 +279,8 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
     let home = crate::config::config_dir();
     let endpoint = config.contribution.comfyui_url.as_deref();
     for video in &profiles {
-        crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "plan", *video, &[])?;
+        let extra = if *video { vec!["--fast".into(), "--seconds".into(), "3".into()] } else { vec![] };
+        crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "plan", *video, &extra)?;
     }
     if !yes {
         if !interactive { return Err("Review opengpu media plan, then pass --yes to authorize media setup".into()); }
@@ -292,9 +293,11 @@ pub fn install_media(config: &mut Config, requested: bool, yes: bool) -> Result<
     for (index, video) in profiles.into_iter().enumerate() {
         let label = if video { "Wan video" } else { "Qwen image" };
         println!("[{}/{}] {label}: preparing runtime and models", index + 1, count);
-        crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "setup", video, &["--yes".into()])?;
+        let extra = if video { vec!["--fast".into(), "--seconds".into(), "3".into()] } else { vec![] };
+        let mut setup_extra = extra.clone(); setup_extra.push("--yes".into());
+        crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "setup", video, &setup_extra)?;
         println!("[{}/{}] {label}: generating verification output (this can take several minutes)", index + 1, count);
-        crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "verify", video, &[])?;
+        crate::media_runtime::run_profile(&home, config.contribution_percent, endpoint, "verify", video, &extra)?;
         println!("[{}/{}] {label}: verification passed", index + 1, count);
     }
     Ok(())

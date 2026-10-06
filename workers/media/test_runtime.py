@@ -139,6 +139,16 @@ class FakeComfy:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_fast_t2v_uses_matching_loras_and_four_step_split(self):
+        profile = json.loads((Path(__file__).parent / 'wan-t2v-fast-v1.json').read_text())
+        graph = media.workflow(profile, 'a sunset', 42, 'owned')
+        self.assertEqual(profile['steps'], 4)
+        self.assertEqual(profile['switch_step'], 2)
+        self.assertEqual(graph['1']['class_type'], 'UNETLoader')
+        self.assertEqual(graph['16']['class_type'], 'LoraLoaderModelOnly')
+        self.assertIn('t2v',graph['16']['inputs']['lora_name'])
+        self.assertEqual(graph['7']['inputs']['model'], ['16',0])
+        self.assertEqual(graph['13']['inputs']['model'], ['17',0])
     def test_interactive_download_bar_preserves_machine_output_mode(self):
         data = b'weights'
         checksum = hashlib.sha256(data).hexdigest()

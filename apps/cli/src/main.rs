@@ -171,13 +171,13 @@ enum Commands {
     /// Manage local Qwen image and Wan video workers
     Media {
         /// Select the bounded Wan video profile instead of Qwen image
-        #[arg(long, global = true)]
+        #[arg(long, global = true, group = "media_video_profile")]
         video: bool,
         /// Select Wan image-to-video with PNG input
-        #[arg(long, global = true, conflicts_with = "video")]
+        #[arg(long, global = true, conflicts_with = "video", group = "media_video_profile")]
         image_to_video: bool,
-        /// Four-step Lightning I2V at 832x480
-        #[arg(long, global = true, requires = "image_to_video")]
+        /// Four-step Lightning video at 832x480
+        #[arg(long, global = true, requires = "media_video_profile")]
         fast: bool,
         /// Video duration: any integer from 1 to 10 seconds
         #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=10))]
@@ -540,6 +540,7 @@ mod contributed_backend_tests {
     #[test]
     fn fast_media_requires_image_to_video() {
         assert!(Cli::try_parse_from(["opengpu", "media", "--fast", "plan"]).is_err());
+        assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--fast", "plan"]).is_ok());
         let cli = Cli::try_parse_from(["opengpu", "media", "--image-to-video", "--fast", "plan"]).unwrap();
         assert!(matches!(cli.command, Commands::Media { image_to_video: true, fast: true, .. }));
     }
