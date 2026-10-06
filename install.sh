@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "MundusX installer starting: checking this machine..." >&2
+progress_pid=""
+run_step() {
+  local label="$1" status=0
+  shift
+  echo "${label}..." >&2
+  (
+    elapsed=0
+    while sleep 10; do
+      elapsed=$((elapsed + 10))
+      echo "${label}: waiting for this step to finish (${elapsed}s elapsed)." >&2
+    done
+  ) &
+  progress_pid=$!
+  "$@" || status=$?
+  kill "$progress_pid" 2>/dev/null || true
+  wait "$progress_pid" 2>/dev/null || true
+  progress_pid=""
+  if [ "$status" -eq 0 ]; then
+    echo "${label}: complete." >&2
+  else
+    echo "${label}: failed (exit ${status})." >&2
+  fi
+  return "$status"
+}
+stop_progress() {
+  if [ -n "$progress_pid" ]; then
+    kill "$progress_pid" 2>/dev/null || true
+    wait "$progress_pid" 2>/dev/null || true
+  fi
+}
+trap stop_progress EXIT
+
 BIN_NAME="opengpu"
 COMPAT_BIN_NAME="mundusx"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
@@ -16,9 +49,13 @@ runtime_only=0
 without_vllm=0
 install_only=1
 cap_percent="${OPENGPU_CAP_PERCENT:-30}"
-max_jobs="${OPENGPU_MAX_JOBS:-2}"
+max_jobs="${OPENGPU_MAX_JOBS:-}"
 local_assets=""
 configure_service_only=0
+with_chat_connector=0
+connection=""
+cluster_url=""
+cluster_model=""
 
 # BEGIN MUNDUSX CHAT SERVICE
 # Embedded in install.sh so curl-based installations need no extra downloads.
@@ -143,22 +180,43 @@ usage() {
 Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only] [--cap-percent N] [--max-jobs N] [--runtime-only] [--local-assets DIR] [--help]
 
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
+  --connection MODE  managed, direct, or pair (PAIR validates only; no contribution).
+  --cluster-url URL  External endpoint; /v1 suffix is accepted.
+  --cluster-model ID Exact external model ID.
   --without-vllm Skip automatic vLLM installation on detected GB10/GX10 hosts.
   --auto-start   Unattended mode: configure safe defaults and start the node.
   --install-only Install binaries/runtime only (default; retained for scripts).
   --cap-percent  Contribution cap used with --auto-start (default: 30).
-  --max-jobs     Concurrent job limit used with --auto-start (default: 2).
+  --max-jobs     Concurrent job limit used with --auto-start (Mac: RAM-capped; others: 2).
   --runtime-only Install only the vLLM runtime configuration (implies --with-vllm).
   --local-assets Install release binaries and checksums directly from DIR.
+  --with-chat-connector Also install the separate MundusX Chat connector and login service.
   --configure-chat-service Configure per-user Chat startup/reconnect for existing binaries.
   --help         Show this help.
+
+Guided setup: run opengpu install after downloading the binaries.
+Images (Qwen Image) require 32 GiB and videos (Wan 14B) require 64 GiB
+of memory after applying your contribution cap, on every OS. The CLI checks
+each workload before selection and setup.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --with-chat-connector)
+      with_chat_connector=1
+      ;;
     --configure-chat-service)
       configure_service_only=1
+      ;;
+    --connection|--cluster-url|--cluster-model)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "$1 requires a value" >&2; exit 2; }
+      case "$1" in
+        --connection) connection="$2" ;;
+        --cluster-url) cluster_url="$2" ;;
+        --cluster-model) cluster_model="$2" ;;
+      esac
+      shift
       ;;
     --with-vllm)
       with_vllm=1
@@ -214,6 +272,21 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+if [ -z "$connection" ] && { [ -n "$cluster_url" ] || [ -n "$cluster_model" ]; }; then
+  echo "--cluster-url and --cluster-model require --connection direct or pair" >&2; exit 2
+fi
+case "$connection" in
+  ""|managed) ;;
+  direct|pair)
+    [ "$with_vllm" -eq 0 ] || { echo "External connections cannot use --with-vllm or --runtime-only" >&2; exit 2; }
+    without_vllm=1
+    ;;
+  *) echo "--connection must be managed, direct, or pair" >&2; exit 2 ;;
+esac
+if [ "$connection" = managed ] && [ -n "$cluster_url" ]; then
+  echo "Managed connection cannot use --cluster-url" >&2; exit 2
+fi
+
 if [ "$configure_service_only" -eq 1 ]; then
   configure_chat_service
   exit 0
@@ -226,9 +299,11 @@ if [ "$cap_percent" -lt 1 ] || [ "$cap_percent" -gt 80 ]; then
   echo "--cap-percent must be a whole number from 1 through 80" >&2
   exit 1
 fi
-case "$max_jobs" in
-  ''|*[!0-9]*|0) echo "--max-jobs must be a positive whole number" >&2; exit 1 ;;
-esac
+if [ -n "$max_jobs" ]; then
+  case "$max_jobs" in
+    *[!0-9]*|0) echo "--max-jobs must be a positive whole number" >&2; exit 1 ;;
+  esac
+fi
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -240,12 +315,37 @@ case "$os" in
   *) echo "unsupported operating system: $os" >&2; exit 1 ;;
 esac
 
+if [ "$os" = "darwin" ]; then
+  # Use physical unified memory, not currently free memory. Fall back safely
+  # when hardware detection is unavailable. Explicit limits may only lower it.
+  mac_job_limit=1
+  mac_memory_bytes="$(sysctl -n hw.memsize 2>/dev/null || true)"
+  case "$mac_memory_bytes" in
+    ''|*[!0-9]*) echo "Could not detect Mac RAM; limiting contribution to 1 job." >&2 ;;
+    *)
+      if [ "$mac_memory_bytes" -ge 137438953472 ]; then
+        mac_job_limit=4
+      elif [ "$mac_memory_bytes" -ge 34359738368 ]; then
+        mac_job_limit=2
+      fi
+      ;;
+  esac
+  if [ -z "$max_jobs" ]; then
+    max_jobs="$mac_job_limit"
+  elif [ "$max_jobs" -gt "$mac_job_limit" ]; then
+    echo "Mac RAM limits contribution to ${mac_job_limit} job(s); reducing --max-jobs from ${max_jobs}."
+    max_jobs="$mac_job_limit"
+  fi
+else
+  max_jobs="${max_jobs:-2}"
+fi
+
 if [ "$without_vllm" -eq 0 ] \
   && [ "$with_vllm" -eq 0 ] \
   && [ "$os" = "linux" ] \
   && { [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; } \
   && command -v nvidia-smi >/dev/null 2>&1 \
-  && nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -Fq "GB10"; then
+  && run_step "Detecting NVIDIA GPU" nvidia-smi --query-gpu=name --format=csv,noheader | grep -Fq "GB10"; then
   with_vllm=1
   echo "Detected NVIDIA GB10/GX10; including the pinned vLLM runtime."
 fi
@@ -298,6 +398,7 @@ tmp_mundusx_checksum="${tmp_dir}/${mundusx_asset_name}.sha256"
 tmp_agent_server="${tmp_dir}/${agent_server_asset_name}"
 tmp_agent_server_checksum="${tmp_dir}/${agent_server_asset_name}.sha256"
 cleanup() {
+  stop_progress
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
@@ -325,16 +426,19 @@ download_to() {
     fi
     cp "$source" "$output"
   elif command -v curl >/dev/null 2>&1; then
-    curl \
+    run_step "Downloading ${label}" curl \
       --fail \
       --location \
       --retry 3 \
+      --connect-timeout 20 \
+      --speed-limit 1 \
+      --speed-time 60 \
       --progress-bar \
       --show-error \
       "$source" \
       -o "$output"
   elif command -v wget >/dev/null 2>&1; then
-    wget --progress=bar:force:noscroll -O "$output" "$source"
+    run_step "Downloading ${label}" wget --timeout=60 --tries=3 --progress=bar:force:noscroll -O "$output" "$source"
   else
     echo "curl or wget is required" >&2
     exit 1
@@ -360,17 +464,15 @@ verify_checksum() {
 }
 
 smoke_installed_binary() {
-  local binary="$1"
-  local label="$2"
-
-  if [ "${OPENGPU_SKIP_INSTALL_SMOKE:-}" = "1" ]; then
-    return 0
-  fi
-
-  if ! "$binary" --version >/dev/null 2>&1; then
-    echo "installed ${label} failed to run: ${binary} --version" >&2
-    echo "This usually means the downloaded release asset does not match this machine." >&2
-    exit 1
+  local binary="$1" label="$2" probe="${3:---version}" status=0
+  if [ "${OPENGPU_SKIP_INSTALL_SMOKE:-}" = "1" ]; then return 0; fi
+  echo "Checking ${label} (${probe})..."
+  "$binary" "$probe" >"$tmp_dir/smoke-output" 2>&1 || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "${label} check failed (exit ${status}): ${binary} ${probe}" >&2
+    cat "$tmp_dir/smoke-output" >&2
+    echo "See the command error above; installation is not complete." >&2
+    exit "$status"
   fi
 }
 
@@ -396,14 +498,18 @@ expose_installed_commands() {
   echo "Making opengpu available immediately through ${GLOBAL_BIN_DIR}..."
   if [ -d "$GLOBAL_BIN_DIR" ] && [ -w "$GLOBAL_BIN_DIR" ]; then
     ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
+    if [ "$with_chat_connector" -eq 1 ]; then
     ln -sf "$INSTALL_DIR/mundusx" "$GLOBAL_BIN_DIR/mundusx"
     ln -sf "$INSTALL_DIR/mundusx-agent-server" "$GLOBAL_BIN_DIR/mundusx-agent-server"
+    fi
     ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
   elif command -v sudo >/dev/null 2>&1; then
     sudo mkdir -p "$GLOBAL_BIN_DIR"
     sudo ln -sf "$INSTALL_DIR/$BIN_NAME" "$GLOBAL_BIN_DIR/$BIN_NAME"
+    if [ "$with_chat_connector" -eq 1 ]; then
     sudo ln -sf "$INSTALL_DIR/mundusx" "$GLOBAL_BIN_DIR/mundusx"
     sudo ln -sf "$INSTALL_DIR/mundusx-agent-server" "$GLOBAL_BIN_DIR/mundusx-agent-server"
+    fi
     sudo ln -sf "$INSTALL_DIR/opengpu-node-agent" "$GLOBAL_BIN_DIR/opengpu-node-agent"
   else
     echo "Cannot write ${GLOBAL_BIN_DIR}; rerun with ${INSTALL_DIR} on PATH." >&2
@@ -432,11 +538,11 @@ install_vllm_runtime() {
     echo "NVIDIA Container Toolkit is required (nvidia-ctk was not found)" >&2
     exit 1
   fi
-  if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi >/dev/null 2>&1; then
+  if ! command -v nvidia-smi >/dev/null 2>&1 || ! run_step "Checking NVIDIA driver" nvidia-smi >/dev/null; then
     echo "the NVIDIA driver is not ready: nvidia-smi could not access a GPU" >&2
     exit 1
   fi
-  if ! docker info >/dev/null 2>&1; then
+  if ! run_step "Checking Docker daemon access" docker info >/dev/null; then
     echo "Docker is installed, but the current user cannot access the Docker daemon" >&2
     echo "On DGX Spark/GX10, add the user to the docker group or run the installer with an accessible daemon." >&2
     exit 1
@@ -445,13 +551,13 @@ install_vllm_runtime() {
   echo
   echo "[runtime 1/2] Validating NVIDIA GPU access inside Docker..."
   echo "Docker shows image-layer download progress if the CUDA image is not cached."
-  docker run --rm --gpus all \
+  run_step "Validating GPU access inside Docker" docker run --rm --gpus all \
     nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 \
     nvidia-smi >/dev/null
 
   echo "[runtime 2/2] Pulling pinned NVIDIA vLLM runtime (${VLLM_IMAGE_TAG})..."
   echo "Docker reports every layer and shows what remains before completion."
-  docker pull "$VLLM_IMAGE"
+  run_step "Pulling vLLM runtime" docker pull "$VLLM_IMAGE"
 
   mkdir -p "$runtime_dir" "${OPENGPU_HOME}/models"
   cat >"$config_path" <<EOF
@@ -473,6 +579,7 @@ EOF
 }
 
 echo "MundusX installer"
+echo "Images require 32 GiB and videos require 64 GiB after applying your contribution cap."
 echo "  target: ${target}"
 echo "  source: ${release_source}"
 echo "  node agent: ${agent_asset_name}"
@@ -493,35 +600,41 @@ if [ "$runtime_only" -eq 0 ]; then
   echo "Verifying node agent checksum..."
   verify_checksum "$tmp_agent_checksum"
 
-  echo "Fetching MundusX agent..."
-  download_to "$mundusx_url" "$tmp_mundusx" "MundusX CLI"
-  download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum" "MundusX CLI checksum"
-  verify_checksum "$tmp_mundusx_checksum"
-  download_to "$agent_server_url" "$tmp_agent_server" "MundusX agent server"
-  download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum" "MundusX agent-server checksum"
-  verify_checksum "$tmp_agent_server_checksum"
+  if [ "$with_chat_connector" -eq 1 ]; then
+    echo "Fetching MundusX agent..."
+    download_to "$mundusx_url" "$tmp_mundusx" "MundusX CLI"
+    download_to "$mundusx_checksum_url" "$tmp_mundusx_checksum" "MundusX CLI checksum"
+    verify_checksum "$tmp_mundusx_checksum"
+    download_to "$agent_server_url" "$tmp_agent_server" "MundusX agent server"
+    download_to "$agent_server_checksum_url" "$tmp_agent_server_checksum" "MundusX agent-server checksum"
+    verify_checksum "$tmp_agent_server_checksum"
+  fi
 
   chmod +x "$tmp_bin"
   chmod +x "$tmp_agent"
-  chmod +x "$tmp_mundusx"
-  chmod +x "$tmp_agent_server"
   mv "$tmp_bin" "$INSTALL_DIR/$BIN_NAME"
   mv "$tmp_agent" "$INSTALL_DIR/opengpu-node-agent"
-  mv "$tmp_mundusx" "$INSTALL_DIR/mundusx"
-  mv "$tmp_agent_server" "$INSTALL_DIR/mundusx-agent-server"
+  if [ "$with_chat_connector" -eq 1 ]; then
+    chmod +x "$tmp_mundusx" "$tmp_agent_server"
+    mv "$tmp_mundusx" "$INSTALL_DIR/mundusx"
+    mv "$tmp_agent_server" "$INSTALL_DIR/mundusx-agent-server"
+  fi
   expose_installed_commands
-  configure_chat_service
 
   echo "Running installed binary smoke checks..."
+  echo "Checking installed command..."
   smoke_installed_binary "$INSTALL_DIR/$BIN_NAME" "$BIN_NAME"
+  echo "Checking installed command..."
   smoke_installed_binary "$INSTALL_DIR/opengpu-node-agent" "opengpu-node-agent"
-  smoke_installed_binary "$INSTALL_DIR/mundusx" "mundusx"
-  smoke_installed_binary "$INSTALL_DIR/mundusx-agent-server" "mundusx-agent-server"
+  if [ "$with_chat_connector" -eq 1 ]; then
+    smoke_installed_binary "$INSTALL_DIR/mundusx" "MundusX Chat connector"
+    smoke_installed_binary "$INSTALL_DIR/mundusx-agent-server" "MundusX Chat agent server" --help
+    echo "Configuring optional Chat service and reconnect support..."
+    configure_chat_service
+  fi
 
   echo
   echo "Installed ${BIN_NAME} to ${INSTALL_DIR}/${BIN_NAME}"
-  echo "Installed MundusX agent to ${INSTALL_DIR}/mundusx"
-  echo "Installed MundusX agent server to ${INSTALL_DIR}/mundusx-agent-server"
   echo "Installed opengpu-node-agent to ${INSTALL_DIR}/opengpu-node-agent"
 fi
 
@@ -532,19 +645,27 @@ fi
 if [ "$runtime_only" -eq 0 ] && [ "$install_only" -eq 0 ]; then
   echo
   echo "Configuring this machine as a public MundusX contributor..."
+  connection_args=(--no-contribute-cluster)
+  if [ -n "$connection" ]; then
+    connection_args=(--connection "$connection")
+    [ -z "$cluster_url" ] || connection_args+=(--cluster-url "$cluster_url")
+    [ -z "$cluster_model" ] || connection_args+=(--cluster-model "$cluster_model")
+  fi
   "$INSTALL_DIR/$BIN_NAME" install \
     --public \
     --cap-percent "$cap_percent" \
     --max-jobs "$max_jobs" \
-    --no-contribute-cluster </dev/null
+    "${connection_args[@]}" </dev/null
   "$INSTALL_DIR/$BIN_NAME" onboarding --complete
 
   echo
   echo "Starting the OpenGPU node in the background..."
+  start_connection_args=()
+  [ -n "$connection" ] || start_connection_args=(--no-contribute-cluster)
   "$INSTALL_DIR/$BIN_NAME" start \
     --background \
     --max-jobs "$max_jobs" \
-    --no-contribute-cluster </dev/null
+    "${start_connection_args[@]}" </dev/null
 
   echo
   echo "OpenGPU is installed and contributing."
@@ -552,6 +673,6 @@ if [ "$runtime_only" -eq 0 ] && [ "$install_only" -eq 0 ]; then
 elif [ "$runtime_only" -eq 0 ]; then
   echo
   echo "Next steps:"
-  echo "  opengpu install"
+  printf "  opengpu install"; [ -z "$connection" ] || printf " --connection %q" "$connection"; [ -z "$cluster_url" ] || printf " --cluster-url %q" "$cluster_url"; [ -z "$cluster_model" ] || printf " --cluster-model %q" "$cluster_model"; printf "\n"
   echo "  opengpu start"
 fi

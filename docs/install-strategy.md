@@ -8,6 +8,59 @@ This page defines the recommended way to distribute `opengpu` with native one-co
 - Keep Rust as the build tool, not a user dependency.
 - Make the first install path one command wherever possible.
 
+## Image and video contribution eligibility
+
+Workload selection uses the bundled model requirements on every OS:
+
+| Workload | Minimum memory after the cap |
+| --- | --- |
+| Images (Qwen Image) | 32 GiB |
+| Videos (Wan 14B) | 64 GiB |
+
+For example, 64 GiB at 50% enables Images only; 128 GiB at 50% enables
+both Images and Videos. Below each model's threshold its checkbox is disabled.
+`--workloads`, including `all`, must satisfy every selected model's minimum.
+These thresholds are read from the bundled model profiles, so selection and
+runtime setup cannot drift. Existing saved selections are checked again.
+
+Every installer delegates contributor choices to the shared `opengpu install`
+wizard: `install.sh` (including `scripts/install.sh`), Windows `install.ps1`
+and the clickable Windows setup, and setup after installing the macOS package.
+The wizard asks for the contribution cap before the workload checkboxes.
+
+On macOS, Windows, and Linux, image generation, image editing, video generation,
+and image-to-video require **at least 24 GiB after applying the contribution cap**.
+Eligibility uses detected physical/unified system memory in bytes multiplied by
+the cap percentage, rounded down to bytes; disk space, swap, and uncapped total
+RAM do not satisfy the requirement. Dedicated GPU/model fit is checked separately.
+For example, 32 GiB at 50% contributes 16 GiB and cannot select media; 32 GiB at
+75% contributes exactly 24 GiB and passes the general media threshold, but
+still cannot select the bundled image or video model.
+
+Below the applicable model threshold, its checkbox is unavailable while LLM remains selectable.
+Explicit `--workloads` flags (including `all` and editing operations) and saved
+media selections are validated too. Lowering the cap or moving state to a smaller
+machine invalidates media readiness; direct setup/generation and queue serving
+cannot bypass the check. Unknown memory fails closed for media, not LLM.
+Inspection and cleanup remain available. A profile may need more than 24 GiB;
+the bundled Qwen and Wan memory requirements are not reduced by this policy.
+This eligibility rule does not enable unsupported runtimes or editing features.
+
+The shared policy is `workers/media/contribution-policy.json`, embedded with the
+media helper. Shipping this change requires rebuilding the CLI used by each
+release channel; uploading the download scripts alone does not update the wizard.
+
+## Mac contributor concurrency
+
+For macOS, `install.sh --auto-start` selects the concurrent job limit from
+physical RAM: below 32 GiB uses 1 job (including 16 GiB Macs), 32 to below
+128 GiB uses 2 jobs, and 128 GiB or more uses 4 jobs. `--max-jobs` and
+`OPENGPU_MAX_JOBS` may lower this limit but cannot exceed it through the
+bootstrapper. If RAM detection fails, the script uses a limit of 1 job.
+The selected limit is passed to both contributor setup and background startup.
+Linux retains its default of 2 jobs. This policy controls concurrency; model
+memory requirements still determine whether a particular workload fits.
+
 ## Recommended Distribution Layers
 
 ### 1. Primary Channel
@@ -99,7 +152,7 @@ Every supported release target must publish a platform-matched node-agent asset 
 - `opengpu-node-agent-x86_64-unknown-linux-gnu`
 - `opengpu-node-agent-x86_64-pc-windows-msvc.exe`
 
-The POSIX bootstrapper installs `opengpu-node-agent` beside `opengpu` and fails if the node-agent asset or checksum is missing. It also writes a `mundusx` compatibility alias that points at `opengpu` while OpenGPU is the primary command. That keeps macOS and Linux contributor installs from looking complete while the executable needed for `opengpu start` is absent. Windows follows the same rule through `install.ps1`, which installs `opengpu-node-agent.exe` beside `opengpu.exe` and copies `mundusx.exe` as the compatibility command.
+The default POSIX bootstrapper installs only `opengpu` and `opengpu-node-agent`. It does not install a `mundusx` alias, pair with Chat, or configure Chat auto-start. The separate Chat connector is opt-in with `--with-chat-connector`; only that path installs `mundusx` and `mundusx-agent-server`. Windows setup modes remain explicit in `install.ps1`. Slow POSIX download and runtime checks display elapsed-time activity updates every 10 seconds, in addition to download progress.
 
 Runtime bundles remain platform-specific release assets:
 

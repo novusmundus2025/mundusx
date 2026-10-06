@@ -74,7 +74,9 @@ where
             "last_tool_result": context.last_result,
         }))
         .map_err(|error| LoopFailure::new("HARNESS_MODEL_OUTPUT_INVALID", error.to_string()))?;
-        let output = (self.generate)(MODEL_SYSTEM_PROMPT, &prompt)
+        let protected_system = format!("{}\n\n{MODEL_SYSTEM_PROMPT}",
+            include_str!("../../../packages/sensitive-information-policy.txt"));
+        let output = (self.generate)(&protected_system, &prompt)
             .map_err(|error| LoopFailure::new("HARNESS_MODEL_FAILED", error))?;
         serde_json::from_str(output.trim()).map_err(|error| {
             LoopFailure::new(

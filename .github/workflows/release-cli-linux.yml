@@ -51,8 +51,22 @@ jobs:
         with:
           targets: ${{ env.TARGET }}
 
-      - name: Build CLIs and agents
+      - name: Test progress and readiness on this OS
         run: |
+          cargo test -p opengpu --bin opengpu operation_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu --bin opengpu local_readiness --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent download_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent runtime_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu --bin opengpu startup_relay --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent parses_vllm_startup_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
+
+      - name: Build CLIs and agents
+        # Context discovery and Muse chat defaults are release-critical regressions.
+        # Run on both native Linux architectures before producing binaries.
+        run: |
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent served_ --target "${TARGET}"
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent muse_plain_chat --target "${TARGET}"
           cargo build --release --manifest-path apps/cli/Cargo.toml --target "${TARGET}"
           cargo build --release --manifest-path apps/agent-server/Cargo.toml --target "${TARGET}"
           cargo build --release --manifest-path agents/node/Cargo.toml --bin opengpu-node-agent --target "${TARGET}"
@@ -125,12 +139,14 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: opengpu-*
+          merge-multiple: true
           path: dist
 
       - name: Publish Linux release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*
+          files: dist/*
           tag_name: ${{ env.RELEASE_TAG }}
           name: MundusX Linux CLI ${{ env.RELEASE_TAG }}
         env:

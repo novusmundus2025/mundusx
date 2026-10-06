@@ -42,7 +42,7 @@ CLI and node-agent signing may decrypt protected key material locally only for t
 
 Official remote model downloads must be reviewable and integrity checked:
 
-- Official presets live in `apps/cli/config/official-models.json`.
+- Official installation choices come from the configured control plane's `/v1/model-catalog` API. Administrators manage enabled variants and OS restrictions in `/model-catalog`; the bundled JSON is a test fixture, not the production allowlist.
 - Remote official catalog entries must include a non-empty SHA-256 before they are eligible for automatic download.
 - The CLI must fail closed when an official remote model lacks a checksum or fails checksum verification.
 - Local `file://` imports and test fixtures must stay explicit and separate from official remote presets.
@@ -80,7 +80,7 @@ If a Windows host is wiped, loses DPAPI-protected material, or deletes the Mundu
 
 Enterprise support should separate product issues from local environment issues:
 
-- Missing NVIDIA drivers, missing CUDA runtime support, unreachable LM Studio, absent model cache, or low VRAM are host readiness issues until diagnostics show a product defect.
+- Missing NVIDIA drivers, missing CUDA runtime support, absent model cache, or low VRAM are host readiness issues until diagnostics show a product defect.
 - Local preview commands, unsigned fixtures, and developer release sources are not production evidence.
 - Hosted release installs require signed manifest artifacts and checksum verification before a host can be considered enterprise-ready.
 - Human-readable support bundles may include config, health output, and logs, but must not include DPAPI-protected blobs, raw tokens, raw private keys, or copied model artifacts.

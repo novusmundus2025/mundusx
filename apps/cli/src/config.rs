@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const PUBLIC_CONTROL_PLANE_URL: &str = "https://uat.mundusx.ai";
+const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 const LEGACY_CONTROL_PLANE_URL: &str = "https://mundusx.ai";
 
 /// A local LLM cluster the contributor already runs and has agreed to
@@ -61,6 +61,8 @@ fn default_cluster_capacity_class() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub contribution: crate::contribution_contract::ContributionSelection,
     pub version: u32,
     pub device_id: String,
     pub public_key_fingerprint: Option<String>,
@@ -101,6 +103,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            contribution: Default::default(),
             version: 1,
             device_id: format!("node-{}", uuid::Uuid::new_v4().simple()),
             public_key_fingerprint: None,
@@ -177,6 +180,14 @@ pub fn resolved_config_path() -> PathBuf {
     }
 }
 
+fn remove_unsupported_cluster(config: &mut Config) -> bool {
+    let excluded = config.contributed_cluster.as_ref().map(|cluster|
+        crate::cluster::policy::unsupported_runtime(&cluster.kind, &cluster.base_url)
+    ).unwrap_or(false);
+    if excluded { config.contributed_cluster = None; }
+    excluded
+}
+
 pub fn load_config() -> std::io::Result<Option<Config>> {
     let path = resolved_config_path();
     if !path.exists() {
@@ -186,7 +197,11 @@ pub fn load_config() -> std::io::Result<Option<Config>> {
     let raw = fs::read_to_string(path)?;
     let mut config: Config = serde_json::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    if migrate_control_plane_url(&mut config.control_plane_url) {
+    let removed_cluster = remove_unsupported_cluster(&mut config);
+    if removed_cluster {
+        eprintln!("PAIR contribution is not enabled. Removed the unsupported connection; run `opengpu install` to choose a direct engine.");
+    }
+    if migrate_control_plane_url(&mut config.control_plane_url) || removed_cluster {
         save_config(&config)?;
     }
     Ok(Some(config))
@@ -265,6 +280,21 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod control_plane_url_tests {
     use super::*;
+
+    #[test]
+    fn removes_legacy_connection_but_preserves_supported_configs() {
+        for (kind, url, excluded) in [
+            ("lm-studio", "http://localhost:9999", false),
+            ("openai-compatible", "http://localhost:1234", false),
+            ("vllm", "http://localhost:8000", false),
+        ] {
+            let mut value = serde_json::to_value(Config::default()).unwrap();
+            value["contributed_cluster"] = serde_json::json!({"kind": kind, "base_url": url});
+            let mut config: Config = serde_json::from_value(value).unwrap();
+            assert_eq!(remove_unsupported_cluster(&mut config), excluded);
+            assert_eq!(config.contributed_cluster.is_none(), excluded);
+        }
+    }
 
     #[test]
     fn migrates_only_the_retired_public_origin() {

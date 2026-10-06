@@ -4,6 +4,21 @@ This document describes what the CLI does when a user starts using it for the fi
 
 ## First Run
 
+On Apple Silicon, managed MLX startup checks the model endpoint and then sends
+a local, non-streaming one-token generation request for the selected model.
+The agent prints `persistentRuntime: warming MLX model ... (first generation)`
+and waits for an actual generation response before handing the runtime to the
+worker. Completion prints `persistentRuntime: MLX model warm-up complete`.
+This also applies when reusing a local MLX server and after restarting MLX
+following a media memory handoff. No network job or credits are used for this probe.
+
+The startup and warm-up share `OPENGPU_MLX_START_TIMEOUT_SECONDS` (300 seconds
+by default). Failure stops a newly owned MLX server and reports the existing
+batch fallback; an existing server is not stopped. This removes the initial
+generation setup from the first real job, but does not guarantee identical
+latency for later prompts, contexts or models. Managed image/video runtimes
+remain on demand; this change does not keep all workloads resident together.
+
 The CLI owns the user-facing lifecycle. It manages local state and, when the user runs `opengpu start`, launches the installed node agent that connects the machine to the platform.
 
 On first run, the CLI:
@@ -81,7 +96,7 @@ the CLI runs the guided machine setup wizard:
    contributed in the previous step:
    - lighter safe catalog model
    - recommended safe catalog model
-   - local GGUF / LM Studio model file
+   - local GGUF model file
 8. Filters model choices by the selected contribution cap and detected machine profile, then checks model fit before download or activation.
 9. Saves the selected control-plane URL, contribution cap, and active model or contributed cluster.
 10. Prints the next step: `opengpu start`.
@@ -108,7 +123,6 @@ each:
 | Runtime | Port | Listing endpoint |
 | --- | --- | --- |
 | Ollama | `11434` | `/api/tags` |
-| LM Studio | `1234` | `/v1/models` |
 | vLLM | `8000` | `/v1/models` |
 | OpenAI-compatible server | `8080` | `/v1/models` |
 
@@ -232,9 +246,10 @@ the CLI:
    `--no-contribute-cluster`, and `--cluster-url` work the same way as on
    `install`. See [Contributing a Running Cluster](#contributing-a-running-cluster).
 8. If no active model is saved yet and no cluster is contributed, asks for a model choice, caches or imports it, and marks it active.
-   - the starter model presets come from `apps/cli/config/official-models.json`
-   - the starter presets point at public Hugging Face GGUF files compatible with the local Mac runtime, so no account is required for the default path
-   - if the selected model is missing, the CLI downloads the public GGUF file and verifies the checksum when one is present in the catalog
+   - model choices come from the configured control plane's `/v1/model-catalog` API, maintained by signed-in administrators
+   - Windows offers allowed GGUF variants; macOS offers MLX variants; Linux offers compatible GGUF/vLLM variants, further filtered by backend and contribution memory budget
+   - missing model files are downloaded from the catalog's public Hugging Face source; GGUF downloads require and verify a SHA-256 checksum
+   - a temporary API outage uses the last successful catalog cached for that control plane; without a cache, the CLI does not substitute bundled model choices
 9. Prints a startup summary with:
    - device ID
    - public key

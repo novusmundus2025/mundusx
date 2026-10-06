@@ -6,6 +6,10 @@ param(
   [switch]$InstallCudaRuntime,
   [switch]$InstallVulkanRuntime,
   [switch]$SkipModelRuntime,
+  [ValidateSet("managed", "direct", "pair")]
+  [string]$Connection,
+  [string]$ClusterUrl,
+  [string]$ClusterModel,
   [switch]$SkipTrayAutoStart,
   [switch]$SkipPathUpdate,
   [switch]$SkipContributorSetup,
@@ -56,6 +60,9 @@ Options:
   -InstallVulkanRuntime    Force Vulkan llama runtime installation instead of CUDA.
                           By default, the installer detects NVIDIA/CUDA and
                           otherwise installs the Vulkan runtime for Windows.
+  -Connection <mode>      managed, direct, or pair (PAIR validates only).
+  -ClusterUrl <url>       External inference endpoint.
+  -ClusterModel <id>      Exact external model ID.
   -SkipModelRuntime        Agent-only install: do not download llama.cpp or a GPU runtime.
   -SkipTrayAutoStart       Install the tray companion without starting it at sign-in.
   -SkipPathUpdate          Test-only: do not add the install directory to the user PATH.
@@ -72,6 +79,8 @@ Options:
 
 After this bootstrapper installs the binary, a fresh PowerShell window opens
 and runs `opengpu install` automatically unless -SkipContributorSetup is set.
+Guided setup checks image/video eligibility after choosing the contribution cap:
+Images (Qwen Image) require 32 GiB; videos (Wan 14B) require 64 GiB.
 "@ | Write-Output
 }
 
@@ -466,14 +475,14 @@ function Copy-ReleaseFile {
       [void]$request.Headers.TryAddWithoutValidation($name, [string]$headers[$name])
     }
 
-    $response = $client.SendAsync(
+    $response = Wait-InstallerDownloadTask -Task ($client.SendAsync(
       $request,
       [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
-    ).GetAwaiter().GetResult()
+    )) -Label "Connecting to $Label download"
     [void]$response.EnsureSuccessStatusCode()
 
     $totalBytes = $response.Content.Headers.ContentLength
-    $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $inputStream = Wait-InstallerDownloadTask -Task ($response.Content.ReadAsStreamAsync()) -Label "Opening $Label download"
     $outputStream = [System.IO.File]::Open(
       $Destination,
       [System.IO.FileMode]::Create,
@@ -485,7 +494,7 @@ function Copy-ReleaseFile {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $lastUpdateMs = [long]-1000
 
-    while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    while (($read = Wait-InstallerDownloadTask -Task ($inputStream.ReadAsync($buffer, 0, $buffer.Length)) -Label "Downloading $Label") -gt 0) {
       $outputStream.Write($buffer, 0, $read)
       $receivedBytes += $read
       if (($stopwatch.ElapsedMilliseconds - $lastUpdateMs) -lt 250 -and
@@ -579,8 +588,12 @@ function Start-ContributorSetup {
   }
 
   $escapedCliPath = $CliPath.Replace("'", "''")
+  $connectionArgs = ""
+  foreach ($item in @(@("--connection", $Connection), @("--cluster-url", $ClusterUrl), @("--cluster-model", $ClusterModel))) {
+    if ($item[1]) { $connectionArgs += " " + $item[0] + " '" + $item[1].Replace("'", "''") + "'" }
+  }
   $setupCommand = @"
-& '$escapedCliPath' install
+& '$escapedCliPath' install$connectionArgs
 `$setupExit = `$LASTEXITCODE
 Write-Host ''
 if (`$setupExit -eq 0) {
@@ -625,6 +638,20 @@ function Write-InstallerPhase {
   $overallPercent = [int][Math]::Floor((($Current - 1) * 100.0) / $Total)
   Write-Output ""
   Write-Output "[$Current/$Total - overall $overallPercent%] $Message"
+}
+
+function Wait-InstallerDownloadTask {
+  param($Task, [string]$Label)
+  $activityTimer = [System.Diagnostics.Stopwatch]::StartNew()
+  $nextUpdate = 10
+  while (-not $Task.IsCompleted) {
+    Start-Sleep -Milliseconds 200
+    if ($activityTimer.Elapsed.TotalSeconds -ge $nextUpdate) {
+      Write-Host "$Label - waiting for network ($([int]$activityTimer.Elapsed.TotalSeconds)s elapsed)..."
+      $nextUpdate += 10
+    }
+  }
+  return $Task.GetAwaiter().GetResult()
 }
 
 function Verify-ReleaseAsset {
@@ -719,6 +746,9 @@ if (-not $agentModeWasProvided -and $SetupMode -ne "contributor") {
 if ($InstallCudaRuntime -and $InstallVulkanRuntime) {
   throw "choose only one runtime override: -InstallCudaRuntime or -InstallVulkanRuntime"
 }
+if (-not $Connection -and ($ClusterUrl -or $ClusterModel)) { throw "-ClusterUrl and -ClusterModel require -Connection direct or pair" }
+if ($Connection -in @("direct", "pair")) { $SkipModelRuntime = $true }
+if ($Connection -eq "managed" -and $ClusterUrl) { throw "Managed connection cannot use -ClusterUrl" }
 if ($SkipModelRuntime -and ($InstallCudaRuntime -or $InstallVulkanRuntime)) {
   throw "-SkipModelRuntime cannot be combined with a GPU runtime override"
 }
@@ -781,6 +811,7 @@ $trayIconExpected = $null
 $runtimeExpected = $null
 
 Write-Output "MundusX Windows installer"
+Write-Output "Images require 32 GiB and videos require 64 GiB after applying your contribution cap."
 Write-Output "  target: $target"
 Write-Output "  profile: $profile"
 Write-Output "  gpu: $(if ($gpu) { $gpu.Name } else { 'none detected' })"
@@ -906,7 +937,11 @@ try {
     New-Item -ItemType Directory -Force -Path $runtimeInstallDir | Out-Null
     $selectedRuntimeArchive = if ($cudaRuntimeRequired) { $tempCudaRuntime } else { $tempVulkanRuntime }
     $selectedRuntimeLabel = if ($cudaRuntimeRequired) { "CUDA" } else { "Vulkan" }
-    Expand-Archive -LiteralPath $selectedRuntimeArchive -DestinationPath $runtimeInstallDir -Force
+    Write-Output "Extracting GPU runtime; this can take several minutes..."
+    Write-Progress -Id 2 -Activity "Extracting GPU runtime" -Status "Preparing installed runtime files" -PercentComplete -1
+    try { Expand-Archive -LiteralPath $selectedRuntimeArchive -DestinationPath $runtimeInstallDir -Force }
+    finally { Write-Progress -Id 2 -Activity "Extracting GPU runtime" -Completed }
+    Write-Output "GPU runtime extraction complete."
     if (-not (Test-Path -LiteralPath $finalCudaRuntime)) {
       $foundRuntime = Get-ChildItem -Path $runtimeInstallDir -Recurse -Filter "llama-cli.exe" | Select-Object -First 1
       if (-not $foundRuntime) {

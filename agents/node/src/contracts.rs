@@ -196,6 +196,11 @@ pub struct JobRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobRecord {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::contribution_contract::Operation::is_llm"
+    )]
+    pub operation: crate::contribution_contract::Operation,
     pub job_id: String,
     pub request_id: String,
     pub prompt: String,
@@ -228,6 +233,8 @@ pub struct JobClaimResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobCompletion {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_usage: Vec<serde_json::Value>,
     pub job_id: String,
     pub node_id: String,
     pub worker_id: String,
@@ -262,6 +269,11 @@ pub struct JobStreamAck {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLaunchRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::contribution_contract::Operation::is_llm"
+    )]
+    pub operation: crate::contribution_contract::Operation,
     pub job_id: String,
     pub node_id: String,
     pub backend: Backend,
@@ -280,6 +292,8 @@ pub struct WorkerLaunchRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLaunchResponse {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_usage: Vec<serde_json::Value>,
     pub job_id: String,
     pub worker_id: String,
     pub status: String,
@@ -293,6 +307,10 @@ pub struct WorkerLaunchResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerHealthReport {
+    #[serde(default)]
+    pub media_profiles: Vec<String>,
+    #[serde(default)]
+    pub media_budget_bytes: u64,
     pub healthy: bool,
     pub model_dir: String,
     pub model_name: Option<String>,
@@ -387,6 +405,10 @@ pub struct ModelCapability {
     pub supports_tools: bool,
     #[serde(default)]
     pub supports_structured_output: bool,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_embeddings: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -421,6 +443,8 @@ impl NodeRole {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeCapabilityProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::contribution_contract::ExecutionCapabilities>,
     #[serde(default = "default_capability_schema_version")]
     pub schema_version: u32,
     #[serde(default)]
@@ -464,6 +488,7 @@ pub struct NodeCapabilityProfile {
 impl Default for NodeCapabilityProfile {
     fn default() -> Self {
         Self {
+            execution: None,
             schema_version: 4,
             models: Vec::new(),
             physical_memory_mb: None,

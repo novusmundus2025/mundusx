@@ -160,6 +160,8 @@ When the task is complete return {{\"type\":\"final\",\"content\":\"answer\"}}.\
             system_prompt.push_str("\n\nSelected skills:\n");
             system_prompt.push_str(&self.additional_instructions.join("\n\n"));
         }
+        system_prompt = format!("{}\n\n{system_prompt}",
+            include_str!("../../sensitive-information-policy.txt"));
         let mut transcript = prior_transcript.to_string();
         if !transcript.is_empty() {
             transcript.push_str("\n\n");
