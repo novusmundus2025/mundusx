@@ -26,7 +26,7 @@ Select the model the server reports. Confirm Radeon GPU offload in its logs and 
 
 ## Managed integration and catalog
 
-Windows already packages a Vulkan runtime. Linux automatic Vulkan detection requires the new CLI change and a Vulkan-enabled llama-cli. Set OPENGPU_LLAMA_CLI to its absolute path if outside the managed runtime directory. Use llama-server from the same build.
+Windows packages a Vulkan runtime. Release 0.2.33 adds Linux automatic Vulkan detection and a pinned runtime bundle. On Linux x86_64 run the release installer with `--with-vulkan`; install the distribution's Vulkan loader and Radeon graphics driver first. Set OPENGPU_LLAMA_CLI to an absolute path only when using a separate runtime build. Use llama-server from the same build.
 
 Approve a separate GGUF catalog variant for Windows/Linux and Vulkan, with chat and coding tags and a provisional 26000 MB serving budget. Leave image input, tools and embeddings disabled pending integration validation. The weights are approximately 18.6 GB; leave memory for the OS, runtime and KV cache. Count shared RAM once, rather than adding GPU memory to system memory.
 

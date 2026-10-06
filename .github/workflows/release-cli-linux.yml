@@ -87,6 +87,13 @@ jobs:
           sha256sum -c "${MUNDUSX_BINARY_NAME}.sha256"
           sha256sum -c "${AGENT_SERVER_BINARY_NAME}.sha256"
 
+      - name: Package Linux Vulkan runtime
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libvulkan-dev glslc
+          bash scripts/package-linux-vulkan-runtime.sh
+
       - name: Verify packaging
         run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
 
@@ -104,6 +111,7 @@ jobs:
             ${{ env.AGENT_SERVER_BINARY_NAME }}
             ${{ env.AGENT_SERVER_BINARY_NAME }}.sha256
             install.sh
+            llama-runtime-*-vulkan.tar.gz*
 
       - name: Prepare signed manifest
         env:
@@ -131,6 +139,7 @@ jobs:
             release-manifest-${{ env.TARGET }}.json
             release-manifest-${{ env.TARGET }}.json.sig
             install.sh
+            llama-runtime-*-vulkan.tar.gz*
 
   release:
     needs: build
