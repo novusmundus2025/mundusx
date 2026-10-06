@@ -156,28 +156,12 @@ pub fn resolved_config_path() -> PathBuf {
         return config_path();
     }
 
-    let home = config_path();
-    let local = local_config_path();
-    match (home.exists(), local.exists()) {
-        (true, true) => {
-            let home_modified = fs::metadata(&home).and_then(|meta| meta.modified()).ok();
-            let local_modified = fs::metadata(&local).and_then(|meta| meta.modified()).ok();
-            match (home_modified, local_modified) {
-                (Some(home_time), Some(local_time)) => {
-                    if local_time > home_time {
-                        local
-                    } else {
-                        home
-                    }
-                }
-                (None, Some(_)) => local,
-                _ => home,
-            }
-        }
-        (true, false) => home,
-        (false, true) => local,
-        (false, false) => home,
-    }
+    select_config_path(config_path(), local_config_path())
+}
+
+fn select_config_path(home: PathBuf, local: PathBuf) -> PathBuf {
+    // A stale folder-local copy must never override an edited home config.
+    if !home.exists() && local.exists() { local } else { home }
 }
 
 fn remove_unsupported_cluster(config: &mut Config) -> bool {
@@ -208,6 +192,10 @@ pub fn load_config() -> std::io::Result<Option<Config>> {
 }
 
 pub fn save_config(config: &Config) -> std::io::Result<PathBuf> {
+    save_config_to(config, &resolved_config_path())
+}
+
+fn save_config_to(config: &Config, path: &Path) -> std::io::Result<PathBuf> {
     #[cfg(windows)]
     let serialized_config = {
         let mut config = config.clone();
@@ -217,29 +205,9 @@ pub fn save_config(config: &Config) -> std::io::Result<PathBuf> {
     #[cfg(not(windows))]
     let serialized_config = config.clone();
     let data = serde_json::to_string_pretty(&serialized_config).expect("config serialization");
-    let mut last_success = None;
-    let mut last_error = None;
-
-    match try_write(&config_path(), &data) {
-        Ok(path) => last_success = path.or(last_success),
-        Err(error) => last_error = Some(error),
-    }
-
-    match try_write(&local_config_path(), &data) {
-        Ok(path) => last_success = path.or(last_success),
-        Err(error) => last_error = Some(error),
-    }
-
-    if let Some(path) = last_success {
-        return Ok(path);
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "unable to write config to home or local fallback",
-        )
-    }))
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    fs::write(path, format!("{data}\n"))?;
+    Ok(path.to_path_buf())
 }
 
 pub fn remove_config_files() -> std::io::Result<()> {
@@ -250,23 +218,6 @@ pub fn remove_config_files() -> std::io::Result<()> {
 
 pub fn config_exists() -> bool {
     resolved_config_path().exists()
-}
-
-fn try_write(path: &Path, data: &str) -> std::io::Result<Option<PathBuf>> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    match fs::write(path, format!("{data}\n")) {
-        Ok(()) => Ok(Some(path.to_path_buf())),
-        Err(error) => {
-            if path == config_path() {
-                Ok(None)
-            } else {
-                Err(error)
-            }
-        }
-    }
 }
 
 fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
@@ -280,6 +231,31 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod control_plane_url_tests {
     use super::*;
+
+    #[test]
+    fn private_home_settings_survive_newer_local_copy_and_startup_save() {
+        let dir = std::env::temp_dir().join(format!("opengpu-config-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let home = dir.join("home.json");
+        let local = dir.join("local.json");
+        let private = Config { control_plane_url: "https://private.example.com".into(), paused: true, ..Config::default() };
+        save_config_to(&private, &home).unwrap();
+        save_config_to(&Config::default(), &local).unwrap();
+        let local_before = fs::read(&local).unwrap();
+        assert_eq!(select_config_path(home.clone(), local.clone()), home);
+        let mut started: Config = serde_json::from_slice(&fs::read(&home).unwrap()).unwrap();
+        started.connected = true;
+        save_config_to(&started, &home).unwrap();
+        let saved: Config = serde_json::from_slice(&fs::read(&home).unwrap()).unwrap();
+        assert_eq!(saved.control_plane_url, private.control_plane_url);
+        assert!(saved.paused);
+        assert_eq!(fs::read(&local).unwrap(), local_before);
+        fs::remove_file(&home).unwrap();
+        assert_eq!(select_config_path(home.clone(), local.clone()), local);
+        fs::remove_file(&local).unwrap();
+        assert_eq!(select_config_path(home.clone(), local), home);
+        fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn removes_legacy_connection_but_preserves_supported_configs() {

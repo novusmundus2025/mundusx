@@ -92,7 +92,7 @@ fn load_unfiltered_catalog() -> Result<ModelCatalog, serde_json::Error> {
 
     #[cfg(not(test))]
     {
-        let config = crate::config::load_config().ok().flatten().unwrap_or_default();
+        let config = crate::config::load_config().map_err(serde_json::Error::io)?.unwrap_or_default();
         let base = config.control_plane_url.trim_end_matches('/');
         // Per-process cache avoids repeated HTTP calls during one model picker.
         static CATALOGS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, ModelCatalog>>> = std::sync::OnceLock::new();
@@ -111,14 +111,14 @@ fn load_unfiltered_catalog() -> Result<ModelCatalog, serde_json::Error> {
                 catalogs.insert(base.to_string(), catalog.clone());
                 return Ok(catalog);
             }
-            Err(_) => {
+            Err(error) => {
                 if let Some(catalog) = fs::read_to_string(&path).ok().and_then(|raw| parse_catalog(&raw).ok()) {
                     eprintln!("Model catalog unavailable; using cached allowed models for {base}.");
                     catalogs.insert(base.to_string(), catalog.clone());
                     return Ok(catalog);
                 }
                 // Never silently replace an admin allowlist with bundled choices.
-                eprintln!("Model catalog unavailable and no cached allowlist exists. Retry when the control plane is reachable.");
+                eprintln!("Model catalog unavailable for {base}: {error}. No cached allowlist exists. Check the URL and private-plane login before retrying.");
                 return Ok(ModelCatalog { version: 1, presets: Vec::new() });
             }
         }
@@ -141,8 +141,9 @@ fn fetch_catalog(base: &str) -> Result<ModelCatalog, String> {
     if !(base.starts_with("https://") || base.starts_with("http://localhost:") || base.starts_with("http://127.0.0.1:")) {
         return Err("Catalog requires HTTPS".into());
     }
-    let response = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(5)).redirects(0).build()
-        .get(&format!("{}/v1/model-catalog", base.trim_end_matches('/'))).call().map_err(|error| error.to_string())?;
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(5)).redirects(0).build();
+    let request = agent.get(&format!("{}/v1/model-catalog", base.trim_end_matches('/')));
+    let response = mundusx_control_plane_auth::apply(request)?.call().map_err(|error| error.to_string())?;
     let mut raw = String::new();
     response.into_reader().take(2_000_001).read_to_string(&mut raw).map_err(|error| error.to_string())?;
     if raw.len() > 2_000_000 { return Err("Model catalog too large".into()); }

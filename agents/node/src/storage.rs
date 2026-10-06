@@ -157,7 +157,13 @@ pub fn config_dir() -> PathBuf {
 }
 
 pub fn config_path() -> PathBuf {
-    config_dir().join("config.json")
+    let home = config_dir().join("config.json");
+    let local = PathBuf::from(".opengpu").join("config.json");
+    if std::env::var_os("OPENGPU_HOME").is_none() && !home.exists() && local.exists() {
+        local
+    } else {
+        home
+    }
 }
 
 pub fn agent_state_path() -> PathBuf {
