@@ -480,7 +480,13 @@ enum JobsCommands {
 }
 
 fn current_config_or_default() -> Config {
-    load_config().ok().flatten().unwrap_or_default()
+    match load_config() {
+        Ok(config) => config.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("Cannot load configuration {}: {error}. Fix this file before retrying; saved settings have not been replaced.", resolved_config_path().display());
+            std::process::exit(1);
+        }
+    }
 }
 
 fn clear_menu_screen() {

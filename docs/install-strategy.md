@@ -8,6 +8,33 @@ This page defines the recommended way to distribute `opengpu` with native one-co
 - Keep Rust as the build tool, not a user dependency.
 - Make the first install path one command wherever possible.
 
+## Private control planes and saved configuration
+
+Configure a private endpoint and authenticate to a Coder gateway with:
+
+```sh
+opengpu config control-plane-url "https://your-private-control-plane.example"
+opengpu login --token-header coder-session-token
+opengpu start
+```
+
+Paste the session token into the login prompt without quotes. Credentials are
+stored separately and scoped to the configured endpoint. Model-catalog requests
+use the same saved credentials as other control-plane requests; redirects remain
+disabled to prevent forwarding the token to another endpoint.
+
+`OPENGPU_HOME/config.json` takes precedence when `OPENGPU_HOME` is set. Otherwise,
+the CLI and node use `~/.opengpu/config.json`, with the current folder's
+`.opengpu/config.json` as a fallback only when the home file does not exist.
+Modification times do not change this precedence. Saves update only the selected
+file. Manual edits must use that file and valid JSON. Stop the running node before
+editing, then restart it. Invalid configuration stops startup rather than
+replacing private settings with public defaults. Use `opengpu doctor` to inspect
+the resolved configuration path.
+
+These changes require a CLI and node build containing the fix; previously
+published packages retain their existing configuration behavior.
+
 ## Image and video contribution eligibility
 
 Workload selection uses the bundled model requirements on every OS:
