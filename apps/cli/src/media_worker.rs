@@ -48,8 +48,14 @@ fn request(
             _ => "Media server connection failed".into(),
         })?;
     let mut bytes = Vec::new();
-    response.into_reader().take(46 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|_| "Cannot read media server response")?;
-    if bytes.len() > 46 * 1024 * 1024 { return Err("Media server response too large".into()); }
+    response
+        .into_reader()
+        .take(46 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read media server response")?;
+    if bytes.len() > 46 * 1024 * 1024 {
+        return Err("Media server response too large".into());
+    }
     serde_json::from_slice(&bytes).map_err(|_| "Invalid media server response".into())
 }
 fn private_json(path: &std::path::Path, value: &Value) -> Result<(), String> {
@@ -73,8 +79,12 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
         let frames = job["quote"]["frames"]
             .as_u64()
             .ok_or("Missing video frames")?;
-        let profile: Value =
-            serde_json::from_str(if i2v { media_runtime::I2V_FAST_PROFILE } else { media_runtime::VIDEO_PROFILE }).map_err(|e| e.to_string())?;
+        let profile: Value = serde_json::from_str(if i2v {
+            media_runtime::I2V_FAST_PROFILE
+        } else {
+            media_runtime::VIDEO_PROFILE
+        })
+        .map_err(|e| e.to_string())?;
         let fps = profile["fps"].as_u64().ok_or("Missing video FPS")?;
         let base_frames = profile["frames"].as_u64().ok_or("Missing base frames")?;
         let seconds = (1..=10)
@@ -90,7 +100,11 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
             return Err("Job model does not match the installed video workflow".into());
         }
         let suffix = if i2v { "-i2v-fast" } else { "-video" };
-        let name = if frames == base_frames { format!("verified{suffix}.json") } else { format!("verified{suffix}-{frames}f.json") };
+        let name = if frames == base_frames {
+            format!("verified{suffix}.json")
+        } else {
+            format!("verified{suffix}-{frames}f.json")
+        };
         (seconds, name)
     } else {
         let profile: Value =
@@ -101,6 +115,56 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
         (2, "verified.json".to_string())
     };
     Ok((video, seconds, name))
+}
+
+// Only delete exact worker-owned files; never traverse arbitrary output paths.
+fn cleanup_completed_media(home: &std::path::Path, cleanup: &Value) -> Result<(), String> {
+    let root = home.join("media");
+    let mut files = Vec::new();
+    for (key, directory) in [
+        ("artifact_name", "artifacts"),
+        ("comfy_output_filename", "outputs/opengpu"),
+    ] {
+        if let Some(name) = cleanup[key].as_str() {
+            if name.is_empty()
+                || name.contains('/')
+                || name.contains('\\')
+                || name.contains(':')
+                || name == "."
+                || name == ".."
+            {
+                return Err("Invalid media cleanup filename".into());
+            }
+            let path = root.join(directory).join(name);
+            if path.exists() {
+                let resolved = path.canonicalize().map_err(|e| e.to_string())?;
+                let parent = root
+                    .join(directory)
+                    .canonicalize()
+                    .map_err(|e| e.to_string())?;
+                let owned_root = root.canonicalize().map_err(|e| e.to_string())?;
+                if !parent.starts_with(&owned_root) || resolved.parent() != Some(parent.as_path()) {
+                    return Err("Media cleanup path escaped its output directory".into());
+                }
+                if let Some(expected) = cleanup["sha256"].as_str() {
+                    use sha2::{Digest, Sha256};
+                    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+                    if hex::encode(Sha256::digest(&bytes)) != expected {
+                        return Err("Completed media copy changed; cleanup refused".into());
+                    }
+                }
+            }
+            files.push(path);
+        }
+    }
+    for path in files {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
 }
 
 fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Result<(), String> {
@@ -137,7 +201,9 @@ fn execute_with(
 ) -> Result<(), String> {
     let (video, seconds, name) = execution_profile(job)?;
     let i2v = job["quote"]["operation"] == "image_to_video";
-    let operation = if i2v { crate::contribution_contract::Operation::ImageToVideo } else if video {
+    let operation = if i2v {
+        crate::contribution_contract::Operation::ImageToVideo
+    } else if video {
         crate::contribution_contract::Operation::TextToVideo
     } else {
         crate::contribution_contract::Operation::TextToImage
@@ -145,22 +211,48 @@ fn execute_with(
     if !cfg.contribution.operations.contains(&operation) {
         return Err("Claimed media workload is not selected by this contributor".into());
     }
-    let mut generation_args = vec!["--seconds".into(), seconds.to_string(), "--prompt".into(),
-        job["prompt"].as_str().ok_or("Missing prompt")?.into(), "--seed".into(), job["seed"].as_u64().unwrap_or(42).to_string()];
-    let reference_path = home.join("media").join(format!("reference-{}.png", uuid::Uuid::new_v4()));
+    let mut generation_args = vec![
+        "--seconds".into(),
+        seconds.to_string(),
+        "--prompt".into(),
+        job["prompt"].as_str().ok_or("Missing prompt")?.into(),
+        "--seed".into(),
+        job["seed"].as_u64().unwrap_or(42).to_string(),
+    ];
+    let reference_path = home
+        .join("media")
+        .join(format!("reference-{}.png", uuid::Uuid::new_v4()));
     if i2v {
         use base64::Engine;
         use sha2::{Digest, Sha256};
-        let reference = call("input", json!({"job_id":job["job_id"], "lease_token":job["lease_token"]}))?;
-        let encoded = reference["data"].as_str().ok_or("Missing reference image")?;
-        if encoded.len() > 45 * 1024 * 1024 { return Err("Reference image too large".into()); }
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| "Invalid reference image")?;
-        if hex::encode(Sha256::digest(&bytes)) != reference["sha256"].as_str().unwrap_or("") { return Err("Reference image checksum mismatch".into()); }
+        let reference = call(
+            "input",
+            json!({"job_id":job["job_id"], "lease_token":job["lease_token"]}),
+        )?;
+        let encoded = reference["data"]
+            .as_str()
+            .ok_or("Missing reference image")?;
+        if encoded.len() > 45 * 1024 * 1024 {
+            return Err("Reference image too large".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| "Invalid reference image")?;
+        if hex::encode(Sha256::digest(&bytes)) != reference["sha256"].as_str().unwrap_or("") {
+            return Err("Reference image checksum mismatch".into());
+        }
         fs::write(&reference_path, bytes).map_err(|e| e.to_string())?;
-        generation_args.extend(["--image-to-video".into(), "--fast".into(), "--input-image".into(), reference_path.to_string_lossy().into_owned()]);
+        generation_args.extend([
+            "--image-to-video".into(),
+            "--fast".into(),
+            "--input-image".into(),
+            reference_path.to_string_lossy().into_owned(),
+        ]);
     }
     let generated = run("generate", video, &generation_args);
-    if i2v { let _ = fs::remove_file(&reference_path); }
+    if i2v {
+        let _ = fs::remove_file(&reference_path);
+    }
     generated?;
     let result: Value = serde_json::from_slice(
         &fs::read(home.join("media").join(name)).map_err(|e| e.to_string())?,
@@ -195,11 +287,23 @@ fn execute_with(
     upload?;
     let mut complete = lease;
     complete["generation_ms"] = result["duration_ms"].clone();
+    let artifact = std::path::Path::new(result["artifact"].as_str().ok_or("Missing artifact")?);
+    if artifact.parent() != Some(home.join("media/artifacts").as_path()) {
+        return Err("Generated artifact is outside the worker output directory".into());
+    }
+    complete["_local_cleanup"] =
+        json!({"artifact_name": artifact.file_name().and_then(|name| name.to_str()), "sha256": result["sha256"]});
+    if cfg.contribution.comfyui_url.is_none() {
+        complete["_local_cleanup"]["comfy_output_filename"] = result["source_filename"].clone();
+    }
     let pending = home.join("media/pending-completion.json");
     private_json(&pending, &complete)?;
     for attempt in 0..4 {
-        match call("complete", complete.clone()) {
+        let mut body = complete.clone();
+        body.as_object_mut().unwrap().remove("_local_cleanup");
+        match call("complete", body) {
             Ok(_) => {
+                cleanup_completed_media(&home, &complete["_local_cleanup"])?;
                 let _ = fs::remove_file(&pending);
                 println!("Media job completed and credits settled");
                 return Ok(());
@@ -246,10 +350,23 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         {
             return Ok(());
         }
-        let profiles: Vec<_> = media_runtime::verified_profiles(&home, cfg.contribution.comfyui_url.as_deref(), cfg.contribution_percent).into_iter().filter(|profile| {
-            let op = if profile.starts_with("qwen-") { crate::contribution_contract::Operation::TextToImage } else if profile.starts_with("wan22-i2v-") { crate::contribution_contract::Operation::ImageToVideo } else { crate::contribution_contract::Operation::TextToVideo };
+        let profiles: Vec<_> = media_runtime::verified_profiles(
+            &home,
+            cfg.contribution.comfyui_url.as_deref(),
+            cfg.contribution_percent,
+        )
+        .into_iter()
+        .filter(|profile| {
+            let op = if profile.starts_with("qwen-") {
+                crate::contribution_contract::Operation::TextToImage
+            } else if profile.starts_with("wan22-i2v-") {
+                crate::contribution_contract::Operation::ImageToVideo
+            } else {
+                crate::contribution_contract::Operation::TextToVideo
+            };
             cfg.contribution.operations.contains(&op)
-        }).collect();
+        })
+        .collect();
         if profiles.is_empty() {
             return Err(
                 "Select image/video workloads and verify at least one profile before serving media"
@@ -261,7 +378,13 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             let body: Value =
                 serde_json::from_slice(&fs::read(&pending).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
-            request(&server, &id, &cfg.device_id, "complete", body)?;
+            let mut completion = body.clone();
+            completion
+                .as_object_mut()
+                .ok_or("Invalid pending completion")?
+                .remove("_local_cleanup");
+            request(&server, &id, &cfg.device_id, "complete", completion)?;
+            cleanup_completed_media(&home, &body["_local_cleanup"])?;
             fs::remove_file(&pending).map_err(|e| e.to_string())?;
         }
         let claim = match request(
@@ -345,6 +468,66 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     #[test]
+    fn video_copies_are_kept_until_completion_acknowledgement() {
+        use sha2::{Digest, Sha256};
+        let home = std::env::temp_dir().join(format!("video-cleanup-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(home.join("media/artifacts")).unwrap();
+        fs::create_dir_all(home.join("media/outputs/opengpu")).unwrap();
+        let artifact = home.join("media/artifacts/test.mp4");
+        let source = home.join("media/outputs/opengpu/test.mp4");
+        let mut cfg = Config::default();
+        cfg.contribution.operations = vec![crate::contribution_contract::Operation::TextToVideo];
+        let profile: Value = serde_json::from_str(media_runtime::VIDEO_PROFILE).unwrap();
+        let job = json!({"job_id":"test", "lease_token":"lease", "profile_id":profile["id"],
+            "quote":{"operation":"text_to_video", "frames":profile["frames"], "fps":profile["fps"]}, "prompt":"mountains"});
+        execute_with(&cfg, &job, &home, "https://chat.example", |action, _, _| {
+            if action == "generate" {
+                fs::write(&artifact, b"video").unwrap();
+                fs::write(&source, b"video").unwrap();
+                private_json(&home.join("media/verified-video.json"), &json!({
+                    "artifact":artifact, "source_filename":"test.mp4", "sha256":hex::encode(Sha256::digest(b"video")), "bytes":5, "duration_ms":100}))?;
+            }
+            Ok(())
+        }, |action, body| {
+            assert!(artifact.exists() && source.exists());
+            assert!(body.get("_local_cleanup").is_none());
+            Ok(if action == "reserve" { json!({"upload_ticket":{}}) } else { json!({"status":"completed"}) })
+        }).unwrap();
+        assert!(!artifact.exists() && !source.exists());
+        assert!(!home.join("media/pending-completion.json").exists());
+        fs::remove_file(home.join("media/verified-video.json")).unwrap();
+        for directory in ["media/artifacts", "media/outputs/opengpu", "media/outputs", "media", ""] {
+            fs::remove_dir(home.join(directory)).unwrap();
+        }
+    }
+    #[test]
+    fn completed_media_cleanup_is_scoped_and_restart_safe() {
+        let home = std::env::temp_dir().join(format!("media-cleanup-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(home.join("media/artifacts")).unwrap();
+        fs::create_dir_all(home.join("media/outputs/opengpu")).unwrap();
+        let artifact = home.join("media/artifacts/generated.png");
+        let source = home.join("media/outputs/opengpu/generated.png");
+        let unrelated = home.join("media/artifacts/keep.png");
+        for path in [&artifact, &source, &unrelated] {
+            fs::write(path, b"image").unwrap();
+        }
+        assert!(cleanup_completed_media(&home, &json!({"artifact_name":"../keep.png"})).is_err());
+        assert!(artifact.exists());
+        let cleanup =
+            json!({"artifact_name":"generated.png", "comfy_output_filename":"generated.png"});
+        cleanup_completed_media(&home, &cleanup).unwrap();
+        cleanup_completed_media(&home, &cleanup).unwrap();
+        assert!(!artifact.exists());
+        assert!(!source.exists());
+        assert!(unrelated.exists());
+        fs::remove_file(unrelated).unwrap();
+        fs::remove_dir(home.join("media/artifacts")).unwrap();
+        fs::remove_dir(home.join("media/outputs/opengpu")).unwrap();
+        fs::remove_dir(home.join("media/outputs")).unwrap();
+        fs::remove_dir(home.join("media")).unwrap();
+        fs::remove_dir(home).unwrap();
+    }
+    #[test]
     fn unselected_image_job_never_generates_or_uploads() {
         let cfg = Config::default();
         let profile: Value = serde_json::from_str(media_runtime::PROFILE).unwrap();
@@ -386,7 +569,7 @@ mod tests {
                         private_json(
                             &home.join("media/verified.json"),
                             &json!({
-                            "artifact":home.join("image.png"),"sha256":"digest","bytes":123,"duration_ms":456,
+                            "artifact":home.join("media/artifacts/image.png"),"sha256":"digest","bytes":123,"duration_ms":456,
                             "source_filename":"0123456789abcdef0123456789abcdef_00001_.png"}),
                         )?;
                     } else {
@@ -450,9 +633,7 @@ mod tests {
         let profiles = bundled_video_profiles().unwrap();
         assert_eq!(profiles.len(), 10);
         for seconds in 1..=10_u64 {
-            let id = bundled_video_profiles().unwrap()
-                [(seconds - 1) as usize]
-            .clone();
+            let id = bundled_video_profiles().unwrap()[(seconds - 1) as usize].clone();
             assert!(profiles.contains(&id));
             let mut job = json!({"profile_id":id,"quote":{"operation":"text_to_video","fps":16,"frames":seconds*16+1}});
             let result = execution_profile(&job).unwrap();
@@ -480,22 +661,35 @@ mod tests {
         cfg.contribution.operations = vec![crate::contribution_contract::Operation::ImageToVideo];
         let job = json!({"job_id":"test", "lease_token":"lease", "profile_id":"wan22-i2v-lightning-14b-480p-161f-v3",
             "quote":{"operation":"image_to_video", "frames":161, "fps":16}, "prompt":"move"});
-        assert_eq!(execution_profile(&job).unwrap(), (true, 10, "verified-i2v-fast-161f.json".into()));
+        assert_eq!(
+            execution_profile(&job).unwrap(),
+            (true, 10, "verified-i2v-fast-161f.json".into())
+        );
         let bytes = b"reference fixture";
-        let result = execute_with(&cfg, &job, &home, "https://chat.example", |action, video, args| {
-            assert_eq!(action, "generate"); assert!(video);
-            assert!(args.iter().any(|arg| arg == "--fast"));
-            assert!(args.iter().any(|arg| arg == "--image-to-video"));
-            let path = &args[args.iter().position(|arg| arg == "--input-image").unwrap() + 1];
-            assert_eq!(fs::read(path).unwrap(), bytes);
-            Err("simulated generation failure".into())
-        }, |action, body| {
-            assert_eq!(action, "input"); assert_eq!(body["lease_token"], "lease");
-            Ok(json!({"data":base64::engine::general_purpose::STANDARD.encode(bytes), "sha256":hex::encode(Sha256::digest(bytes))}))
-        });
+        let result = execute_with(
+            &cfg,
+            &job,
+            &home,
+            "https://chat.example",
+            |action, video, args| {
+                assert_eq!(action, "generate");
+                assert!(video);
+                assert!(args.iter().any(|arg| arg == "--fast"));
+                assert!(args.iter().any(|arg| arg == "--image-to-video"));
+                let path = &args[args.iter().position(|arg| arg == "--input-image").unwrap() + 1];
+                assert_eq!(fs::read(path).unwrap(), bytes);
+                Err("simulated generation failure".into())
+            },
+            |action, body| {
+                assert_eq!(action, "input");
+                assert_eq!(body["lease_token"], "lease");
+                Ok(
+                    json!({"data":base64::engine::general_purpose::STANDARD.encode(bytes), "sha256":hex::encode(Sha256::digest(bytes))}),
+                )
+            },
+        );
         assert!(result.is_err());
         assert_eq!(fs::read_dir(home.join("media")).unwrap().count(), 0);
         fs::remove_dir_all(home).unwrap();
     }
-
 }
