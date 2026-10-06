@@ -221,3 +221,17 @@ Neither Windows GPU nor Apple Silicon generation has been validated in this
 change; these paths are provisional until real generation verification succeeds.
 Official references: https://docs.comfy.org/installation/manual_install and
 https://pytorch.org/get-started/previous-versions/ .
+
+## Fast video and quality requests
+
+Chat defaults to four-step Lightning LoRA at 832x480. Requests for HD, best definition or higher quality select the standard 20-step profile at the same resolution. T2V and I2V use their own matching adapters. Existing jobs are not rewritten.
+
+After updating the media contributor, prepare and verify the fast text-to-video profile for the duration you use:
+
+```sh
+opengpu media --video --fast setup --yes
+opengpu media --video --fast --seconds 3 verify
+opengpu media --video --fast --seconds 5 verify
+```
+
+Only verified durations are advertised. Standard T2V remains available through `opengpu media --video verify`; standard 480p I2V uses `opengpu media --image-to-video verify --input-image /path/to/reference.png`. Fast T2V throughput has not been hardware-benchmarked in this release; its pricing is marked provisional pending measurement.

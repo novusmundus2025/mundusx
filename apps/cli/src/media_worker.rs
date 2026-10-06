@@ -75,12 +75,17 @@ fn private_json(path: &std::path::Path, value: &Value) -> Result<(), String> {
 fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
     let i2v = job["quote"]["operation"] == "image_to_video";
     let video = i2v || job["quote"]["operation"] == "text_to_video";
+    let fast = job["profile_id"].as_str().is_some_and(|id| id.contains("-lightning-"));
     let (seconds, name) = if video {
         let frames = job["quote"]["frames"]
             .as_u64()
             .ok_or("Missing video frames")?;
-        let profile: Value = serde_json::from_str(if i2v {
+        let profile: Value = serde_json::from_str(if i2v && fast {
             media_runtime::I2V_FAST_PROFILE
+        } else if i2v {
+            media_runtime::I2V_PROFILE
+        } else if fast {
+            media_runtime::VIDEO_FAST_PROFILE
         } else {
             media_runtime::VIDEO_PROFILE
         })
@@ -99,7 +104,7 @@ fn execution_profile(job: &Value) -> Result<(bool, u64, String), String> {
         {
             return Err("Job model does not match the installed video workflow".into());
         }
-        let suffix = if i2v { "-i2v-fast" } else { "-video" };
+        let suffix = match (i2v, fast) { (true,true) => "-i2v-fast", (true,false) => "-i2v", (false,true) => "-video-fast", _ => "-video" };
         let name = if frames == base_frames {
             format!("verified{suffix}.json")
         } else {
@@ -201,6 +206,7 @@ fn execute_with(
 ) -> Result<(), String> {
     let (video, seconds, name) = execution_profile(job)?;
     let i2v = job["quote"]["operation"] == "image_to_video";
+    let fast = job["profile_id"].as_str().is_some_and(|id| id.contains("-lightning-"));
     let operation = if i2v {
         crate::contribution_contract::Operation::ImageToVideo
     } else if video {
@@ -244,11 +250,11 @@ fn execute_with(
         fs::write(&reference_path, bytes).map_err(|e| e.to_string())?;
         generation_args.extend([
             "--image-to-video".into(),
-            "--fast".into(),
             "--input-image".into(),
             reference_path.to_string_lossy().into_owned(),
         ]);
     }
+    if fast { generation_args.push("--fast".into()); }
     let generated = run("generate", video, &generation_args);
     if i2v {
         let _ = fs::remove_file(&reference_path);
@@ -467,6 +473,18 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fast_text_video_and_quality_reference_use_separate_profiles() {
+        for (source, suffix) in [(media_runtime::VIDEO_FAST_PROFILE,"video-fast"),(media_runtime::I2V_PROFILE,"i2v")] {
+            let p: Value=serde_json::from_str(source).unwrap();
+            let job=json!({"profile_id":p["id"],"quote":{"operation":p["operation"],"frames":p["frames"],"fps":p["fps"]}});
+            assert_eq!(execution_profile(&job).unwrap(),(true,2,format!("verified-{suffix}.json")));
+            assert_eq!(p["width"],832);assert_eq!(p["height"],480);
+        }
+        let fast: Value=serde_json::from_str(media_runtime::VIDEO_FAST_PROFILE).unwrap();
+        assert_eq!(fast["steps"],4);assert_eq!(fast["switch_step"],2);
+        assert!(fast["files"][4]["source_path"].as_str().unwrap().contains("T2V"));
+    }
     #[test]
     fn video_copies_are_kept_until_completion_acknowledgement() {
         use sha2::{Digest, Sha256};
