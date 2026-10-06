@@ -4187,14 +4187,14 @@ fn detect_backend() -> Backend {
         return Backend::Cuda;
     }
 
-    if env::consts::OS == "windows" {
+    if matches!(env::consts::OS, "windows" | "linux") {
         let llama_cli = env::var_os("OPENGPU_LLAMA_CLI")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 config::config_dir()
                     .join("runtimes")
                     .join("llama")
-                    .join("llama-cli.exe")
+                    .join(if cfg!(windows) { "llama-cli.exe" } else { "llama-cli" })
             });
         if Command::new(llama_cli)
             .arg("--list-devices")
@@ -4252,6 +4252,7 @@ fn install_profile_for(os: &str, arch: &str, backend: Backend) -> &'static str {
         ("macos", "aarch64", Backend::M) => "macos-aarch64-apple-silicon",
         ("windows", "x86_64", Backend::Cuda) => "windows-x86_64-cuda",
         ("windows", "x86_64", Backend::Vulkan) => "windows-x86_64-vulkan",
+        ("linux", "x86_64", Backend::Vulkan) => "linux-x86_64-vulkan",
         ("linux", "x86_64", Backend::Cuda) => "linux-x86_64-cuda",
         ("linux", "aarch64", Backend::Cuda) => "linux-aarch64-cuda",
         ("linux", "x86_64", Backend::Vllm) => "linux-x86_64-vllm",
@@ -9717,6 +9718,10 @@ mod tests {
 
     #[test]
     fn install_profile_routes_machine_families() {
+        assert_eq!(
+            super::install_profile_for("linux", "x86_64", Backend::Vulkan),
+            "linux-x86_64-vulkan"
+        );
         assert_eq!(
             super::install_profile_for("macos", "aarch64", Backend::M),
             "macos-aarch64-apple-silicon"

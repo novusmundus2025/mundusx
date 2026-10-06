@@ -150,3 +150,5 @@ See [docs/cli-startup-flow.md](/Users/DBATALL/Documents/mundusx/docs/cli-startup
 - [docs/retrieval-policy.md](/Users/DBATALL/Documents/mundusx/docs/retrieval-policy.md) for when to answer from the model, when to retrieve local context, and when to use live tools
 - [docs/node-agent.md](/Users/DBATALL/Documents/mundusx/docs/node-agent.md) for the current node agent prototype and local state files
 - [docs/worker.md](/Users/DBATALL/Documents/mundusx/docs/worker.md) for the current worker prototype and launch contract
+
+AMD contributors: [Strix Halo on Windows and Linux](docs/install-strix-halo.md).
