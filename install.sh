@@ -45,6 +45,7 @@ OPENGPU_HOME="${OPENGPU_HOME:-$HOME/.opengpu}"
 VLLM_IMAGE="${OPENGPU_VLLM_IMAGE:-nvcr.io/nvidia/vllm@sha256:63b808804826a028e38f559747a9e4d5985cf676616fbaa70c1937c58f83e13e}"
 VLLM_IMAGE_TAG="${OPENGPU_VLLM_IMAGE_TAG:-26.06-py3}"
 with_vllm=0
+with_vulkan=0
 runtime_only=0
 without_vllm=0
 install_only=1
@@ -179,6 +180,8 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [--with-vllm] [--without-vllm] [--auto-start] [--install-only] [--cap-percent N] [--max-jobs N] [--runtime-only] [--local-assets DIR] [--help]
 
+  --with-vulkan Install the bundled llama.cpp Vulkan runtime on Linux x86_64.
+
   --with-vllm    Install the pinned NVIDIA vLLM container runtime after the CLI.
   --connection MODE  managed, direct, or pair (PAIR validates only; no contribution).
   --cluster-url URL  External endpoint; /v1 suffix is accepted.
@@ -220,6 +223,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --with-vllm)
       with_vllm=1
+      ;;
+    --with-vulkan)
+      with_vulkan=1
       ;;
     --without-vllm)
       without_vllm=1
@@ -640,6 +646,19 @@ fi
 
 if [ "$with_vllm" -eq 1 ]; then
   install_vllm_runtime
+fi
+
+if [ "$with_vulkan" -eq 1 ]; then
+  [ "$target" = "x86_64-unknown-linux-gnu" ] || { echo "Vulkan bundle requires Linux x86_64" >&2; exit 2; }
+  vulkan_asset="llama-runtime-${target}-vulkan.tar.gz"
+  vulkan_source="${RELEASE_BASE_URL}/${vulkan_asset}"
+  [ -z "$local_assets" ] || vulkan_source="${local_assets}/${vulkan_asset}"
+  download_to "$vulkan_source" "$tmp_dir/$vulkan_asset" "Vulkan runtime"
+  download_to "$vulkan_source.sha256" "$tmp_dir/$vulkan_asset.sha256" "Vulkan runtime checksum"
+  verify_checksum "$tmp_dir/$vulkan_asset.sha256"
+  mkdir -p "$OPENGPU_HOME/runtimes/llama"
+  tar -xzf "$tmp_dir/$vulkan_asset" -C "$OPENGPU_HOME/runtimes/llama"
+  echo "Installed Vulkan runtime. Install your distribution's Vulkan loader and Radeon graphics driver."
 fi
 
 if [ "$runtime_only" -eq 0 ] && [ "$install_only" -eq 0 ]; then
