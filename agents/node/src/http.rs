@@ -282,14 +282,6 @@ pub fn request_agent_with_timeouts(connect: Duration, io: Duration) -> ureq::Age
         .build()
 }
 
-pub fn request_agent_with_timeouts(connect: Duration, io: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(connect)
-        .timeout_read(io)
-        .timeout_write(io)
-        .build()
-}
-
 fn control_plane_error(error: ureq::Error) -> String {
     match error {
         ureq::Error::Status(code, response) => {
