@@ -658,6 +658,19 @@ if [ "$with_vulkan" -eq 1 ]; then
   verify_checksum "$tmp_dir/$vulkan_asset.sha256"
   mkdir -p "$OPENGPU_HOME/runtimes/llama"
   tar -xzf "$tmp_dir/$vulkan_asset" -C "$OPENGPU_HOME/runtimes/llama"
+  python3 - "$OPENGPU_HOME" <<'PY'
+import hashlib, json, os, pathlib, sys
+home = pathlib.Path(sys.argv[1]).resolve()
+record = home / 'trusted-runtime-paths.json'
+data = json.loads(record.read_text()) if record.exists() else {}
+for name, key in [('llama-cli', 'llama_cli'), ('llama-server', 'llama_server')]:
+    executable = home / 'runtimes' / 'llama' / name
+    data[key] = {'path': str(executable), 'sha256': hashlib.sha256(executable.read_bytes()).hexdigest()}
+temporary = record.with_suffix('.json.new')
+temporary.write_text(json.dumps(data, indent=2) + '\n')
+os.chmod(temporary, 0o600)
+temporary.replace(record)
+PY
   echo "Installed Vulkan runtime. Install your distribution's Vulkan loader and Radeon graphics driver."
 fi
 
