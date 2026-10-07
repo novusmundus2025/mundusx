@@ -2468,14 +2468,29 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
                 drop(persistent_runtime.take());
                 clear_runtime_environment();
             }
-            let heartbeat = build_heartbeat_with_state(&latest_config, AgentState::Paused);
-            let _ = save_agent_state(&heartbeat);
-            send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+            let state = if media_release_confirmed && media_drain::active(&storage::config_dir()) {
+                AgentState::Busy
+            } else {
+                AgentState::Paused
+            };
+            if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
+                let mut heartbeat = build_heartbeat_with_state(&latest_config, state);
+                if state == AgentState::Busy {
+                    heartbeat.worker_health.runtime_mode = "media".into();
+                    heartbeat.worker_health.parallel_slots = 1;
+                    heartbeat.worker_health.capabilities.max_parallel_jobs = 1;
+                }
+                let _ = save_agent_state(&heartbeat);
+                let _ = save_heartbeat(&heartbeat);
+                send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+                last_heartbeat_sent = Instant::now();
+            }
             if media_release_confirmed {
                 if let Err(error) = media_drain::acknowledge(&storage::config_dir(), &request_id) {
                     eprintln!("mediaDrain: {error}");
                 }
             }
+            thread::sleep(Duration::from_millis(250));
             continue;
         }
         if media_drained && persistent_runtime.is_none() && should_keep_runtime_warm(&latest_config) {

@@ -1,6 +1,17 @@
 //! Local GPU handoff: the helper holds media.lock while the agent drains LLM work.
 use std::{fs, path::Path};
 
+/// A live helper owns the shared GPU slot; a leftover container alone is recovery.
+pub fn active(home: &Path) -> bool {
+    let media = home.join("media");
+    let Ok(bytes) = fs::read(media.join("drain-request.json")) else { return false; };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false; };
+    let Some(id) = value["id"].as_str() else { return false; };
+    if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) { return false; }
+    let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(media.join("media.lock")) else { return false; };
+    matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+}
+
 pub fn request(home: &Path) -> Option<String> {
     let media = home.join("media");
     // A crashed helper may leave its container using the GPU. Fail closed until
@@ -36,11 +47,14 @@ mod tests {
         let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(home.join("media/media.lock")).unwrap();
         assert!(request(&home).is_none());
         lock.lock().unwrap();
+        assert!(active(&home));
         assert_eq!(request(&home).as_deref(), Some(id));
         acknowledge(&home, id).unwrap();
         drop(lock);
+        assert!(!active(&home));
         assert!(request(&home).is_none());
         fs::write(home.join("media/active-container.json"), "{}").unwrap();
+        assert!(!active(&home));
         assert_eq!(request(&home).as_deref(), Some("container-recovery-required"));
         fs::remove_file(home.join("media/active-container.json")).unwrap();
         // All paths were created beneath this unique test directory.
