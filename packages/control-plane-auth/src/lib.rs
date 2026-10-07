@@ -254,6 +254,25 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn media_without_gateway_login_keeps_only_node_authentication() {
+        let previous = std::env::var_os("OPENGPU_HOME");
+        let absent = std::env::temp_dir().join(format!("media-no-login-{}", std::process::id()));
+        assert!(!absent.exists());
+        std::env::set_var("OPENGPU_HOME", &absent);
+        let target = "https://open-plane.example/api/media/artifacts/test/content";
+        let upload = super::media_upload_gateway_auth(target);
+        let request = super::apply(ureq::post("https://open-plane.example/api/media/worker/claim")
+            .set("X-MundusX-Signature", "signed-payload"));
+        if let Some(value) = previous { std::env::set_var("OPENGPU_HOME", value); }
+        else { std::env::remove_var("OPENGPU_HOME"); }
+        assert!(upload.unwrap().is_none());
+        let request = request.unwrap();
+        assert_eq!(request.header("X-MundusX-Signature"), Some("signed-payload"));
+        assert!(request.header("Coder-Session-Token").is_none());
+        assert!(request.header("Authorization").is_none());
+    }
+
+    #[test]
     fn media_upload_credentials_are_exactly_scoped_and_do_not_replace_ticket_bearer() {
         let c = credential("https://private.example", TokenHeader::CoderSessionToken);
         let target = "https://private.example/api/media/artifacts/test/content";

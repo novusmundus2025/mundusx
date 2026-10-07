@@ -126,6 +126,7 @@ For an existing media-only contributor, finish any active job before switching:
 ```bash
 opengpu disconnect
 opengpu config control-plane-url "https://YOUR-PRIVATE-PLANE"
+# Only when this private gateway requires a session token:
 opengpu login --token-header coder-session-token
 export MUNDUSX_MEDIA_SERVER_URL="https://YOUR-PRIVATE-PLANE"
 opengpu start --no-contribute-cluster --max-jobs 1
@@ -142,3 +143,7 @@ not forwarded to a different media origin. This upload integration supports
 Coder session gateway authentication; a gateway bearer credential conflicts
 with the artifact's bearer ticket and is rejected explicitly. Public media
 uploads without a matching gateway credential keep their existing behavior.
+
+Gateway authentication is optional: omit `opengpu login` for an open gateway.
+Without a matching saved credential, no gateway header is added. Signed node
+requests and scoped artifact upload tickets remain required in both modes.

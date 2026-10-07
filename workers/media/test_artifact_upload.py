@@ -41,6 +41,17 @@ class UploadTests(unittest.TestCase):
         self.assertTrue(result['local_image_deleted']); self.assertFalse(result['local_image_preserved'])
         self.assertNotIn('upload_token',result)
 
+    def test_open_plane_upload_needs_no_gateway_token(self):
+        self.save()
+        class Opener:
+            def open(inner, request, timeout):
+                self.assertIsNone(request.get_header('Coder-session-token'))
+                self.assertEqual(request.headers['Authorization'],'Bearer '+'a'*64)
+                return io.BytesIO(json.dumps(self.receipt).encode())
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(upload.urllib.request,'build_opener',return_value=Opener()):
+            self.assertEqual(upload.upload_file(self.file,self.ticket_file,'https://images.example')['status'],'ready')
+
     def test_private_gateway_header_preserves_artifact_bearer(self):
         self.save()
         auth = json.dumps({'url':'https://images.example'+self.ticket['upload_path'],
