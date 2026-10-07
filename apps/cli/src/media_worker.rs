@@ -475,6 +475,23 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     #[test]
+    fn lightning_queue_jobs_support_every_integer_duration() {
+        for source in [media_runtime::VIDEO_FAST_PROFILE, media_runtime::I2V_FAST_PROFILE] {
+            let profile: Value = serde_json::from_str(source).unwrap();
+            let base_frames = profile["frames"].as_u64().unwrap();
+            for seconds in 1..=10_u64 {
+                let frames = seconds * 16 + 1;
+                let id = profile["id"].as_str().unwrap().replace(&format!("-{base_frames}f-"), &format!("-{frames}f-"));
+                let job = json!({"profile_id":id,"quote":{"operation":profile["operation"],"fps":16,"frames":frames}});
+                let (video, duration, certificate) = execution_profile(&job).unwrap();
+                assert!(video);
+                assert_eq!(duration, seconds);
+                assert!(certificate.contains("fast"));
+            }
+        }
+    }
+
+    #[test]
     fn fast_text_video_and_quality_reference_use_separate_profiles() {
         for (source, suffix) in [(media_runtime::VIDEO_FAST_PROFILE,"video-fast"),(media_runtime::I2V_PROFILE,"i2v")] {
             let p: Value=serde_json::from_str(source).unwrap();

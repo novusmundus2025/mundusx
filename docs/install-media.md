@@ -73,8 +73,12 @@ opengpu media generate --prompt "A red ceramic teapot on a wooden table"
 opengpu media --video --seconds 2 generate --prompt "A red ceramic teapot slowly rotates"
 ```
 
-Release 0.2.20 supports every integer from **1 through 10 seconds** with the
-832×480, 16 FPS profile. Local generation reports its output
+Release 0.2.39 selects four-step Lightning by default for both `--video` and
+`--image-to-video`, including setup, verification and generation. `--fast` remains
+accepted explicitly; use `--quality` to select the regular video profile.
+Every integer from **1 through 10 seconds** is supported at 832×480 and 16 FPS;
+zero, fractional seconds and durations above 10 are rejected.
+Local generation reports its output
 artifact path. It does not automatically create a public user download URL.
 
 ## 5. Start network contribution

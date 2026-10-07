@@ -61,6 +61,12 @@ jobs:
           cargo test -p opengpu-node-agent --bin opengpu-node-agent parses_vllm_startup_progress --target ${{ env.TARGET }}
           cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
 
+      - name: Test default fast video and all durations
+        run: |
+          cargo test -p opengpu --bin opengpu video_defaults_to_fast_for_every_supported_duration --target "${TARGET}"
+          cargo test -p opengpu --bin opengpu lightning_queue_jobs_support_every_integer_duration --target "${TARGET}"
+          python3 -m unittest workers.media.test_runtime.ProgressStageTests.test_lightning_durations_cover_one_through_ten_seconds
+
       - name: Test private media gateway authentication
         run: |
           cargo test -p mundusx-control-plane-auth --target "${TARGET}"

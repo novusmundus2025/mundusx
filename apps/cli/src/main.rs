@@ -176,9 +176,12 @@ enum Commands {
         /// Select Wan image-to-video with PNG input
         #[arg(long, global = true, conflicts_with = "video", group = "media_video_profile")]
         image_to_video: bool,
-        /// Four-step Lightning video at 832x480
+        /// Four-step Lightning video at 832x480 (default for video)
         #[arg(long, global = true, requires = "media_video_profile")]
         fast: bool,
+        /// Use the regular video profile instead of Lightning
+        #[arg(long, global = true, requires = "media_video_profile", conflicts_with = "fast")]
+        quality: bool,
         /// Video duration: any integer from 1 to 10 seconds
         #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=10))]
         seconds: u8,
@@ -540,6 +543,10 @@ fn display_public_key_fingerprint(config: &Config) -> String {
         .unwrap_or_else(|| "unset".to_string())
 }
 
+fn fast_video_selected(video: bool, image_to_video: bool, fast: bool, quality: bool) -> bool {
+    fast || ((video || image_to_video) && !quality)
+}
+
 #[cfg(test)]
 mod contributed_backend_tests {
     use super::*;
@@ -549,6 +556,28 @@ mod contributed_backend_tests {
         assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--fast", "plan"]).is_ok());
         let cli = Cli::try_parse_from(["opengpu", "media", "--image-to-video", "--fast", "plan"]).unwrap();
         assert!(matches!(cli.command, Commands::Media { image_to_video: true, fast: true, .. }));
+    }
+
+    #[test]
+    fn video_defaults_to_fast_for_every_supported_duration() {
+        for mode in ["--video", "--image-to-video"] {
+            for seconds in 1..=10 {
+                let duration = seconds.to_string();
+                for quality_requested in [false, true] {
+                    let mut args = vec!["opengpu", "media", mode, "--seconds", &duration, "plan"];
+                    if quality_requested { args.insert(args.len() - 1, "--quality"); }
+                    let Commands::Media { video, image_to_video, fast, quality, seconds: parsed, .. } = Cli::try_parse_from(args).unwrap().command else { panic!("media command"); };
+                    assert_eq!(parsed, seconds);
+                    assert_eq!(fast_video_selected(video, image_to_video, fast, quality), !quality_requested);
+                }
+            }
+            for seconds in ["0", "11", "1.5"] {
+                assert!(Cli::try_parse_from(["opengpu", "media", mode, "--seconds", seconds, "plan"]).is_err());
+            }
+            assert!(Cli::try_parse_from(["opengpu", "media", mode, "--fast", "--quality", "plan"]).is_err());
+        }
+        assert!(!fast_video_selected(false, false, false, false));
+        assert!(Cli::try_parse_from(["opengpu", "media", "--quality", "plan"]).is_err());
     }
 
     #[test]
@@ -7019,7 +7048,7 @@ fn main() {
             setup_media,
             yes,
         ),
-        Commands::Media { command, video, image_to_video, fast, seconds } => {
+        Commands::Media { command, video, image_to_video, fast, quality, seconds } => {
             if !(1..=10).contains(&seconds) { eprintln!("Video seconds must be an integer from 1 to 10"); std::process::exit(2); }
             if let MediaCommands::Serve { server, once } = command {
                 if let Err(error) = media_worker::serve(server, once) { eprintln!("{error}"); std::process::exit(1); }
@@ -7045,7 +7074,7 @@ fn main() {
                 },
             };
             if image_to_video { extra.push("--image-to-video".into()); }
-            if fast { extra.push("--fast".into()); }
+            if fast_video_selected(video, image_to_video, fast, quality) { extra.push("--fast".into()); }
             extra.extend(["--seconds".into(), seconds.to_string()]);
             if let Err(error) = media_runtime::run_profile(&config_dir(), config.contribution_percent, config.contribution.comfyui_url.as_deref(), action, video, &extra) {
                 eprintln!("{error}"); std::process::exit(1);
