@@ -349,6 +349,16 @@ mod tests {
                         stream.read_exact(&mut byte).unwrap();
                         raw.push(byte[0]);
                     }
+                    // Consume the request before closing the socket. Closing
+                    // after headers races POST writes on macOS (EINVAL).
+                    let headers = String::from_utf8(raw.clone()).unwrap();
+                    let content_length = headers.lines().find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok()).flatten()
+                    }).unwrap_or(0);
+                    let mut body = vec![0; content_length];
+                    stream.read_exact(&mut body).unwrap();
                     stream
                         .write_all(
                             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
