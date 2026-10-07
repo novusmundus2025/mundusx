@@ -36,12 +36,13 @@ fn request(
     let signature = identity
         .sign_hex(&format!("POST\n{path}\n{stamp}\n{text}"))
         .map_err(|e| e.to_string())?;
-    let response = url
+    let request = url
         .post(&format!("{}{path}", server.trim_end_matches('/')))
         .set("Content-Type", "application/json")
         .set("X-MundusX-Node-Id", node)
         .set("X-MundusX-Timestamp", &stamp)
-        .set("X-MundusX-Signature", &signature)
+        .set("X-MundusX-Signature", &signature);
+    let response = mundusx_control_plane_auth::apply(request)?
         .send_string(&text)
         .map_err(|e| match e {
             ureq::Error::Status(code, _) => format!("Media server returned HTTP {code}"),

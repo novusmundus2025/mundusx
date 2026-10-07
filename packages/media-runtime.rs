@@ -120,6 +120,23 @@ pub fn run_profile(
         command.env("OPENGPU_MEDIA_HUMAN_PROGRESS", "1");
     }
     command.env("OPENGPU_MEDIA_ACTIVITY", "1");
+    // Strip any caller-supplied credential packet, and inject a saved,
+    // endpoint-scoped token only into the upload helper (never a container).
+    command.env_remove("OPENGPU_MEDIA_GATEWAY_AUTH");
+    if action == "upload" {
+        let option = |name: &str| extra.windows(2).find(|args| args[0] == name).map(|args| args[1].as_str());
+        if let (Some(server), Some(ticket_path)) = (option("--server"), option("--ticket")) {
+            let raw = fs::read(ticket_path).map_err(|_| "Cannot read media upload ticket")?;
+            if raw.len() > 16 * 1024 { return Err("Media upload ticket too large".into()); }
+            let ticket: Value = serde_json::from_slice(&raw).map_err(|_| "Invalid media upload ticket")?;
+            let ticket = ticket.get("upload_ticket").unwrap_or(&ticket);
+            let path = ticket["upload_path"].as_str().ok_or("Missing media upload path")?;
+            let target = format!("{}{path}", server.trim_end_matches('/'));
+            if let Some(auth) = mundusx_control_plane_auth::media_upload_gateway_auth(&target)? {
+                command.env("OPENGPU_MEDIA_GATEWAY_AUTH", auth);
+            }
+        }
+    }
     drop(progress); // The helper owns stage reporting after launch.
     let status = command
         .stdin(Stdio::null())

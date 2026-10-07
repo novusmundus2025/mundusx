@@ -1,6 +1,7 @@
-"""Scoped media upload. No account password, operator token or storage key is sent."""
+"""Scoped media upload, with optional endpoint-scoped private gateway authentication."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import urllib.error
@@ -51,6 +52,17 @@ def upload_file(file, ticket_path, server, managed_copy=None):
         'Authorization': 'Bearer ' + ticket['upload_token'], 'Content-Type': content_type,
         'Content-Length': str(len(data)),
     })
+    gateway = os.environ.get('OPENGPU_MEDIA_GATEWAY_AUTH')
+    if gateway:
+        try:
+            auth = json.loads(gateway)
+        except (ValueError, TypeError):
+            raise ValueError('Invalid private gateway authentication') from None
+        if (not isinstance(auth, dict) or auth.get('url') != request.full_url or
+                auth.get('header') != 'Coder-Session-Token' or not isinstance(auth.get('token'), str) or
+                not auth['token'] or any(not 0x21 <= ord(c) <= 0x7e for c in auth['token'])):
+            raise ValueError('Private gateway authentication does not match this upload')
+        request.add_header('Coder-Session-Token', auth['token'])
     try:
         with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as response:
             result = response.read(16 * 1024 + 1)

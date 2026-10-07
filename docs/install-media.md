@@ -112,3 +112,33 @@ opengpu media stop
 ```
 
 This does not stop an externally managed ComfyUI server.
+
+## Private plane behind a Coder gateway
+
+Media worker requests retain their node signatures and also use the saved,
+endpoint-scoped gateway credential. Artifact uploads preserve their scoped
+bearer ticket and add `Coder-Session-Token` separately. Redirects are disabled;
+credentials are not sent to an unrelated server or included in command-line
+arguments, container environments, upload tickets, or diagnostics.
+
+For an existing media-only contributor, finish any active job before switching:
+
+```bash
+opengpu disconnect
+opengpu config control-plane-url "https://YOUR-PRIVATE-PLANE"
+opengpu login --token-header coder-session-token
+export MUNDUSX_MEDIA_SERVER_URL="https://YOUR-PRIVATE-PLANE"
+opengpu start --no-contribute-cluster --max-jobs 1
+```
+
+The agent starts the media worker automatically when media workloads are saved.
+Do not start a second `media serve` process alongside that managed worker.
+The private deployment must expose `/api/media/worker/*` and artifact upload
+routes and admit the contributor identity. If a worker is being run manually,
+`opengpu media serve --server "https://YOUR-PRIVATE-PLANE"` uses the same login.
+
+The saved login is scoped to its configured control-plane origin/path. It is
+not forwarded to a different media origin. This upload integration supports
+Coder session gateway authentication; a gateway bearer credential conflicts
+with the artifact's bearer ticket and is rejected explicitly. Public media
+uploads without a matching gateway credential keep their existing behavior.

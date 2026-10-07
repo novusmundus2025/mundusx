@@ -162,6 +162,25 @@ pub fn apply(request: ureq::Request) -> Result<ureq::Request, String> {
     })
 }
 
+/// Secret child-process payload for the exact upload URL. Never print it or
+/// pass it on a command line. The scoped artifact bearer token remains intact.
+pub fn media_upload_gateway_auth(target: &str) -> Result<Option<String>, String> {
+    let credential = load_from(&config_dir()).map_err(|_| {
+        "could not read private gateway credential; run opengpu login again".to_string()
+    })?;
+    credential.as_ref().map(|c| c.media_upload_auth(target)).transpose().map(Option::flatten)
+}
+
+impl Credential {
+    fn media_upload_auth(&self, target: &str) -> Result<Option<String>, String> {
+        if !self.matches(target) { return Ok(None); }
+        if self.header != TokenHeader::CoderSessionToken {
+            return Err("Private media upload gateway authentication requires coder-session-token; the artifact ticket already uses bearer authentication".into());
+        }
+        Ok(Some(serde_json::json!({"url":target,"header":"Coder-Session-Token","token":self.token}).to_string()))
+    }
+}
+
 #[cfg(not(windows))]
 fn protect(bytes: &[u8]) -> io::Result<Vec<u8>> {
     Ok(bytes.to_vec())
@@ -233,6 +252,21 @@ mod tests {
     use std::io::Read;
     use std::net::TcpListener;
     use std::time::Duration;
+
+    #[test]
+    fn media_upload_credentials_are_exactly_scoped_and_do_not_replace_ticket_bearer() {
+        let c = credential("https://private.example", TokenHeader::CoderSessionToken);
+        let target = "https://private.example/api/media/artifacts/test/content";
+        let value: serde_json::Value = serde_json::from_str(&c.media_upload_auth(target).unwrap().unwrap()).unwrap();
+        assert_eq!(value["header"], "Coder-Session-Token");
+        assert_eq!(value["url"], target);
+        assert!(c.media_upload_auth("https://other.example/api/media/artifacts/test/content").unwrap().is_none());
+        assert!(c.media_upload_auth("http://private.example/api/media/artifacts/test/content").unwrap().is_none());
+        let scoped = credential("https://private.example/control", TokenHeader::CoderSessionToken);
+        assert!(scoped.media_upload_auth(target).unwrap().is_none());
+        let bearer = credential("https://private.example", TokenHeader::Bearer);
+        assert!(bearer.media_upload_auth(target).is_err());
+    }
 
     fn credential(base_url: &str, header: TokenHeader) -> Credential {
         Credential {
