@@ -103,3 +103,44 @@ current step and download progress. Slow download, GPU checks, and Docker steps
 print an elapsed-time update every 10 seconds; elapsed time is not a percentage
 or an estimate of remaining time. A step failure prints its exit status.
 Do not launch a second installer while one is still running.
+
+## Managed MLX context and streaming
+
+The contributor reads the selected model's cached `config.json` and complete
+weight files. For supported standard-attention architectures, including
+Qwen3-Coder 30B, it advertises the smaller of the model context window and an
+estimated memory budget. The estimate reserves memory for runtime/prefill
+work and divides full-precision KV-cache capacity across all advertised job
+slots. Four-bit weights do not imply a four-bit KV cache. Unsupported or
+missing metadata retains the conservative fallback; no network lookup occurs
+on a heartbeat. This estimate needs hardware verification for long prompts.
+
+To request a specific ceiling before starting the node:
+
+```bash
+export OPENGPU_MODEL_CONTEXT_TOKENS=81920
+opengpu start --no-contribute-cluster
+```
+
+The override is still bounded by model metadata and the contribution memory
+budget. Lower `--max-jobs` if you need more context per concurrent request.
+It applies to managed MLX; contributed engines keep their reported limits.
+The node does not truncate input to make a request fit.
+
+Managed MLX startup allows 900 seconds by default. To change that deadline:
+
+```bash
+export OPENGPU_MLX_START_TIMEOUT_SECONDS=1200
+```
+
+A complete one-token SSE generation verifies streaming before admission.
+A separate harmless function-call probe verifies native tool support; failed
+tool probes do not prevent ordinary chat. A failed warm-up leaves streaming
+unavailable and identifies the runtime log. Owned MLX servers disable retained
+prompt caches with `--prompt-cache-size 0`, so old long-context conversations
+do not silently exceed the active-slot memory estimate. This may reduce
+repeat-prompt performance; active generation KV caches are still used.
+
+After updating and restarting, check `opengpu status --json` for the selected
+model's `context_tokens`, `streaming_supported`, and `supports_tools` rather
+than assuming every installed model advertises those capabilities.

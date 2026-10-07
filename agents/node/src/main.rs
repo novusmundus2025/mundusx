@@ -15,6 +15,7 @@ mod identity;
 mod local_api;
 mod storage;
 mod worker;
+mod mlx_context;
 
 use clap::{Parser, Subcommand};
 use contracts::{
@@ -751,12 +752,27 @@ fn build_scheduler_capabilities(
     };
     for entry in &mut models {
         entry.warm |= entry.active && health.persistent_runtime_warm;
+        if cluster.is_none() && backend == Backend::M {
+            if let Some(context) = mlx_context::context_tokens(
+                entry,
+                &config.effective_model_dir(),
+                capabilities.physical_memory_mb.unwrap_or_else(detect_memory_mb),
+                config.contribution_percent,
+                health.parallel_slots,
+            ) {
+                entry.context_tokens = Some(context);
+                entry.max_output_tokens = None;
+                entry.output_capacity_mode = Some("context_window".into());
+            }
+        }
         *entry = enrich_model_capability(
             entry.clone(),
             &capabilities.capacity_class,
             cluster_capabilities,
             cluster.and_then(|entry| entry.model_context_tokens),
-            cluster_supports_tools,
+            cluster_supports_tools
+                || (cluster.is_none() && backend == Backend::M && health.persistent_runtime_warm
+                    && worker::managed_mlx_tools_verified(&entry.name)),
         );
     }
     if cluster.is_none() && health.runtime_mode == "vllm" && health.healthy {
@@ -804,6 +820,7 @@ fn build_scheduler_capabilities(
     // Two signals: capabilities the listing advertises, and — for vLLM, which
     // publishes no capability array — a loaded tool-call parser.
     let supports_tools = advertises("tool")
+        || models.iter().any(|model| model.active && model.supports_tools)
         || cluster
             .map(|cluster| cluster.supports_tool_calls)
             .unwrap_or(false);

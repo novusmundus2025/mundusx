@@ -49,6 +49,10 @@ jobs:
           cargo test -p opengpu --bin opengpu startup_relay --target ${{ env.TARGET }}
           cargo test -p opengpu-node-agent --bin opengpu-node-agent parses_vllm_startup_progress --target ${{ env.TARGET }}
           cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent mlx_context --target ${{ env.TARGET }} -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent mlx_warmup --target ${{ env.TARGET }} -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent mlx_stream_readiness --target ${{ env.TARGET }} -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent managed_mlx_tool_turn --target ${{ env.TARGET }} -- --test-threads=1
 
       - name: Build CLI
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ env.TARGET }}
