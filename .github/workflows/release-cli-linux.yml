@@ -120,7 +120,8 @@ jobs:
           if [[ -n "${REUSE_VULKAN_RUNTIME_TAG:-}" ]]; then
             [[ "$REUSE_VULKAN_RUNTIME_TAG" =~ ^cli-linux-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
             git fetch --depth 1 origin "$REUSE_VULKAN_RUNTIME_TAG"
-            git diff --exit-code FETCH_HEAD HEAD -- scripts/package-linux-vulkan-runtime.sh agents/node/src/worker.rs
+            git diff --exit-code FETCH_HEAD HEAD -- scripts/package-linux-vulkan-runtime.sh
+            python3 scripts/verify-vulkan-runtime-reuse.py FETCH_HEAD HEAD
             gh release download "$REUSE_VULKAN_RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern 'llama-runtime-x86_64-unknown-linux-gnu-vulkan.tar.gz*' --dir .
             gh release download "$REUSE_VULKAN_RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" \
