@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -39,6 +40,46 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(result['status'],'ready'); self.assertFalse(self.file.exists())
         self.assertTrue(result['local_image_deleted']); self.assertFalse(result['local_image_preserved'])
         self.assertNotIn('upload_token',result)
+
+    def test_open_plane_upload_needs_no_gateway_token(self):
+        self.save()
+        class Opener:
+            def open(inner, request, timeout):
+                self.assertIsNone(request.get_header('Coder-session-token'))
+                self.assertEqual(request.headers['Authorization'],'Bearer '+'a'*64)
+                return io.BytesIO(json.dumps(self.receipt).encode())
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(upload.urllib.request,'build_opener',return_value=Opener()):
+            self.assertEqual(upload.upload_file(self.file,self.ticket_file,'https://images.example')['status'],'ready')
+
+    def test_private_gateway_header_preserves_artifact_bearer(self):
+        self.save()
+        auth = json.dumps({'url':'https://images.example'+self.ticket['upload_path'],
+                           'header':'Coder-Session-Token','token':'gateway-fixture'})
+        class Opener:
+            def open(inner, request, timeout):
+                self.assertEqual(request.headers['Authorization'],'Bearer '+'a'*64)
+                self.assertEqual(request.get_header('Coder-session-token'),'gateway-fixture')
+                return io.BytesIO(json.dumps(self.receipt).encode())
+        with patch.dict(os.environ, {'OPENGPU_MEDIA_GATEWAY_AUTH':auth}), \
+             patch.object(upload.urllib.request,'build_opener',return_value=Opener()):
+            result=upload.upload_file(self.file,self.ticket_file,'https://images.example')
+        self.assertNotIn('gateway-fixture',json.dumps(result))
+
+    def test_gateway_credentials_never_go_to_another_upload_or_header(self):
+        self.save()
+        for changed in [{'url':'https://other.example'+self.ticket['upload_path']},
+                        {'url':'https://images.example/api/other'},
+                        {'header':'Authorization'}, {'token':'bad\nheader'}]:
+            auth={'url':'https://images.example'+self.ticket['upload_path'],
+                  'header':'Coder-Session-Token','token':'gateway-fixture',**changed}
+            with patch.dict(os.environ, {'OPENGPU_MEDIA_GATEWAY_AUTH':json.dumps(auth)}), \
+                 patch.object(upload.urllib.request,'build_opener') as network:
+                with self.assertRaises(ValueError) as error:
+                    upload.upload_file(self.file,self.ticket_file,'https://images.example')
+                self.assertNotIn('gateway-fixture',str(error.exception))
+                network.assert_not_called()
+            self.assertTrue(self.file.exists())
 
     def successful_opener(self, receipt=None, mutate=None):
         value = self.receipt if receipt is None else receipt

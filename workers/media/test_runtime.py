@@ -24,6 +24,18 @@ VIDEO_PROFILE = json.loads(Path(__file__).with_name('wan-video-v1.json').read_te
 
 
 class ProgressStageTests(unittest.TestCase):
+    def test_lightning_durations_cover_one_through_ten_seconds(self):
+        for name in ('wan-t2v-fast-v1.json', 'wan-i2v-fast-v1.json'):
+            base = json.loads(Path(__file__).with_name(name).read_text())
+            for seconds in range(1, 11):
+                profile = media.preset_profile(base, seconds)
+                self.assertEqual(profile['frames'], seconds * 16 + 1)
+                self.assertEqual(profile['steps'], 4)
+                self.assertEqual(profile['files'], base['files'])
+                self.assertIn(f"-{seconds * 16 + 1}f-", profile['id'])
+            for seconds in (0, 11, 1.5):
+                with self.assertRaises(media.MediaError): media.preset_profile(base, seconds)
+
     def test_current_stage_tracks_file_and_generation_without_polluting_json(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

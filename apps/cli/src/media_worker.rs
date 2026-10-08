@@ -5,6 +5,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::{
     fs,
     sync::{
@@ -36,12 +37,13 @@ fn request(
     let signature = identity
         .sign_hex(&format!("POST\n{path}\n{stamp}\n{text}"))
         .map_err(|e| e.to_string())?;
-    let response = url
+    let request = url
         .post(&format!("{}{path}", server.trim_end_matches('/')))
         .set("Content-Type", "application/json")
         .set("X-MundusX-Node-Id", node)
         .set("X-MundusX-Timestamp", &stamp)
-        .set("X-MundusX-Signature", &signature)
+        .set("X-MundusX-Signature", &signature);
+    let response = mundusx_control_plane_auth::apply(request)?
         .send_string(&text)
         .map_err(|e| match e {
             ureq::Error::Status(code, _) => format!("Media server returned HTTP {code}"),
@@ -172,14 +174,14 @@ fn cleanup_completed_media(home: &std::path::Path, cleanup: &Value) -> Result<()
     Ok(())
 }
 
-fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Result<(), String> {
+fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value, owner: Option<&str>) -> Result<(), String> {
     execute_with(
         cfg,
         job,
         &config::config_dir(),
         server,
         |action, video, extra| {
-            media_runtime::run_profile(
+            media_runtime::run_profile_with_owner(
                 &config::config_dir(),
                 cfg.contribution_percent,
                 if action == "upload" {
@@ -190,6 +192,7 @@ fn execute(server: &str, cfg: &Config, id: &DeviceIdentity, job: &Value) -> Resu
                 action,
                 video,
                 extra,
+                if action == "generate" { owner } else { None },
             )
         },
         |action, body| request(server, id, &cfg.device_id, action, body),
@@ -324,6 +327,86 @@ fn execute_with(
     }
     unreachable!()
 }
+fn warm_eligible(cfg: &Config) -> bool {
+    cfg!(target_os = "linux") && !cfg.contribution.llm_enabled()
+        && cfg.contribution.comfyui_url.is_none()
+        && std::env::var("OPENGPU_MEDIA_KEEP_WARM").as_deref() != Ok("0")
+        && (std::env::var("OPENGPU_MEDIA_MANAGED").as_deref() != Ok("true")
+            || std::env::var("OPENGPU_MEDIA_PARENT_PID").ok()
+                .and_then(|v| v.parse::<u32>().ok()).and_then(process_stamp).is_some())
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+fn atomic_value(path: &Path, value: &Value) -> Result<(), String> {
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    fs::write(&tmp, serde_json::to_vec(value).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    fs::rename(tmp, path).map_err(|e| e.to_string())
+}
+
+fn process_stamp(pid: u32) -> Option<String> {
+    media_runtime::drain::process_stamp(pid)
+}
+
+struct WarmRuntime {
+    home: PathBuf,
+    owner: String,
+    cap: u8,
+    stop: Arc<AtomicBool>,
+    pulse: Option<thread::JoinHandle<()>>,
+}
+impl WarmRuntime {
+    fn start(home: &Path, cap: u8) -> Result<Self, String> {
+        // A stopped worker can leave an owned container behind. Recover it before claims.
+        media_runtime::run_profile(home, cap, None, "stop", false, &[])?;
+        let lifecycle = home.join("media/lifecycle");
+        fs::create_dir_all(&lifecycle).map_err(|e| e.to_string())?;
+        let owner = uuid::Uuid::new_v4().simple().to_string();
+        let lease = lifecycle.join("lease.json");
+        let parent = std::env::var("OPENGPU_MEDIA_PARENT_PID").ok().and_then(|v| v.parse::<u32>().ok());
+        let parent_stamp = parent.and_then(process_stamp);
+        if parent.is_some() && parent_stamp.is_none() { return Err("Media parent agent is unavailable".into()); }
+        let renewal = |path: &Path, id: &str| atomic_value(path, &json!({"owner":id,"expires_at":now_seconds()+120,
+            "pid":std::process::id(),"start_ticks":process_stamp(std::process::id())}));
+        renewal(&lease, &owner)?;
+        let pulse_owner = owner.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let pulse = thread::spawn(move || {
+            while !stopped.load(Ordering::Acquire) {
+                if parent.is_some_and(|pid| process_stamp(pid) != parent_stamp) { break; }
+                if let Err(e) = renewal(&lease, &pulse_owner) { eprintln!("Media runtime lease: {e}"); break; }
+                for _ in 0..5 {
+                    if stopped.load(Ordering::Acquire) { return; }
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+            // Revoking the file lets the in-container watchdog release GPU memory.
+            let _ = fs::remove_file(&lease);
+        });
+        Ok(Self {home:home.into(),owner,cap,stop,pulse:Some(pulse)})
+    }
+}
+impl Drop for WarmRuntime {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(pulse) = self.pulse.take() { let _ = pulse.join(); }
+        if let Err(e) = media_runtime::run_profile(&self.home, self.cap, None, "stop", false, &[]) {
+            eprintln!("Media runtime cleanup: {e}; LLM handoff remains blocked until recovery");
+        }
+        let _ = fs::remove_file(self.home.join("media/lifecycle/lease.json"));
+    }
+}
+
+fn occupy_media_slot(home: &Path) -> Result<fs::File, String> {
+    let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        .open(home.join("media/job.lock")).map_err(|e| e.to_string())?;
+    file.try_lock().map_err(|_| "Media job slot is already occupied")?;
+    Ok(file)
+}
+
 pub fn serve(server: String, once: bool) -> Result<(), String> {
     if !(server.starts_with("https://") || server.starts_with("http://127.0.0.1:"))
         || server.contains('@')
@@ -346,6 +429,10 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     lock.try_lock()
         .map_err(|_| "A media worker is already running")?;
+    let initial = config::load_config().map_err(|e| e.to_string())?.ok_or("Missing contributor configuration")?;
+    let warm = if !once && warm_eligible(&initial) {
+        Some(WarmRuntime::start(&home, initial.contribution_percent)?)
+    } else { None };
     println!("Media contributor listening for queued jobs");
     loop {
         let cfg = config::load_config()
@@ -355,6 +442,12 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             || (std::env::var("OPENGPU_MEDIA_MANAGED").as_deref() == Ok("true") && !cfg.connected)
         {
             return Ok(());
+        }
+        if warm.is_some() && (!warm_eligible(&cfg) || cfg.contribution_percent != initial.contribution_percent) {
+            return Ok(()); // Cleanup must finish before a new runtime policy starts.
+        }
+        if warm.is_some() && media_runtime::drain::live_owner(&home).is_none() {
+            return Err("Media runtime lease was lost; restart the serving worker".into());
         }
         let profiles: Vec<_> = media_runtime::verified_profiles(
             &home,
@@ -381,6 +474,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
         }
         let pending = home.join("media/pending-completion.json");
         if pending.exists() {
+            let _slot = occupy_media_slot(&home)?;
             let body: Value =
                 serde_json::from_slice(&fs::read(&pending).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
@@ -411,6 +505,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             }
         };
         if !claim["job"].is_null() {
+            let _slot = occupy_media_slot(&home)?;
             let job = &claim["job"];
             let done = Arc::new(AtomicBool::new(false));
             let stopped = done.clone();
@@ -433,7 +528,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
                     }
                 }
             });
-            let result = execute(&server, &cfg, &id, job);
+            let result = execute(&server, &cfg, &id, job, warm.as_ref().map(|runtime| runtime.owner.as_str()));
             done.store(true, Ordering::Relaxed);
             let _ = thread.join();
             if let Err(e) = result {
@@ -473,6 +568,64 @@ fn bundled_video_profiles() -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn serving_job_slot_is_exclusive_and_released_after_upload_scope() {
+        let home = std::env::temp_dir().join(format!("media-slot-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(home.join("media")).unwrap();
+        let first = occupy_media_slot(&home).unwrap();
+        assert!(occupy_media_slot(&home).is_err());
+        drop(first);
+        drop(occupy_media_slot(&home).unwrap());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn serving_process_identity_requires_a_live_process() {
+        assert!(process_stamp(std::process::id()).is_some());
+        assert!(process_stamp(0).is_none());
+        let mut child = std::process::Command::new("sleep").arg("10").spawn().unwrap();
+        assert!(process_stamp(child.id()).is_some());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(process_stamp(child.id()).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn serving_python_helper_recognizes_the_rust_worker_lock() {
+        let home = std::env::temp_dir().join(format!("media-interop-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(home.join("lifecycle")).unwrap();
+        let worker = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(home.join("worker.lock")).unwrap();
+        worker.lock().unwrap();
+        let owner = uuid::Uuid::new_v4().simple().to_string();
+        atomic_value(&home.join("lifecycle/lease.json"), &json!({"owner":owner,"expires_at":now_seconds()+120,
+            "pid":std::process::id(),"start_ticks":process_stamp(std::process::id())})).unwrap();
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workers/media/runtime.py");
+        let status = std::process::Command::new("python3").args(["-c",
+            "import importlib.util,sys,os,pathlib; s=importlib.util.spec_from_file_location('media',sys.argv[1]); m=importlib.util.module_from_spec(s);s.loader.exec_module(m);os.environ['OPENGPU_MEDIA_PERSISTENT_OWNER']=sys.argv[3];sys.exit(0 if m.persistent_owner(pathlib.Path(sys.argv[2]))==sys.argv[3] else 3)"])
+            .arg(helper).arg(&home).arg(&owner).status().unwrap();
+        assert!(status.success());
+        drop(worker);
+        fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn lightning_queue_jobs_support_every_integer_duration() {
+        for source in [media_runtime::VIDEO_FAST_PROFILE, media_runtime::I2V_FAST_PROFILE] {
+            let profile: Value = serde_json::from_str(source).unwrap();
+            let base_frames = profile["frames"].as_u64().unwrap();
+            for seconds in 1..=10_u64 {
+                let frames = seconds * 16 + 1;
+                let id = profile["id"].as_str().unwrap().replace(&format!("-{base_frames}f-"), &format!("-{frames}f-"));
+                let job = json!({"profile_id":id,"quote":{"operation":profile["operation"],"fps":16,"frames":frames}});
+                let (video, duration, certificate) = execution_profile(&job).unwrap();
+                assert!(video);
+                assert_eq!(duration, seconds);
+                assert!(certificate.contains("fast"));
+            }
+        }
+    }
+
     #[test]
     fn fast_text_video_and_quality_reference_use_separate_profiles() {
         for (source, suffix) in [(media_runtime::VIDEO_FAST_PROFILE,"video-fast"),(media_runtime::I2V_PROFILE,"i2v")] {

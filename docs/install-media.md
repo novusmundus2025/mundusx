@@ -73,11 +73,41 @@ opengpu media generate --prompt "A red ceramic teapot on a wooden table"
 opengpu media --video --seconds 2 generate --prompt "A red ceramic teapot slowly rotates"
 ```
 
-Release 0.2.20 supports every integer from **1 through 10 seconds** with the
-832×480, 16 FPS profile. Local generation reports its output
+Release 0.2.39 selects four-step Lightning by default for both `--video` and
+`--image-to-video`, including setup, verification and generation. `--fast` remains
+accepted explicitly; use `--quality` to select the regular video profile.
+Every integer from **1 through 10 seconds** is supported at 832×480 and 16 FPS;
+zero, fractional seconds and durations above 10 are rejected.
+Local generation reports its output
 artifact path. It does not automatically create a public user download URL.
 
 ## 5. Start network contribution
+
+On Linux, a media-only contributor using OpenGPU-owned Docker keeps its runtime
+after the first successful request. Matching requests reuse the container and
+ComfyUI model cache. No dummy generation is run to preload a model. Changing the
+profile/model family or memory cap stops the old container before loading the
+next one, so image and video models do not accumulate in memory together.
+
+The contributor advertises one shared slot: Ready with zero active jobs while
+idle, and Busy from claim through upload and completion. Health probes run in
+the background while heartbeats continue from the latest snapshot. A resident
+media runtime blocks LLM startup until its owned container has stopped. Changing
+the selected workloads drains the current media job before the worker releases
+its runtime. Stop the contributor before starting a separate vLLM recipe;
+`opengpu media stop` resets the runtime but does not stop queue polling.
+
+The serving worker renews a 120-second local lease every five seconds. Its managed
+container checks the lease every five seconds and exits if renewal stops,
+and the agent recovers stale owned containers before allowing an LLM handoff.
+External ComfyUI endpoints, native runtimes, `serve --once`, and standalone local
+generation retain their existing per-request lifecycle. A current node agent is
+required for supervised retention; older agents keep per-request execution.
+
+To opt out before starting the contributor, set `OPENGPU_MEDIA_KEEP_WARM=0`.
+Generation logs include `runtime_reused` and `runtime_startup_ms`; existing
+`duration_ms` continues to measure generation. Actual GPU speedup must be
+measured with a cold request and a second, different prompt on the same profile.
 
 ```text
 opengpu start --background
@@ -112,3 +142,38 @@ opengpu media stop
 ```
 
 This does not stop an externally managed ComfyUI server.
+
+## Private plane behind a Coder gateway
+
+Media worker requests retain their node signatures and also use the saved,
+endpoint-scoped gateway credential. Artifact uploads preserve their scoped
+bearer ticket and add `Coder-Session-Token` separately. Redirects are disabled;
+credentials are not sent to an unrelated server or included in command-line
+arguments, container environments, upload tickets, or diagnostics.
+
+For an existing media-only contributor, finish any active job before switching:
+
+```bash
+opengpu disconnect
+opengpu config control-plane-url "https://YOUR-PRIVATE-PLANE"
+# Only when this private gateway requires a session token:
+opengpu login --token-header coder-session-token
+export MUNDUSX_MEDIA_SERVER_URL="https://YOUR-PRIVATE-PLANE"
+opengpu start --no-contribute-cluster --max-jobs 1
+```
+
+The agent starts the media worker automatically when media workloads are saved.
+Do not start a second `media serve` process alongside that managed worker.
+The private deployment must expose `/api/media/worker/*` and artifact upload
+routes and admit the contributor identity. If a worker is being run manually,
+`opengpu media serve --server "https://YOUR-PRIVATE-PLANE"` uses the same login.
+
+The saved login is scoped to its configured control-plane origin/path. It is
+not forwarded to a different media origin. This upload integration supports
+Coder session gateway authentication; a gateway bearer credential conflicts
+with the artifact's bearer ticket and is rejected explicitly. Public media
+uploads without a matching gateway credential keep their existing behavior.
+
+Gateway authentication is optional: omit `opengpu login` for an open gateway.
+Without a matching saved credential, no gateway header is added. Signed node
+requests and scoped artifact upload tickets remain required in both modes.

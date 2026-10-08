@@ -15,6 +15,7 @@ mod identity;
 mod local_api;
 mod storage;
 mod worker;
+mod mlx_context;
 
 use clap::{Parser, Subcommand};
 use contracts::{
@@ -751,12 +752,27 @@ fn build_scheduler_capabilities(
     };
     for entry in &mut models {
         entry.warm |= entry.active && health.persistent_runtime_warm;
+        if cluster.is_none() && backend == Backend::M {
+            if let Some(context) = mlx_context::context_tokens(
+                entry,
+                &config.effective_model_dir(),
+                capabilities.physical_memory_mb.unwrap_or_else(detect_memory_mb),
+                config.contribution_percent,
+                health.parallel_slots,
+            ) {
+                entry.context_tokens = Some(context);
+                entry.max_output_tokens = None;
+                entry.output_capacity_mode = Some("context_window".into());
+            }
+        }
         *entry = enrich_model_capability(
             entry.clone(),
             &capabilities.capacity_class,
             cluster_capabilities,
             cluster.and_then(|entry| entry.model_context_tokens),
-            cluster_supports_tools,
+            cluster_supports_tools
+                || (cluster.is_none() && backend == Backend::M && health.persistent_runtime_warm
+                    && worker::managed_mlx_tools_verified(&entry.name)),
         );
     }
     if cluster.is_none() && health.runtime_mode == "vllm" && health.healthy {
@@ -804,6 +820,7 @@ fn build_scheduler_capabilities(
     // Two signals: capabilities the listing advertises, and — for vLLM, which
     // publishes no capability array — a loaded tool-call parser.
     let supports_tools = advertises("tool")
+        || models.iter().any(|model| model.active && model.supports_tools)
         || cluster
             .map(|cluster| cluster.supports_tool_calls)
             .unwrap_or(false);
@@ -1097,6 +1114,23 @@ fn heartbeat_from_snapshot(
     heartbeat.available_gpu_percent = detect_available_gpu_percent(config);
     heartbeat.updated_at = now_unix_seconds();
     heartbeat.contribution_percent = config.contribution_percent;
+    heartbeat
+}
+
+fn media_heartbeat_from_snapshot(snapshot: &Heartbeat, config: &AgentConfig, home: &std::path::Path,
+                                 released: bool) -> Heartbeat {
+    let resident = media_drain::resident(home);
+    let state = if released && media_drain::active(home) { AgentState::Busy }
+        else if released && resident { AgentState::Ready } else { AgentState::Paused };
+    let mut heartbeat = heartbeat_from_snapshot(snapshot, config, state);
+    if state == AgentState::Busy || resident {
+        heartbeat.worker_health.runtime_mode = "media".into();
+        heartbeat.worker_health.parallel_slots = 1;
+        heartbeat.worker_health.capabilities.max_parallel_jobs = 1;
+        heartbeat.capabilities.parallel_slots = 1;
+        heartbeat.capabilities.ready_for_jobs = false;
+        if resident { heartbeat.worker_health.notes.push("Managed media runtime retained between requests".into()); }
+    }
     heartbeat
 }
 
@@ -2265,6 +2299,8 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         }
     };
     let mut media_drained = false;
+    let mut media_recovery: Option<thread::JoinHandle<()>> = None;
+    let mut last_media_recovery = Instant::now() - Duration::from_secs(30);
     let mut media_release_confirmed = false;
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
@@ -2430,53 +2466,6 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
 
         if let Some(worker) = media_worker.as_mut() { worker.maintain(&latest_config); }
 
-        if let Some(request_id) = media_drain::request(&storage::config_dir()) {
-            if slot_pool.active() > 0 { continue; }
-            if !media_drained {
-                media_release_confirmed = if let Some(runtime) = persistent_runtime.as_mut() {
-                    match runtime.stop_for_media() {
-                        Ok(()) => true,
-                        Err(error) => { eprintln!("mediaDrain: {error}"); false }
-                    }
-                } else {
-                    !latest_config.contribution.llm_enabled() || !worker::external_runtime_blocks_media()
-                };
-                if !media_release_confirmed {
-                    eprintln!("mediaDrain: runtime memory release is unconfirmed; withholding media handoff");
-                }
-            }
-            media_drained = true;
-            // process_pending_jobs joins active requests before returning here.
-            if media_release_confirmed {
-                drop(persistent_runtime.take());
-                clear_runtime_environment();
-            }
-            let heartbeat = build_heartbeat_with_state(&latest_config, AgentState::Paused);
-            let _ = save_agent_state(&heartbeat);
-            send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
-            if media_release_confirmed {
-                if let Err(error) = media_drain::acknowledge(&storage::config_dir(), &request_id) {
-                    eprintln!("mediaDrain: {error}");
-                }
-            }
-            continue;
-        }
-        if media_drained && persistent_runtime.is_none() && should_keep_runtime_warm(&latest_config) {
-            match worker::start_persistent_runtime(
-                &latest_config.effective_model_dir(), latest_config.active_model.as_deref(),
-                resolved_backend(&latest_config), worker_readiness(&latest_config).0.parallel_slots,
-            ) {
-                Ok(runtime) => {
-                    persistent_runtime = runtime;
-                    if let Some(runtime) = persistent_runtime.as_ref() {
-                        std::env::set_var(runtime.environment_variable(), runtime.url());
-                    }
-                }
-                Err(error) => eprintln!("persistentRuntime: resume failed ({error})"),
-            }
-        }
-        if media_drained { media_drained = false; }
-
         while let Ok(mut refreshed) = health_refresh_rx.try_recv() {
             // The health probe may have started before a native-tool probe
             // updated the config. Re-project it through the latest config so
@@ -2500,6 +2489,79 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             health_refresh_in_flight = true;
             last_health_refresh_started = Instant::now();
         }
+
+        if let Some(request_id) = media_drain::request(&storage::config_dir()) {
+            if media_recovery.as_ref().is_some_and(|handle| handle.is_finished()) {
+                if let Some(handle) = media_recovery.take() { let _ = handle.join(); }
+            }
+            if request_id == "container-recovery-required" && !media_drain::active(&storage::config_dir())
+                && media_recovery.is_none() && last_media_recovery.elapsed() >= Duration::from_secs(30) {
+                media_recovery = Some(thread::spawn(|| {
+                    if let Err(e) = media_process::cleanup_orphan_runtime() { eprintln!("mediaRecovery: {e}"); }
+                }));
+                last_media_recovery = Instant::now();
+            }
+            if slot_pool.active() > 0 {
+                if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
+                    let heartbeat = heartbeat_from_snapshot(&heartbeat_snapshot, &latest_config, AgentState::Busy);
+                    let _ = save_agent_state(&heartbeat);
+                    let _ = save_heartbeat(&heartbeat);
+                    send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+                    last_heartbeat_sent = Instant::now();
+                }
+                thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+            if !media_drained {
+                media_release_confirmed = if let Some(runtime) = persistent_runtime.as_mut() {
+                    match runtime.stop_for_media() {
+                        Ok(()) => true,
+                        Err(error) => { eprintln!("mediaDrain: {error}"); false }
+                    }
+                } else {
+                    !latest_config.contribution.llm_enabled() || !worker::external_runtime_blocks_media()
+                };
+                if !media_release_confirmed {
+                    eprintln!("mediaDrain: runtime memory release is unconfirmed; withholding media handoff");
+                }
+            }
+            media_drained = true;
+            // process_pending_jobs joins active requests before returning here.
+            if media_release_confirmed {
+                drop(persistent_runtime.take());
+                clear_runtime_environment();
+            }
+            if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
+                let heartbeat = media_heartbeat_from_snapshot(&heartbeat_snapshot, &latest_config,
+                    &storage::config_dir(), media_release_confirmed);
+                let _ = save_agent_state(&heartbeat);
+                let _ = save_heartbeat(&heartbeat);
+                send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+                last_heartbeat_sent = Instant::now();
+            }
+            if media_release_confirmed {
+                if let Err(error) = media_drain::acknowledge(&storage::config_dir(), &request_id) {
+                    eprintln!("mediaDrain: {error}");
+                }
+            }
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        if media_drained && persistent_runtime.is_none() && should_keep_runtime_warm(&latest_config) {
+            match worker::start_persistent_runtime(
+                &latest_config.effective_model_dir(), latest_config.active_model.as_deref(),
+                resolved_backend(&latest_config), worker_readiness(&latest_config).0.parallel_slots,
+            ) {
+                Ok(runtime) => {
+                    persistent_runtime = runtime;
+                    if let Some(runtime) = persistent_runtime.as_ref() {
+                        std::env::set_var(runtime.environment_variable(), runtime.url());
+                    }
+                }
+                Err(error) => eprintln!("persistentRuntime: resume failed ({error})"),
+            }
+        }
+        if media_drained { media_drained = false; }
 
         if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
             let heartbeat = heartbeat_from_snapshot(
@@ -3312,6 +3374,28 @@ mod tests {
         assert!(heartbeat_runtime_ready(&snapshot));
         assert_eq!(heartbeat_from_snapshot(&snapshot, &config, AgentState::Ready).agent_state, AgentState::Ready);
         assert_eq!(heartbeat_from_snapshot(&snapshot, &config, AgentState::Paused).agent_state, AgentState::Paused);
+        let home = std::env::temp_dir().join(format!("media-heartbeat-{}", uuid::Uuid::new_v4()));
+        let media = home.join("media");
+        std::fs::create_dir_all(media.join("lifecycle")).unwrap();
+        let owner = "0123456789abcdef0123456789abcdef";
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        std::fs::write(media.join("lifecycle/lease.json"), serde_json::json!({"owner":owner,"expires_at":now+120,
+            "pid":std::process::id(),"start_ticks":media_drain::process_stamp(std::process::id())}).to_string()).unwrap();
+        std::fs::write(media.join("active-container.json"), serde_json::json!({"persistent_owner":owner}).to_string()).unwrap();
+        let worker = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join("worker.lock")).unwrap();
+        worker.lock().unwrap();
+        let idle = media_heartbeat_from_snapshot(&snapshot, &config, &home, true);
+        assert_eq!(idle.agent_state, AgentState::Ready);
+        assert!(!idle.capabilities.ready_for_jobs);
+        assert_eq!(idle.worker_health.parallel_slots, 1);
+        assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, false).agent_state, AgentState::Paused);
+        let job = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join("job.lock")).unwrap();
+        job.lock().unwrap();
+        assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, true).agent_state, AgentState::Busy);
+        drop(job);
+        drop(worker);
+        assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, true).agent_state, AgentState::Paused);
+        std::fs::remove_dir_all(home).unwrap();
         snapshot.policy_allowed = false;
         assert!(!heartbeat_runtime_ready(&snapshot));
         snapshot.policy_allowed = true;

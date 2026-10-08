@@ -43,6 +43,7 @@ impl MediaProcess {
         command
             .args(["media", "serve", "--server", &server])
             .env("OPENGPU_MEDIA_MANAGED", "true")
+            .env("OPENGPU_MEDIA_PARENT_PID", std::process::id().to_string())
             .stdin(Stdio::null());
         #[cfg(windows)]
         {
@@ -61,10 +62,23 @@ impl MediaProcess {
 impl Drop for MediaProcess {
     fn drop(&mut self) {
         if let Some(child) = self.0.as_mut() {
+            let running = matches!(child.try_wait(), Ok(None));
             let _ = child.kill();
             let _ = child.wait();
+            if running {
+              if let Err(e) = cleanup_orphan_runtime() {
+                eprintln!("mediaWorker: {e}; managed lease will expire if the worker stopped");
+              }
+            }
         }
     }
+}
+
+pub fn cleanup_orphan_runtime() -> Result<(), String> {
+    let home = crate::storage::config_dir();
+    if !home.join("media/active-container.json").exists() { return Ok(()); }
+    if crate::media_drain::active(&home) { return Err("active generation owns the media slot".into()); }
+    crate::media_runtime::run_profile(&home, 70, None, "stop", false, &[])
 }
 
 fn media_selected(config: &AgentConfig) -> bool {
