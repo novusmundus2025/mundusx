@@ -3359,6 +3359,14 @@ fn contributed_cluster_health(
     }
 }
 
+fn battery_contribution_reason(charge: Option<u8>) -> Option<String> {
+    match charge {
+        Some(percent) if percent > 28 && percent <= 100 => None,
+        Some(percent) => Some(format!("battery contribution requires charge above 28% (reported {percent}%)")),
+        None => Some("battery charge is unknown; requires charge above 28%".into()),
+    }
+}
+
 pub fn probe_worker_policy(
     health: &WorkerHealthReport,
     contribution_percent: u8,
@@ -3380,22 +3388,13 @@ pub fn probe_worker_policy(
         notes.push("set a contribution cap before enabling jobs".to_string());
     }
 
+    recommended_max_contribution_percent = 100;
     if health.on_battery {
-        recommended_max_contribution_percent = 20;
-        if contribution_percent > 20 {
+        if let Some(battery_reason) = battery_contribution_reason(health.battery_percent) {
             allowed = false;
-            reason = Some("battery power requires contribution percent <= 20".to_string());
-            notes.push("plug in the Mac or lower the cap to 20% or less".to_string());
+            reason = Some(battery_reason);
+            notes.push("plug in the laptop or charge its battery above 28%".into());
         }
-        if let Some(percent) = health.battery_percent {
-            if percent <= 20 {
-                allowed = false;
-                reason = Some("battery too low for active inference".to_string());
-                notes.push("battery level is too low to start work safely".to_string());
-            }
-        }
-    } else {
-        recommended_max_contribution_percent = 100;
     }
 
     WorkerPolicyReport {
@@ -4336,6 +4335,38 @@ fn kill_process_tree(pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn battery_policy_allows_configured_caps_and_preserves_health_checks() {
+        with_temp_runtime_home(|home| {
+            let mut health = probe_worker_health(&home.join("models"), Some("qwen"), Backend::Cuda, None);
+            health.healthy = true;
+            health.on_battery = true;
+            health.battery_percent = Some(100);
+            for cap in [20, 70, 80, 100] {
+                let policy = super::probe_worker_policy(&health, cap);
+                assert!(policy.allowed, "cap={cap}: {:?}", policy.reason);
+                assert_eq!(policy.recommended_max_contribution_percent, 100);
+            }
+            assert!(!super::probe_worker_policy(&health, 0).allowed);
+            health.healthy = false;
+            assert!(!super::probe_worker_policy(&health, 80).allowed);
+            health.healthy = true;
+            health.battery_percent = Some(28);
+            assert!(!super::probe_worker_policy(&health, 80).allowed);
+            health.on_battery = false;
+            assert!(super::probe_worker_policy(&health, 80).allowed);
+        });
+    }
+
+    #[test]
+    fn battery_contribution_requires_charge_above_28_percent() {
+        for (charge, allowed) in [(Some(100), true), (Some(29), true), (Some(28), false),
+            (Some(27), false), (Some(0), false), (None, false), (Some(101), false)] {
+            assert_eq!(super::battery_contribution_reason(charge).is_none(), allowed,
+                "charge={charge:?}");
+        }
+    }
+
     #[test]
     fn external_health_rejects_generic_services_and_malformed_listings() {
         for body in [r#"{"status":"ok"}"#, r#"{"system":{},"devices":[]}"#, r#"{"data":[{"filename":"image.png"}]}"#] {
