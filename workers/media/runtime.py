@@ -789,6 +789,47 @@ def client_for(root, profile, endpoint, budget_bytes):
     if record.get('kind') == 'managed_native_comfyui':
         with native_client(root, profile, record, budget_bytes) as client: yield client
         return
+    started = time.monotonic()
+    persistent = persistent_owner(root)
+    if os.environ.get('OPENGPU_MEDIA_PERSISTENT_OWNER') and not persistent:
+        raise MediaError('Media serving lease expired; refusing an orphaned generation')
+    bootstrap = Path(__file__).with_name("unified_memory.py").resolve()
+    if not bootstrap.is_file(): raise MediaError("Managed runtime bootstrap is missing; update CLI")
+    bootstrap_hash = hashlib.sha256(bootstrap.read_bytes()).hexdigest()
+    signature = profile_hash(profile)
+    marker = root/'active-container.json'
+    if marker.exists():
+        previous = owned_container_record(root)
+        compatible = (persistent and previous.get('persistent_owner') == persistent
+                      and previous.get('image_id') == record['image_id']
+                      and previous.get('profile_hash') == signature
+                      and previous.get('budget_bytes') == budget_bytes
+                      and previous.get('bootstrap_hash') == bootstrap_hash)
+        if compatible:
+            try:
+                actual_owner = run(['docker', 'inspect', previous['name'], '--format',
+                                    '{{index .Config.Labels "opengpu.media.owner"}}'], capture=True)
+                if actual_owner != previous['owner']: raise MediaError('Container ownership mismatch; refusing reuse')
+                actual_image = run(['docker', 'inspect', previous['name'], '--format', '{{.Image}}'], capture=True)
+                if actual_image != record['image_id']: raise MediaError('Container image mismatch; refusing reuse')
+                client = container_client(previous['name'])
+                client.request('/system_stats')
+                client.ensure_idle()
+            except (MediaError, subprocess.SubprocessError):
+                stop_owned_container(root)
+            else:
+                client.runtime_info = {'runtime_reused': True, 'runtime_startup_ms': round((time.monotonic()-started)*1000)}
+                emit('runtime_ready', **client.runtime_info)
+                success = False
+                try:
+                    yield client
+                    success = True
+                finally:
+                    if not success or persistent_owner(root) != persistent: stop_owned_container(root)
+                return
+        else:
+            # Switching profile/model or cap releases all cached weights before loading.
+            stop_owned_container(root)
     # Only our new container is stopped. No global stop, external unload or prune.
     name = "opengpu-media-" + uuid.uuid4().hex
     outputs = root / "outputs"; outputs.mkdir(exist_ok=True)
@@ -796,8 +837,6 @@ def client_for(root, profile, endpoint, budget_bytes):
     (outputs / "opengpu").mkdir(exist_ok=True)
     reserve_gb = max(0, (physical_memory() - budget_bytes) / 1024**3)
     owner = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
-    bootstrap = Path(__file__).with_name("unified_memory.py").resolve()
-    if not bootstrap.is_file(): raise MediaError("Managed runtime bootstrap is missing; update CLI")
     args = ["docker", "run", "--detach", "--rm", "--name", name, "--gpus", "all", "--entrypoint", "python",
             "--label", "opengpu.media.owner=" + owner,
             "--publish", "127.0.0.1::8188", "--memory", str(budget_bytes),
@@ -807,12 +846,19 @@ def client_for(root, profile, endpoint, budget_bytes):
             "-u", "/opt/opengpu/unified_memory.py",
             "--listen", "0.0.0.0", "--port", "8188", "--disable-all-custom-nodes",
             "--reserve-vram", str(round(reserve_gb, 2))]
-    atomic_json(root/'active-container.json', {"name": name, "owner": owner})
+    if persistent:
+        lifecycle = root/'lifecycle'
+        args[args.index(record['image_id']):args.index(record['image_id'])] = [
+            '--volume', f'{lifecycle}:/opt/opengpu/lifecycle:ro',
+            '--env', 'OPENGPU_MEDIA_LEASE_PATH=/opt/opengpu/lifecycle/lease.json',
+            '--env', 'OPENGPU_MEDIA_OWNER_INSTANCE=' + persistent]
+    atomic_json(marker, {"name": name, "owner": owner, "persistent_owner": persistent,
+                        "image_id": record['image_id'], "profile_hash": signature,
+                        "budget_bytes": budget_bytes, "bootstrap_hash": bootstrap_hash})
+    success = False
     try:
         run(args, timeout=120, capture=True)
-        bindings = json.loads(run(["docker", "inspect", name, "--format", "{{json .NetworkSettings.Ports}}"], capture=True))
-        port = bindings["8188/tcp"][0]["HostPort"]
-        client = Comfy("http://127.0.0.1:" + port)
+        client = container_client(name)
         deadline = time.monotonic() + 180
         while True:
             try:
@@ -822,16 +868,68 @@ def client_for(root, profile, endpoint, budget_bytes):
                 if time.monotonic() >= deadline:
                     raise MediaError("Managed ComfyUI did not become ready within 180 seconds")
                 time.sleep(2)
+        client.runtime_info = {'runtime_reused': False, 'runtime_startup_ms': round((time.monotonic()-started)*1000)}
+        emit('runtime_ready', **client.runtime_info)
         yield client
+        success = True
     finally:
-        stop_owned_container(root)
+        if not success or not persistent or persistent_owner(root) != persistent:
+            stop_owned_container(root)
+
+
+def persistent_owner(root):
+    """Only the live serving worker may retain a managed Linux runtime."""
+    owner = os.environ.get('OPENGPU_MEDIA_PERSISTENT_OWNER')
+    return owner if owner and live_lease_owner(root) == owner else None
+
+
+def live_lease_owner(root):
+    if platform.system() != 'Linux': return None
+    try:
+        lease = load_json(root/'lifecycle/lease.json')
+        owner = lease.get('owner')
+        if not isinstance(owner, str) or not re.fullmatch('[0-9a-f]{32}', owner) or lease.get('expires_at', 0) <= time.time(): return None
+        pid = lease.get('pid')
+        if not isinstance(pid, int) or not 0 < pid <= 2**32-1: return None
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
+        if fields[0] in ('Z', 'X') or fields[19] != lease.get('start_ticks'): return None
+        import fcntl
+        with (root/'worker.lock').open('r+b') as file:
+            try: fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError: return owner
+    except (OSError, ValueError, TypeError, IndexError): pass
+    return None
+
+
+def retained_runtime(root):
+    owner = live_lease_owner(root)
+    if not owner: return False
+    try: return owned_container_record(root).get('persistent_owner') == owner
+    except (OSError, ValueError, KeyError, MediaError): return False
+
+
+def container_client(name):
+    bindings = json.loads(run(['docker', 'inspect', name, '--format', '{{json .NetworkSettings.Ports}}'], capture=True))
+    port = bindings['8188/tcp'][0]['HostPort']
+    if not str(port).isdigit() or not 1 <= int(port) <= 65535: raise MediaError('Invalid managed container port')
+    return Comfy('http://127.0.0.1:' + str(port))
+
+
+def owned_container_record(root):
+    record = load_json(root/'active-container.json')
+    name, owner = record['name'], record['owner']
+    suffix = name.removeprefix('opengpu-media-')
+    expected = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
+    if not name.startswith('opengpu-media-') or len(suffix) != 32 or any(c not in '0123456789abcdef' for c in suffix) or owner != expected:
+        raise MediaError('Invalid owned-container marker; refusing container cleanup')
+    return record
 
 
 def stop_owned_container(root):
     stop_owned_native(root)
     marker = root/'active-container.json'
     if not marker.exists(): return
-    record = load_json(marker)
+    record = owned_container_record(root)
     name, owner = record['name'], record['owner']
     suffix = name.removeprefix('opengpu-media-')
     expected = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
@@ -937,11 +1035,12 @@ def main():
                             certificate.get('profile_hash') != profile_hash(profile) or
                             certificate.get('cap_percent') != args.cap_percent or
                             certificate.get('endpoint') != args.endpoint or
-                            ((root/'active-container.json').exists() or (root/'active-native.json').exists())):
+                            (((root/'active-container.json').exists() and not retained_runtime(root)) or (root/'active-native.json').exists())):
             certificate['ready'] = False
             certificate['reason'] = 'Memory budget is insufficient, configuration changed, or cleanup is pending; verify again'
         emit('status', verified=certificate, media_eligible=plan['media_eligible'],
-             budget_bytes=budget, minimum_media_budget_bytes=MINIMUM_MEDIA_BUDGET, network_dispatch_enabled=False); return
+             budget_bytes=budget, minimum_media_budget_bytes=MINIMUM_MEDIA_BUDGET,
+             runtime_retained=retained_runtime(root), network_dispatch_enabled=False); return
     require_media_budget(budget, profile)
     if profile.get('operation') == 'image_to_video' and args.action in ('verify', 'generate'):
         if args.input_image is None: raise MediaError('Image-to-video requires --input-image pointing to a PNG')
@@ -949,7 +1048,7 @@ def main():
     elif args.input_image is not None:
         raise MediaError('--input-image requires image-to-video verify or generate')
     with lock(root):
-        stop_owned_container(root)
+        if args.action == 'setup' or not persistent_owner(root): stop_owned_container(root)
         if args.action == 'setup':
             emit('plan', **plan)
             if not args.yes: raise MediaError("Review the plan and rerun with --yes to download and install")
@@ -975,7 +1074,8 @@ def main():
                            "steps": profile['steps'], "budget_bytes": budget, "cap_percent": args.cap_percent, "verified_at": int(time.time()),
                            "runtime": 'external' if args.endpoint else 'managed', "endpoint": args.endpoint,
                            "frames": profile.get('frames'), "fps": profile.get('fps'),
-                           "devices": stats.get('devices', []), "network_dispatch_enabled": False, **result}
+                           "devices": stats.get('devices', []), "network_dispatch_enabled": False, **result,
+                           **getattr(client, 'runtime_info', {})}
         atomic_json(profile_record(root, profile, 'verified'), certificate)
         emit('completed', **certificate)
 

@@ -83,6 +83,32 @@ artifact path. It does not automatically create a public user download URL.
 
 ## 5. Start network contribution
 
+On Linux, a media-only contributor using OpenGPU-owned Docker keeps its runtime
+after the first successful request. Matching requests reuse the container and
+ComfyUI model cache. No dummy generation is run to preload a model. Changing the
+profile/model family or memory cap stops the old container before loading the
+next one, so image and video models do not accumulate in memory together.
+
+The contributor advertises one shared slot: Ready with zero active jobs while
+idle, and Busy from claim through upload and completion. Health probes run in
+the background while heartbeats continue from the latest snapshot. A resident
+media runtime blocks LLM startup until its owned container has stopped. Changing
+the selected workloads drains the current media job before the worker releases
+its runtime. Stop the contributor before starting a separate vLLM recipe;
+`opengpu media stop` resets the runtime but does not stop queue polling.
+
+The serving worker renews a 120-second local lease every five seconds. Its managed
+container checks the lease every five seconds and exits if renewal stops,
+and the agent recovers stale owned containers before allowing an LLM handoff.
+External ComfyUI endpoints, native runtimes, `serve --once`, and standalone local
+generation retain their existing per-request lifecycle. A current node agent is
+required for supervised retention; older agents keep per-request execution.
+
+To opt out before starting the contributor, set `OPENGPU_MEDIA_KEEP_WARM=0`.
+Generation logs include `runtime_reused` and `runtime_startup_ms`; existing
+`duration_ms` continues to measure generation. Actual GPU speedup must be
+measured with a cold request and a second, different prompt on the same profile.
+
 ```text
 opengpu start --background
 opengpu status

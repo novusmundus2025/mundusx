@@ -7,6 +7,11 @@ on:
         description: "Linux release tag to build and publish, for example cli-linux-v0.1.14"
         required: true
         type: string
+      reuse_vulkan_runtime_tag:
+        description: "Optional verified Linux release to reuse when the Vulkan engine and adapter are unchanged"
+        required: false
+        default: ""
+        type: string
   push:
     tags:
       - "cli-linux-v*"
@@ -67,6 +72,13 @@ jobs:
           cargo test -p opengpu --bin opengpu lightning_queue_jobs_support_every_integer_duration --target "${TARGET}"
           python3 -m unittest workers.media.test_runtime.ProgressStageTests.test_lightning_durations_cover_one_through_ten_seconds
 
+      - name: Test persistent media lifecycle
+        run: |
+          python3 -m unittest workers.media.test_persistent_runtime
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent media_drain --target "${TARGET}" -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent media_heartbeat --target "${TARGET}" -- --test-threads=1
+          cargo test -p opengpu --bin opengpu serving_ --target "${TARGET}" -- --test-threads=1
+
       - name: Test private media gateway authentication
         run: |
           cargo test -p mundusx-control-plane-auth --target "${TARGET}"
@@ -101,10 +113,32 @@ jobs:
 
       - name: Package Linux Vulkan runtime
         if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          REUSE_VULKAN_RUNTIME_TAG: ${{ inputs.reuse_vulkan_runtime_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libvulkan-dev glslc glslang-tools spirv-headers
-          bash scripts/package-linux-vulkan-runtime.sh
+          if [[ -n "${REUSE_VULKAN_RUNTIME_TAG:-}" ]]; then
+            [[ "$REUSE_VULKAN_RUNTIME_TAG" =~ ^cli-linux-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            git fetch --depth 1 origin "$REUSE_VULKAN_RUNTIME_TAG"
+            git diff --exit-code FETCH_HEAD HEAD -- scripts/package-linux-vulkan-runtime.sh agents/node/src/worker.rs
+            gh release download "$REUSE_VULKAN_RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'llama-runtime-x86_64-unknown-linux-gnu-vulkan.tar.gz*' --dir .
+            gh release download "$REUSE_VULKAN_RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'release-manifest-x86_64-unknown-linux-gnu.json' --dir runtime-reuse
+            sha256sum -c llama-runtime-x86_64-unknown-linux-gnu-vulkan.tar.gz.sha256
+            python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          name = 'llama-runtime-x86_64-unknown-linux-gnu-vulkan.tar.gz'
+          manifest = json.loads(Path('runtime-reuse/release-manifest-x86_64-unknown-linux-gnu.json').read_text())
+          entry = next(item for item in manifest['runtime_assets'] if item['name'] == name)
+          assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == entry['checksum_sha256']
+          PY
+          else
+            sudo apt-get update
+            sudo apt-get install -y cmake ninja-build libvulkan-dev glslc glslang-tools spirv-headers
+            bash scripts/package-linux-vulkan-runtime.sh
+          fi
 
       - name: Verify packaging
         run: ./scripts/verify-release-packaging.sh . "${BINARY_NAME}" "${AGENT_BINARY_NAME}"
