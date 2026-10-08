@@ -18,14 +18,13 @@ The current config already carries:
 
 On the node agent side, the worker already reads an effective model directory from config.
 
-The official starter model presets are defined in:
+Installation choices come from the configured control plane's `GET /v1/model-catalog` API. Signed-in administrators add, edit, enable or disable model variants through `/model-catalog`. The bundled `apps/cli/config/official-models.json` remains a test fixture.
 
-- [apps/cli/config/official-models.json](/Users/DBATALL/Documents/mundusx/apps/cli/config/official-models.json)
+From CLI 0.2.27, installation filters the admin allowlist by operating system: Windows shows GGUF variants, macOS shows MLX variants, and Linux shows GGUF/vLLM variants. Backend compatibility and contribution memory limits further narrow the choices. Model capability metadata is retained in local manifests.
 
-That file is the reviewable source of truth for the default `start` / `connect` model choices on the CLI.
+Catalogs are cached per control-plane URL for temporary outages. A fresh installation without a cached catalog does not fall back to bundled choices. An explicit `OPENGPU_MODEL_CATALOG_PATH` remains available for local overrides and testing.
 
-Those starter presets now point at public Hugging Face GGUF model files compatible with the local Mac runtime, so the default path does **not** need a Hugging Face account.
-If a model is missing, the CLI downloads the public GGUF file, verifies the checksum when one is provided, and then caches it locally.
+Catalog sources are public Hugging Face artifacts or repositories. Missing GGUF files are downloaded, checked against the required SHA-256 checksum, and cached locally. MLX/vLLM repository variants use their respective runtime provisioning paths.
 
 The CLI now has working local cache commands that operate on a manifest directory inside the model cache:
 

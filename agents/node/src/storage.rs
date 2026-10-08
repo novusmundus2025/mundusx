@@ -1,3 +1,6 @@
+#[path = "../../../packages/cluster-policy.rs"]
+pub mod cluster_policy;
+
 use crate::contracts::Backend;
 use crate::contracts::Heartbeat;
 use serde::{Deserialize, Serialize};
@@ -63,6 +66,8 @@ fn default_cluster_capacity_class() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentConfig {
+    #[serde(default)]
+    pub contribution: crate::contribution_contract::ContributionSelection,
     pub version: u32,
     pub device_id: String,
     pub public_key_fingerprint: Option<String>,
@@ -98,6 +103,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
+            contribution: Default::default(),
             version: 1,
             device_id: String::new(),
             public_key_fingerprint: None,
@@ -151,7 +157,13 @@ pub fn config_dir() -> PathBuf {
 }
 
 pub fn config_path() -> PathBuf {
-    config_dir().join("config.json")
+    let home = config_dir().join("config.json");
+    let local = PathBuf::from(".opengpu").join("config.json");
+    if std::env::var_os("OPENGPU_HOME").is_none() && !home.exists() && local.exists() {
+        local
+    } else {
+        home
+    }
 }
 
 pub fn agent_state_path() -> PathBuf {
@@ -179,6 +191,12 @@ pub fn load_agent_config() -> std::io::Result<Option<AgentConfig>> {
     let raw = fs::read_to_string(path)?;
     let mut config: AgentConfig = serde_json::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if config.contributed_cluster.as_ref().map(|cluster|
+        cluster_policy::unsupported_runtime(&cluster.kind, &cluster.base_url)
+    ).unwrap_or(false) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+            "PAIR contribution is not enabled until serving-node capacity can be enforced; choose a direct engine."));
+    }
     if migrate_control_plane_url(&mut config.control_plane_url) {
         save_agent_config(&config)?;
     }
@@ -308,6 +326,21 @@ mod tests {
         let _ = fs::remove_dir_all(temp);
     }
 
+    #[test]
+    fn refuses_saved_unsupported_cluster_without_rewriting_it() {
+        with_temp_home(|| {
+            let mut value = serde_json::to_value(AgentConfig::default()).unwrap();
+            value["contributed_cluster"] = serde_json::json!({
+                "kind": "nvidia-pair", "base_url": "http://localhost:9999"
+            });
+            let original = serde_json::to_string(&value).unwrap();
+            fs::write(config_path(), &original).unwrap();
+            let error = load_agent_config().unwrap_err();
+            assert!(error.to_string().contains("not enabled"));
+            assert_eq!(fs::read_to_string(config_path()).unwrap(), original);
+        });
+    }
+
     fn heartbeat(updated_at: &str) -> Heartbeat {
         Heartbeat {
             node_id: "node-1".to_string(),
@@ -325,6 +358,7 @@ mod tests {
             policy_allowed: true,
             policy_reason: None,
             worker_health: WorkerHealthReport {
+            media_profiles: vec![], media_budget_bytes: 0,
                 healthy: true,
                 model_dir: "/tmp/models".to_string(),
                 model_name: Some("llama3.1:8b".to_string()),

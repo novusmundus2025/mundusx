@@ -120,6 +120,7 @@ create_manifest() {
   vulkan_runtime_checksum=""
   case "$binary_name" in
     opengpu-*.exe) vulkan_runtime_name="llama-runtime-x86_64-pc-windows-msvc-vulkan.zip" ;;
+    opengpu-x86_64-unknown-linux-gnu) vulkan_runtime_name="llama-runtime-x86_64-unknown-linux-gnu-vulkan.tar.gz" ;;
   esac
   if [ -n "$vulkan_runtime_name" ] && [ -f "$artifact_dir/$vulkan_runtime_name" ]; then
     vulkan_runtime_checksum="$(checksum_for_binary "$vulkan_runtime_name")"

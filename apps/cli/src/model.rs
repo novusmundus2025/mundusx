@@ -524,10 +524,12 @@ fn download_model_from_option(
     if is_local_source {
         let source_path = option.source_url.trim_start_matches("file://");
         eprintln!("model download: copying `{name}` from {source_path}");
+        let _progress = crate::operation_progress::OperationProgress::start(format!("Copying local model: {name}"));
         fs::copy(source_path, &tmp)?;
     } else {
         eprintln!("model download: starting `{name}`");
         eprintln!("model download: {}", option.source_url);
+        let _progress = crate::operation_progress::OperationProgress::start(format!("Downloading model: {name} (curl reports transfer progress below)"));
         let status = Command::new("curl")
             .args([
                 "-fL",
@@ -566,6 +568,7 @@ fn download_model_from_option(
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
+    let _progress = crate::operation_progress::OperationProgress::start(format!("Verifying model checksum: {}", path.file_name().unwrap_or_default().to_string_lossy()));
     let expected = expected.trim();
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -773,7 +776,20 @@ fn write_models(config: &Config, models: &[ModelRecord]) -> io::Result<()> {
 
     for model in models {
         let path = manifest_path(config, &model.name);
-        let data = serde_json::to_string_pretty(model).expect("model serialization");
+        let mut metadata = serde_json::to_value(model).expect("model serialization");
+        if let Some(previous) = fs::read_to_string(&path).ok().and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) {
+            for field in ["task_capabilities", "supports_vision", "supports_embeddings", "supports_tools"] {
+                if let Some(value) = previous.get(field) { metadata[field] = value.clone(); }
+            }
+        }
+        if let Some(option) = lookup_model_for_backend(&model.name, config.backend_preference) {
+            if let Some(capabilities) = option.capabilities.as_object() {
+                for field in ["task_capabilities", "supports_vision", "supports_embeddings", "supports_tools"] {
+                    if let Some(value) = capabilities.get(field) { metadata[field] = value.clone(); }
+                }
+            }
+        }
+        let data = serde_json::to_string_pretty(&metadata).expect("model serialization");
         fs::write(&path, format!("{data}\n"))?;
     }
 
@@ -920,6 +936,8 @@ mod tests {
         fs::write(&source_path, b"model-bytes").expect("write source");
 
         let option = crate::model_catalog::ModelOption {
+            supported_os: Vec::new(),
+            capabilities: serde_json::Value::Null,
             name: "Test/OpenModel".to_string(),
             label: "Test Open Model".to_string(),
             notes: "local test source".to_string(),
@@ -980,6 +998,8 @@ mod tests {
         let (config, temp_dir) = temp_config();
 
         let option = crate::model_catalog::ModelOption {
+            supported_os: Vec::new(),
+            capabilities: serde_json::Value::Null,
             name: "Test/RemoteModel".to_string(),
             label: "Test Remote Model".to_string(),
             notes: "remote test source".to_string(),

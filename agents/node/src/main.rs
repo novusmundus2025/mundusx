@@ -1,9 +1,21 @@
+#[path = "../../../packages/media-runtime.rs"]
+mod media_runtime;
+#[path = "../../../packages/operation-progress.rs"]
+mod operation_progress;
+mod media_process;
+#[path = "../../../packages/vllm-model-profile.rs"]
+mod vllm_model_profile;
+#[path = "../../../packages/media-drain.rs"]
+mod media_drain;
 mod contracts;
+#[path = "../../../packages/contribution-contract.rs"]
+mod contribution_contract;
 mod http;
 mod identity;
 mod local_api;
 mod storage;
 mod worker;
+mod mlx_context;
 
 use clap::{Parser, Subcommand};
 use contracts::{
@@ -216,9 +228,9 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
     let model_dir = config.effective_model_dir();
     let mut health = worker::probe_worker_health(
         &model_dir,
-        config.active_model.as_deref(),
+        config.active_model.as_deref().filter(|_| config.contribution.llm_enabled()),
         resolved_backend(config),
-        config.contributed_cluster.as_ref(),
+        config.contributed_cluster.as_ref().filter(|_| config.contribution.llm_enabled()),
     );
     // A contributor limit can donate fewer slots, but it must never raise the
     // safe capacity derived from memory or reported by an external runtime.
@@ -242,6 +254,21 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
         .map(|requested| requested.min(u32::from(runtime_ceiling)) as u8)
         .unwrap_or(runtime_ceiling)
         .max(1);
+    let verified = media_runtime::verified_profiles(&storage::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent);
+    health.media_profiles = verified.into_iter().filter(|id| {
+        config.contribution.operations.contains(&if id.starts_with("qwen-") { contribution_contract::Operation::TextToImage } else if id.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo })
+    }).collect();
+    health.media_budget_bytes = media_runtime::memory::MediaBudget::detect(config.contribution_percent).contribution_budget_bytes.unwrap_or(0);
+    if !config.contribution.llm_enabled() {
+        health.runtime_mode = "media".into();
+        let device_ready = (health.cuda_driver_available && health.cuda_device_available)
+            || (resolved_backend(config) == Backend::M && (health.blas_device_available || health.mlx_available));
+        health.healthy = !health.media_profiles.is_empty() && device_ready;
+        health.parallel_slots = 1;
+        health.model_name = None; health.model_path = None;
+        health.notes = vec!["Media-only runtime; verified profiles determine readiness".into()];
+        health.supported_runtime_modes.clear();
+    }
     let policy = worker::probe_worker_policy(&health, config.contribution_percent);
     (health, policy)
 }
@@ -393,6 +420,7 @@ fn build_capabilities(
         }),
     };
 
+    let active_model = active_model.filter(|_| config.contribution.llm_enabled());
     let mut ready_for_jobs = policy_allowed && health.healthy;
     let mut readiness_reason = None;
     match active_model.as_ref() {
@@ -418,6 +446,13 @@ fn build_capabilities(
         readiness_reason = Some("worker policy does not allow jobs".to_string());
     } else if !health.healthy && readiness_reason.is_none() {
         readiness_reason = Some("worker health is degraded".to_string());
+    }
+
+    if !config.contribution.llm_enabled() {
+        ready_for_jobs = false;
+        readiness_reason = Some(
+            "LLM contribution disabled; image/video jobs use the media queue".into(),
+        );
     }
 
     NodeCapabilityAdvertisement {
@@ -529,22 +564,37 @@ fn enrich_model_capability(
             .any(|value| value.to_ascii_lowercase().contains(needle))
     };
     let rank = capacity_rank(&model.capacity_class);
-    let coding = name.contains("code") || name.contains("coder") || declared("code");
-    let mut tasks = vec!["chat".to_string(), "math".to_string()];
-    let mut roles = vec![NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis];
+    let coding = name.contains("code") || name.contains("coder") || declared("code") || declared("coding");
+    // Keep reviewed/runtime-declared skills. Enrichment must not erase them.
+    let mut tasks = model.task_capabilities.iter().map(|task| task.trim().to_ascii_lowercase())
+        .filter(|task| !task.is_empty()).collect::<Vec<_>>();
+    let mut roles = model.roles.clone();
+    let embedding_only = (model.supports_embeddings || declared("embed") || name.contains("embed"))
+        && !tasks.iter().any(|task| task == "chat") && !declared("chat");
+    if embedding_only {
+        model.supports_embeddings = true;
+        model.task_capabilities = vec!["embedding".to_string()];
+        model.roles = vec![NodeRole::Embedding];
+        return model;
+    }
+    tasks.extend(["chat".to_string(), "math".to_string()]);
+    roles.extend([NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis]);
     if rank >= capacity_rank("standard") {
         tasks.push("reasoning".to_string());
     }
     if !name.contains("embed") || coding {
-        tasks.push("small_coding".to_string());
+        // General code generation is not a measured small-project ceiling.
+        tasks.push("coding".to_string());
         roles.push(NodeRole::Coding);
     }
     if rank >= capacity_rank("performance") {
-        tasks.extend(["medium_coding".to_string(), "research".to_string()]);
+        if coding { tasks.push("medium_coding".to_string()); }
+        tasks.push("research".to_string());
         roles.push(NodeRole::Reducer);
     }
     if rank >= capacity_rank("heavy") {
-        tasks.extend(["large_coding".to_string(), "synthesizer".to_string()]);
+        if coding { tasks.push("large_coding".to_string()); }
+        tasks.push("synthesizer".to_string());
         roles.push(NodeRole::Synthesizer);
     }
     model.supports_tools |= cluster_supports_tools || declared("tool");
@@ -552,17 +602,27 @@ fn enrich_model_capability(
         tasks.push("tool_use".to_string());
         roles.push(NodeRole::ToolUse);
     }
-    if declared("vision") {
+    if model.supports_vision || declared("vision") || vllm_model_profile::is_muse_glimmer(&model.name) {
+        model.supports_vision = true;
         tasks.push("vision".to_string());
         roles.push(NodeRole::Vision);
     }
-    if declared("embed") || name.contains("embed") {
+    if model.supports_embeddings || declared("embed") || name.contains("embed") {
+        model.supports_embeddings = true;
         tasks.push("embedding".to_string());
         roles.push(NodeRole::Embedding);
     }
     if model.supports_structured_output || declared("structured") || declared("json") {
         tasks.push("structured_output".to_string());
         model.supports_structured_output = true;
+    }
+    for task in &tasks {
+        match task.as_str() {
+            "small_coding" | "medium_coding" | "large_coding" => roles.push(NodeRole::Coding),
+            "research" => roles.push(NodeRole::ChunkAnalysis),
+            "synthesizer" => roles.extend([NodeRole::Reducer, NodeRole::Synthesizer]),
+            _ => {}
+        }
     }
     tasks.sort();
     tasks.dedup();
@@ -620,6 +680,14 @@ fn node_roles_for(
     roles.sort_by_key(|role| role.as_str());
     roles.dedup();
     roles
+}
+
+fn apply_served_model_context(models: &mut [contracts::ModelCapability], model: &str, context: u32) {
+    for entry in models.iter_mut().filter(|entry| entry.name == model) {
+        entry.context_tokens = Some(context);
+        entry.max_output_tokens = None;
+        entry.output_capacity_mode = Some("context_window".to_string());
+    }
 }
 
 fn build_scheduler_capabilities(
@@ -684,13 +752,35 @@ fn build_scheduler_capabilities(
     };
     for entry in &mut models {
         entry.warm |= entry.active && health.persistent_runtime_warm;
+        if cluster.is_none() && backend == Backend::M {
+            if let Some(context) = mlx_context::context_tokens(
+                entry,
+                &config.effective_model_dir(),
+                capabilities.physical_memory_mb.unwrap_or_else(detect_memory_mb),
+                config.contribution_percent,
+                health.parallel_slots,
+            ) {
+                entry.context_tokens = Some(context);
+                entry.max_output_tokens = None;
+                entry.output_capacity_mode = Some("context_window".into());
+            }
+        }
         *entry = enrich_model_capability(
             entry.clone(),
             &capabilities.capacity_class,
             cluster_capabilities,
             cluster.and_then(|entry| entry.model_context_tokens),
-            cluster_supports_tools,
+            cluster_supports_tools
+                || (cluster.is_none() && backend == Backend::M && health.persistent_runtime_warm
+                    && worker::managed_mlx_tools_verified(&entry.name)),
         );
+    }
+    if cluster.is_none() && health.runtime_mode == "vllm" && health.healthy {
+        if let Some(model) = health.model_name.as_deref() {
+            if let Some(context) = worker::served_vllm_context_tokens(model) {
+                apply_served_model_context(&mut models, model, context);
+            }
+        }
     }
     let context_tokens = models.iter().filter_map(|entry| entry.context_tokens).max();
     let available_vram_mb = capabilities
@@ -699,14 +789,6 @@ fn build_scheduler_capabilities(
         .or(health.cuda_memory_mb);
     let total_vram_mb = capabilities.physical_vram_mb.or(health.cuda_memory_mb);
     let current_load_percent = Some(100_u8.saturating_sub(available_gpu_percent.min(100) as u8));
-    // A contributed cluster node has no local active model, so the name-derived
-    // flags must come from the model the cluster advertises.
-    let active_model_name = model
-        .as_ref()
-        .map(|entry| entry.name.clone())
-        .or_else(|| config.active_model.clone())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
     // The runtime tells us what its model can do, so prefer that over guesswork.
     let advertised_capabilities: Vec<String> = cluster
         .map(|cluster| {
@@ -738,6 +820,7 @@ fn build_scheduler_capabilities(
     // Two signals: capabilities the listing advertises, and — for vLLM, which
     // publishes no capability array — a loaded tool-call parser.
     let supports_tools = advertises("tool")
+        || models.iter().any(|model| model.active && model.supports_tools)
         || cluster
             .map(|cluster| cluster.supports_tool_calls)
             .unwrap_or(false);
@@ -746,15 +829,25 @@ fn build_scheduler_capabilities(
         supported_tools.push("tool_use".to_string());
         supported_tools.push("native_tool_calls_v1".to_string());
     }
-    if roles.contains(&NodeRole::Coding) {
-        supported_tools.push("repository".to_string());
-    }
     supported_tools.sort();
     supported_tools.dedup();
+    let supports_vision = models.iter().any(|model| model.supports_vision);
+    let supports_embeddings = models.iter().any(|model| model.supports_embeddings);
 
     NodeCapabilityProfile {
+        execution: Some(contribution_contract::ExecutionCapabilities {
+            contract_version: 1,
+            operations: {
+                let mut operations = if config.contribution.llm_enabled() { vec![contribution_contract::Operation::Llm] } else { vec![] };
+                for profile in &health.media_profiles {
+                    let operation = if profile.starts_with("qwen-") { contribution_contract::Operation::TextToImage } else if profile.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo };
+                    if !operations.contains(&operation) { operations.push(operation); }
+                }
+                operations
+            },
+        }),
         schema_version: capabilities.schema_version,
-        models,
+        models: if config.contribution.llm_enabled() { models } else { vec![] },
         physical_memory_mb: capabilities.physical_memory_mb,
         usable_memory_mb: capabilities.usable_memory_mb,
         available_memory_mb: capabilities.available_memory_mb,
@@ -764,8 +857,8 @@ fn build_scheduler_capabilities(
         kv_cache_size_tokens: cluster.and_then(|entry| entry.kv_cache_tokens),
         total_vram_mb,
         available_vram_mb,
-        supports_vision: advertises("vision"),
-        supports_embeddings: advertises("embed") || active_model_name.contains("embed"),
+        supports_vision,
+        supports_embeddings,
         supports_tools,
         max_parallel_jobs: health.parallel_slots.max(1) as u32,
         current_load_percent,
@@ -815,6 +908,9 @@ fn build_heartbeat_with_state(config: &AgentConfig, agent_state: AgentState) -> 
 }
 
 fn resolved_backend(config: &AgentConfig) -> Backend {
+    if config.contributed_cluster.as_ref().is_some_and(|cluster| cluster.kind.eq_ignore_ascii_case("vllm")) {
+        return Backend::Vllm;
+    }
     if config.backend_preference == Backend::Auto {
         #[cfg(target_os = "macos")]
         {
@@ -830,7 +926,7 @@ fn resolved_backend(config: &AgentConfig) -> Backend {
             return Backend::Cuda;
         }
 
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         if worker::probe_vulkan_device().is_ok() {
             return Backend::Vulkan;
         }
@@ -987,10 +1083,19 @@ fn build_registration(config: &AgentConfig, identity: &DeviceIdentity) -> AgentR
 
 fn build_heartbeat(config: &AgentConfig) -> Heartbeat {
     let mut heartbeat = build_heartbeat_with_state(config, resolved_state(config));
-    if !heartbeat.capabilities.ready_for_jobs {
+    if heartbeat.agent_state == AgentState::Ready && !heartbeat_runtime_ready(&heartbeat) {
         heartbeat.agent_state = AgentState::Paused;
     }
     heartbeat
+}
+
+fn heartbeat_runtime_ready(heartbeat: &Heartbeat) -> bool {
+    heartbeat.capabilities.ready_for_jobs
+        || (heartbeat.worker_health.runtime_mode == "media"
+            && heartbeat.policy_allowed
+            && heartbeat.worker_health.healthy
+            && !heartbeat.worker_health.media_profiles.is_empty()
+            && heartbeat.worker_health.media_budget_bytes > 0)
 }
 
 fn heartbeat_from_snapshot(
@@ -1000,7 +1105,7 @@ fn heartbeat_from_snapshot(
 ) -> Heartbeat {
     let mut heartbeat = snapshot.clone();
     heartbeat.agent_state =
-        if agent_state == AgentState::Ready && !heartbeat.capabilities.ready_for_jobs {
+        if agent_state == AgentState::Ready && !heartbeat_runtime_ready(&heartbeat) {
             AgentState::Paused
         } else {
             agent_state
@@ -1009,6 +1114,23 @@ fn heartbeat_from_snapshot(
     heartbeat.available_gpu_percent = detect_available_gpu_percent(config);
     heartbeat.updated_at = now_unix_seconds();
     heartbeat.contribution_percent = config.contribution_percent;
+    heartbeat
+}
+
+fn media_heartbeat_from_snapshot(snapshot: &Heartbeat, config: &AgentConfig, home: &std::path::Path,
+                                 released: bool) -> Heartbeat {
+    let resident = media_drain::resident(home);
+    let state = if released && media_drain::active(home) { AgentState::Busy }
+        else if released && resident { AgentState::Ready } else { AgentState::Paused };
+    let mut heartbeat = heartbeat_from_snapshot(snapshot, config, state);
+    if state == AgentState::Busy || resident {
+        heartbeat.worker_health.runtime_mode = "media".into();
+        heartbeat.worker_health.parallel_slots = 1;
+        heartbeat.worker_health.capabilities.max_parallel_jobs = 1;
+        heartbeat.capabilities.parallel_slots = 1;
+        heartbeat.capabilities.ready_for_jobs = false;
+        if resident { heartbeat.worker_health.notes.push("Managed media runtime retained between requests".into()); }
+    }
     heartbeat
 }
 
@@ -1125,6 +1247,7 @@ fn build_worker_launch_request(
     seed: Option<u64>,
 ) -> WorkerLaunchRequest {
     WorkerLaunchRequest {
+        operation: crate::contribution_contract::Operation::Llm,
         job_id,
         node_id: config.device_id.clone(),
         backend: resolved_backend(config),
@@ -1267,6 +1390,9 @@ fn launch_worker_process(
     json: bool,
     delta_sender: Option<mpsc::Sender<String>>,
 ) -> Result<contracts::WorkerLaunchResponse, String> {
+    if !request.operation.is_llm() || !config.contribution.llm_enabled() {
+        return Err("Workload is not enabled for execution by this contributor".into());
+    }
     let (_, policy) = worker_readiness(config);
     if !policy.allowed {
         return Err(policy
@@ -1483,6 +1609,9 @@ fn print_worker_health(config: &AgentConfig, json: bool) {
 }
 
 fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<JobRecord> {
+    if config.contributed_cluster.as_ref().is_some_and(|cluster| !worker::cluster_selected_model_ready(cluster)) {
+        return None;
+    }
     let path = format!("/v1/jobs/next?node_id={}", config.device_id);
     // Hermes tool turns carry the conversation and tool schemas in the claim
     // response. A remote cluster needs more than the generic five-second HTTP
@@ -1676,6 +1805,7 @@ fn build_completion_from_worker_response(
 ) -> JobCompletion {
     let is_completed = response.status == "completed";
     JobCompletion {
+        token_usage: response.token_usage,
         job_id: response.job_id,
         node_id: response.node_id,
         worker_id: response.worker_id,
@@ -1710,6 +1840,7 @@ fn build_worker_error_completion(
     duration_ms: u64,
 ) -> JobCompletion {
     JobCompletion {
+        token_usage: Vec::new(),
         job_id: job.job_id.clone(),
         node_id: config.device_id.clone(),
         worker_id: "worker-failed".to_string(),
@@ -1759,6 +1890,7 @@ fn execute_claimed_job(
     _permit: local_api::SlotPermit,
 ) {
     let request = WorkerLaunchRequest {
+        operation: job.operation,
         job_id: job.job_id.clone(),
         node_id: config.device_id.clone(),
         backend: job.backend.unwrap_or_else(|| resolved_backend(&config)),
@@ -1855,6 +1987,7 @@ fn process_pending_jobs(
     slot_pool: Arc<local_api::SlotPool>,
     heartbeat_snapshot: &Heartbeat,
 ) {
+    if !config.contribution.llm_enabled() || media_drain::request(&storage::config_dir()).is_some() { return; }
     let identity = load_identity_or_exit();
     // Health probing can invoke slow external programs such as nvidia-smi and
     // contact a contributed runtime. The heartbeat path already performs those
@@ -1918,7 +2051,7 @@ fn process_pending_jobs(
             reap_finished_jobs(&mut handles);
 
             let refill_config = match load_agent_config() {
-                Ok(Some(latest)) if should_agent_run(&latest) => Some(latest),
+                Ok(Some(latest)) if should_agent_run(&latest) && media_drain::request(&storage::config_dir()).is_none() => Some(latest),
                 Ok(_) => None,
                 Err(error) => {
                     eprintln!("jobPoll: refill paused ({error})");
@@ -1984,7 +2117,7 @@ fn print_status(json: bool) {
     println!("heartbeatLogPath: {}", heartbeat_log_path().display());
     println!("nodeId: {}", config.device_id);
     println!("publicKeyFingerprint: {}", identity.fingerprint);
-    println!("backend: {}", config.backend_preference);
+    println!("backend: {}", resolved_backend(&config));
     println!("state: {}", state);
     println!("connected: {}", if config.connected { "yes" } else { "no" });
     println!("paused: {}", if config.paused { "yes" } else { "no" });
@@ -2000,7 +2133,7 @@ fn print_status(json: bool) {
 }
 
 fn should_keep_runtime_warm(config: &AgentConfig) -> bool {
-    should_agent_run(config)
+    config.contributed_cluster.is_none() && should_agent_run(config) && config.contribution.llm_enabled() && media_drain::request(&storage::config_dir()).is_none()
 }
 
 fn should_agent_run(config: &AgentConfig) -> bool {
@@ -2020,6 +2153,7 @@ fn probe_contributed_tool_capability(config: &AgentConfig) -> bool {
     let Some(cluster) = config.contributed_cluster.as_ref() else {
         return false;
     };
+    if !worker::cluster_selected_model_ready(cluster) { return false; }
     if cluster.supports_tool_calls {
         return true;
     }
@@ -2164,6 +2298,10 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             }
         }
     };
+    let mut media_drained = false;
+    let mut media_recovery: Option<thread::JoinHandle<()>> = None;
+    let mut last_media_recovery = Instant::now() - Duration::from_secs(30);
+    let mut media_release_confirmed = false;
     let registration = build_registration(&config, &identity);
     let heartbeat = build_heartbeat(&config);
     let mut heartbeat_snapshot = heartbeat.clone();
@@ -2174,11 +2312,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let mut tool_refresh_in_flight = false;
     let mut last_tool_refresh_started = Instant::now() - TOOL_CAPABILITY_REFRESH_INTERVAL;
     let state = resolved_state(&config);
-    let interval = if config.paused {
-        interval_seconds.max(30)
-    } else {
-        interval_seconds.max(5)
-    };
+    let interval = if config.paused { interval_seconds.max(30) } else { interval_seconds.max(5) };
 
     if json {
         let payload = serde_json::json!({
@@ -2195,7 +2329,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     println!("agentVersion: {}", env!("CARGO_PKG_VERSION"));
     println!("nodeId: {}", config.device_id);
     println!("publicKeyFingerprint: {}", identity.fingerprint);
-    println!("backend: {}", config.backend_preference);
+    println!("backend: {}", resolved_backend(&config));
     println!("state: {}", state);
     println!("intervalSeconds: {}", interval);
     println!("agentStatePath: {}", agent_state_path().display());
@@ -2207,6 +2341,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         persistent_runtime
             .as_ref()
             .map(|runtime| runtime.url())
+            .or_else(|| config.contributed_cluster.as_ref().map(|cluster| cluster.base_url.as_str()))
             .unwrap_or("batch")
     );
 
@@ -2234,16 +2369,9 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         clear_runtime_environment();
         eprintln_error_field("persistentRuntime", "stopped");
         std::process::exit(2);
-    } else {
-        process_pending_jobs(
-            &config,
-            json,
-            verbose,
-            !once,
-            slot_pool.clone(),
-            &heartbeat_snapshot,
-        );
     }
+    let mut media_worker = if once { None } else { Some(media_process::MediaProcess::start(&config)) };
+    process_pending_jobs(&config, json, verbose, !once, slot_pool.clone(), &heartbeat_snapshot);
 
     println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
@@ -2336,6 +2464,8 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             break;
         }
 
+        if let Some(worker) = media_worker.as_mut() { worker.maintain(&latest_config); }
+
         while let Ok(mut refreshed) = health_refresh_rx.try_recv() {
             // The health probe may have started before a native-tool probe
             // updated the config. Re-project it through the latest config so
@@ -2359,6 +2489,79 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             health_refresh_in_flight = true;
             last_health_refresh_started = Instant::now();
         }
+
+        if let Some(request_id) = media_drain::request(&storage::config_dir()) {
+            if media_recovery.as_ref().is_some_and(|handle| handle.is_finished()) {
+                if let Some(handle) = media_recovery.take() { let _ = handle.join(); }
+            }
+            if request_id == "container-recovery-required" && !media_drain::active(&storage::config_dir())
+                && media_recovery.is_none() && last_media_recovery.elapsed() >= Duration::from_secs(30) {
+                media_recovery = Some(thread::spawn(|| {
+                    if let Err(e) = media_process::cleanup_orphan_runtime() { eprintln!("mediaRecovery: {e}"); }
+                }));
+                last_media_recovery = Instant::now();
+            }
+            if slot_pool.active() > 0 {
+                if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
+                    let heartbeat = heartbeat_from_snapshot(&heartbeat_snapshot, &latest_config, AgentState::Busy);
+                    let _ = save_agent_state(&heartbeat);
+                    let _ = save_heartbeat(&heartbeat);
+                    send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+                    last_heartbeat_sent = Instant::now();
+                }
+                thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+            if !media_drained {
+                media_release_confirmed = if let Some(runtime) = persistent_runtime.as_mut() {
+                    match runtime.stop_for_media() {
+                        Ok(()) => true,
+                        Err(error) => { eprintln!("mediaDrain: {error}"); false }
+                    }
+                } else {
+                    !latest_config.contribution.llm_enabled() || !worker::external_runtime_blocks_media()
+                };
+                if !media_release_confirmed {
+                    eprintln!("mediaDrain: runtime memory release is unconfirmed; withholding media handoff");
+                }
+            }
+            media_drained = true;
+            // process_pending_jobs joins active requests before returning here.
+            if media_release_confirmed {
+                drop(persistent_runtime.take());
+                clear_runtime_environment();
+            }
+            if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
+                let heartbeat = media_heartbeat_from_snapshot(&heartbeat_snapshot, &latest_config,
+                    &storage::config_dir(), media_release_confirmed);
+                let _ = save_agent_state(&heartbeat);
+                let _ = save_heartbeat(&heartbeat);
+                send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+                last_heartbeat_sent = Instant::now();
+            }
+            if media_release_confirmed {
+                if let Err(error) = media_drain::acknowledge(&storage::config_dir(), &request_id) {
+                    eprintln!("mediaDrain: {error}");
+                }
+            }
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        if media_drained && persistent_runtime.is_none() && should_keep_runtime_warm(&latest_config) {
+            match worker::start_persistent_runtime(
+                &latest_config.effective_model_dir(), latest_config.active_model.as_deref(),
+                resolved_backend(&latest_config), worker_readiness(&latest_config).0.parallel_slots,
+            ) {
+                Ok(runtime) => {
+                    persistent_runtime = runtime;
+                    if let Some(runtime) = persistent_runtime.as_ref() {
+                        std::env::set_var(runtime.environment_variable(), runtime.url());
+                    }
+                }
+                Err(error) => eprintln!("persistentRuntime: resume failed ({error})"),
+            }
+        }
+        if media_drained { media_drained = false; }
 
         if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
             let heartbeat = heartbeat_from_snapshot(
@@ -2543,6 +2746,80 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn classification_keeps_embeddings_out_of_chat_and_coding() {
+        let model = enrich_model_capability(contracts::ModelCapability {
+            name: "large-embedding-32b".into(), ..Default::default()
+        }, "server", &[], Some(32768), false);
+        assert_eq!(model.task_capabilities, vec!["embedding"]);
+        assert_eq!(model.roles, vec![NodeRole::Embedding]);
+        assert!(model.supports_embeddings);
+    }
+
+    #[test]
+    fn classification_preserves_declared_skills_and_model_modalities() {
+        let model = enrich_model_capability(contracts::ModelCapability {
+            name: "custom-model".into(), task_capabilities: vec!["large_coding".into()],
+            supports_vision: true, ..Default::default()
+        }, "server", &[], Some(32768), false);
+        assert!(model.task_capabilities.contains(&"large_coding".into()));
+        assert!(model.roles.contains(&NodeRole::Coding));
+        assert!(model.roles.contains(&NodeRole::Vision));
+        assert!(model.supports_vision);
+    }
+
+    #[test]
+    fn contributed_vllm_advertises_serving_backend_and_general_coding() {
+        let mut config = cluster_config("muse-glimmer", Some(30_000_000_000), None);
+        config.backend_preference = Backend::Cuda;
+        let cluster = config.contributed_cluster.as_mut().unwrap();
+        cluster.kind = "vllm".into();
+        cluster.model_context_tokens = Some(90_000);
+        assert_eq!(resolved_backend(&config), Backend::Vllm);
+        assert!(!should_keep_runtime_warm(&config));
+        let health = cluster_health("muse-glimmer");
+        let capabilities = build_capabilities(&config, &health, true);
+        assert_eq!(capabilities.backend, Backend::Vllm);
+        let profile = build_scheduler_capabilities(&config, &health, &capabilities, 99640, 80);
+        assert_eq!(profile.models[0].context_tokens, Some(90_000));
+        assert!(profile.models[0].task_capabilities.contains(&"coding".into()));
+        assert!(profile.models[0].supports_vision);
+        assert!(!profile.models[0].task_capabilities.contains(&"small_coding".into()));
+    }
+
+    #[test]
+    fn classification_requires_specialization_for_large_coding() {
+        for (name, coding) in [("general-32b", false), ("qwen3-coder-30b", true)] {
+            let model = enrich_model_capability(contracts::ModelCapability {
+                name: name.into(), ..Default::default()
+            }, "server", &[], Some(32768), false);
+            assert_eq!(model.task_capabilities.contains(&"large_coding".into()), coding);
+        }
+        let config = cluster_config("qwen3-coder-30b", Some(30_000_000_000), None);
+        let health = cluster_health("qwen3-coder-30b");
+        let advertised = build_capabilities(&config, &health, true);
+        let profile = build_scheduler_capabilities(&config, &health, &advertised, 65536, 80);
+        assert!(!profile.supported_tools.contains(&"repository".into()));
+    }
+
+    #[test]
+    fn served_context_replaces_guesses_only_for_the_running_model() {
+        let mut models = vec![contracts::ModelCapability {
+            name: "Muse".into(), context_tokens: Some(4096), max_output_tokens: Some(4096),
+            ..Default::default()
+        }, contracts::ModelCapability {
+            name: "other".into(), context_tokens: Some(32768), ..Default::default()
+        }];
+        apply_served_model_context(&mut models, "Muse", 16384);
+        assert_eq!(models[0].context_tokens, Some(16384));
+        assert_eq!(models[0].max_output_tokens, None);
+        assert_eq!(models[0].output_capacity_mode.as_deref(), Some("context_window"));
+        assert_eq!(models[1].context_tokens, Some(32768));
+        // A smaller server limit must also override an optimistic model guess.
+        apply_served_model_context(&mut models, "Muse", 2048);
+        assert_eq!(models[0].context_tokens, Some(2048));
+    }
+
+    #[test]
     fn native_tool_probe_requires_the_expected_openai_tool_call() {
         assert!(native_tool_response_supported(&serde_json::json!({
             "choices": [{
@@ -2650,6 +2927,7 @@ mod tests {
 
     fn test_config() -> AgentConfig {
         AgentConfig {
+            contribution: Default::default(),
             version: 1,
             device_id: "node-1".to_string(),
             public_key_fingerprint: None,
@@ -3075,6 +3353,59 @@ mod tests {
     }
 
     #[test]
+    fn media_heartbeat_ready_without_llm_preserves_explicit_pause() {
+        let config = cluster_config("qwen3-coder", Some(80_000_000_000), None);
+        let mut health = cluster_health("qwen3-coder");
+        health.runtime_mode = "media".into();
+        health.healthy = true;
+        health.media_profiles = vec!["qwen-image-fp8-832x480-v1".into()];
+        health.media_budget_bytes = 100_000_000_000;
+        let mut capabilities = build_capabilities(&config, &health, true);
+        capabilities.ready_for_jobs = false;
+        let mut snapshot = Heartbeat {
+            node_id: config.device_id.clone(), backend: Backend::Cuda,
+            agent_state: AgentState::Ready, available_memory_mb: 8192,
+            available_gpu_percent: 100, updated_at: now_unix_seconds(),
+            contribution_percent: 80, hostname: "gx10-test".into(),
+            identity_trust_path: "test".into(), power_source: "ac".into(),
+            on_battery: false, battery_percent: None, policy_allowed: true,
+            policy_reason: None, worker_health: health, capabilities,
+        };
+        assert!(heartbeat_runtime_ready(&snapshot));
+        assert_eq!(heartbeat_from_snapshot(&snapshot, &config, AgentState::Ready).agent_state, AgentState::Ready);
+        assert_eq!(heartbeat_from_snapshot(&snapshot, &config, AgentState::Paused).agent_state, AgentState::Paused);
+        let home = std::env::temp_dir().join(format!("media-heartbeat-{}", uuid::Uuid::new_v4()));
+        let media = home.join("media");
+        std::fs::create_dir_all(media.join("lifecycle")).unwrap();
+        let owner = "0123456789abcdef0123456789abcdef";
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        std::fs::write(media.join("lifecycle/lease.json"), serde_json::json!({"owner":owner,"expires_at":now+120,
+            "pid":std::process::id(),"start_ticks":media_drain::process_stamp(std::process::id())}).to_string()).unwrap();
+        std::fs::write(media.join("active-container.json"), serde_json::json!({"persistent_owner":owner}).to_string()).unwrap();
+        let worker = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join("worker.lock")).unwrap();
+        worker.lock().unwrap();
+        let idle = media_heartbeat_from_snapshot(&snapshot, &config, &home, true);
+        assert_eq!(idle.agent_state, AgentState::Ready);
+        assert!(!idle.capabilities.ready_for_jobs);
+        assert_eq!(idle.worker_health.parallel_slots, 1);
+        assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, false).agent_state, AgentState::Paused);
+        let job = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join("job.lock")).unwrap();
+        job.lock().unwrap();
+        assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, true).agent_state, AgentState::Busy);
+        drop(job);
+        drop(worker);
+        assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, true).agent_state, AgentState::Paused);
+        std::fs::remove_dir_all(home).unwrap();
+        snapshot.policy_allowed = false;
+        assert!(!heartbeat_runtime_ready(&snapshot));
+        snapshot.policy_allowed = true;
+        snapshot.worker_health.media_profiles.clear();
+        assert!(!heartbeat_runtime_ready(&snapshot));
+        snapshot.worker_health.runtime_mode = "vllm".into();
+        assert!(!heartbeat_runtime_ready(&snapshot));
+    }
+
+    #[test]
     fn existing_runtime_tool_flag_is_migrated_to_the_model_scope() {
         let mut config = cluster_config("qwen3-coder", Some(80_000_000_000), None);
         let cluster = config
@@ -3211,6 +3542,7 @@ mod tests {
 
     fn test_health(backend: Backend) -> WorkerHealthReport {
         WorkerHealthReport {
+            media_profiles: vec![], media_budget_bytes: 0,
             healthy: true,
             model_dir: "/tmp/models".to_string(),
             model_name: Some("tiny-cuda".to_string()),
@@ -3271,6 +3603,7 @@ mod tests {
 
     fn test_job() -> JobRecord {
         JobRecord {
+            operation: crate::contribution_contract::Operation::Llm,
             job_id: "job-1".to_string(),
             request_id: "request-1".to_string(),
             prompt: "summarize".to_string(),
@@ -3330,6 +3663,7 @@ mod tests {
     #[test]
     fn completion_preserves_success_runtime_metadata() {
         let response = WorkerLaunchResponse {
+            token_usage: Vec::new(),
             job_id: "job-1".to_string(),
             worker_id: "worker-1".to_string(),
             status: "completed".to_string(),
@@ -3354,6 +3688,7 @@ mod tests {
     #[test]
     fn completion_converts_worker_failure_to_actionable_error() {
         let response = WorkerLaunchResponse {
+            token_usage: Vec::new(),
             job_id: "job-1".to_string(),
             worker_id: "worker-1".to_string(),
             status: "failed".to_string(),
@@ -3380,6 +3715,7 @@ mod tests {
     fn control_plane_completion_message_includes_reported_status() {
         let job = test_job();
         let completion = JobCompletion {
+            token_usage: Vec::new(),
             job_id: "job-1".to_string(),
             node_id: "node-1".to_string(),
             worker_id: "worker-1".to_string(),
@@ -3550,14 +3886,14 @@ mod tests {
         assert!(small.warm);
         assert!(small
             .task_capabilities
-            .contains(&"small_coding".to_string()));
+            .contains(&"coding".to_string()));
         assert!(!small
             .task_capabilities
             .contains(&"large_coding".to_string()));
         assert!(large
             .task_capabilities
-            .contains(&"small_coding".to_string()));
-        assert!(large
+            .contains(&"coding".to_string()));
+        assert!(!large
             .task_capabilities
             .contains(&"large_coding".to_string()));
         assert!(large.task_capabilities.contains(&"synthesizer".to_string()));

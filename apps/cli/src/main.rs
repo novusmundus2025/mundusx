@@ -1,6 +1,17 @@
+#[path = "../../../packages/operation-progress.rs"]
+mod operation_progress;
+#[path = "../../../packages/media-runtime.rs"]
+mod media_runtime;
+#[path = "../../../packages/vllm-model-profile.rs"]
+mod vllm_model_profile;
+mod media_worker;
+mod workload_picker;
 mod auth_token;
 mod cluster;
 mod config;
+mod contribution;
+#[path = "../../../packages/contribution-contract.rs"]
+mod contribution_contract;
 mod identity;
 mod model;
 mod model_catalog;
@@ -76,7 +87,7 @@ const PUBLIC_CONTROL_PLANE_URL: &str = "https://control.mundusx.ai";
 #[derive(Parser, Debug)]
 #[command(
     name = "opengpu",
-    version = "0.2.12",
+    version,
     about = "MundusX CLI",
     arg_required_else_help = true
 )]
@@ -86,6 +97,28 @@ struct Cli {
     theme: theme::ThemeSelection,
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum InferenceConnection { Managed, Direct, Pair }
+
+#[derive(Subcommand, Debug)]
+enum MediaCommands {
+    /// Serve queued image and video requests using this contributor identity
+    Serve { #[arg(long, default_value = "https://chat.mundusx.ai")] server: String, #[arg(long)] once: bool },
+    /// Upload a generated PNG or MP4 using a scoped ticket from the requesting user's web session
+    Upload {
+        #[arg(long)] file: PathBuf,
+        #[arg(long)] ticket: PathBuf,
+        #[arg(long)] server: Option<String>,
+    },
+    Plan,
+    Setup { #[arg(long)] yes: bool },
+    Verify { #[arg(long)] input_image: Option<PathBuf> },
+    Generate { #[arg(long)] prompt: String, #[arg(long, default_value_t = 42)] seed: u64, #[arg(long)] input_image: Option<PathBuf> },
+    Status,
+    /// Stop only an OpenGPU-owned media container left after an interrupted run
+    Stop,
 }
 
 #[derive(Subcommand, Debug)]
@@ -113,9 +146,54 @@ enum Commands {
         /// Probe this cluster endpoint instead of the well-known local ports
         #[arg(long)]
         cluster_url: Option<String>,
+        /// Choose managed models, a direct engine, or PAIR endpoint validation.
+        #[arg(long, value_enum, conflicts_with_all = ["contribute_cluster", "no_contribute_cluster"])]
+        connection: Option<InferenceConnection>,
+        /// Exact external model ID; never substituted by another model.
+        #[arg(long, requires = "connection")]
+        cluster_model: Option<String>,
         /// Concurrent jobs to accept on a contributed cluster (skips the prompt)
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=64))]
         max_jobs: Option<u32>,
+        /// Contribution workloads: llm, image, video, or all
+        #[arg(long)]
+        workloads: Option<String>,
+        /// Existing ComfyUI endpoint to inspect (never grants runtime ownership)
+        #[arg(long)]
+        comfyui_url: Option<String>,
+        /// Prepare and verify selected Qwen image and Wan video runtimes
+        #[arg(long)]
+        setup_media: bool,
+        /// Accept the displayed media download/setup plan
+        #[arg(long, requires = "setup_media")]
+        yes: bool,
+    },
+    /// Manage local Qwen image and Wan video workers
+    Media {
+        /// Select the bounded Wan video profile instead of Qwen image
+        #[arg(long, global = true, group = "media_video_profile")]
+        video: bool,
+        /// Select Wan image-to-video with PNG input
+        #[arg(long, global = true, conflicts_with = "video", group = "media_video_profile")]
+        image_to_video: bool,
+        /// Four-step Lightning video at 832x480 (default for video)
+        #[arg(long, global = true, requires = "media_video_profile")]
+        fast: bool,
+        /// Use the regular video profile instead of Lightning
+        #[arg(long, global = true, requires = "media_video_profile", conflicts_with = "fast")]
+        quality: bool,
+        /// Video duration: any integer from 1 to 10 seconds
+        #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=10))]
+        seconds: u8,
+        #[command(subcommand)]
+        command: MediaCommands,
+    },
+    /// Show selected workloads and execution support; optionally probe ComfyUI
+    Capabilities {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        probe: bool,
     },
     /// Start the MundusX network
     Start {
@@ -405,7 +483,13 @@ enum JobsCommands {
 }
 
 fn current_config_or_default() -> Config {
-    load_config().ok().flatten().unwrap_or_default()
+    match load_config() {
+        Ok(config) => config.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("Cannot load configuration {}: {error}. Fix this file before retrying; saved settings have not been replaced.", resolved_config_path().display());
+            std::process::exit(1);
+        }
+    }
 }
 
 fn clear_menu_screen() {
@@ -435,6 +519,9 @@ fn drain_pending_terminal_events() {
 }
 
 fn resolved_backend(config: &Config) -> Backend {
+    if config.contributed_cluster.as_ref().is_some_and(|cluster| cluster.kind.eq_ignore_ascii_case("vllm")) {
+        return Backend::Vllm;
+    }
     if config.backend_preference.is_auto() {
         detect_backend()
     } else {
@@ -454,6 +541,56 @@ fn display_public_key_fingerprint(config: &Config) -> String {
         })
         .or_else(identity_metadata_fingerprint)
         .unwrap_or_else(|| "unset".to_string())
+}
+
+fn fast_video_selected(video: bool, image_to_video: bool, fast: bool, quality: bool) -> bool {
+    fast || ((video || image_to_video) && !quality)
+}
+
+#[cfg(test)]
+mod contributed_backend_tests {
+    use super::*;
+    #[test]
+    fn fast_media_requires_image_to_video() {
+        assert!(Cli::try_parse_from(["opengpu", "media", "--fast", "plan"]).is_err());
+        assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--fast", "plan"]).is_ok());
+        let cli = Cli::try_parse_from(["opengpu", "media", "--image-to-video", "--fast", "plan"]).unwrap();
+        assert!(matches!(cli.command, Commands::Media { image_to_video: true, fast: true, .. }));
+    }
+
+    #[test]
+    fn video_defaults_to_fast_for_every_supported_duration() {
+        for mode in ["--video", "--image-to-video"] {
+            for seconds in 1..=10 {
+                let duration = seconds.to_string();
+                for quality_requested in [false, true] {
+                    let mut args = vec!["opengpu", "media", mode, "--seconds", &duration, "plan"];
+                    if quality_requested { args.insert(args.len() - 1, "--quality"); }
+                    let Commands::Media { video, image_to_video, fast, quality, seconds: parsed, .. } = Cli::try_parse_from(args).unwrap().command else { panic!("media command"); };
+                    assert_eq!(parsed, seconds);
+                    assert_eq!(fast_video_selected(video, image_to_video, fast, quality), !quality_requested);
+                }
+            }
+            for seconds in ["0", "11", "1.5"] {
+                assert!(Cli::try_parse_from(["opengpu", "media", mode, "--seconds", seconds, "plan"]).is_err());
+            }
+            assert!(Cli::try_parse_from(["opengpu", "media", mode, "--fast", "--quality", "plan"]).is_err());
+        }
+        assert!(!fast_video_selected(false, false, false, false));
+        assert!(Cli::try_parse_from(["opengpu", "media", "--quality", "plan"]).is_err());
+    }
+
+    #[test]
+    fn vllm_connection_takes_precedence_over_host_backend() {
+        let mut config = Config::default();
+        config.backend_preference = Backend::Cuda;
+        config.contributed_cluster = Some(serde_json::from_value(serde_json::json!({
+            "kind":"vllm", "base_url":"http://127.0.0.1:8000"
+        })).unwrap());
+        assert_eq!(resolved_backend(&config), Backend::Vllm);
+        config.contributed_cluster = None;
+        assert_eq!(resolved_backend(&config), Backend::Cuda);
+    }
 }
 
 fn display_public_key_hex(config: &Config) -> String {
@@ -594,13 +731,6 @@ fn cuda_doctor_payload(
         );
     }
 
-    if os == "windows" {
-        notes.push(
-            "LM Studio can be used on Windows without the full CUDA developer toolkit when its local OpenAI-compatible endpoint and loaded model probe successfully"
-                .to_string(),
-        );
-    }
-
     if backend != Backend::Cuda {
         notes.push(format!(
             "selected backend is {}; CUDA diagnostics are informational unless CUDA is selected",
@@ -631,7 +761,6 @@ fn cuda_doctor_payload(
         "cuda_vram_mb": memory_mb,
         "cuda_low_vram_profile": low_vram_profile,
         "runtime_readiness": readiness,
-        "lm_studio_without_cuda_toolkit_supported": os == "windows",
         "notes": notes,
         "name_probe_error": name_query.err(),
         "memory_probe_error": memory_query.err(),
@@ -2959,7 +3088,7 @@ fn local_readiness(
             .clone()
             .or_else(|| Some("active model is not compatible with this node".to_string()))
     } else {
-        None
+        Some("runtime readiness has not been confirmed by the node agent".to_string())
     };
 
     LocalReadiness {
@@ -3494,7 +3623,7 @@ fn terminal_line_endings(bytes: &[u8], previous_was_carriage_return: &mut bool) 
     rendered
 }
 
-fn relay_background_startup_output(log_path: &Path, offset: &mut u64) -> Result<(), String> {
+fn relay_background_startup_output(log_path: &Path, offset: &mut u64, waiting: &mut Option<operation_progress::OperationProgress>) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .read(true)
         .open(log_path)
@@ -3505,12 +3634,14 @@ fn relay_background_startup_output(log_path: &Path, offset: &mut u64) -> Result<
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|error| format!("failed to tail agent log `{}`: {error}", log_path.display()))?;
-    *offset = offset.saturating_add(bytes.len() as u64);
+    let Some(end) = bytes.iter().rposition(|b| matches!(b, b'\r' | b'\n')) else { return Ok(()); };
+    *offset = offset.saturating_add((end + 1) as u64);
 
-    for line in String::from_utf8_lossy(&bytes).split(['\r', '\n']) {
+    for line in String::from_utf8_lossy(&bytes[..=end]).split(['\r', '\n']) {
         let line = line.trim();
-        if line.starts_with("vllmStartup:") {
-            println!("{line}");
+        if line.starts_with("vllmStartup:") || line.starts_with("operationProgress:") {
+            drop(waiting.take());
+            eprintln!("{line}");
         }
     }
     Ok(())
@@ -3538,6 +3669,8 @@ fn wait_for_background_agent_startup(
     mut log_offset: u64,
     previous_state: Option<&str>,
 ) -> Result<(), String> {
+    let mut waiting = Some(operation_progress::OperationProgress::start("Waiting for first startup report from node agent"));
+    let mut error_offset = std::fs::metadata(error_log_path).map(|meta| meta.len()).unwrap_or_default();
     let timeout_seconds = env::var("OPENGPU_AGENT_START_TIMEOUT_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -3545,7 +3678,8 @@ fn wait_for_background_agent_startup(
         .unwrap_or(1800);
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
-        relay_background_startup_output(log_path, &mut log_offset)?;
+        relay_background_startup_output(log_path, &mut log_offset, &mut waiting)?;
+        relay_background_startup_output(error_log_path, &mut error_offset, &mut waiting)?;
         if background_worker_is_healthy(previous_state) {
             theme::field("agent", theme::status("ready"));
             return Ok(());
@@ -3687,6 +3821,7 @@ fn run_node_agent_foreground(
 fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
     let agent = resolve_node_agent_executable();
     let mut command = Command::new(&agent);
+    if let Ok(cli) = std::env::current_exe() { command.env("OPENGPU_CLI_EXE", cli); }
     command.arg("run");
 
     report_stale_previous_session();
@@ -4087,14 +4222,14 @@ fn detect_backend() -> Backend {
         return Backend::Cuda;
     }
 
-    if env::consts::OS == "windows" {
+    if matches!(env::consts::OS, "windows" | "linux") {
         let llama_cli = env::var_os("OPENGPU_LLAMA_CLI")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 config::config_dir()
                     .join("runtimes")
                     .join("llama")
-                    .join("llama-cli.exe")
+                    .join(if cfg!(windows) { "llama-cli.exe" } else { "llama-cli" })
             });
         if Command::new(llama_cli)
             .arg("--list-devices")
@@ -4152,6 +4287,7 @@ fn install_profile_for(os: &str, arch: &str, backend: Backend) -> &'static str {
         ("macos", "aarch64", Backend::M) => "macos-aarch64-apple-silicon",
         ("windows", "x86_64", Backend::Cuda) => "windows-x86_64-cuda",
         ("windows", "x86_64", Backend::Vulkan) => "windows-x86_64-vulkan",
+        ("linux", "x86_64", Backend::Vulkan) => "linux-x86_64-vulkan",
         ("linux", "x86_64", Backend::Cuda) => "linux-x86_64-cuda",
         ("linux", "aarch64", Backend::Cuda) => "linux-aarch64-cuda",
         ("linux", "x86_64", Backend::Vllm) => "linux-x86_64-vllm",
@@ -4256,6 +4392,7 @@ fn install_macos_python3_if_missing() -> Result<(), String> {
 }
 
 fn run_checked_command(mut command: Command, action: &str) -> Result<(), String> {
+    let _progress = operation_progress::OperationProgress::start(action);
     let output = command
         .output()
         .map_err(|error| format!("{action} failed to launch: {error}"))?;
@@ -4274,6 +4411,7 @@ fn run_checked_command(mut command: Command, action: &str) -> Result<(), String>
 }
 
 fn run_streaming_command(mut command: Command, action: &str) -> Result<(), String> {
+    let _progress = operation_progress::OperationProgress::start(action);
     let status = command
         .status()
         .map_err(|error| format!("{action} failed to launch: {error}"))?;
@@ -4383,10 +4521,11 @@ fn prefetch_vllm_catalog_model(config: &Config, model: &str) -> Result<(), Strin
     }
 
     let docker = env::var_os("OPENGPU_DOCKER_BIN").unwrap_or_else(|| "docker".into());
-    let image = env::var("OPENGPU_VLLM_IMAGE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| vllm_runtime_config_value("VLLM_IMAGE"))
+    let image = vllm_model_profile::image_for(
+        model,
+        env::var("OPENGPU_VLLM_IMAGE").ok(),
+        vllm_runtime_config_value("VLLM_IMAGE"),
+    )
         .ok_or_else(|| {
             "the vLLM runtime image is not configured; run the Linux installer with --with-vllm"
                 .to_string()
@@ -4425,7 +4564,11 @@ fn prefetch_vllm_catalog_model(config: &Config, model: &str) -> Result<(), Strin
     if env::var_os("HF_TOKEN").is_some() {
         command.args(["-e", "HF_TOKEN"]);
     }
-    command.arg(image).args(["python3", "-c", script, model]);
+    if vllm_model_profile::is_muse_glimmer(model) {
+        command.args(["--entrypoint", "python3"]).arg(image).args(["-c", script, model]);
+    } else {
+        command.arg(image).args(["python3", "-c", script, model]);
+    }
     run_streaming_command(command, "prefetch vLLM model")?;
     println!("modelPrefetch: ready");
     Ok(())
@@ -4552,12 +4695,12 @@ fn detect_machine_profile() -> MachineProfile {
         arch: env::consts::ARCH,
         backend,
         install_profile: install_profile_for(env::consts::OS, env::consts::ARCH, backend),
-        cuda_gpu_name: if backend == Backend::Cuda {
+        cuda_gpu_name: if matches!(backend, Backend::Cuda | Backend::Vllm) {
             detect_cuda_gpu_name()
         } else {
             None
         },
-        cuda_vram_mb: if backend == Backend::Cuda {
+        cuda_vram_mb: if matches!(backend, Backend::Cuda | Backend::Vllm) {
             detect_cuda_vram_mb()
         } else {
             None
@@ -4697,7 +4840,7 @@ fn select_menu_option(
                     }
                     render_menu(selected);
                 }
-                KeyCode::Enter => break Some(selected),
+                KeyCode::Enter | KeyCode::Char(' ') => break Some(selected),
                 KeyCode::Esc => break None,
                 _ => {}
             },
@@ -4883,8 +5026,12 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
         Some((80, "maximum")),
         None,
     ];
-    let cluster_index = OPTIONS.len();
-    let row_count = OPTIONS.len() + usize::from(cluster_count > 0);
+    let mut options = OPTIONS.to_vec();
+    if !options.iter().flatten().any(|(percent, _)| *percent == default_percent) {
+        options.push(Some((default_percent, "current setting")));
+    }
+    let cluster_index = options.len();
+    let row_count = options.len() + usize::from(cluster_count > 0);
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let mut input = String::new();
@@ -4903,7 +5050,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
         return PromptOutcome::Selected(default_percent);
     }
 
-    let mut selected = OPTIONS
+    let mut selected = options
         .iter()
         .position(|option| {
             option
@@ -4921,7 +5068,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
         clear_menu_screen();
         raw_println!("{}", theme::menu_title("Contribution level"));
         raw_println!("{}", theme::menu_rule());
-        for (index, option) in OPTIONS.iter().enumerate() {
+        for (index, option) in options.iter().enumerate() {
             let is_selected = index == selected;
             let marker = theme::menu_marker(is_selected);
             match option {
@@ -4980,7 +5127,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
                         .and_then(|value| usize::try_from(value).ok())
                         .and_then(|value| value.checked_sub(1))
                     {
-                        if index < OPTIONS.len() {
+                        if index < options.len() {
                             selected = index;
                             render_menu(selected);
                         }
@@ -4990,7 +5137,7 @@ fn prompt_contribution_percent(default_percent: u8, cluster_count: usize) -> Pro
                     let _ = disable_raw_mode();
                     return PromptOutcome::UseCluster;
                 }
-                KeyCode::Enter => match OPTIONS[selected] {
+                KeyCode::Enter => match options[selected] {
                     Some((percent, _)) => break Some(percent),
                     None => {
                         let _ = disable_raw_mode();
@@ -5186,8 +5333,12 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
     } else {
         selectable_options_for(backend, gb, available_vram_mb)
     };
-    let allow_local_gguf = backend != Backend::Vllm;
+    let allow_local_gguf = !cfg!(target_os = "macos") && backend != Backend::Vllm;
     let choice_count = options.len() + usize::from(allow_local_gguf);
+    if choice_count == 0 {
+        eprintln!("No admin-allowed model variants fit this operating system, runtime and contribution budget.");
+        std::process::exit(1);
+    }
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return options
@@ -5256,7 +5407,7 @@ fn prompt_model_selection(config: &Config, backend: Backend) -> ModelChoice {
             raw_println!(
                 "{marker} {}",
                 theme::menu_label(
-                    format!("{}. Import local GGUF / LM Studio model", options.len() + 1),
+                    format!("{}. Import local GGUF model", options.len() + 1),
                     is_selected
                 )
             );
@@ -5724,6 +5875,11 @@ fn contribute_detected_cluster(
     cluster: &DetectedCluster,
     max_jobs: Option<u32>,
 ) {
+    let selected = choose_and_verify_model(cluster, None);
+    record_detected_cluster(config, &selected, max_jobs);
+}
+
+fn record_detected_cluster(config: &mut Config, cluster: &DetectedCluster, max_jobs: Option<u32>) {
     let contributed = contributed_cluster_from(cluster, None);
     if let Some(jobs) = max_jobs.filter(|value| *value > 0) {
         config.max_jobs = Some(jobs);
@@ -5911,21 +6067,8 @@ fn run_cluster_use(url: &str, model: Option<String>, max_jobs: Option<u32>) {
         std::process::exit(1);
     };
 
-    if let Some(requested) = model.as_ref() {
-        if !detected.models.is_empty()
-            && !detected.models.iter().any(|entry| &entry.name == requested)
-        {
-            eprintln!("clusterError: `{requested}` is not served by {base_url}");
-            eprintln!("clusterModels: {}", detected.model_names().join(", "));
-            std::process::exit(1);
-        }
-    }
-
-    if !detected.is_servable() && model.is_none() {
-        eprintln!("clusterError: {base_url} is running but advertises no model");
-        eprintln!("clusterHint: load a model in that runtime, or pass `--model <name>`");
-        std::process::exit(1);
-    }
+    let detected = choose_and_verify_model(&detected, model.as_deref());
+    let model = detected.primary_model().map(str::to_string);
 
     let mut config = current_config_or_default();
     let contributed = contributed_cluster_from(&detected, model);
@@ -6040,8 +6183,8 @@ fn print_start_preflight(config: &Config) {
     );
 
     if blockers.is_empty() {
-        theme::section("Ready to contribute");
-        theme::field("status", theme::status("ready"));
+        theme::section("LLM setup checks");
+        theme::field("status", "passed; runtime startup and network admission are checked by opengpu start");
         if config.contributed_cluster.is_some() {
             theme::note(
                 "This node serves work from the contributed cluster; the control plane must admit the `contributed-cluster` runtime mode",
@@ -6091,7 +6234,90 @@ fn run_init() -> Config {
     config
 }
 
+fn choose_inference_connection(
+    connection: Option<InferenceConnection>, mut url: Option<String>, legacy: Option<bool>,
+) -> (Option<InferenceConnection>, Option<String>) {
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let connection = connection.or_else(|| {
+        if !interactive || legacy.is_some() || url.is_some() { return None; }
+        let options = vec![
+            ("MundusX-managed runtime".into(), "Download or reuse a standalone model".into()),
+            ("Direct local engine".into(), "Reuse Ollama, LM Studio, vLLM or llama.cpp".into()),
+            ("NVIDIA PAIR cluster".into(), "Validate endpoint only; contribution is not enabled yet".into()),
+        ];
+        match select_menu_option(&["Choose one inference connection".into()], &options,
+            "Up/Down: move | Space or Enter: select | Esc: cancel", 0) {
+            Some(0) => Some(InferenceConnection::Managed),
+            Some(1) => Some(InferenceConnection::Direct),
+            Some(2) => Some(InferenceConnection::Pair),
+            _ => std::process::exit(0),
+        }
+    });
+    if connection == Some(InferenceConnection::Managed) && url.is_some() {
+        eprintln!("Managed runtime cannot be combined with --cluster-url.");
+        std::process::exit(2);
+    }
+    if matches!(connection, Some(InferenceConnection::Direct | InferenceConnection::Pair)) && url.is_none() {
+        if !interactive {
+            eprintln!("This connection requires --cluster-url <endpoint>.");
+            std::process::exit(2);
+        }
+        println!("Paste the endpoint URL (for PAIR, copy it from Endpoints):");
+        let mut line = String::new();
+        io::stdin().read_line(&mut line).expect("read endpoint");
+        url = cluster::normalize_base_url(&line);
+        if url.is_none() { eprintln!("A full http:// or https:// URL is required."); std::process::exit(2); }
+    }
+    (connection, url)
+}
+
+fn choose_and_verify_model(endpoint: &DetectedCluster, requested: Option<&str>) -> DetectedCluster {
+    let model = if let Some(model) = requested {
+        model.to_string()
+    } else if endpoint.models.len() == 1 {
+        endpoint.models[0].name.clone()
+    } else if !endpoint.models.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal() {
+        let options = endpoint.models.iter().map(|model| (model.label(), "Use this exact model".into())).collect::<Vec<_>>();
+        let index = select_menu_option(&["Choose the contribution model".into()], &options,
+            "Up/Down: move | Space or Enter: select | Esc: cancel", 0).unwrap_or_else(|| std::process::exit(0));
+        endpoint.models[index].name.clone()
+    } else {
+        eprintln!("Select an available model explicitly with --cluster-model (install) or --model (cluster use). For LM Studio, load the model first.");
+        std::process::exit(2);
+    };
+    if !endpoint.models.iter().any(|entry| entry.name == model) {
+        eprintln!("Selected model is not available: {model}"); std::process::exit(1);
+    }
+    if endpoint.kind == cluster::ClusterKind::LmStudio && !cluster::lmstudio_model_loaded(&endpoint.base_url, &model) {
+        eprintln!("LM Studio must report the selected model as loaded. Load it and enable its native model API.");
+        std::process::exit(1);
+    }
+    println!("Verifying selected model {model} with a short inference request...");
+    if let Err(error) = cluster::verify_inference(&endpoint.base_url, &model) {
+        eprintln!("Model verification failed: {error}"); std::process::exit(1);
+    }
+    let mut selected = endpoint.clone();
+    selected.models.retain(|entry| entry.name == model);
+    cluster::actively_verify_native_tools(std::slice::from_mut(&mut selected));
+    println!("Model responds successfully. External engine lifecycle remains under your control.");
+    selected
+}
+
+fn validate_pair_endpoint(url: Option<&str>, model: Option<&str>) {
+    let mut endpoint = url.and_then(cluster::probe_cluster).unwrap_or_else(|| {
+        eprintln!("PAIR endpoint did not return a model listing. Copy its URL from PAIR Endpoints.");
+        std::process::exit(1);
+    });
+    endpoint.kind = cluster::ClusterKind::OpenAiCompatible;
+    let selected = choose_and_verify_model(&endpoint, model);
+    println!("PAIR route verified: {} / {}", selected.base_url, selected.primary_model().unwrap_or(""));
+    eprintln!("PAIR contribution is not enabled: serving-node capacity and overlapping contributors cannot yet be enforced. Existing configuration was not changed. Use one direct local engine per contributor instead.");
+    std::process::exit(2);
+}
+
 fn run_install(
+    connection: Option<InferenceConnection>,
+    cluster_model: Option<String>,
     public: bool,
     private: bool,
     control_plane_url: Option<String>,
@@ -6099,11 +6325,46 @@ fn run_install(
     cluster_choice: Option<bool>,
     cluster_url: Option<String>,
     max_jobs: Option<u32>,
+    workloads: Option<String>,
+    comfyui_url: Option<String>,
+    setup_media: bool,
+    yes: bool,
 ) {
-    theme::banner(
-        "Set up this machine for OpenGPU",
-        "Private compute. Your limits. The MundusX network.",
-    );
+    theme::banner("Set up this machine for OpenGPU", "Private compute. Your limits. The MundusX network.");
+    // Reject malformed options before touching identity, config, or model downloads.
+    if let Some(value) = cap_percent {
+        if let Err(error) = normalize_contribution_percent(u16::from(value)) {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    }
+    if let Err(error) = workloads
+        .as_deref()
+        .map(contribution::parse_operations)
+        .transpose()
+        .and_then(|_| {
+            comfyui_url
+                .as_deref()
+                .map(contribution::validate_endpoint)
+                .transpose()
+        })
+    {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+    if connection == Some(InferenceConnection::Managed) && cluster_model.is_some() {
+        eprintln!("--cluster-model applies only to external connections."); std::process::exit(2);
+    }
+    let (connection, cluster_url) = choose_inference_connection(connection, cluster_url, cluster_choice);
+    if connection == Some(InferenceConnection::Pair) {
+        validate_pair_endpoint(cluster_url.as_deref(), cluster_model.as_deref());
+        return;
+    }
+    let cluster_choice = match connection {
+        Some(InferenceConnection::Managed) => Some(false),
+        Some(InferenceConnection::Direct) => Some(true),
+        _ => cluster_choice,
+    };
     let profile = detect_machine_profile();
     // A previous or interrupted setup can leave config.json behind without an
     // identity. Always create/validate secure identity independently, then make
@@ -6130,8 +6391,25 @@ fn run_install(
         config.max_jobs = Some(jobs);
     }
 
+    if connection == Some(InferenceConnection::Managed) {
+        config.contributed_cluster = None;
+        config.cluster_prompt_declined = true;
+    }
     // Probe up front so the cluster step after the cap has results ready.
-    let detected_clusters = detect_clusters_for_setup(cluster_url.as_deref());
+    theme::note("Checking for running model servers and clusters...");
+    let mut detected_clusters = if connection == Some(InferenceConnection::Managed) {
+        Vec::new()
+    } else { detect_clusters_for_setup(cluster_url.as_deref()) };
+    if connection == Some(InferenceConnection::Direct) {
+        let Some(endpoint) = cluster::preferred_cluster(&detected_clusters).cloned() else {
+            eprintln!("No model endpoint answered. Start the engine and check --cluster-url.");
+            std::process::exit(1);
+        };
+        let selected = choose_and_verify_model(&endpoint, cluster_model.as_deref());
+        detected_clusters = vec![selected];
+        config.contributed_cluster = Some(contributed_cluster_from(&detected_clusters[0], None));
+    }
+    theme::note(format!("Discovery complete: {} server(s) found", detected_clusters.len()));
 
     config.control_plane_url =
         resolve_install_control_plane_url(public, private, control_plane_url);
@@ -6145,12 +6423,22 @@ fn run_install(
         std::process::exit(1);
     }
 
-    let ranked_clusters = cluster::servable_clusters_by_size(&detected_clusters);
+    // Choose the cap before offering media: eligibility uses the capped budget.
+    let requested_llm = workloads.as_deref()
+        .and_then(|value| contribution::parse_operations(value).ok())
+        .map(|operations| operations.contains(&contribution_contract::Operation::Llm))
+        .unwrap_or(true);
+    let ranked_clusters = if requested_llm {
+        cluster::servable_clusters_by_size(&detected_clusters)
+    } else {
+        Vec::new()
+    };
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let mut contributed_from_menu = false;
 
-    let cluster_uses_automatic_cap = config.contributed_cluster.is_some()
-        || (cluster_choice == Some(true) && !ranked_clusters.is_empty());
+    let cluster_uses_automatic_cap = !interactive && requested_llm
+        && (config.contributed_cluster.is_some()
+            || (cluster_choice == Some(true) && !ranked_clusters.is_empty()));
     let selected_cap = if let Some(value) = cap_percent {
         match normalize_contribution_percent(u16::from(value)) {
             Ok(value) => Some(value),
@@ -6167,13 +6455,20 @@ fn run_install(
             detected.as_str()
         ));
         theme::note(contribution_semantics(detected));
-        let default_percent = default_contribution_percent(detected);
+        let default_percent = if config.contribution_percent > 0 {
+            config.contribution_percent
+        } else {
+            default_contribution_percent(detected)
+        };
         // The cluster list is reached from this menu, and Esc or "None" inside it
         // comes back here so the cap can still be chosen.
         loop {
-            match prompt_contribution_percent(default_percent, ranked_clusters.len()) {
+            match prompt_contribution_percent(default_percent, if connection.is_some() { 0 } else { ranked_clusters.len() }) {
                 PromptOutcome::Selected(value) => break Some(value),
-                PromptOutcome::Cancelled => break None,
+                PromptOutcome::Cancelled => {
+                    theme::note("Setup cancelled before model provisioning.");
+                    return;
+                },
                 PromptOutcome::UseCluster => match prompt_cluster_pick(&ranked_clusters) {
                     ClusterPickOutcome::Picked(index) => {
                         let chosen = ranked_clusters[index];
@@ -6202,24 +6497,31 @@ fn run_install(
         config.contribution_percent = value;
     }
 
-    let contributing_cluster = contributed_from_menu
-        || maybe_contribute_running_cluster(
+    if let Err(error) =
+        contribution::configure(&mut config, workloads.as_deref(), comfyui_url.as_deref())
+    {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+
+    let contributing_cluster = (contributed_from_menu && config.contribution.llm_enabled())
+        || (config.contribution.llm_enabled() && maybe_contribute_running_cluster(
             &mut config,
-            cluster_choice,
+            if connection == Some(InferenceConnection::Direct) { None } else { cluster_choice },
             cluster_url.as_deref(),
             Some(&detected_clusters),
             // Interactive installs ask through the contribution level menu.
             !interactive,
             max_jobs,
-        );
+        ));
 
-    if should_prompt_model_selection(&config) {
+    if config.contribution.llm_enabled() && !contributing_cluster && should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
         let choice = prompt_model_selection(&config, backend);
         apply_model_choice(&mut config, choice, true);
     }
 
-    if !contributing_cluster {
+    if config.contribution.llm_enabled() && !contributing_cluster {
         configure_macos_runtime(&mut config);
 
         // Managed runtimes are capacity-sized automatically. Small CUDA cards
@@ -6241,7 +6543,6 @@ fn run_install(
             );
         }
     }
-
     match save_config(&config) {
         Ok(path) => {
             let body = vec![
@@ -6256,7 +6557,9 @@ fn run_install(
                     profile
                         .cuda_vram_mb
                         .map(|value| format!("{value} MB"))
-                        .unwrap_or_else(|| "none detected".to_string())
+                        .unwrap_or_else(|| if profile.cuda_gpu_name.as_deref().is_some_and(|name| name.contains("GB10")) {
+                            "not reported by driver (GB10 uses unified memory)".to_string()
+                        } else { "not reported by driver".to_string() })
                 ),
                 format!("control plane: {}", config.control_plane_url),
                 format!(
@@ -6292,15 +6595,32 @@ fn run_install(
                     effective_active_model(&config).unwrap_or_else(|| "none".to_string())
                 ),
                 format!("config: {}", path.display()),
-                "next step: run `opengpu start`".to_string(),
+                if config.contribution.llm_enabled() {
+                    "next step: run `opengpu start`".to_string()
+                } else {
+                    "media selections saved; verify profiles, then run opengpu start for media-only admission".to_string()
+                },
             ];
+            if let Err(error) = contribution::install_media(&mut config, setup_media, yes) {
+                eprintln!("mediaSetup: {error}");
+                eprintln!("LLM settings are preserved. Run opengpu media verify after resolving the diagnostic.");
+                std::process::exit(1);
+            }
             print_retro_panel(
-                "INSTALL COMPLETE",
-                "machine setup saved",
+                "SETUP SAVED",
+                "configuration saved; use start to connect",
                 &body,
                 Color::Green,
             );
-            print_start_preflight(&config);
+            contribution::print_report(&config, false, config.contribution.comfyui_url.is_some());
+            if config.contribution.llm_enabled() {
+                print_start_preflight(&config);
+            }
+            if config.contribution.llm_enabled() {
+                theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
+            } else {
+                theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Media-only network serving requires verified profiles and control-plane admission. Set MUNDUSX_MEDIA_SERVER_URL for a private plane.");
+            }
         }
         Err(error) => {
             eprintln!("failed to save install setup: {error}");
@@ -6364,6 +6684,10 @@ fn verify_contributed_cluster(config: &mut Config) -> bool {
         return true;
     };
 
+    if cluster::policy::unsupported_runtime(&recorded.kind, &recorded.base_url) {
+        eprintln!("PAIR contribution is blocked until serving-node limits can be enforced.");
+        return false;
+    }
     let probe = cluster::probe_cluster(&recorded.base_url);
     let check = classify_contributed_cluster(Some(&recorded), probe);
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -6610,14 +6934,14 @@ fn run_start_or_connect(
         std::process::exit(1);
     }
 
-    maybe_contribute_running_cluster(
+    if config.contribution.llm_enabled() { maybe_contribute_running_cluster(
         &mut config,
         cluster_choice,
         cluster_url.as_deref(),
         None,
         false,
         max_jobs,
-    );
+    ); }
 
     if config.contributed_cluster.is_none() {
         let backend = resolved_backend(&config);
@@ -6633,12 +6957,12 @@ fn run_start_or_connect(
         }
     }
 
-    if should_prompt_model_selection(&config) {
+    if config.contribution.llm_enabled() && should_prompt_model_selection(&config) {
         let backend = resolved_backend(&config);
         let choice = prompt_model_selection(&config, backend);
         apply_model_choice(&mut config, choice, true);
     }
-    if let Some(active_model) = active_model_name(&config) {
+    if let Some(active_model) = active_model_name(&config).filter(|_| config.contribution.llm_enabled()) {
         let backend = resolved_backend(&config);
         if let Err(error) = ensure_catalog_model_fits_machine(&active_model, backend, &config) {
             eprintln!("{error}");
@@ -6702,8 +7026,16 @@ fn main() {
             contribute_cluster,
             no_contribute_cluster,
             cluster_url,
+            connection,
+            cluster_model,
             max_jobs,
+            workloads,
+            comfyui_url,
+            setup_media,
+            yes,
         } => run_install(
+            connection,
+            cluster_model,
             public,
             private,
             control_plane_url,
@@ -6711,7 +7043,46 @@ fn main() {
             cluster_choice_flag(contribute_cluster, no_contribute_cluster),
             cluster_url,
             max_jobs,
+            workloads,
+            comfyui_url,
+            setup_media,
+            yes,
         ),
+        Commands::Media { command, video, image_to_video, fast, quality, seconds } => {
+            if !(1..=10).contains(&seconds) { eprintln!("Video seconds must be an integer from 1 to 10"); std::process::exit(2); }
+            if let MediaCommands::Serve { server, once } = command {
+                if let Err(error) = media_worker::serve(server, once) { eprintln!("{error}"); std::process::exit(1); }
+                return;
+            }
+            let config = current_config_or_default();
+            let (action, mut extra) = match command {
+                MediaCommands::Serve { .. } => unreachable!(),
+                MediaCommands::Upload { file, ticket, server } => ("upload", vec![
+                    "--file".into(), file.to_string_lossy().into_owned(),
+                    "--ticket".into(), ticket.to_string_lossy().into_owned(),
+                    "--server".into(), server.unwrap_or_else(|| config.control_plane_url.clone()),
+                ]),
+                MediaCommands::Plan => ("plan", vec![]),
+                MediaCommands::Setup { yes } => ("setup", if yes { vec!["--yes".into()] } else { vec![] }),
+                MediaCommands::Verify { input_image } => ("verify", input_image.map(|p| vec!["--input-image".into(), p.to_string_lossy().into_owned()]).unwrap_or_default()),
+                MediaCommands::Status => ("status", vec![]),
+                MediaCommands::Stop => ("stop", vec![]),
+                MediaCommands::Generate { prompt, seed, input_image } => {
+                    let mut args = vec!["--prompt".into(), prompt, "--seed".into(), seed.to_string()];
+                    if let Some(path) = input_image { args.extend(["--input-image".into(), path.to_string_lossy().into_owned()]); }
+                    ("generate", args)
+                },
+            };
+            if image_to_video { extra.push("--image-to-video".into()); }
+            if fast_video_selected(video, image_to_video, fast, quality) { extra.push("--fast".into()); }
+            extra.extend(["--seconds".into(), seconds.to_string()]);
+            if let Err(error) = media_runtime::run_profile(&config_dir(), config.contribution_percent, config.contribution.comfyui_url.as_deref(), action, video, &extra) {
+                eprintln!("{error}"); std::process::exit(1);
+            }
+        },
+        Commands::Capabilities { json, probe } => {
+            contribution::print_report(&current_config_or_default(), json, probe);
+        }
         Commands::Start {
             background,
             debug,
@@ -7456,7 +7827,7 @@ fn main() {
 mod tests {
     use super::{
         active_graph_node_name, build_job_submission_payload, classify_contributed_cluster,
-        cluster, cluster_choice_flag, contribute_detected_cluster, contributed_cluster_from,
+        cluster, cluster_choice_flag, record_detected_cluster, contributed_cluster_from,
         control_plane_endpoint, cuda_doctor_payload, doctor_payload, effective_active_model,
         graph_progress_counts, handles_terminal_key, is_hugging_face_model_id,
         job_degradation_message, job_is_terminal, job_status_path, job_wait_progress_signature,
@@ -7484,6 +7855,13 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn image_to_video_cli_accepts_png_and_rejects_conflicting_profile() {
+        let cli = Cli::try_parse_from(["opengpu", "media", "--image-to-video", "generate", "--input-image", "input.png", "--prompt", "a teapot turns"]).unwrap();
+        assert!(matches!(cli.command, Commands::Media { image_to_video: true, command: super::MediaCommands::Generate { input_image: Some(_), .. }, .. }));
+        assert!(Cli::try_parse_from(["opengpu", "media", "--image-to-video", "--video", "status"]).is_err());
     }
 
     #[test]
@@ -7599,6 +7977,22 @@ mod tests {
     }
 
     #[test]
+    fn startup_relay_hands_activity_to_agent_and_keeps_partial_lines() {
+        let path = std::env::temp_dir().join(format!("startup-progress-{}.log", uuid::Uuid::new_v4()));
+        let mut waiting = Some(super::operation_progress::OperationProgress::start("Waiting for agent"));
+        let mut offset = 0;
+        std::fs::write(&path, "operationProgress: Downloading").unwrap();
+        super::relay_background_startup_output(&path, &mut offset, &mut waiting).unwrap();
+        assert!(waiting.is_some());
+        assert_eq!(offset, 0);
+        std::fs::write(&path, "operationProgress: Downloading runtime image\n").unwrap();
+        super::relay_background_startup_output(&path, &mut offset, &mut waiting).unwrap();
+        assert!(waiting.is_none());
+        assert_eq!(offset, std::fs::metadata(&path).unwrap().len());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn pause_and_resume_commands_parse() {
         assert!(matches!(
             Cli::try_parse_from(["opengpu", "pause"])
@@ -7615,12 +8009,12 @@ mod tests {
     }
 
     #[test]
-    fn local_readiness_reports_ready_node() {
+    fn local_readiness_requires_agent_confirmation() {
         let config = ready_config();
         let readiness = local_readiness(&config, &ac_power(), config.active_model.as_deref(), true);
 
-        assert!(readiness.ready_for_jobs);
-        assert_eq!(readiness.readiness_reason, None);
+        assert!(!readiness.ready_for_jobs);
+        assert_eq!(readiness.readiness_reason.as_deref(), Some("runtime readiness has not been confirmed by the node agent"));
     }
 
     #[test]
@@ -7931,7 +8325,7 @@ mod tests {
         };
 
         let mut config = Config::default();
-        contribute_detected_cluster(&mut config, &detected, Some(8));
+        record_detected_cluster(&mut config, &detected, Some(8));
 
         // The runtime says 71; the contributor said 8, and that is a property
         // of the node rather than of the cluster record.
@@ -7979,7 +8373,7 @@ mod tests {
             "opengpu",
             "cluster",
             "use",
-            "http://127.0.0.1:1234",
+            "http://127.0.0.1:8080",
             "--model",
             "qwen2.5-7b",
         ])
@@ -7988,7 +8382,7 @@ mod tests {
             Commands::Cluster {
                 command: ClusterCommands::Use { url, model, .. },
             } => {
-                assert_eq!(url, "http://127.0.0.1:1234");
+                assert_eq!(url, "http://127.0.0.1:8080");
                 assert_eq!(model.as_deref(), Some("qwen2.5-7b"));
             }
             other => panic!("unexpected command: {other:?}"),
@@ -8165,7 +8559,12 @@ mod tests {
     #[test]
     fn preflight_reports_everything_start_would_need() {
         // No identity, no agent binary, no cap, no model and no cluster.
-        let blockers = start_preflight_blockers(&Config::default(), false, false, None);
+        // The test host may already have an active model in its real cache.
+        let config = Config {
+            model_dir: Some(std::env::temp_dir().join(format!("empty-models-{}", uuid::Uuid::new_v4())).display().to_string()),
+            ..Config::default()
+        };
+        let blockers = start_preflight_blockers(&config, false, false, None);
 
         assert_eq!(blockers.len(), 4);
         assert!(blockers
@@ -8241,8 +8640,8 @@ mod tests {
     fn explicit_cluster_model_wins_over_the_first_listed_model() {
         let mut config = Config::default();
         config.contributed_cluster = Some(ContributedCluster {
-            kind: "lm-studio".to_string(),
-            base_url: "http://127.0.0.1:1234".to_string(),
+            kind: "openai-compatible".to_string(),
+            base_url: "http://127.0.0.1:8080".to_string(),
             capacity_class: "server".to_string(),
             models: vec!["a".to_string(), "b".to_string()],
             model: Some("b".to_string()),
@@ -8368,6 +8767,61 @@ mod tests {
 
         assert!(decoded.contributed_cluster.is_none());
         assert!(!decoded.cluster_prompt_declined);
+    }
+
+    #[test]
+    fn install_accepts_media_selection_and_existing_comfyui() {
+        let cli = Cli::try_parse_from([
+            "opengpu",
+            "install",
+            "--workloads",
+            "all",
+            "--comfyui-url",
+            "http://127.0.0.1:8188",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Install {
+                workloads,
+                comfyui_url,
+                ..
+            } => {
+                assert_eq!(workloads.as_deref(), Some("all"));
+                assert_eq!(comfyui_url.as_deref(), Some("http://127.0.0.1:8188"));
+            }
+            _ => panic!("expected install"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["opengpu", "capabilities", "--json", "--probe"])
+                .unwrap()
+                .command,
+            Commands::Capabilities {
+                json: true,
+                probe: true
+            }
+        ));
+    }
+
+    #[test]
+    fn media_video_selects_profile_without_changing_image_default() {
+        for seconds in ["1", "3", "10"] {
+            assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--seconds", seconds, "plan"]).is_ok());
+        }
+        for seconds in ["0", "11"] {
+            assert!(Cli::try_parse_from(["opengpu", "media", "--video", "--seconds", seconds, "plan"]).is_err());
+        }
+        for args in [vec!["opengpu", "media", "--video", "plan"], vec!["opengpu", "media", "verify", "--video"]] {
+            assert!(matches!(Cli::try_parse_from(args).unwrap().command, Commands::Media { video: true, .. }));
+        }
+        assert!(matches!(Cli::try_parse_from(["opengpu", "media", "verify"]).unwrap().command, Commands::Media { video: false, .. }));
+    }
+
+    #[test]
+    fn media_upload_requires_a_file_and_scoped_ticket() {
+        assert!(Cli::try_parse_from(["opengpu", "media", "upload", "--file", "image.png"]).is_err());
+        let cli = Cli::try_parse_from(["opengpu", "media", "upload", "--file", "image.png",
+            "--ticket", "ticket.json", "--server", "https://example.test"]).unwrap();
+        assert!(matches!(cli.command, Commands::Media { command: super::MediaCommands::Upload { .. }, .. }));
     }
 
     #[test]
@@ -9300,6 +9754,10 @@ mod tests {
     #[test]
     fn install_profile_routes_machine_families() {
         assert_eq!(
+            super::install_profile_for("linux", "x86_64", Backend::Vulkan),
+            "linux-x86_64-vulkan"
+        );
+        assert_eq!(
             super::install_profile_for("macos", "aarch64", Backend::M),
             "macos-aarch64-apple-silicon"
         );
@@ -9415,9 +9873,6 @@ mod tests {
             payload["runtime_readiness"].as_str(),
             Some("cuda-prerequisites-detected")
         );
-        assert!(payload["lm_studio_without_cuda_toolkit_supported"]
-            .as_bool()
-            .unwrap_or(false));
     }
 
     #[test]

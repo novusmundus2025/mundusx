@@ -1,3 +1,5 @@
+#[path = "../../../packages/operation-progress.rs"]
+mod operation_progress;
 use clap::{Parser, Subcommand};
 use mundusx_agent_core::{AgentEventStore, SessionId, SqliteEventStore};
 use serde::{Deserialize, Serialize};
@@ -16,7 +18,7 @@ mod swarm;
 const DEFAULT_AGENT_URL: &str = "http://127.0.0.1:11436";
 
 #[derive(Parser)]
-#[command(name = "mundusx", version = "0.2.12", about = "Local-first MundusX AI agent")]
+#[command(name = "mundusx", version, about = "Local-first MundusX AI agent")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -222,6 +224,7 @@ fn server_executable() -> PathBuf {
 }
 
 fn spawn_server(workspace: &Path) -> Result<(), String> {
+    let _progress = operation_progress::OperationProgress::start("Starting local Chat agent server");
     let executable = server_executable();
     let mut command = Command::new(&executable);
     command

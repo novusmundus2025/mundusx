@@ -40,6 +40,32 @@ jobs:
         with:
           targets: ${{ env.TARGET }}
 
+      - name: Test progress and readiness on this OS
+        run: |
+          cargo test -p opengpu --bin opengpu operation_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu --bin opengpu local_readiness --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent download_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent runtime_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu --bin opengpu startup_relay --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent parses_vllm_startup_progress --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent mlx_context --target ${{ env.TARGET }} -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent mlx_warmup --target ${{ env.TARGET }} -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent mlx_stream_readiness --target ${{ env.TARGET }} -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent managed_mlx_tool_turn --target ${{ env.TARGET }} -- --test-threads=1
+
+      - name: Test private media gateway authentication
+        run: |
+          cargo test -p mundusx-control-plane-auth --target "${TARGET}"
+          cargo test -p opengpu --bin opengpu media_worker --target "${TARGET}"
+          cd workers/media && python3 -m unittest test_artifact_upload
+
+      - name: Test default fast video and all durations
+        run: |
+          cargo test -p opengpu --bin opengpu video_defaults_to_fast_for_every_supported_duration --target "${TARGET}"
+          cargo test -p opengpu --bin opengpu lightning_queue_jobs_support_every_integer_duration --target "${TARGET}"
+          python3 -m unittest workers.media.test_runtime.ProgressStageTests.test_lightning_durations_cover_one_through_ten_seconds
+
       - name: Build CLI
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ env.TARGET }}
 

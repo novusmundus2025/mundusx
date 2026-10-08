@@ -1,0 +1,28 @@
+name: Persistent media lifecycle
+on:
+  pull_request:
+    paths:
+      - 'workers/media/**'
+      - 'packages/media-*.rs'
+      - 'agents/node/src/**'
+      - 'apps/cli/src/media_worker.rs'
+      - '.github/workflows/persistent-media.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test runtime reuse, switching and lease recovery
+        run: python3 -m unittest workers.media.test_runtime workers.media.test_persistent_runtime
+      - name: Test native locks and media heartbeat projection
+        run: |
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent media_drain -- --test-threads=1
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent media_heartbeat -- --test-threads=1
+          cargo test -p opengpu --bin opengpu serving_ -- --test-threads=1

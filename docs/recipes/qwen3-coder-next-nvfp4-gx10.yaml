@@ -1,0 +1,53 @@
+# Single GX10 reference. See ../install-sparkrun.md for validation status and limits.
+recipe_version: "2"
+
+model: ucbye/Qwen3-Coder-Next-NVFP4-GB10
+
+runtime: vllm
+
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly@sha256:22df040ea23a7d85c8d6b30a1aa067947368e71441ad3c4c39ce2cbea838b5e9
+
+min_nodes: 1
+max_nodes: 1
+
+defaults:
+  host: 127.0.0.1
+  port: 8000
+
+  tensor_parallel: 1
+  served_model_name: qwen3-coder
+
+  dtype: auto
+  kv_cache_dtype: fp8
+
+  gpu_memory_utilization: 0.80
+  max_model_len: 131072
+
+  max_num_seqs: 16
+  max_num_batched_tokens: 8192
+
+env:
+  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+executor_config:
+  restart_policy: unless-stopped
+
+command: |
+  vllm serve \
+    {model} \
+    --host {host} \
+    --port {port} \
+    --served-model-name {served_model_name} \
+    --tensor-parallel-size {tensor_parallel} \
+    --dtype {dtype} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --attention-backend FLASHINFER \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --trust-remote-code
