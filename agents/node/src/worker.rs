@@ -2403,6 +2403,38 @@ fn is_native_openai_tool_turn(request: &WorkerLaunchRequest) -> bool {
     request.prompt.starts_with(OPENAI_TOOL_TURN_PREFIX)
 }
 
+// Image-only structured requests use the same OpenAI transport without
+// requiring native tool verification. Tool definitions/history remain gated.
+fn native_request_requires_tools(request: &WorkerLaunchRequest) -> bool {
+    let Some(raw) = request.prompt.strip_prefix(OPENAI_TOOL_TURN_PREFIX) else { return false; };
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(raw) else { return true; };
+    let images = body["messages"].as_array().is_some_and(|messages| messages.iter().any(|m|
+        m["content"].as_array().is_some_and(|parts| parts.iter().any(|p| p["type"] == "image_url"))));
+    let tools = body["tools"].as_array().is_some_and(|tools| !tools.is_empty())
+        || body["messages"].as_array().is_some_and(|messages| messages.iter().any(|m|
+            m["role"] == "tool" || m.get("tool_call_id").is_some()
+                || m["tool_calls"].as_array().is_some_and(|calls| !calls.is_empty())));
+    tools || !images
+}
+
+#[cfg(test)]
+mod structured_image_tests {
+    use super::*;
+    #[test]
+    fn image_transport_does_not_grant_unverified_tool_calls() {
+        let make=|body:serde_json::Value| WorkerLaunchRequest {
+            job_id:"vision-test".into(),node_id:"node".into(),backend:Backend::M,operation:Default::default(),stream:false,
+            prompt:format!("{OPENAI_TOOL_TURN_PREFIX}{body}"), model:None,mode:None,system_prompt:None,
+            max_tokens:Some(128),temperature:None,top_p:None,seed:None,
+        };
+        let body=serde_json::json!({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,test"}}]}]});
+        assert!(!native_request_requires_tools(&make(body.clone())));
+        let mut tool=body;tool["tools"]=serde_json::json!([{"type":"function","function":{"name":"write"}}]);
+        assert!(native_request_requires_tools(&make(tool)));
+        assert!(native_request_requires_tools(&make(serde_json::json!({"messages":[{"role":"tool","content":"result"}]}))));
+    }
+}
+
 fn run_native_openai_tool_turn(
     url: &str,
     model: &str,
@@ -3501,7 +3533,7 @@ fn run_llama_request(
 
     if backend == Backend::M && is_native_openai_tool_turn(request) {
         let url = configured_mlx_server_url().filter(|url| mlx_server_health_ok(url))
-            .filter(|_| managed_mlx_tools_verified(&model_name))
+            .filter(|_| !native_request_requires_tools(request) || managed_mlx_tools_verified(&model_name))
             .ok_or_else(|| "Managed MLX native tools are not verified; restart the persistent runtime".to_string())?;
         let generated = run_native_openai_tool_turn(&url, &model_name, request)?;
         return Ok(WorkerLaunchResponse {
@@ -3815,7 +3847,7 @@ fn run_contributed_cluster_request(
     let model = advertised.as_str();
 
     if is_native_openai_tool_turn(request) {
-        if !cluster.supports_tool_calls {
+        if native_request_requires_tools(request) && !cluster.supports_tool_calls {
             return Err(format!(
                 "contributed {} cluster does not advertise native tool-call support",
                 cluster.kind
