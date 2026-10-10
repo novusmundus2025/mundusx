@@ -1168,61 +1168,22 @@ fn served_vllm_context_at(url: &str, model: &str) -> Option<u32> {
         .filter(|limit| *limit > 0)
 }
 
-/// A model listing proves liveness, not that the first inference has executed.
-/// Exercise prefill and one decode step before publishing the managed MLX URL.
-fn warm_mlx_runtime(url: &str, model: &str, timeout: Duration) -> Result<(), String> {
-    let started = Instant::now();
-    let _progress = crate::operation_progress::OperationProgress::start("Warming MLX model");
-    if timeout.is_zero() {
-        return Err("MLX startup deadline elapsed before model warm-up".into());
-    }
-    println!("persistentRuntime: warming MLX model {model} (first generation)");
-    let response = ureq::AgentBuilder::new().redirects(0).timeout(timeout).build()
-        .post(&format!("{url}/v1/chat/completions"))
-        .send_json(serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "Reply with OK."}],
-            "max_tokens": 1,
-            "temperature": 0,
-            "stream": true,
-            "stream_options": {"include_usage": true}
-        }))
-        .map_err(|error| format!("MLX model warm-up failed: {error}"))?;
-    let mut bytes = Vec::new();
-    response.into_reader().take(1024 * 1024 + 1).read_to_end(&mut bytes)
-        .map_err(|error| format!("Cannot read MLX warm-up result: {error}"))?;
-    if bytes.len() > 1024 * 1024 { return Err("MLX warm-up response exceeded 1 MiB".into()); }
-    if !mlx_warm_stream_ready(&bytes) {
-        return Err("MLX warm-up did not confirm a completed streamed generation".into());
-    }
-    println!("persistentRuntime: MLX model warm-up complete");
-    let remaining = timeout.saturating_sub(started.elapsed()).min(Duration::from_secs(30));
-    let tools = !remaining.is_zero() && probe_managed_mlx_tools(url, model, remaining);
-    *VERIFIED_MLX_TOOLS.lock().expect("MLX tools lock") = tools.then(|| (url.to_string(), model.to_string()));
-    println!("persistentRuntime: MLX native tools {}", if tools { "verified" } else { "unavailable" });
+/// Check runtime availability using metadata only. Joining never generates tokens.
+fn warm_mlx_runtime(url: &str, _model: &str, timeout: Duration) -> Result<(), String> {
+    if timeout.is_zero() {return Err("MLX startup deadline elapsed".into());}
+    ureq::AgentBuilder::new().redirects(0).timeout(timeout).build()
+        .get(&format!("{url}/v1/models")).call()
+        .map_err(|error|format!("MLX runtime unavailable: {error}"))?;
+    println!("persistentRuntime: MLX endpoint available; automatic generation probes disabled");
     Ok(())
 }
 
-static VERIFIED_MLX_TOOLS: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
-
-pub fn managed_mlx_tools_verified(model: &str) -> bool {
-    VERIFIED_MLX_TOOLS.lock().expect("MLX tools lock").as_ref()
-        .is_some_and(|(url, name)| name == model && configured_mlx_server_url().as_deref() == Some(url.as_str()))
+/// A catalog/runtime claim, not a tested capability. Central policy controls routing.
+pub fn managed_mlx_tools_declared(model: &str) -> bool {
+    configured_mlx_server_url().is_some() && crate::model_profile::is_qwen3_coder(model)
 }
 
-fn probe_managed_mlx_tools(url: &str, model: &str, timeout: Duration) -> bool {
-    let payload = serde_json::json!({"model": model, "stream": false, "max_tokens": 64, "temperature": 0,
-        "messages": [{"role":"user", "content":"Call mundusx_capability_probe exactly once with an empty object."}],
-        "tools": [{"type":"function", "function":{"name":"mundusx_capability_probe", "description":"Side-effect-free capability probe.", "parameters":{"type":"object","properties":{},"additionalProperties":false}}}],
-        "tool_choice":{"type":"function","function":{"name":"mundusx_capability_probe"}}});
-    ureq::AgentBuilder::new().redirects(0).timeout(timeout).build()
-        .post(&format!("{url}/v1/chat/completions")).send_json(payload).ok()
-        .and_then(|r| r.into_json::<serde_json::Value>().ok())
-        .is_some_and(|v| v.get("error").is_none_or(|e| e.is_null()) &&
-            v.pointer("/choices/0/message/tool_calls").and_then(|c| c.as_array())
-                .is_some_and(|calls| calls.iter().any(|c| c.pointer("/function/name").and_then(|n| n.as_str()) == Some("mundusx_capability_probe"))))
-}
-
+#[cfg(test)]
 fn mlx_warm_stream_ready(bytes: &[u8]) -> bool {
     let Ok(body) = std::str::from_utf8(bytes) else { return false; };
     let mut generated = false;
@@ -3559,8 +3520,7 @@ fn run_llama_request(
 
     if backend == Backend::M && is_native_openai_tool_turn(request) {
         let url = configured_mlx_server_url().filter(|url| mlx_server_health_ok(url))
-            .filter(|_| !native_request_requires_tools(request) || managed_mlx_tools_verified(&model_name))
-            .ok_or_else(|| "Managed MLX native tools are not verified; restart the persistent runtime".to_string())?;
+            .ok_or_else(|| "Managed MLX endpoint is unavailable; start the persistent runtime".to_string())?;
         let generated = run_native_openai_tool_turn(&url, &model_name, request)?;
         return Ok(WorkerLaunchResponse {
             token_usage: Vec::new(), job_id: request.job_id.clone(),
@@ -4500,85 +4460,47 @@ mod tests {
     }
 
     #[test]
-    fn mlx_warmup_performs_a_bounded_generation_not_a_liveness_check() {
-        for (body, status, succeeds) in [
-            ("data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n", 200, true),
-            ("data: {\"choices\":[],\"usage\":{\"completion_tokens\":1}}\n\ndata: [DONE]\n\n", 200, true),
-            (r#"{"data":[{"id":"test-model"}]}"#, 200, false),
-            (r#"{"choices":[{"message":{"content":""}}]}"#, 200, false),
-            (r#"{"error":{"message":"out of memory"}}"#, 200, false),
-            ("not json", 200, false),
-            (r#"{"error":"loading failed"}"#, 503, false),
-        ] {
-            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-            let url = format!("http://{}", server.server_addr());
-            let request = std::thread::spawn(move || {
-                let mut request = server.recv_timeout(std::time::Duration::from_secs(5)).unwrap().expect("warm-up request");
-                assert_eq!(request.method(), &tiny_http::Method::Post);
-                assert_eq!(request.url(), "/v1/chat/completions");
-                let mut text = String::new();
-                request.as_reader().read_to_string(&mut text).unwrap();
-                let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-                assert_eq!(payload["model"], "test-model");
-                assert_eq!(payload["max_tokens"], 1);
-                assert_eq!(payload["stream"], true);
-                assert_eq!(payload["temperature"], 0);
-                assert_eq!(payload["messages"][0]["role"], "user");
-                request.respond(tiny_http::Response::from_string(body).with_status_code(status)).unwrap();
-                if succeeds {
-                    let mut tools = server.recv_timeout(std::time::Duration::from_secs(5)).unwrap().expect("tools probe");
-                    let mut text = String::new(); tools.as_reader().read_to_string(&mut text).unwrap();
-                    let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-                    assert!(payload["tools"].is_array());
-                    tools.respond(tiny_http::Response::from_string(r#"{"choices":[{"message":{"content":"no tools"}}]}"#)).unwrap();
-                }
-            });
-            assert_eq!(super::warm_mlx_runtime(&url, "test-model", std::time::Duration::from_secs(3)).is_ok(), succeeds, "{body}");
-            request.join().unwrap();
-        }
+    fn mlx_warmup_checks_metadata_without_generating_or_probing_tools() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}",server.server_addr());
+        let handle=std::thread::spawn(move || {
+            let request=server.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+            assert_eq!(request.method(),&tiny_http::Method::Get);
+            assert_eq!(request.url(),"/v1/models");
+            request.respond(tiny_http::Response::from_string(r#"{"data":[{"id":"test-model"}]}"#)).unwrap();
+            assert!(server.recv_timeout(Duration::from_millis(100)).unwrap().is_none());
+        });
+        super::warm_mlx_runtime(&url,"test-model",Duration::from_secs(2)).unwrap();
+        handle.join().unwrap();
     }
 
     #[test]
     fn managed_mlx_tool_turn_preserves_messages_and_function_schema() {
-        with_temp_runtime_home(|home| {
-            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-            let url = format!("http://{}", server.server_addr());
-            let handle = std::thread::spawn(move || {
-                for stage in 0..4 {
-                    let mut request = server.recv_timeout(Duration::from_secs(5)).unwrap().expect("MLX request");
-                    let mut text = String::new(); request.as_reader().read_to_string(&mut text).unwrap();
-                    let body = if stage == 2 {
-                        assert_eq!(request.url(), "/v1/models");
-                        r#"{"data":[{"id":"test-model"}]}"#.to_string()
+        with_temp_runtime_home(|_home| {
+            let server=tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url=format!("http://{}",server.server_addr());
+            let handle=std::thread::spawn(move || {
+                for stage in 0..2 {
+                    let mut request=server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+                    if stage==0 {
+                        assert_eq!(request.method(),&tiny_http::Method::Get);
+                        assert_eq!(request.url(),"/v1/models");
+                        request.respond(tiny_http::Response::from_string(r#"{"data":[{"id":"test-model"}]}"#)).unwrap();
                     } else {
-                        let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-                        assert_eq!(payload["model"], "test-model");
-                        if stage == 0 {
-                            assert_eq!(payload["stream"], true);
-                            "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n".to_string()
-                        } else {
-                            if stage == 3 {
-                                assert_eq!(payload["messages"][0]["content"], "Read student.js");
-                                assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
-                            }
-                            let name = if stage == 1 { "mundusx_capability_probe" } else { "read_file" };
-                            serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":name,"arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":5,"prompt_tokens":10}}).to_string()
-                        }
-                    };
-                    request.respond(tiny_http::Response::from_string(body)).unwrap();
+                        assert_eq!(request.method(),&tiny_http::Method::Post);
+                        let mut text=String::new();request.as_reader().read_to_string(&mut text).unwrap();
+                        let payload:serde_json::Value=serde_json::from_str(&text).unwrap();
+                        assert_eq!(payload["messages"][0]["content"],"Read student.js");
+                        assert_eq!(payload["tools"][0]["function"]["name"],"read_file");
+                        request.respond(tiny_http::Response::from_string(r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":5,"prompt_tokens":10}}"#)).unwrap();
+                    }
                 }
             });
-            super::warm_mlx_runtime(&url, "test-model", Duration::from_secs(5)).unwrap();
-            env::set_var("OPENGPU_MLX_SERVER_URL", &url);
-            assert!(super::managed_mlx_tools_verified("test-model"));
-            assert!(!super::managed_mlx_tools_verified("other-model"));
-            let mut request = speakai_request(Some("test-model")); request.mode = None;
-            request.prompt = format!("{}{}", super::OPENAI_TOOL_TURN_PREFIX, serde_json::json!({"messages":[{"role":"user","content":"Read student.js"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]}));
-            let result = super::run_llama_request(&request, Backend::M).unwrap();
-            assert!(result.output.contains("read_file"));
-            assert_eq!(result.runtime_mode.as_deref(), Some("persistent-warm-mlx-native-openai-tools"));
-            handle.join().unwrap();
-            let _ = home;
+            env::set_var("OPENGPU_MLX_SERVER_URL",&url);
+            let mut request=speakai_request(Some("test-model"));request.mode=None;
+            request.prompt=format!("{}{}",super::OPENAI_TOOL_TURN_PREFIX,serde_json::json!({"messages":[{"role":"user","content":"Read student.js"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]}));
+            let result=super::run_llama_request(&request,Backend::M).unwrap();
+            assert!(result.output.contains("read_file"));handle.join().unwrap();
         });
     }
 

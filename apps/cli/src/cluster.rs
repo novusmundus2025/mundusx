@@ -386,20 +386,6 @@ pub fn lmstudio_model_loaded(base: &str, model: &str) -> bool {
         .is_some_and(|body| policy::listing_contains(&body, false, model))
 }
 
-pub fn verify_inference(base: &str, model: &str) -> Result<(), String> {
-    let _progress = crate::operation_progress::OperationProgress::start("Verifying selected external model");
-    let response = ureq::post(&format!("{base}/v1/chat/completions"))
-        .timeout(Duration::from_secs(120))
-        .send_json(serde_json::json!({"model": model, "messages": [{"role": "user", "content": "Reply OK"}],
-            "max_tokens": 1, "stream": false}))
-        .map_err(|_| "endpoint rejected or timed out during inference; check the server and selected model".to_string())?;
-    let body: serde_json::Value = response.into_json().map_err(|_| "invalid inference response".to_string())?;
-    if body.get("error").is_some() || !body["choices"].as_array().is_some_and(|c| !c.is_empty()) {
-        return Err("endpoint did not return a completion".into());
-    }
-    Ok(())
-}
-
 /// Probe every candidate endpoint and return the ones that answered.
 pub fn detect_running_clusters() -> Vec<DetectedCluster> {
     if detection_disabled() {
@@ -416,56 +402,7 @@ pub fn probe_cluster(base_url: &str) -> Option<DetectedCluster> {
     clusters.into_iter().next()
 }
 
-pub fn actively_verify_native_tools(clusters: &mut [DetectedCluster]) {
-    for cluster in clusters {
-        if cluster.supports_tool_calls || cluster.kind == ClusterKind::Ollama {
-            continue;
-        }
-        let Some(model) = cluster.largest_model().map(|model| model.name.clone()) else {
-            continue;
-        };
-        cluster.supports_tool_calls = probe_native_tool_calls(&cluster.base_url, &model);
-    }
-}
-
-/// Capability metadata and Prometheus metrics are inconsistent across vLLM
-/// versions. A tiny, side-effect-free request is the authoritative check: the
-/// endpoint is tool capable only when it emits a native OpenAI tool call.
-fn probe_native_tool_calls(base_url: &str, model: &str) -> bool {
-    let payload = serde_json::json!({
-        "model": model,
-        "stream": false,
-        "max_tokens": 32,
-        "messages": [{
-            "role": "user",
-            "content": "Call mundusx_capability_probe exactly once with an empty object."
-        }],
-        "tools": [{
-            "type": "function",
-            "function": {
-                "name": "mundusx_capability_probe",
-                "description": "A side-effect-free runtime capability probe.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }
-            }
-        }],
-        "tool_choice": {
-            "type": "function",
-            "function": {"name": "mundusx_capability_probe"}
-        }
-    });
-    ureq::post(&format!("{base_url}/v1/chat/completions"))
-        .timeout(Duration::from_secs(15))
-        .send_json(payload)
-        .ok()
-        .filter(|response| response.status() < 400)
-        .and_then(|response| response.into_json::<serde_json::Value>().ok())
-        .is_some_and(|body| native_tool_response_supported(&body))
-}
-
+#[cfg(test)]
 fn native_tool_response_supported(body: &serde_json::Value) -> bool {
     body.pointer("/choices/0/message/tool_calls")
         .and_then(serde_json::Value::as_array)

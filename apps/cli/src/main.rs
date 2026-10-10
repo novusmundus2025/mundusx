@@ -6293,13 +6293,12 @@ fn choose_and_verify_model(endpoint: &DetectedCluster, requested: Option<&str>) 
         std::process::exit(1);
     }
     println!("Verifying selected model {model} with a short inference request...");
-    if let Err(error) = cluster::verify_inference(&endpoint.base_url, &model) {
-        eprintln!("Model verification failed: {error}"); std::process::exit(1);
+    if !endpoint.models.iter().any(|entry|entry.name == model) {
+        eprintln!("Selected model is not listed by the endpoint"); std::process::exit(1);
     }
     let mut selected = endpoint.clone();
     selected.models.retain(|entry| entry.name == model);
-    cluster::actively_verify_native_tools(std::slice::from_mut(&mut selected));
-    println!("Model responds successfully. External engine lifecycle remains under your control.");
+    println!("Model is listed by the endpoint. Automatic generation tests are disabled.");
     selected
 }
 

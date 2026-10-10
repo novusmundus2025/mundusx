@@ -18,3 +18,13 @@ Version 0.2.43 changes the agent version and therefore the qualification
 fingerprint. The updated configuration is requalified using the existing policy.
 This first version has built-in profiles; contributor-defined profile files and
 additional generation parameters on the legacy /v1/jobs endpoint are not added.
+
+## Connection behavior (0.2.44)
+
+Connecting a contributor does not generate an inference or tool-call challenge.
+The CLI checks the selected model against endpoint metadata. The agent checks
+MLX availability with GET /v1/models and does not run a generation warm-up or
+background cluster tool probe. Native tool capability is a declared model/runtime
+claim controlled by the control-plane catalog and admin policy, not a benchmark.
+Model loading may occur on the first real user request. Ordinary generation,
+temperature/top-p/top-k/repetition settings and explicit overrides are unchanged.

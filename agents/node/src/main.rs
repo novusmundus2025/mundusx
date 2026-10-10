@@ -39,8 +39,6 @@ use storage::{
     save_agent_config, save_agent_state, save_heartbeat, AgentConfig,
 };
 
-const TOOL_CAPABILITY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
-const TOOL_CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 struct AgentRunLock {
     _file: fs::File,
@@ -773,7 +771,7 @@ fn build_scheduler_capabilities(
             cluster.and_then(|entry| entry.model_context_tokens),
             cluster_supports_tools
                 || (cluster.is_none() && backend == Backend::M && health.persistent_runtime_warm
-                    && worker::managed_mlx_tools_verified(&entry.name)),
+                    && worker::managed_mlx_tools_declared(&entry.name)),
         );
     }
     if cluster.is_none() && health.runtime_mode == "vllm" && health.healthy {
@@ -2147,57 +2145,7 @@ fn clear_runtime_environment() {
     std::env::remove_var("OPENGPU_VLLM_URL");
 }
 
-/// Verify native OpenAI tool calling against the contributed runtime itself.
-/// This is intentionally run outside the job-claim loop because a busy model
-/// may take several seconds to answer the probe.
-fn probe_contributed_tool_capability(config: &AgentConfig) -> bool {
-    let Some(cluster) = config.contributed_cluster.as_ref() else {
-        return false;
-    };
-    if !worker::cluster_selected_model_ready(cluster) { return false; }
-    if cluster.supports_tool_calls {
-        return true;
-    }
-    let Some(model) = cluster.model.as_ref().or_else(|| cluster.models.first()) else {
-        return false;
-    };
-    let payload = serde_json::json!({
-        "model": model,
-        "stream": false,
-        "max_tokens": 32,
-        "messages": [{
-            "role": "user",
-            "content": "Call mundusx_capability_probe exactly once with an empty object."
-        }],
-        "tools": [{
-            "type": "function",
-            "function": {
-                "name": "mundusx_capability_probe",
-                "description": "A side-effect-free runtime capability probe.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }
-            }
-        }],
-        "tool_choice": {
-            "type": "function",
-            "function": {"name": "mundusx_capability_probe"}
-        }
-    });
-    ureq::post(&format!("{}/v1/chat/completions", cluster.base_url))
-        // A contributed runtime may already be serving a long generation. The
-        // probe runs on a background thread, so let it wait for the same model
-        // queue instead of repeatedly timing out just before a normal response.
-        .timeout(TOOL_CAPABILITY_PROBE_TIMEOUT)
-        .send_json(payload)
-        .ok()
-        .filter(|response| response.status() < 400)
-        .and_then(|response| response.into_json::<serde_json::Value>().ok())
-        .is_some_and(|body| native_tool_response_supported(&body))
-}
-
+#[cfg(test)]
 fn native_tool_response_supported(body: &serde_json::Value) -> bool {
     body.pointer("/choices/0/message/tool_calls")
         .and_then(serde_json::Value::as_array)
@@ -2309,9 +2257,6 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
     let (health_refresh_tx, health_refresh_rx) = mpsc::channel::<Heartbeat>();
     let mut health_refresh_in_flight = false;
     let mut last_health_refresh_started = Instant::now();
-    let (tool_refresh_tx, tool_refresh_rx) = mpsc::channel::<bool>();
-    let mut tool_refresh_in_flight = false;
-    let mut last_tool_refresh_started = Instant::now() - TOOL_CAPABILITY_REFRESH_INTERVAL;
     let state = resolved_state(&config);
     let interval = if config.paused { interval_seconds.max(30) } else { interval_seconds.max(5) };
 
@@ -2404,48 +2349,6 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             }
         };
 
-        while let Ok(supported) = tool_refresh_rx.try_recv() {
-            tool_refresh_in_flight = false;
-            if supported {
-                if let Some(cluster) = latest_config.contributed_cluster.as_mut() {
-                    if !cluster.supports_tool_calls {
-                        cluster.supports_tool_calls = true;
-                        let _ = normalize_verified_tool_capability(&mut latest_config);
-                        match save_agent_config(&latest_config) {
-                            Ok(_) => {
-                                refresh_snapshot_capabilities(
-                                    &mut heartbeat_snapshot,
-                                    &latest_config,
-                                );
-                                println!("nativeToolCapability: verified");
-                            }
-                            Err(error) => {
-                                eprintln!("failed to persist contributed tool capability: {error}")
-                            }
-                        }
-                    }
-                }
-            } else if verbose {
-                println!("nativeToolCapability: probe pending; retrying later");
-            }
-        }
-
-        let needs_tool_probe = latest_config
-            .contributed_cluster
-            .as_ref()
-            .is_some_and(|cluster| !cluster.supports_tool_calls);
-        if needs_tool_probe
-            && !tool_refresh_in_flight
-            && last_tool_refresh_started.elapsed() >= TOOL_CAPABILITY_REFRESH_INTERVAL
-        {
-            let refresh_config = latest_config.clone();
-            let refresh_tx = tool_refresh_tx.clone();
-            thread::spawn(move || {
-                let _ = refresh_tx.send(probe_contributed_tool_capability(&refresh_config));
-            });
-            tool_refresh_in_flight = true;
-            last_tool_refresh_started = Instant::now();
-        }
         if !should_agent_run(&latest_config) {
             let heartbeat = heartbeat_from_snapshot(
                 &heartbeat_snapshot,
