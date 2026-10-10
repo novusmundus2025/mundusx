@@ -66,6 +66,9 @@ jobs:
           cargo test -p opengpu --bin opengpu lightning_queue_jobs_support_every_integer_duration --target "${TARGET}"
           python3 -m unittest workers.media.test_runtime.ProgressStageTests.test_lightning_durations_cover_one_through_ten_seconds
 
+      - name: Test streaming worker startup logging
+        run: cargo test -p opengpu-node-agent startup_logging_can_precede_first_stream_delta --target ${{ env.TARGET }}
+
       - name: Build CLI
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ env.TARGET }}
 
