@@ -16,6 +16,7 @@ mod local_api;
 mod storage;
 mod worker;
 mod mlx_context;
+mod model_profile;
 
 use clap::{Parser, Subcommand};
 use contracts::{

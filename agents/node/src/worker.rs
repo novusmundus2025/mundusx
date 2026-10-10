@@ -2213,6 +2213,9 @@ fn run_llama_command(
         .arg(top_p.to_string())
         .arg("--seed")
         .arg(seed.to_string());
+    if crate::model_profile::is_qwen3_coder(&model_path.to_string_lossy()) {
+        command.args(["--top-k", "20", "--repeat-penalty", "1.05"]);
+    }
     if let Some(grammar) = grammar {
         command.arg("--grammar").arg(grammar);
     }
@@ -2244,6 +2247,7 @@ fn run_llama_command(
 
 fn run_llama_server_completion(
     url: &str,
+    model: &str,
     system_prompt: &str,
     user_prompt: &str,
     backend: Backend,
@@ -2271,6 +2275,10 @@ fn run_llama_server_completion(
         "top_p": top_p,
         "seed": seed,
     });
+    crate::model_profile::apply(model, &mut payload);
+    if let Some(penalty) = payload.as_object_mut().and_then(|value| value.remove("repetition_penalty")) {
+        payload["repeat_penalty"] = penalty;
+    }
     if structured {
         payload["response_format"] = speakai_response_format();
     }
@@ -2343,6 +2351,7 @@ fn run_vllm_completion(
             payload["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
         }
     }
+    crate::model_profile::apply(model, &mut payload);
     if structured {
         payload["response_format"] = speakai_response_format();
     }
@@ -2447,6 +2456,7 @@ fn run_native_openai_tool_turn(
     let mut payload: serde_json::Value = serde_json::from_str(raw)
         .map_err(|error| format!("native OpenAI tool turn is invalid JSON: {error}"))?;
     payload["model"] = serde_json::Value::String(model.to_string());
+    crate::model_profile::apply(model, &mut payload);
     let streaming = live_delta_enabled();
     payload["stream"] = serde_json::Value::Bool(streaming);
     if streaming { payload["stream_options"] = serde_json::json!({"include_usage":true}); }
@@ -2896,11 +2906,12 @@ fn run_mlx_command(
     prompt: &str,
     max_tokens: u32,
     temperature: f32,
+    top_p: f32,
 ) -> Result<(String, String, RuntimeMetrics), String> {
     let python = probe_mlx_available()?;
     let started = Instant::now();
-    let output = Command::new(&python)
-        .args([
+    let mut command = Command::new(&python);
+    command.args([
             "-m",
             "mlx_lm",
             "generate",
@@ -2912,8 +2923,15 @@ fn run_mlx_command(
             &max_tokens.to_string(),
             "--temp",
             &temperature.to_string(),
-        ])
-        .output()
+        ]).arg("--top-p").arg(top_p.to_string());
+    if crate::model_profile::is_qwen3_coder(model_name) {
+        // MLX's generate CLI does not consistently expose repetition penalty.
+        // Use its public sampler/logits API rather than silently dropping it.
+        command = Command::new(&python);
+        command.args(["-c", crate::model_profile::MLX_GENERATE_SCRIPT, model_name, prompt,
+            &max_tokens.to_string(), &temperature.to_string(), &top_p.to_string()]);
+    }
+    let output = command.output()
         .map_err(|error| format!("failed to launch MLX runtime: {error}"))?;
 
     if !output.status.success() {
@@ -3531,6 +3549,14 @@ fn run_llama_request(
     let model_name = preferred_speakai_model_name(&model_dir, request.model.as_deref(), speakai)
         .unwrap_or_else(|| "active".to_string());
 
+    if crate::model_profile::is_qwen3_coder(&model_name) {
+        eprintln!("model-profile=qwen3-coder-instruct-v1; defaults temperature=0.7 top_p=0.8 top_k=20 repetition_penalty=1.05; explicit request settings preserved");
+    }
+
+    if backend == Backend::M && crate::model_profile::is_qwen3_coder(&model_name) {
+        crate::model_profile::verify_mlx_runtime(&probe_mlx_available()?)?;
+    }
+
     if backend == Backend::M && is_native_openai_tool_turn(request) {
         let url = configured_mlx_server_url().filter(|url| mlx_server_health_ok(url))
             .filter(|_| !native_request_requires_tools(request) || managed_mlx_tools_verified(&model_name))
@@ -3547,8 +3573,7 @@ fn run_llama_request(
 
     let base_system_prompt = effective_system_prompt(request);
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
-    let temperature = request.temperature.unwrap_or(0.2).max(0.0);
-    let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
+    let (temperature, top_p) = crate::model_profile::sampling(&model_name, request.temperature, request.top_p);
     let seed = request.seed.unwrap_or(42);
     let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
 
@@ -3594,7 +3619,7 @@ fn run_llama_request(
             let generated = match warm_result {
                 Some(Ok(result)) => Ok(result),
                 Some(Err(_)) | None => {
-                    run_mlx_command(&model_name, &prompt, max_tokens, attempt_temperature)
+                    run_mlx_command(&model_name, &prompt, max_tokens, attempt_temperature, top_p)
                 }
             };
             match generated {
@@ -3668,6 +3693,7 @@ fn run_llama_request(
             .map(|url| {
                 run_llama_server_completion(
                     url,
+                    &model_name,
                     &system_prompt,
                     &request.prompt,
                     backend,
@@ -3745,8 +3771,7 @@ fn run_vllm_request(request: &WorkerLaunchRequest) -> Result<WorkerLaunchRespons
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "vLLM jobs require an explicit model".to_string())?;
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
-    let temperature = request.temperature.unwrap_or(0.2).max(0.0);
-    let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
+    let (temperature, top_p) = crate::model_profile::sampling(model, request.temperature, request.top_p);
     let seed = request.seed.unwrap_or(42);
     let speakai = is_speakai_request(request);
     let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
@@ -3872,8 +3897,7 @@ fn run_contributed_cluster_request(
     }
 
     let max_tokens = request.max_tokens.unwrap_or(16).max(1);
-    let temperature = request.temperature.unwrap_or(0.2).max(0.0);
-    let top_p = request.top_p.unwrap_or(0.9).clamp(0.0, 1.0);
+    let (temperature, top_p) = crate::model_profile::sampling(model, request.temperature, request.top_p);
     let seed = request.seed.unwrap_or(42);
     let attempts = if speakai { SPEAKAI_MAX_ATTEMPTS } else { 1 };
     let base_system_prompt = effective_system_prompt(request);
@@ -4414,6 +4438,30 @@ mod tests {
             assert!(!super::cluster_endpoint_healthy(&url));
             responder.join().unwrap();
         }
+    }
+
+    #[test]
+    fn qwen_profile_reaches_mlx_compatible_and_llama_http_payloads() {
+        with_temp_runtime_home(|_| {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", server.server_addr());
+            let responder = std::thread::spawn(move || {
+                for llama in [false, true] {
+                    let mut request = server.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+                    let mut body = String::new(); request.as_reader().read_to_string(&mut body).unwrap();
+                    let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    assert!((payload["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+                    assert!((payload["top_p"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+                    assert_eq!(payload["top_k"], 20);
+                    assert_eq!(payload[if llama { "repeat_penalty" } else { "repetition_penalty" }], 1.05);
+                    request.respond(tiny_http::Response::from_string(r#"{"choices":[{"message":{"content":"hello"}}]}"#)).unwrap();
+                }
+            });
+            let model = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit";
+            assert_eq!(super::run_openai_compatible_completion(&url, model, "", "hello", 64, 0.7, 0.8, 42, true).unwrap(), "hello");
+            assert_eq!(super::run_llama_server_completion(&url, model, "", "hello", Backend::Vulkan, 64, 0.7, 0.8, 42, true).unwrap().0, "hello");
+            responder.join().unwrap();
+        });
     }
 
     #[test]
