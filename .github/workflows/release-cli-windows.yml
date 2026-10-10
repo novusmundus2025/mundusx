@@ -68,6 +68,9 @@ jobs:
           cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
           if ($LASTEXITCODE -ne 0) { throw "Progress test failed" }
 
+      - name: Test streaming worker startup logging
+        run: cargo test -p opengpu-node-agent startup_logging_can_precede_first_stream_delta --target ${{ env.TARGET }}
+
       - name: Build CLI
         run: cargo build --release --manifest-path apps/cli/Cargo.toml --target ${{ env.TARGET }}
 

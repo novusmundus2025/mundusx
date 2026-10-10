@@ -85,6 +85,9 @@ jobs:
           cargo test -p opengpu --bin opengpu media_worker --target "${TARGET}"
           cd workers/media && python3 -m unittest test_artifact_upload
 
+      - name: Test streaming worker startup logging
+        run: cargo test -p opengpu-node-agent startup_logging_can_precede_first_stream_delta --target ${{ env.TARGET }}
+
       - name: Build CLIs and agents
         # Context discovery and Muse chat defaults are release-critical regressions.
         # Run on both native Linux architectures before producing binaries.

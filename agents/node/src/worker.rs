@@ -4018,6 +4018,58 @@ fn execute_request_with_cluster_inner(
     }
 }
 
+fn print_stream_deltas(delta_rx: mpsc::Receiver<String>) {
+    let stderr = io::stderr();
+    while let Ok(delta) = delta_rx.recv() {
+        // Startup/progress logging also uses stderr. Never hold its global
+        // lock while waiting for generation to send a delta.
+        let mut stderr = stderr.lock();
+        let _ = writeln!(stderr, "{STREAM_DELTA_PREFIX}{}", hex::encode(delta));
+        let _ = stderr.flush();
+    }
+}
+
+#[cfg(test)]
+mod stream_stderr_regression {
+    use super::*;
+
+    #[test]
+    fn startup_logging_can_precede_first_stream_delta() {
+        const CHILD: &str = "OPENGPU_STDERR_REGRESSION_CHILD";
+        if env::var_os(CHILD).is_some() {
+            let (tx, rx) = mpsc::channel();
+            let printer = thread::spawn(move || print_stream_deltas(rx));
+            thread::sleep(Duration::from_millis(100));
+            eprintln!("model-profile: startup before first token");
+            tx.send("hello".into()).unwrap();
+            drop(tx);
+            printer.join().unwrap();
+            return;
+        }
+        // Isolate the regression: a retained stderr lock must fail on a
+        // deadline rather than deadlocking the entire test runner.
+        let mut child = Command::new(env::current_exe().unwrap())
+            .args(["--exact", "worker::stream_stderr_regression::startup_logging_can_precede_first_stream_delta", "--nocapture"])
+            .env(CHILD, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("stream printer blocked startup logging before first token");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
 pub fn worker_main(cli: WorkerCli) {
     let live_stream = cli.stream;
     let request = WorkerLaunchRequest {
@@ -4038,14 +4090,7 @@ pub fn worker_main(cli: WorkerCli) {
 
     let response = if live_stream {
         let (delta_tx, delta_rx) = mpsc::channel::<String>();
-        let printer = thread::spawn(move || {
-            let stderr = io::stderr();
-            let mut stderr = stderr.lock();
-            while let Ok(delta) = delta_rx.recv() {
-                let _ = writeln!(stderr, "{STREAM_DELTA_PREFIX}{}", hex::encode(delta));
-                let _ = stderr.flush();
-            }
-        });
+        let printer = thread::spawn(move || print_stream_deltas(delta_rx));
         let response = with_stream_delta_sender(Some(delta_tx), || execute_request(&request));
         let _ = printer.join();
         response
