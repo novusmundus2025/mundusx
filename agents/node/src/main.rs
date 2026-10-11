@@ -7,6 +7,8 @@ mod media_process;
 mod vllm_model_profile;
 #[path = "../../../packages/media-drain.rs"]
 mod media_drain;
+#[path = "../../../packages/settings-drain.rs"]
+mod settings_drain;
 mod contracts;
 #[path = "../../../packages/contribution-contract.rs"]
 mod contribution_contract;
@@ -1865,7 +1867,8 @@ fn start_busy_heartbeat_supervisor(
             Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let heartbeat =
-                    heartbeat_from_snapshot(&heartbeat_snapshot, &config, AgentState::Busy);
+                    heartbeat_from_snapshot(&heartbeat_snapshot, &config,
+                        if settings_drain::active(&storage::config_dir()) { AgentState::Paused } else { AgentState::Busy });
                 let _ = save_agent_state(&heartbeat);
                 let _ = save_heartbeat(&heartbeat);
                 send_heartbeat(&config, &identity, &heartbeat, false);
@@ -1986,7 +1989,7 @@ fn process_pending_jobs(
     slot_pool: Arc<local_api::SlotPool>,
     heartbeat_snapshot: &Heartbeat,
 ) {
-    if !config.contribution.llm_enabled() || media_drain::request(&storage::config_dir()).is_some() { return; }
+    if !config.contribution.llm_enabled() || media_drain::request(&storage::config_dir()).is_some() || settings_drain::active(&storage::config_dir()) { return; }
     let identity = load_identity_or_exit();
     // Health probing can invoke slow external programs such as nvidia-smi and
     // contact a contributed runtime. The heartbeat path already performs those
@@ -2050,7 +2053,7 @@ fn process_pending_jobs(
             reap_finished_jobs(&mut handles);
 
             let refill_config = match load_agent_config() {
-                Ok(Some(latest)) if should_agent_run(&latest) && media_drain::request(&storage::config_dir()).is_none() => Some(latest),
+                Ok(Some(latest)) if should_agent_run(&latest) && media_drain::request(&storage::config_dir()).is_none() && !settings_drain::active(&storage::config_dir()) => Some(latest),
                 Ok(_) => None,
                 Err(error) => {
                     eprintln!("jobPoll: refill paused ({error})");
@@ -2368,6 +2371,23 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             break;
         }
 
+        if settings_drain::active(&storage::config_dir()) {
+            let heartbeat = heartbeat_from_snapshot(&heartbeat_snapshot, &latest_config, AgentState::Paused);
+            if last_heartbeat_sent.elapsed() >= Duration::from_secs(interval) {
+                let _ = save_agent_state(&heartbeat);
+                send_heartbeat(&latest_config, &identity, &heartbeat, verbose);
+                last_heartbeat_sent = Instant::now();
+            }
+            let media_idle = media_worker.as_mut().is_none_or(|worker| worker.settings_drained());
+            if settings_drain::can_acknowledge(slot_pool.active(), media_idle, media_drain::active(&storage::config_dir()),
+                storage::config_dir().join("media/pending-completion.json").exists()) {
+                if let Some(id) = settings_drain::request(&storage::config_dir()) {
+                    let _ = settings_drain::acknowledge(&storage::config_dir(), &id);
+                }
+            }
+            thread::sleep(Duration::from_millis(200));
+            continue;
+        }
         if let Some(worker) = media_worker.as_mut() { worker.maintain(&latest_config); }
 
         while let Ok(mut refreshed) = health_refresh_rx.try_recv() {

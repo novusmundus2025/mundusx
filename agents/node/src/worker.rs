@@ -2243,10 +2243,29 @@ fn run_llama_server_completion(
     if structured {
         payload["response_format"] = speakai_response_format();
     }
-    let response = ureq::post(&format!("{url}/v1/chat/completions"))
-        .timeout(Duration::from_secs(worker_idle_timeout().as_secs().max(30)))
+    let live_stream = live_delta_enabled() && !structured;
+    let timeout = if live_stream { worker_hard_timeout() } else { worker_idle_timeout() };
+    let mut request = ureq::post(&format!("{url}/v1/chat/completions"))
+        .timeout(Duration::from_secs(timeout.as_secs().max(30)));
+    if live_stream {
+        payload["stream"] = serde_json::json!(true);
+        payload["stream_options"] = serde_json::json!({"include_usage": true});
+        request = request.set("Accept", "text/event-stream")
+            .set("Accept-Encoding", "identity").set("Cache-Control", "no-cache");
+    }
+    let response = request
         .send_json(payload)
         .map_err(|error| format!("llama-server completion failed: {error}"))?;
+    if live_stream {
+        let generated = parse_openai_stream(BufReader::new(response.into_reader()))?;
+        let runtime_mode = match backend {
+            Backend::Cuda => "persistent-warm-cuda",
+            Backend::Vulkan => "persistent-warm-vulkan",
+            Backend::M => "persistent-warm-blas",
+            _ => "persistent-warm",
+        };
+        return Ok((generated, runtime_mode.to_string(), RuntimeMetrics::default()));
+    }
     let value = response
         .into_json::<serde_json::Value>()
         .map_err(|error| format!("llama-server returned invalid json: {error}"))?;
@@ -3280,7 +3299,8 @@ pub fn probe_worker_health(
         parallel_slots: 1,
         supported_runtime_modes,
         streaming_supported: (backend == Backend::Vllm && vllm_ready)
-            || (backend == Backend::M && persistent_mlx_warm),
+            || (backend == Backend::M && persistent_mlx_warm)
+            || persistent_llama_warm,
         capabilities: Default::default(),
         checked_at: now_unix_seconds(),
         notes,
@@ -3666,6 +3686,8 @@ fn run_llama_request(
             });
         let (generated, runtime_mode, metrics) = match warm_result {
             Some(Ok(result)) => result,
+            Some(Err(error)) if live_delta_enabled() && !speakai => return Err(error),
+            None if live_delta_enabled() && !speakai => return Err("Streaming requires a healthy persistent llama-server runtime".into()),
             Some(Err(_)) | None => run_llama_command(
                 &model_path,
                 &prompt,
@@ -4695,6 +4717,64 @@ mod tests {
 
         assert_eq!(parsed, content);
         assert_eq!(relayed, content);
+    }
+
+    #[test]
+    fn managed_llama_stream_delivers_before_completion() {
+        for backend in [Backend::Cuda, Backend::Vulkan, Backend::M] {
+            check_managed_llama_stream(backend);
+        }
+    }
+
+    fn check_managed_llama_stream(backend: Backend) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" { break; }
+                headers.push_str(&line);
+            }
+            let length: usize = headers.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+            }).unwrap();
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(payload["stream"], true);
+            assert_eq!(payload["stream_options"]["include_usage"], true);
+            assert!(headers.to_ascii_lowercase().contains("accept-encoding: identity"));
+            let text = "Progressive CUDA streaming delivers tokens while the runtime is still generating. ".repeat(3);
+            let first = format!("data: {}\n\n", serde_json::json!({"choices":[{"delta":{"content":text}}]}));
+            let end = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":42}}\n\ndata: [DONE]\n\n";
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", first.len() + end.len(), first).unwrap();
+            socket.flush().unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            socket.write_all(end.as_bytes()).unwrap();
+            text
+        });
+        let (tx, rx) = mpsc::channel();
+        let worker = thread::spawn(move || with_stream_delta_sender(Some(tx), || {
+            run_llama_server_completion(&url, "qwen", "", "hello", backend, 64, 0.2, 0.9, 42, false)
+        }));
+        let first = rx.recv_timeout(Duration::from_secs(10)).expect("delta before final event");
+        assert!(!first.is_empty());
+        release_tx.send(()).unwrap();
+        let result = worker.join().unwrap().unwrap();
+        let expected = server.join().unwrap();
+        assert_eq!(result.0, expected.trim());
+        assert_eq!(result.1, match backend {
+            Backend::Cuda => "persistent-warm-cuda",
+            Backend::Vulkan => "persistent-warm-vulkan",
+            _ => "persistent-warm-blas",
+        });
+        assert_eq!(format!("{first}{}", rx.try_iter().collect::<String>()), expected.trim());
     }
 
     #[test]
@@ -5924,6 +6004,7 @@ mod tests {
             assert!(health.llama_server_available);
             assert!(health.persistent_runtime_warm);
             assert_eq!(health.runtime_kind, "persistent-warm");
+            assert!(health.streaming_supported);
             assert_eq!(health.supported_runtime_modes, vec!["local".to_string()]);
         });
     }

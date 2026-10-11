@@ -195,7 +195,7 @@ pub fn print_report(config: &Config, json: bool, probe: bool) {
     println!(
         "LLM: {}",
         if config.contribution.llm_enabled() {
-            "enabled; run opengpu doctor to check readiness"
+            "enabled"
         } else {
             "disabled"
         }

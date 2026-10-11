@@ -58,7 +58,7 @@ impl SlotPool {
     }
 
     pub fn try_acquire(self: &Arc<Self>) -> Option<SlotPermit> {
-        if crate::media_drain::request(&crate::storage::config_dir()).is_some() { return None; }
+        if crate::media_drain::request(&crate::storage::config_dir()).is_some() || crate::settings_drain::active(&crate::storage::config_dir()) { return None; }
         let mut active = self.active.load(Ordering::Acquire);
         loop {
             if active >= self.capacity {
@@ -73,7 +73,7 @@ impl SlotPool {
                 Ok(_) => {
                     let permit = SlotPermit { pool: self.clone() };
                     // The drain may have started between the initial check and CAS.
-                    if crate::media_drain::request(&crate::storage::config_dir()).is_some() {
+                    if crate::media_drain::request(&crate::storage::config_dir()).is_some() || crate::settings_drain::active(&crate::storage::config_dir()) {
                         drop(permit);
                         return None;
                     }

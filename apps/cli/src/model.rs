@@ -3,10 +3,10 @@ use crate::model_catalog::{lookup_model_for_backend, ModelOption};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelRecord {
@@ -528,29 +528,9 @@ fn download_model_from_option(
         fs::copy(source_path, &tmp)?;
     } else {
         eprintln!("model download: starting `{name}`");
-        eprintln!("model download: {}", option.source_url);
-        let _progress = crate::operation_progress::OperationProgress::start(format!("Downloading model: {name} (curl reports transfer progress below)"));
-        let status = Command::new("curl")
-            .args([
-                "-fL",
-                "--retry",
-                "3",
-                "--continue-at",
-                "-",
-                "--progress-bar",
-                "--show-error",
-                "--output",
-            ])
-            .arg(&tmp)
-            .arg(&option.source_url)
-            .status()?;
-
-        if !status.success() {
+        if let Err(error) = download_with_progress(&option.source_url, &tmp) {
             let _ = fs::remove_file(&tmp);
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("failed to download model from {}", option.source_url),
-            ));
+            return Err(error);
         }
     }
 
@@ -565,6 +545,119 @@ fn download_model_from_option(
     fs::rename(&tmp, &dest)?;
     eprintln!("model download: saved `{name}` to {}", dest.display());
     Ok(true)
+}
+
+fn response_length(headers: &str) -> Option<u64> {
+    let mut status = 0;
+    let mut length = None;
+    let mut range_total = None;
+    for line in headers.lines() {
+        if line.starts_with("HTTP/") {
+            status = line.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+            length = None;
+            range_total = None;
+        } else if (200..300).contains(&status) {
+            if let Some((key, value)) = line.split_once(':') {
+                if key.eq_ignore_ascii_case("content-length") { length = value.trim().parse().ok(); }
+                if key.eq_ignore_ascii_case("content-range") { range_total = value.trim().rsplit('/').next().and_then(|s| s.parse().ok()); }
+                if key.eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked") { return None; }
+            }
+        }
+    }
+    range_total.or(length).filter(|n| *n > 0)
+}
+
+fn transfer_line(bytes: u64, total: Option<u64>, elapsed: Duration) -> String {
+    let rate = bytes as f64 / elapsed.as_secs_f64().max(0.001);
+    let size = |n: u64| format!("{:.2}GiB", n as f64 / 1_073_741_824.0);
+    match total {
+        Some(total) => {
+            let fraction = (bytes as f64 / total as f64).clamp(0.0, 1.0);
+            let filled = (fraction * 12.0) as usize;
+            let eta = if rate > 0.0 { format!("{}s", ((total.saturating_sub(bytes)) as f64 / rate).ceil() as u64) } else { "--".into() };
+            format!("[{}{}] {:5.1}%  {} / {}  {:.1}MiB/s avg  ETA {}", "#".repeat(filled), "-".repeat(12 - filled), fraction * 100.0, size(bytes), size(total), rate / 1_048_576.0, eta)
+        }
+        None => format!("Downloading {}  {:.1} MiB/s  total / ETA unknown", size(bytes), rate / 1_048_576.0),
+    }
+}
+
+fn download_with_progress(url: &str, destination: &Path) -> io::Result<()> {
+    let headers = destination.with_extension("download-headers");
+    let mut child = Command::new("curl")
+        .args(["-fL", "--retry", "3", "--continue-at", "-", "--no-progress-meter", "--show-error", "--dump-header"])
+        .arg(&headers).arg("--output").arg(destination).arg(url)
+        .stdout(Stdio::null()).stderr(Stdio::piped()).spawn()?;
+    let mut errors = child.stderr.take().expect("piped curl stderr");
+    let reader = std::thread::spawn(move || { let mut text = String::new(); let _ = errors.read_to_string(&mut text); text });
+    let started = Instant::now();
+    let terminal = io::stderr().is_terminal();
+    let status = loop {
+        let status = child.try_wait()?;
+        if terminal {
+            let bytes = fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
+            let total = fs::read_to_string(&headers).ok().and_then(|s| response_length(&s));
+            let line = transfer_line(bytes, total, started.elapsed());
+            let columns = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(100);
+            let line: String = line.chars().take(columns.saturating_sub(1)).collect();
+            let mut out = io::stderr().lock();
+            let _ = write!(out, "\r\x1b[2K{}", crate::theme::menu_label(line, true));
+            let _ = out.flush();
+        }
+        if let Some(status) = status { break status; }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    if terminal { eprintln!(); }
+    let diagnostics = reader.join().unwrap_or_default();
+    let _ = fs::remove_file(&headers);
+    if !status.success() {
+        return Err(io::Error::other(format!("Model download failed: {}", diagnostics.trim())));
+    }
+    eprintln!("Download complete: {} bytes in {:.1}s", fs::metadata(destination)?.len(), started.elapsed().as_secs_f64());
+    Ok(())
+}
+
+#[cfg(test)]
+mod transfer_progress_tests {
+    use super::*;
+    #[test]
+    fn final_response_length_ignores_redirects_and_unknown_totals() {
+        assert_eq!(response_length("HTTP/1.1 302 Found\r\nContent-Length: 9\r\n\r\nHTTP/2 200\r\ncontent-length: 1000\r\n"), Some(1000));
+        assert_eq!(response_length("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"), None);
+        assert_eq!(response_length("HTTP/1.1 302 Found\r\nContent-Length: 9\r\n"), None);
+        assert_eq!(response_length("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 500-999/1000\r\nContent-Length: 500\r\n"), Some(1000));
+    }
+    #[test]
+    fn progress_uses_real_bytes_and_reports_unknown_eta_honestly() {
+        let line = transfer_line(500, Some(1000), Duration::from_secs(5));
+        assert!(line.contains("50.0%"));
+        assert!(line.contains("ETA 5s"));
+        assert!(transfer_line(500, None, Duration::from_secs(5)).contains("unknown"));
+    }
+
+    #[test]
+    fn curl_download_preserves_bytes_from_local_http_server() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/model.gguf", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut reader = io::BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if io::BufRead::read_line(&mut reader, &mut line).unwrap() == 0 || line == "\r\n" { break; }
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nGGUFdemo").unwrap();
+        });
+        let path = std::env::temp_dir().join(format!("mundusx-transfer-{}", uuid::Uuid::new_v4()));
+        let result = download_with_progress(&url, &path);
+        server.join().unwrap();
+        result.unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"GGUFdemo");
+        assert!(!path.with_extension("download-headers").exists());
+        fs::remove_file(path).unwrap();
+    }
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {

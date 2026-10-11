@@ -58,7 +58,7 @@ fn rich_output_allowed() -> bool {
 pub fn section(title: &str) {
     match current_mode() {
         ThemeMode::Classic => println!("[{}]", title),
-        ThemeMode::Mundusx => println!("{}", style(title).with(brand()).bold()),
+        ThemeMode::Mundusx => println!("{}", menu_title(title)),
     }
 }
 
@@ -77,6 +77,18 @@ pub fn note(value: impl std::fmt::Display) {
     match current_mode() {
         ThemeMode::Classic => println!("note: {value}"),
         ThemeMode::Mundusx => println!("{} {value}", style("•").with(brand())),
+    }
+}
+
+pub fn is_rich() -> bool { current_mode() == ThemeMode::Mundusx }
+
+pub fn command(command: &str, description: &str) {
+    match current_mode() {
+        ThemeMode::Classic => println!("  $ {command}\n    {description}"),
+        ThemeMode::Mundusx => {
+            println!("  {} {}", style("$").with(brand()), style(command).with(brand_blue()).bold());
+            println!("    {}", style(description).with(Color::DarkGrey));
+        }
     }
 }
 
@@ -106,7 +118,7 @@ pub fn status(value: &str) -> String {
                 "completed" | "ready" | "yes" | "allowed" | "saved" => Color::Green,
                 "failed" | "blocked" | "no" | "cancelled" | "canceled" => Color::Red,
                 "queued" | "assigned" | "running" | "pending" | "review needed" => Color::Yellow,
-                _ => Color::Cyan,
+                _ => brand_blue(),
             };
             style(value).with(color).to_string()
         }
@@ -147,12 +159,12 @@ pub fn panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
         ThemeMode::Mundusx => {
             let top = format!("╭{}╮", "─".repeat(width + 4));
             let bottom = format!("╰{}╯", "─".repeat(width + 4));
-            println!("{}", style(top).with(Color::DarkGrey));
+            println!("{}", style(top).with(brand_blue()));
             println!(
                 "{} {} {}",
                 style("│").with(Color::DarkGrey),
                 style(format!("{:<width$}", title, width = width + 2))
-                    .with(accent)
+                    .with(if accent == Color::Cyan { brand_blue() } else { accent })
                     .bold(),
                 style("│").with(Color::DarkGrey)
             );
@@ -175,13 +187,17 @@ pub fn panel(title: &str, subtitle: &str, lines: &[String], accent: Color) {
                     width = width + 2
                 );
             }
-            println!("{}", style(bottom).with(Color::DarkGrey));
+            println!("{}", style(bottom).with(brand_blue()));
         }
     }
 }
 
 fn brand() -> Color {
-    Color::AnsiValue(99)
+    Color::Rgb { r: 114, g: 89, b: 245 }
+}
+
+fn brand_blue() -> Color {
+    Color::Rgb { r: 76, g: 172, b: 249 }
 }
 
 pub fn banner(title: &str, subtitle: &str) {
@@ -192,8 +208,7 @@ pub fn banner(title: &str, subtitle: &str) {
         }
         ThemeMode::Mundusx => {
             println!();
-            println!("{}", style("◆  MUNDUSX").with(brand()).bold());
-            println!("{}", style(title).with(Color::White).bold());
+            println!("{}", menu_title(title));
             println!("{}", style(subtitle).with(Color::DarkGrey));
             println!();
         }
@@ -203,7 +218,21 @@ pub fn banner(title: &str, subtitle: &str) {
 pub fn menu_title(value: &str) -> String {
     match current_mode() {
         ThemeMode::Classic => value.to_string(),
-        ThemeMode::Mundusx => style(value).with(Color::White).bold().to_string(),
+        ThemeMode::Mundusx => {
+            let columns = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+            let width = columns.saturating_sub(4).clamp(20, 76);
+            let row = |text: &str, color: Color| {
+                let text: String = text.chars().take(width - 2).collect();
+                format!("{} {} {}", style("│").with(brand_blue()),
+                    style(format!("{text:<inner$}", inner = width - 2)).with(color).bold(),
+                    style("│").with(brand_blue()))
+            };
+            format!("{}\r\n{}\r\n{}\r\n{}",
+                style(format!("╭{}╮", "─".repeat(width))).with(brand_blue()),
+                row("M U N D U S X  ·  OpenGPU", brand()),
+                row(value, Color::White),
+                style(format!("╰{}╯", "─".repeat(width))).with(brand_blue()))
+        },
     }
 }
 
@@ -211,7 +240,7 @@ pub fn menu_rule() -> String {
     match current_mode() {
         ThemeMode::Classic => "------------------------------".to_string(),
         ThemeMode::Mundusx => style("──────────────────────────────")
-            .with(Color::DarkGrey)
+            .with(brand_blue())
             .to_string(),
     }
 }
@@ -222,7 +251,7 @@ pub fn menu_marker(selected: bool) -> String {
         (ThemeMode::Classic, false) => "  ".to_string(),
         // ASCII remains legible in legacy Windows PowerShell hosts whose
         // selected console font does not contain the heavier arrow glyphs.
-        (ThemeMode::Mundusx, true) => style(">>").with(brand()).bold().to_string(),
+        (ThemeMode::Mundusx, true) => style(">>").with(brand_blue()).bold().to_string(),
         (ThemeMode::Mundusx, false) => "  ".to_string(),
     }
 }
@@ -230,7 +259,7 @@ pub fn menu_marker(selected: bool) -> String {
 pub fn menu_label(value: impl std::fmt::Display, selected: bool) -> String {
     let value = value.to_string();
     match (current_mode(), selected) {
-        (ThemeMode::Mundusx, true) => style(value).with(brand()).bold().to_string(),
+        (ThemeMode::Mundusx, true) => style(value).with(brand_blue()).bold().to_string(),
         _ => value,
     }
 }
