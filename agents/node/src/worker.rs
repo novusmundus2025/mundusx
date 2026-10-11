@@ -1503,6 +1503,16 @@ fn is_model_download_stage(stage: &str) -> bool {
 }
 
 fn local_runtime_progress(line: &str) -> Option<String> {
+    if let Some(event) = line.strip_prefix("MUNDUSX_LOAD_PROGRESS:") {
+        let value: serde_json::Value = serde_json::from_str(event).ok()?;
+        let done = value["completed_bytes"].as_u64()?;
+        let total = value["total_bytes"].as_u64()?;
+        if total == 0 || done > total { return None; }
+        let percent = u128::from(done) * 100 / u128::from(total);
+        let filled = (percent / 5) as usize;
+        return Some(format!("Loading weights [{}{}] {percent}% ({:.2}/{:.2} GiB evaluated)",
+            "#".repeat(filled), "-".repeat(20-filled), done as f64 / 1073741824.0, total as f64 / 1073741824.0));
+    }
     if line.contains("load_tensors:") || line.contains("load_weights") {
         Some("Loading model weights into memory".into())
     } else if line.contains("warmup") || line.contains("warming up") {
@@ -1779,10 +1789,14 @@ pub fn start_persistent_runtime(
             let stdout = log
                 .try_clone()
                 .map_err(|error| format!("failed to clone MLX runtime log handle: {error}"))?;
+            let wrapper = log_path.with_file_name("measured_startup.py");
+            fs::write(&wrapper, include_str!("mlx_startup.py")).map_err(|e| e.to_string())?;
+            let ready_file = log_path.with_file_name(format!("model-ready-{}.txt", uuid::Uuid::new_v4().simple()));
             let mut child = Command::new(python)
+                .arg(&wrapper)
+                .env("OPENGPU_MLX_READY_FILE", &ready_file)
+                .env("PYTHONUNBUFFERED", "1")
                 .args([
-                    "-m",
-                    "mlx_lm.server",
                     "--model",
                     model_name,
                     // Retaining ten old long-context KV caches would invalidate
@@ -1801,6 +1815,12 @@ pub fn start_persistent_runtime(
                 .map_err(|error| format!("failed to launch persistent MLX runtime: {error}"))?;
             while Instant::now() < deadline {
                 emit_runtime_startup_progress(&log_path, &mut log_offset, &mut last_progress, &progress, "MLX", local_runtime_progress);
+                if let Ok(error) = fs::read_to_string(ready_file.with_extension("error")) {
+                    kill_process_tree(child.id());
+                    let _ = child.wait();
+                    let _ = fs::remove_file(ready_file.with_extension("error"));
+                    return Err(format!("MLX model loading failed: {error}"));
+                }
                 if let Some(status) = child
                     .try_wait()
                     .map_err(|error| format!("failed to poll persistent MLX runtime: {error}"))?
@@ -1811,7 +1831,8 @@ pub fn start_persistent_runtime(
                         log_path.display()
                     ));
                 }
-                if mlx_server_health_ok(&url) {
+                if ready_file.is_file() && mlx_server_health_ok(&url) {
+                    let _ = fs::remove_file(&ready_file);
                     let runtime = PersistentRuntimeHandle::new(
                         child,
                         url,
@@ -1829,6 +1850,7 @@ pub fn start_persistent_runtime(
 
             kill_process_tree(child.id());
             let _ = child.wait();
+            let _ = fs::remove_file(&ready_file);
             return Err(format!(
                 "persistent MLX runtime did not become healthy within {timeout_seconds}s; see {} (override with OPENGPU_MLX_START_TIMEOUT_SECONDS)",
                 log_path.display()
@@ -5392,6 +5414,16 @@ mod tests {
             vllm_startup_progress("INFO: Application startup complete.").as_deref(),
             Some("server started; checking endpoint health")
         );
+    }
+
+    #[test]
+    fn measured_weight_progress_uses_completed_bytes_and_rejects_invalid_totals() {
+        let line = "MUNDUSX_LOAD_PROGRESS:{\"completed_bytes\":1073741824,\"total_bytes\":2147483648}";
+        let progress = local_runtime_progress(line).unwrap();
+        assert!(progress.contains("50%"));
+        assert!(progress.contains("1.00/2.00 GiB evaluated"));
+        assert!(local_runtime_progress("MUNDUSX_LOAD_PROGRESS:{\"completed_bytes\":2,\"total_bytes\":1}").is_none());
+        assert!(local_runtime_progress("MUNDUSX_LOAD_PROGRESS:{\"completed_bytes\":0,\"total_bytes\":0}").is_none());
     }
 
     #[test]
