@@ -783,6 +783,14 @@ fn build_scheduler_capabilities(
             }
         }
     }
+    if cluster.is_none() && health.healthy && health.persistent_runtime_warm
+        && matches!(health.runtime_mode.as_str(), "cuda" | "vulkan" | "blas") {
+        if let Some(model) = health.model_name.as_deref() {
+            if let Some(context) = worker::served_llama_context_tokens(&config.effective_model_dir(), model) {
+                apply_served_model_context(&mut models, model, context);
+            }
+        }
+    }
     let context_tokens = models.iter().filter_map(|entry| entry.context_tokens).max();
     let available_vram_mb = capabilities
         .usable_vram_mb
@@ -3316,6 +3324,10 @@ mod tests {
         let job = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join("job.lock")).unwrap();
         job.lock().unwrap();
         assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, true).agent_state, AgentState::Busy);
+        // Parallel subprocess tests can briefly inherit Unix descriptors.
+        // Release the locks explicitly before asserting the helper is gone.
+        job.unlock().unwrap();
+        worker.unlock().unwrap();
         drop(job);
         drop(worker);
         assert_eq!(media_heartbeat_from_snapshot(&snapshot, &config, &home, true).agent_state, AgentState::Paused);
