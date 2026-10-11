@@ -3859,6 +3859,8 @@ fn run_node_agent_foreground(
     theme::field("error log", error_log_path.display());
         theme::note("S: settings · Esc / Ctrl-C: disconnect");
 
+    command.env("OPENGPU_PROGRESS_RENDER", if !debug && theme::is_rich() { "terminal" } else { "plain" });
+    command.env("OPENGPU_PROGRESS_COLUMNS", crossterm::terminal::size().map(|(width, _)| width).unwrap_or(80).to_string());
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to run node agent `{}`: {error}", agent.display()))?;

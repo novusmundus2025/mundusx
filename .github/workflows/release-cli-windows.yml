@@ -68,6 +68,9 @@ jobs:
           cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
           if ($LASTEXITCODE -ne 0) { throw "Progress test failed" }
 
+      - name: Test measured weight loading
+        run: python -m unittest discover -s agents/node/src -p test_mlx_startup.py
+
       - name: Test contributor settings and managed streaming
         run: |
           cargo test --locked -p opengpu -p opengpu-node-agent --target ${{ env.TARGET }}

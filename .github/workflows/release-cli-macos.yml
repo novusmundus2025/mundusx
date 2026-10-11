@@ -66,6 +66,12 @@ jobs:
           cargo test -p opengpu --bin opengpu lightning_queue_jobs_support_every_integer_duration --target "${TARGET}"
           python3 -m unittest workers.media.test_runtime.ProgressStageTests.test_lightning_durations_cover_one_through_ten_seconds
 
+      - name: Test measured weight loading with native MLX
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/mlx-progress"
+          "${RUNNER_TEMP}/mlx-progress/bin/pip" install mlx
+          "${RUNNER_TEMP}/mlx-progress/bin/python" -m unittest discover -s agents/node/src -p test_mlx_startup.py
+
       - name: Test contributor settings and managed streaming
         run: |
           cargo test --locked -p opengpu -p opengpu-node-agent --target ${{ env.TARGET }}

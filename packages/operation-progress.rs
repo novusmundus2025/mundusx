@@ -2,6 +2,21 @@
 use std::sync::{mpsc::{self, Sender}, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use std::io::{self, IsTerminal, Write};
+
+fn terminal_progress() -> bool {
+    std::env::var("OPENGPU_PROGRESS_RENDER").ok().as_deref() == Some("terminal")
+        || (io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() && std::env::var_os("CI").is_none())
+}
+fn show_stage(label: &str) {
+    if terminal_progress() {
+        let columns = std::env::var("OPENGPU_PROGRESS_COLUMNS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(80).max(20);
+        let label = label.chars().take(columns-1).collect::<String>();
+        let mut out = io::stderr().lock();
+        let _ = write!(out, "\r\x1b[2K\x1b[38;2;76;172;249m{label}\x1b[0m");
+        let _ = out.flush();
+    } else { eprintln!("operationProgress: {label}"); }
+}
 
 pub struct OperationProgress {
     stop: Option<Sender<()>>,
@@ -17,12 +32,12 @@ impl OperationProgress {
         let label = label.into();
         let mut stage = self.stage.lock().unwrap_or_else(|e| e.into_inner());
         if stage.0 != label {
-            eprintln!("operationProgress: {label}");
+            show_stage(&label);
             *stage = (label, Instant::now());
         }
     }
     fn with_interval(label: String, interval: Duration) -> Self {
-        eprintln!("operationProgress: {label}");
+        show_stage(&label);
         let stage = Arc::new(Mutex::new((label, Instant::now())));
         let current = stage.clone();
         let (stop, receiver) = mpsc::channel();
@@ -30,7 +45,7 @@ impl OperationProgress {
             while receiver.recv_timeout(interval) == Err(mpsc::RecvTimeoutError::Timeout) {
                 let stage = current.lock().unwrap_or_else(|e| e.into_inner());
                 if stage.1.elapsed() >= interval {
-                    eprintln!("operationProgress: {} ({}s since last progress; waiting for next update)", stage.0, stage.1.elapsed().as_secs());
+                    show_stage(&format!("{} ({}s since last progress; waiting for next update)", stage.0, stage.1.elapsed().as_secs()));
                 }
             }
         });
@@ -41,6 +56,7 @@ impl Drop for OperationProgress {
     fn drop(&mut self) {
         drop(self.stop.take());
         if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+        if terminal_progress() { eprintln!(); }
     }
 }
 #[cfg(test)]

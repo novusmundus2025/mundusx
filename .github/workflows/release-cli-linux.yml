@@ -85,6 +85,9 @@ jobs:
           cargo test -p opengpu --bin opengpu media_worker --target "${TARGET}"
           cd workers/media && python3 -m unittest test_artifact_upload
 
+      - name: Test measured weight loading
+        run: python3 -m unittest discover -s agents/node/src -p test_mlx_startup.py
+
       - name: Test contributor settings and managed streaming
         run: |
           cargo test --locked -p opengpu -p opengpu-node-agent --target ${{ env.TARGET }}
