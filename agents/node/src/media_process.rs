@@ -2,6 +2,9 @@ use crate::storage::AgentConfig;
 use std::process::{Child, Command, Stdio};
 pub struct MediaProcess(Option<Child>, std::time::Instant);
 impl MediaProcess {
+    pub fn settings_drained(&mut self) -> bool {
+        self.0.as_mut().is_none_or(|child| matches!(child.try_wait(), Ok(Some(_))))
+    }
     pub fn maintain(&mut self, config: &AgentConfig) {
         let running = self
             .0

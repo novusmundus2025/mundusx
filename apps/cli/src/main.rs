@@ -7,6 +7,10 @@ mod vllm_model_profile;
 mod media_worker;
 mod workload_picker;
 mod auth_token;
+mod control_planes;
+#[path = "../../../packages/settings-drain.rs"]
+mod settings_drain;
+mod session_settings;
 mod cluster;
 mod config;
 mod contribution;
@@ -123,6 +127,11 @@ enum MediaCommands {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Manage the persistent list of saved control-plane endpoints
+    ControlPlane {
+        #[command(subcommand)]
+        command: ControlPlaneCommands,
+    },
     /// Guided first-run setup for this contributor machine
     Install {
         /// Use the public MundusX control plane
@@ -499,6 +508,12 @@ fn clear_menu_screen() {
 
 fn handles_terminal_key(kind: KeyEventKind) -> bool {
     kind != KeyEventKind::Release
+}
+
+fn session_disconnect_key(key: crossterm::event::KeyEvent, settings_returned: Option<std::time::Instant>) -> bool {
+    if key.kind != KeyEventKind::Press { return false; }
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { return true; }
+    key.code == KeyCode::Esc && settings_returned.is_none_or(|returned| returned.elapsed() >= Duration::from_millis(750))
 }
 
 macro_rules! raw_println {
@@ -3593,6 +3608,88 @@ fn mark_disconnected() -> Result<Config, String> {
     Ok(config)
 }
 
+fn grouped_startup(fields: &std::collections::BTreeMap<String, String>) -> String {
+    let get = |key: &str| fields.get(key).map(String::as_str).unwrap_or("not reported");
+    let memory = |key: &str| fields.get(key).and_then(|v| v.parse::<f64>().ok())
+        .map(|v| format!("{:.1} GiB", v / 1024.0)).unwrap_or_else(|| "not reported".into());
+    format!("\r\n{}\r\n\r\n{}\r\n  State: {} · Accepting jobs: {}\r\n  Node: {}\r\n\r\n{}\r\n  Model: {}\r\n  Runtime: {} · Backend: {}\r\n\r\n{}\r\n  RAM: {} · Contributed RAM: {}\r\n  VRAM: {} · Job slots: {}\r\n\r\n{}\r\n  S: Settings · Esc / Ctrl-C: disconnect\r\n  opengpu logs: view diagnostic log locations\r\n  opengpu start --debug: show full diagnostics\r\n\r\n",
+        theme::menu_title("Contributor status"), theme::menu_label("CONNECTION", true),
+        get("controlPlaneState"), theme::status(get("readyForJobs")), get("nodeId"),
+        theme::menu_label("MODEL & RUNTIME", true), get("activeModel"), get("runtimeMode"), get("backend"),
+        theme::menu_label("RESOURCES", true), memory("physicalMemoryMb"), memory("usableMemoryMb"),
+        memory("physicalVramMb"), get("parallelSlots"), theme::menu_label("CONTROLS & DIAGNOSTICS", true))
+}
+
+#[derive(Subcommand, Debug)]
+enum ControlPlaneCommands {
+    List,
+    Add { name: String, url: String },
+    Delete { name: String },
+}
+
+fn tee_grouped_agent<R: Read, W: Write>(reader: R, mut mirror: W, mut log: std::fs::File) {
+    let mut reader = io::BufReader::new(reader);
+    let mut line = String::new();
+    let mut fields = std::collections::BTreeMap::new();
+    let mut displayed = false;
+    loop {
+        line.clear();
+        match io::BufRead::read_line(&mut reader, &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let _ = log.write_all(line.as_bytes());
+        let _ = log.flush();
+        let text = line.trim();
+        if !displayed {
+            if let Some((key, value)) = text.split_once(':') {
+                if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    fields.insert(key.into(), value.trim().into());
+                    continue;
+                }
+            }
+            if text.contains("connected ") { continue; }
+            if text.contains("press Ctrl-C to stop") {
+                let _ = mirror.write_all(grouped_startup(&fields).as_bytes());
+                let _ = mirror.flush();
+                displayed = true;
+                continue;
+            }
+        }
+        let bytes = terminal_line_endings(line.as_bytes(), &mut false);
+        let _ = mirror.write_all(&bytes);
+        let _ = mirror.flush();
+    }
+    if !displayed && !fields.is_empty() {
+        let _ = mirror.write_all(grouped_startup(&fields).as_bytes());
+        if let Some(reason) = fields.get("agentAdmission.readinessReason") {
+            let _ = writeln!(mirror, "\r\nNot ready: {reason}\r");
+        }
+        let _ = mirror.flush();
+    }
+}
+
+#[cfg(test)]
+mod grouped_console_tests {
+    #[test]
+    fn groups_startup_without_losing_log_or_live_job_events() {
+        let raw = b"agentVersion: 0.2.45\nnodeId: node-demo\ncontrolPlaneState: ready\nreadyForJobs: yes\nactiveModel: demo-model\nphysicalMemoryMb: 32768\nconnected node-demo\npress Ctrl-C to stop\njobPoll: claimed job-demo\n";
+        let path = std::env::temp_dir().join(format!("mundusx-console-{}", uuid::Uuid::new_v4()));
+        let log = std::fs::File::create(&path).unwrap();
+        let mut output = Vec::new();
+        super::tee_grouped_agent(std::io::Cursor::new(raw), &mut output, log);
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
+        let output = String::from_utf8(output).unwrap();
+        for title in ["CONNECTION", "MODEL & RUNTIME", "RESOURCES", "CONTROLS & DIAGNOSTICS"] {
+            assert!(output.contains(title));
+        }
+        assert!(!output.contains("physicalMemoryMb:"));
+        assert!(output.contains("32.0 GiB"));
+        assert!(output.contains("jobPoll: claimed job-demo"));
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 fn tee_stream<R: Read, W: Write>(mut reader: R, mut mirror: W, mut log: std::fs::File) {
     let mut buffer = [0u8; 4096];
     let mut previous_was_carriage_return = false;
@@ -3760,7 +3857,7 @@ fn run_node_agent_foreground(
     theme::field("command", format!("{} run", agent.display()));
     theme::field("log", log_path.display());
     theme::field("error log", error_log_path.display());
-    theme::note("Press Esc or Ctrl-C to disconnect");
+        theme::note("S: settings · Esc / Ctrl-C: disconnect");
 
     let mut child = command
         .spawn()
@@ -3770,10 +3867,15 @@ fn run_node_agent_foreground(
 
     let stdout_pipe = child.stdout.take().expect("node agent stdout piped");
     let stderr_pipe = child.stderr.take().expect("node agent stderr piped");
-    let stdout_tee = thread::spawn(move || tee_stream(stdout_pipe, io::stdout(), stdout_log));
+    let grouped = !debug && theme::is_rich();
+    let stdout_tee = thread::spawn(move || {
+        if grouped { tee_grouped_agent(stdout_pipe, io::stdout(), stdout_log); }
+        else { tee_stream(stdout_pipe, io::stdout(), stdout_log); }
+    });
     let stderr_tee = thread::spawn(move || tee_stream(stderr_pipe, io::stderr(), stderr_log));
 
     let mut raw_mode = enable_session_raw_mode();
+    let mut settings_returned = None;
     loop {
         if let Some(status) = child.try_wait().map_err(|error| {
             format!(
@@ -3792,11 +3894,26 @@ fn run_node_agent_foreground(
 
         match poll(Duration::from_millis(200)) {
             Ok(true) => match read() {
+                Ok(Event::Key(event)) if handles_terminal_key(event.kind) && !event.modifiers.contains(KeyModifiers::CONTROL) && matches!(event.code, KeyCode::Char('s' | 'S')) => {
+                    drop(raw_mode.take());
+                    match apply_session_settings(&mut child) {
+                        Ok(true) => {
+                            remove_node_agent_pid();
+                            let _ = stdout_tee.join();
+                            let _ = stderr_tee.join();
+                            return launch_node_agent(if debug { AgentLaunchMode::ForegroundDebug } else { AgentLaunchMode::Foreground });
+                        }
+                        Ok(false) => {}
+                        Err(error) => theme::warn(error),
+                    }
+                    raw_mode = enable_session_raw_mode();
+                    drain_pending_terminal_events();
+                    settings_returned = Some(std::time::Instant::now());
+                    theme::section("Contributor session");
+                    theme::note("Session continues. S: settings · Esc / Ctrl-C: disconnect");
+                }
                 Ok(Event::Key(event))
-                    if handles_terminal_key(event.kind)
-                        && (event.code == KeyCode::Esc
-                            || event.code == KeyCode::Char('c')
-                                && event.modifiers.contains(KeyModifiers::CONTROL)) =>
+                    if session_disconnect_key(event, settings_returned) =>
                 {
                     mark_disconnected()?;
                     drop(raw_mode.take());
@@ -3816,6 +3933,95 @@ fn run_node_agent_foreground(
             Err(error) => theme::warn(format!("Could not poll terminal input: {error}")),
         }
     }
+}
+
+fn apply_session_settings(child: &mut std::process::Child) -> Result<bool, String> {
+    let guard = settings_drain::Guard::acquire(&config::config_dir()).map_err(|e| e.to_string())?;
+    theme::section("Preparing settings");
+    theme::note("Finishing active jobs. No new jobs will be accepted. Esc cancels.");
+    let raw = enable_session_raw_mode();
+    let deadline = std::time::Instant::now() + Duration::from_secs(900);
+    while !guard.ready() {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() { return Err("Agent exited while preparing settings; no changes were applied.".into()); }
+        if std::time::Instant::now() >= deadline { return Err("Active work did not drain within 15 minutes; changes were not applied.".into()); }
+        if poll(Duration::from_millis(200)).unwrap_or(false) {
+            if let Ok(Event::Key(key)) = read() {
+                if key.code == KeyCode::Esc || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    drop(raw);
+    let original = current_config_or_default();
+    let Some(mut changes) = session_settings::edit(&original)? else {
+        theme::note("Pending changes discarded. Resuming existing settings.");
+        return Ok(false);
+    };
+    let restart = changes.model_changed || changes.plane_changed;
+    let mut registry = control_planes::Registry::load().map_err(|e| e.to_string())?;
+    for url in [&original.control_plane_url, &changes.config.control_plane_url] {
+        if url.trim_end_matches('/') != PUBLIC_CONTROL_PLANE_URL {
+            registry.add(url, url).map_err(|e| e.to_string())?;
+        }
+    }
+    registry.save().map_err(|e| e.to_string())?;
+    // Keep encrypted credential files for rollback; never print or decode them.
+    let auth_files = ["control-plane-auth.dpapi", "control-plane-auth.json", "operator-token.dpapi"];
+    let mut credential_backup = Vec::new();
+    for name in auth_files {
+        let path = config::config_dir().join(name);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Cannot prepare credential rollback: {e}")),
+        };
+        credential_backup.push((path, bytes));
+    }
+    if changes.model_changed && changes.config.contributed_cluster.is_none() {
+        let name = changes.config.active_model.clone().ok_or("No model selected")?;
+        let backend = resolved_backend(&changes.config);
+        ensure_catalog_model_fits_machine(&name, backend, &changes.config).map_err(|e| e.to_string())?;
+        prefetch_mlx_catalog_model(&changes.config, &name)?;
+        use_model(&mut changes.config, &name).map_err(|e| e.to_string())?;
+    }
+    if restart {
+        // Drain acknowledgment guarantees no active worker needs the old URL,
+        // credentials or model. Publish disconnect using the old configuration.
+        mark_disconnected()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            if std::time::Instant::now() >= deadline {
+                save_config(&original).map_err(|e| e.to_string())?;
+                return Err("Agent did not stop cleanly; settings were not applied.".into());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    changes.config.connected = true;
+    changes.config.paused = false;
+    let applied = if let Some((token, header)) = changes.token {
+        save_control_plane_auth(&mut changes.config, &token, header).map(|_| ())
+    } else { save_config(&changes.config).map(|_| ()).map_err(|e| e.to_string()) };
+    if let Err(error) = applied {
+        for (path, bytes) in credential_backup {
+            match bytes {
+                Some(bytes) => std::fs::write(path, bytes).map_err(|e| e.to_string())?,
+                None => match std::fs::remove_file(path) {
+                    Ok(()) => {}, Err(e) if e.kind() == io::ErrorKind::NotFound => {}, Err(e) => return Err(e.to_string()),
+                },
+            }
+        }
+        save_config(&original).map_err(|e| e.to_string())?;
+        theme::warn(format!("Could not apply settings: {error}. Original configuration restored."));
+        return Ok(restart);
+    }
+    drop(guard);
+    theme::section("Settings applied");
+    theme::field("control plane", &changes.config.control_plane_url);
+    theme::field("model", changes.config.active_model.as_deref().unwrap_or("not selected"));
+    theme::note(if restart { "Reconnecting automatically with the updated settings." } else { "Credentials reloaded; the model remains warm." });
+    Ok(restart)
 }
 
 fn launch_node_agent(mode: AgentLaunchMode) -> Result<(), String> {
@@ -4934,6 +5140,25 @@ fn prompt_control_plane_choice() -> ControlPlaneChoice {
 }
 
 fn read_private_control_plane_url() -> String {
+    let mut registry = control_planes::Registry::load().unwrap_or_else(|error| {
+        eprintln!("Cannot read {}: {error}. Saved profiles were not changed.", control_planes::path().display());
+        std::process::exit(1);
+    });
+    let saved = current_config_or_default().control_plane_url;
+    if saved != PUBLIC_CONTROL_PLANE_URL && control_planes::normalize(&saved).is_ok()
+        && !registry.control_planes.iter().any(|p| p.url.trim_end_matches('/') == saved.trim_end_matches('/')) {
+        let name = if registry.control_planes.iter().any(|p| p.name == "Previous endpoint") { saved.clone() } else { "Previous endpoint".into() };
+        registry.add(&name, &saved).and_then(|_| registry.save()).unwrap_or_else(|e| {
+            eprintln!("Cannot preserve previous endpoint: {e}"); std::process::exit(1);
+        });
+    }
+    if !registry.control_planes.is_empty() {
+        let mut options: Vec<(String, String)> = registry.control_planes.iter().map(|p| (p.name.clone(), p.url.clone())).collect();
+        options.push(("Add a new private control plane".into(), "Save it for future setup sessions".into()));
+        let choice = select_menu_option(&["Saved private control planes".into()], &options, "↑↓ Select · Enter Continue · Esc Cancel", 0)
+            .unwrap_or_else(|| std::process::exit(0));
+        if choice < registry.control_planes.len() { return registry.control_planes[choice].url.clone(); }
+    }
     loop {
         print!("Private control-plane URL (http:// or https://): ");
         let _ = io::stdout().flush();
@@ -4947,8 +5172,16 @@ fn read_private_control_plane_url() -> String {
             println!("Private / custom requires a URL. Choose Public MundusX in the previous menu to use the default.");
             continue;
         }
-        if is_valid_control_plane_url(url) {
-            return url.to_string();
+        if let Ok(url) = control_planes::normalize(url) {
+            print!("Save as (profile name; Enter uses URL): ");
+            let _ = io::stdout().flush();
+            let mut name = String::new();
+            if io::stdin().read_line(&mut name).is_err() { std::process::exit(1); }
+            let name = if name.trim().is_empty() { url.as_str() } else { name.trim() };
+            match registry.add(name, &url).and_then(|_| registry.save()) {
+                Ok(()) => return url,
+                Err(error) => { theme::warn(error); continue; }
+            }
         }
         println!(
             "Enter a full URL, for example http://127.0.0.1:8787 or https://control.mundusx.ai"
@@ -4983,11 +5216,14 @@ fn resolve_install_control_plane_url(
         std::process::exit(2);
     }
 
+    remember_private_control_plane(&current_config_or_default().control_plane_url);
+
     if let Some(url) = control_plane_url {
         let url = normalize_control_plane_url(&url).unwrap_or_else(|error| {
             eprintln!("{error}");
             std::process::exit(2);
         });
+        remember_private_control_plane(&url);
         return url;
     }
 
@@ -5006,6 +5242,20 @@ fn resolve_install_control_plane_url(
     match prompt_control_plane_choice() {
         ControlPlaneChoice::Public => PUBLIC_CONTROL_PLANE_URL.to_string(),
         ControlPlaneChoice::Private => read_private_control_plane_url(),
+    }
+}
+
+fn remember_private_control_plane(url: &str) {
+    if url.trim_end_matches('/') == PUBLIC_CONTROL_PLANE_URL || url.trim_end_matches('/') == "https://mundusx.ai" {
+        return;
+    }
+    let result = control_planes::Registry::load().and_then(|mut registry| {
+        registry.add(url, url)?;
+        registry.save()
+    });
+    if let Err(error) = result {
+        eprintln!("Cannot preserve control-plane profile: {error}. Saved profiles were not replaced.");
+        std::process::exit(1);
     }
 }
 
@@ -6184,7 +6434,7 @@ fn print_start_preflight(config: &Config) {
 
     if blockers.is_empty() {
         theme::section("LLM setup checks");
-        theme::field("status", "passed; runtime startup and network admission are checked by opengpu start");
+        theme::field("status", "passed; runtime startup and network admission are checked when starting");
         if config.contributed_cluster.is_some() {
             theme::note(
                 "This node serves work from the contributed cluster; the control plane must admit the `contributed-cluster` runtime mode",
@@ -6616,7 +6866,12 @@ fn run_install(
                 print_start_preflight(&config);
             }
             if config.contribution.llm_enabled() {
-                theme::note("Run opengpu doctor to check LLM readiness, then opengpu start to connect. Media readiness is shown separately above.");
+                theme::section("Next steps");
+                theme::command("opengpu doctor", "Check LLM readiness and runtime diagnostics.");
+                theme::command("opengpu start", "Start the runtime and connect to MundusX.");
+                if config.contribution.media_enabled() {
+                    theme::note("Media readiness is shown separately above.");
+                }
             } else {
                 theme::note("Use opengpu media generate for images, or opengpu media --video generate for videos. Media-only network serving requires verified profiles and control-plane admission. Set MUNDUSX_MEDIA_SERVER_URL for a private plane.");
             }
@@ -7775,6 +8030,8 @@ fn main() {
                         eprintln!("{error}");
                         std::process::exit(2);
                     });
+                    remember_private_control_plane(&config.control_plane_url);
+                    remember_private_control_plane(&normalized);
                     config.control_plane_url = normalized.clone();
                     if let Err(error) = crate::config::save_config(&config) {
                         eprintln!("failed to save config: {error}");
@@ -7783,6 +8040,20 @@ fn main() {
                     println!("controlPlaneUrl: {normalized}");
                 }
             }
+        }
+        Commands::ControlPlane { command } => {
+            let mut registry = control_planes::Registry::load().unwrap_or_else(|e| { eprintln!("Cannot read saved control planes: {e}"); std::process::exit(1); });
+            let result = match command {
+                ControlPlaneCommands::List => {
+                    theme::section("Saved control planes");
+                    for profile in &registry.control_planes { theme::field(&profile.name, &profile.url); }
+                    theme::field("file", control_planes::path().display());
+                    Ok(())
+                }
+                ControlPlaneCommands::Add { name, url } => registry.add(&name, &url).and_then(|_| registry.save()),
+                ControlPlaneCommands::Delete { name } => registry.delete(&name).and_then(|_| registry.save()),
+            };
+            if let Err(error) = result { eprintln!("Saved profiles were not changed: {error}"); std::process::exit(1); }
         }
         Commands::Credits { json, limit, page } => {
             let config = current_config_or_default();
@@ -7824,6 +8095,21 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_escape_does_not_disconnect_resumed_session() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let now = std::time::Instant::now();
+        assert!(!super::session_disconnect_key(escape, Some(now)));
+        assert!(super::session_disconnect_key(escape, Some(now - std::time::Duration::from_secs(1))));
+        let mut repeat = escape;
+        repeat.kind = KeyEventKind::Repeat;
+        assert!(!super::session_disconnect_key(repeat, None));
+        let mut release = escape;
+        release.kind = KeyEventKind::Release;
+        assert!(!super::session_disconnect_key(release, None));
+        assert!(super::session_disconnect_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), Some(now)));
+    }
     use super::{
         active_graph_node_name, build_job_submission_payload, classify_contributed_cluster,
         cluster, cluster_choice_flag, record_detected_cluster, contributed_cluster_from,

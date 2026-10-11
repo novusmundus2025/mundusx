@@ -487,6 +487,7 @@ pub fn serve(server: String, once: bool) -> Result<(), String> {
             cleanup_completed_media(&home, &body["_local_cleanup"])?;
             fs::remove_file(&pending).map_err(|e| e.to_string())?;
         }
+        if crate::settings_drain::active(&home) { return Ok(()); }
         let claim = match request(
             &server,
             &id,

@@ -114,22 +114,75 @@ impl Drop for RawMode {
 }
 
 pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operation>, String> {
-    enable_raw_mode().map_err(|e| format!("Cannot open workload selector: {e}. Use --workloads llm,image,video for scripted setup."))?;
-    let _raw = RawMode;
-    let mut picker = Picker::new(current, budget.clone());
+    enable_raw_mode().map_err(|e| format!("Cannot open workload selector: {e}"))?;
+    let raw = RawMode;
+    let mut selected = [current.contains(&Operation::Llm), current.iter().any(|op| *op != Operation::Llm)];
+    let mut cursor = 0usize;
     let mut message = String::new();
     loop {
         let mut out = io::stdout();
         execute!(out, MoveTo(0, 0), Clear(ClearType::All)).map_err(|e| e.to_string())?;
-        write!(out, "Choose contribution workloads\r\n\r\n").map_err(|e| e.to_string())?;
-        writeln!(out, "{}\r", budget.description()).map_err(|e| e.to_string())?;
-        for (index, (_, label, _)) in OPTIONS.iter().enumerate() {
+        write!(out, "{}\r\n\r\n", crate::theme::menu_title("Choose contribution workloads")).map_err(|e| e.to_string())?;
+        for (index, (label, detail)) in [
+            ("LLM", "Chat and coding · managed model or existing local engine"),
+            ("Media", "Images and video · choose media operations next"),
+        ].iter().enumerate() {
+            write!(out, "{} [{}] {}\r\n    {}\r\n\r\n",
+                crate::theme::menu_marker(cursor == index), if selected[index] { "x" } else { " " },
+                crate::theme::menu_label(label, cursor == index), crate::theme::muted(detail)).map_err(|e| e.to_string())?;
+        }
+        write!(out, "{}\r\n{}\r\n{}\r\n", crate::theme::hint("↑↓ Move · Space Toggle · Enter Continue · Esc Cancel"),
+            crate::theme::muted("Choose one or both. Media availability is checked on the next screen."),
+            crate::theme::muted(&message)).map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())?;
+        if let Event::Key(key) = read().map_err(|e| e.to_string())? {
+            if key.kind != KeyEventKind::Press { continue; }
+            match key.code {
+                KeyCode::Esc => return Err("Workload selection cancelled; saved choices are unchanged.".into()),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Err("Workload selection cancelled.".into()),
+                KeyCode::Up | KeyCode::BackTab => cursor = 0,
+                KeyCode::Down | KeyCode::Tab => cursor = 1,
+                KeyCode::Char(' ') => selected[cursor] = !selected[cursor],
+                KeyCode::Char('a' | 'A') => selected = [true, true],
+                KeyCode::Enter if selected.iter().any(|v| *v) => {
+                    drop(raw);
+                    let mut operations = if selected[1] { prompt_media(current, budget)? } else { Vec::new() };
+                    if selected[0] { operations.insert(0, Operation::Llm); }
+                    return Ok(operations);
+                }
+                KeyCode::Enter => message = "Select LLM, Media, or both.".into(),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn prompt_media(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operation>, String> {
+    enable_raw_mode().map_err(|e| format!("Cannot open workload selector: {e}. Use --workloads llm,image,video for scripted setup."))?;
+    let _raw = RawMode;
+    let mut picker = Picker::new(current, budget.clone());
+    picker.selected[0] = false;
+    let visible: Vec<usize> = (1..OPTIONS.len()).filter(|i| OPTIONS[*i].2 || picker.selected[*i]).collect();
+    picker.cursor = visible[0];
+    let mut message = String::new();
+    loop {
+        let mut out = io::stdout();
+        execute!(out, MoveTo(0, 0), Clear(ClearType::All)).map_err(|e| e.to_string())?;
+        write!(out, "{}\r\n\r\n", crate::theme::menu_title("Media · choose image and video operations")).map_err(|e| e.to_string())?;
+        writeln!(out, "{}\r", crate::theme::muted("Only media operations that fit your contribution limit can be enabled.")).map_err(|e| e.to_string())?;
+        for &index in &visible {
+            let label = match OPTIONS[index].0 {
+                Operation::TextToImage => "Image generation · Qwen Image",
+                Operation::TextToVideo => "Video generation · Wan",
+                Operation::ImageEdit => "Image editing · saved selection (unavailable)",
+                _ => "Image-to-video · saved selection (unavailable)",
+            };
             write!(
                 out,
                 "{} [{}] {}{}\r\n",
-                if picker.cursor == index { ">" } else { " " },
+                crate::theme::menu_marker(picker.cursor == index),
                 if picker.selected[index] { "x" } else { " " },
-                label,
+                crate::theme::menu_label(label, picker.cursor == index),
                 if !picker.available(index) {
                     " — disabled"
                 } else {
@@ -161,13 +214,18 @@ pub fn prompt(current: &[Operation], budget: &MediaBudget) -> Result<Vec<Operati
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Err("Workload selection cancelled.".into())
                 }
-                KeyCode::Up | KeyCode::BackTab => picker.cursor = picker.cursor.saturating_sub(1),
+                KeyCode::Up | KeyCode::BackTab => {
+                    let position = visible.iter().position(|i| *i == picker.cursor).unwrap_or(0);
+                    picker.cursor = visible[position.saturating_sub(1)];
+                },
                 KeyCode::Down | KeyCode::Tab => {
-                    picker.cursor = (picker.cursor + 1).min(OPTIONS.len() - 1)
+                    let position = visible.iter().position(|i| *i == picker.cursor).unwrap_or(0);
+                    picker.cursor = visible[(position + 1).min(visible.len() - 1)];
                 }
                 KeyCode::Char(' ') => {}, // Ignore repeat events; toggle once per press.
                 KeyCode::Char('a' | 'A') => {
                     picker.select_all();
+                    picker.selected[0] = false;
                 }
                 KeyCode::Enter => match picker.result() {
                     Ok(result) => return Ok(result),
