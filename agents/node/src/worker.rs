@@ -1145,6 +1145,28 @@ fn mlx_server_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Read the served per-slot context, only for the selected cached GGUF.
+pub fn served_llama_context_tokens(model_dir: &Path, model: &str) -> Option<u32> {
+    let expected = resolve_model_path(model_dir, Some(model)).ok()?;
+    served_llama_context_at(&configured_llama_server_url()?, &expected)
+}
+
+fn served_llama_context_at(url: &str, expected: &Path) -> Option<u32> {
+    let response = ureq::AgentBuilder::new().redirects(0)
+        .timeout(Duration::from_secs(2)).build()
+        .get(&format!("{}/props", url.trim_end_matches('/'))).call().ok()?;
+    let mut bytes = Vec::new();
+    response.into_reader().take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 1024 * 1024 { return None; }
+    let props: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let served = Path::new(props.get("model_path")?.as_str()?).canonicalize().ok()?;
+    if served != expected.canonicalize().ok()? { return None; }
+    // llama-server reports the context allocated to each slot here; do not
+    // advertise its training context or multiply it by parallel slot count.
+    props.pointer("/default_generation_settings/n_ctx")?.as_u64()
+        .and_then(|limit| u32::try_from(limit).ok()).filter(|limit| *limit >= 1024)
+}
+
 /// Use the running server's limit, not a guess based on the model name.
 pub fn served_vllm_context_tokens(model: &str) -> Option<u32> {
     served_vllm_context_at(&configured_vllm_url()?, model)
@@ -4626,6 +4648,36 @@ mod tests {
     use std::io::Write;
     use std::net::TcpListener;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn served_llama_context_requires_matching_model_and_valid_per_slot_limit() {
+        let home = std::env::temp_dir().join(format!("llama-context-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let model = home.join("selected.gguf");
+        let other = home.join("other.gguf");
+        std::fs::write(&model, b"test").unwrap();
+        std::fs::write(&other, b"test").unwrap();
+        for (limit, matches, expected) in [(serde_json::json!(4096), true, Some(4096)),
+            (serde_json::json!(8192), true, Some(8192)),
+            (serde_json::json!(4096), false, None),
+            (serde_json::json!(0), true, None), (serde_json::json!(-1), true, None),
+            (serde_json::json!(u64::MAX), true, None), (serde_json::Value::Null, true, None)] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", server.server_addr());
+            let selected = if matches { model.clone() } else { other.clone() };
+            let handler = thread::spawn(move || {
+                let request = server.recv().unwrap();
+                assert_eq!(request.url(), "/props");
+                request.respond(tiny_http::Response::from_string(serde_json::json!({
+                    "model_path":selected, "total_slots":4,
+                    "default_generation_settings":{"n_ctx":limit}, "n_ctx_train":131072
+                }).to_string())).unwrap();
+            });
+            assert_eq!(served_llama_context_at(&url, &model), expected);
+            handler.join().unwrap();
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn served_vllm_context_reads_matching_model_and_rejects_invalid_limits() {
