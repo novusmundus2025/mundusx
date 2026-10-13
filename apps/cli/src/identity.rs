@@ -320,7 +320,7 @@ fn linux_storage_dir() -> PathBuf {
     }
 
     let home = identity_dir();
-    if identity_path().exists() || identity_path().with_file_name("identity.json.bak").exists() || !local_identity_path().exists() {
+    if identity_path().exists() || identity_path().with_file_name("identity.json.bak").exists() || (!local_identity_path().exists() && !local_identity_path().with_file_name("identity.json.bak").exists()) {
         return home;
     }
 
@@ -355,7 +355,7 @@ fn windows_storage_dir() -> PathBuf {
     }
 
     let home = identity_dir();
-    if identity_path().exists() || identity_path().with_file_name("identity.json.bak").exists() || !local_identity_path().exists() {
+    if identity_path().exists() || !local_identity_path().exists() {
         return home;
     }
 
