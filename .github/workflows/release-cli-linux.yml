@@ -66,6 +66,11 @@ jobs:
           cargo test -p opengpu-node-agent --bin opengpu-node-agent parses_vllm_startup_progress --target ${{ env.TARGET }}
           cargo test -p opengpu-node-agent --bin opengpu-node-agent classification_ --target ${{ env.TARGET }}
 
+      - name: Test durable Linux device identity
+        run: |
+          cargo test -p opengpu --bin opengpu linux_identity --target "${TARGET}" -- --test-threads=4
+          cargo test -p opengpu-node-agent --bin opengpu-node-agent linux_identity --target "${TARGET}" -- --test-threads=4
+
       - name: Test default fast video and all durations
         run: |
           cargo test -p opengpu --bin opengpu video_defaults_to_fast_for_every_supported_duration --target "${TARGET}"
