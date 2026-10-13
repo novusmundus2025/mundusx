@@ -207,6 +207,21 @@ fn load_stored_identity(storage_dir: &Path) -> io::Result<Option<StoredIdentity>
     if let Ok(raw) = &primary {
         if let Ok(identity) = parse_stored_identity(raw) {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            let backup = storage_dir.join("identity.json.bak");
+            let matches = fs::read_to_string(&backup).ok()
+                .and_then(|raw| parse_stored_identity(&raw).ok())
+                .is_some_and(|saved| saved.public_key_hex == identity.public_key_hex
+                    && saved.encrypted_private_key_hex == identity.encrypted_private_key_hex
+                    && saved.nonce_hex == identity.nonce_hex);
+            if !matches {
+                if backup.exists() {
+                    fs::set_permissions(&backup, fs::Permissions::from_mode(0o600))?;
+                    fs::rename(&backup, storage_dir.join(format!("identity.json.bak.stale-{}", uuid::Uuid::new_v4())))?;
+                }
+                atomic_identity_write(&backup, raw.as_bytes())?;
+            } else {
+                fs::set_permissions(&backup, fs::Permissions::from_mode(0o600))?;
+            }
             return Ok(Some(identity));
         }
     }
@@ -465,6 +480,22 @@ mod tests {
     fn temp_home() -> PathBuf {
         let root = std::env::temp_dir().join(format!("identity-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap(); root
+    }
+
+    #[test]
+    fn atomic_identity_backs_up_existing_identity_on_upgrade() {
+        let root = temp_home(); let path = identity_path(&root);
+        fs::write(&path, fixture()).unwrap();
+        let identity = ensure_identity(&root).unwrap();
+        assert_eq!(identity.fingerprint, "12".repeat(8));
+        let backup = root.join("identity.json.bak");
+        assert!(parse_stored_identity(&fs::read_to_string(&backup).unwrap()).is_ok());
+        assert_eq!(fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::write(&backup, "bad backup").unwrap();
+        assert_eq!(ensure_identity(&root).unwrap().fingerprint, identity.fingerprint);
+        fs::write(&path, vec![0; 362]).unwrap();
+        assert_eq!(ensure_identity(&root).unwrap().fingerprint, identity.fingerprint);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
