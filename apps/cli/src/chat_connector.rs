@@ -422,6 +422,16 @@ fn requires_project_file_change(prompt: &str) -> bool {
     if advisory_opening || advisory_change_question {
         return false;
     }
+    // A prohibition is not a mutation request. Inspect affirmative clauses so
+    // "run this; do not create or edit files" can finish without a fabricated
+    // file change, while "don't edit README; fix server.cjs" still needs one.
+    let affirmative_clauses = value
+        .split(['.', '!', '?', '\n', ';'])
+        .flat_map(|clause| clause.split(" but "))
+        .map(str::trim)
+        .filter(|clause| !["do not ", "don't ", "don’t ", "never ", "no need to ", "without "]
+            .iter().any(|prefix| clause.starts_with(prefix)))
+        .collect::<Vec<_>>();
     [
         "create",
         "make",
@@ -445,9 +455,9 @@ fn requires_project_file_change(prompt: &str) -> bool {
     ]
     .iter()
     .any(|word| {
-        value
+        affirmative_clauses.iter().any(|clause| clause
             .split(|character: char| !character.is_ascii_alphanumeric())
-            .any(|token| token == *word)
+            .any(|token| token == *word))
     })
 }
 
@@ -669,6 +679,26 @@ fn is_reusable_test_path(path: &Path) -> bool {
         || name.ends_with("test.java")
         || name.ends_with("tests.cs")
         || name.ends_with("_spec.rb")
+        || matches!(name.as_str(), "acceptance.cjs" | "acceptance.mjs" | "acceptance.js" | "acceptance.py")
+}
+
+fn preserved_test_contract(
+    prompt: &str,
+    before: &BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
+) -> Vec<PathBuf> {
+    let lower = prompt.to_ascii_lowercase();
+    before.keys().filter(|path| {
+        if !is_reusable_test_path(path) { return false; }
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_ascii_lowercase();
+        lower.split('\n').flat_map(|line| line.split(". ")).flat_map(|line| line.split(';'))
+            .flat_map(|line| line.split(" but ")).any(|clause| {
+                clause.contains(&name)
+                    && ["preserve ", "unchanged", "do not modify", "do not edit", "don't change"]
+                        .iter().any(|marker| clause.contains(marker))
+                    && ![" and update ", " and edit ", " and modify ", " and change "]
+                        .iter().any(|marker| clause.contains(marker))
+            })
+    }).cloned().collect()
 }
 
 fn reusable_tests_changed(
@@ -1338,6 +1368,7 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
     let before_files = workspace_snapshot(&task_workspace);
     let reusable_tests_required =
         allow_mutations && request_requires_reusable_tests(&prompt, &task_workspace);
+    let preserved_tests = preserved_test_contract(&prompt, &before_files);
     post_task_events(
         options,
         &task_id,
@@ -1377,7 +1408,9 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
                 if cli_verification_required { instructions.push_str(&format!(
                     "\n\n{CLI_ACCEPTANCE_MARKER}: This is a command-line program task. Load and follow the cli-runtime-acceptance skill. Keep core behavior callable without interactive prompts and cover it with project-owned automated tests. Before a smoke run, inspect the supported arguments and stdin flow. Never launch an interactive CLI unattended: supply every response through redirected input or supported noninteractive flags, set an explicit timeout of at most 30 seconds, and verify that the process exits. A usage message with a nonzero status is a wrong invocation, not successful verification. After any repair, rerun the complete automated test and bounded smoke sequence, then return the result immediately."
                 )); }
-                if reusable_tests_required { instructions.push_str(&format!(
+                if reusable_tests_required && !preserved_tests.is_empty() {
+                    instructions.push_str("\n\nThe user supplied an existing acceptance contract and requested that it stay unchanged. Preserve those test files, implement the requested behavior, and run the existing suite after the final implementation change. Do not weaken assertions or invent a test edit merely to satisfy a completion check.");
+                } else if reusable_tests_required { instructions.push_str(&format!(
                     "\n\n{REUSABLE_TEST_ACCEPTANCE_MARKER}: This project change requires a reusable automated regression test. Use the project's existing test framework when present; otherwise add the smallest maintainable test setup supported by the project. Create or update a project-owned test file that exercises the requested behavior or the reproduced failure, then run that test suite successfully after the final implementation change. Generated build output, a one-off terminal command, lint, compilation, and manual browser checks do not count as the reusable test. Browser acceptance remains a separate requirement for frontend work."
                 )); }
                 instructions
@@ -1617,8 +1650,11 @@ fn run_task(options: &ConnectorOptions, connection_id: &str, task: &Value) -> Re
             if reusable_tests_required && !reusable_test_present {
                 missing.push("project-owned regression test");
             }
-            if reusable_tests_required && !reusable_test_changed {
+            if reusable_tests_required && preserved_tests.is_empty() && !reusable_test_changed {
                 missing.push("regression test changed for this task");
+            }
+            if preserved_tests.iter().any(|path| before_files.get(path) != after_files.get(path)) {
+                missing.push("supplied acceptance contract must remain unchanged");
             }
             if reusable_tests_required && !reusable_test_ran {
                 missing.push("successful regression test run");
@@ -2031,6 +2067,24 @@ mod tests {
         assert!(!transient_agent_failure(
             "Hermes rejected an invalid tool argument"
         ));
+    }
+
+    #[test]
+    fn command_only_prohibitions_do_not_require_an_invented_file_change() {
+        assert!(!requires_project_file_change("Run this foreground command. Do not create or edit files, install packages, or replan."));
+        assert!(!requires_project_file_change("Show the output; don't modify files."));
+        assert!(requires_project_file_change("Don't edit README; fix server.cjs."));
+        assert!(requires_project_file_change("Do not install dependencies but implement the API."));
+        assert_eq!(project_execution_directive(true,"Run this command. Do not edit files."), "");
+    }
+
+    #[test]
+    fn supplied_acceptance_is_reusable_without_forcing_a_forbidden_test_edit() {
+        let before = std::collections::BTreeMap::from([(std::path::PathBuf::from("acceptance.cjs"),(10,None))]);
+        assert!(super::project_has_reusable_tests(&before));
+        assert_eq!(super::preserved_test_contract("Fix the API. Preserve package.json and acceptance.cjs exactly.", &before),vec![std::path::PathBuf::from("acceptance.cjs")]);
+        assert!(super::preserved_test_contract("Preserve README and update acceptance.cjs", &before).is_empty());
+        assert!(super::preserved_test_contract("Modify acceptance.cjs but preserve README", &before).is_empty());
     }
 
     #[test]
