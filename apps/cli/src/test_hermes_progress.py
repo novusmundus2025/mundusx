@@ -94,6 +94,18 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(Agent.context_compressor.threshold_tokens, PROJECT_COMPACTION_TOKENS)
         self.assertFalse(configure_project_compaction(object()))
 
+    def test_project_compaction_respects_declared_context_and_preserves_headroom(self):
+        for window, threshold, expected in [(8192,6000,4096),(65536,48000,32768),(131072,100000,65536),(262144,200000,65536)]:
+            class Compressor:
+                context_length=window
+                threshold_tokens=threshold
+                threshold_tokens_cap=None
+            class Agent:
+                context_compressor=Compressor()
+            self.assertTrue(configure_project_compaction(Agent()))
+            self.assertEqual(Agent.context_compressor.threshold_tokens_cap,expected)
+            self.assertLessEqual(Agent.context_compressor.threshold_tokens,window//2)
+
     def test_skill_progress_requires_actual_success(self):
         self.assertEqual(loaded_skill("skill_view", '{"success":true,"name":"debugging"}'), "debugging")
         for result in [{"success": False, "name": "debugging"}, {"name": "debugging"}, {"success": True, "name": "debugging", "error": "failed"}, "bad json"]:

@@ -76,6 +76,7 @@ COMPREHENSIVE_MAX_ITERATIONS = 24
 FRONTEND_MAX_ITERATIONS = 24
 SWARM_PLANNER_MARKER = "MUNDUSX_SWARM_PLANNER_V1"
 PROJECT_COMPACTION_TOKENS = 16_384
+PROJECT_MAX_COMPACTION_TOKENS = 65_536
 CHECKPOINT_EVENT_LIMIT = 16
 CHECKPOINT_TARGET_LIMIT = 24
 
@@ -275,9 +276,16 @@ def configure_project_compaction(agent):
     compressor = getattr(agent, "context_compressor", None)
     if compressor is None:
         return False
-    compressor.threshold_tokens_cap = PROJECT_COMPACTION_TOKENS
+    try:
+        context_length = int(getattr(compressor, "context_length", 0))
+    except (TypeError, ValueError):
+        context_length = 0
+    # Keep room for the next tool result and output without repeatedly
+    # summarizing a small project on runtimes that declare a larger window.
+    cap = min(PROJECT_MAX_COMPACTION_TOKENS, context_length // 2) if context_length > 0 else PROJECT_COMPACTION_TOKENS
+    compressor.threshold_tokens_cap = cap
     compressor.threshold_tokens = min(
-        int(compressor.threshold_tokens), PROJECT_COMPACTION_TOKENS
+        int(compressor.threshold_tokens), cap
     )
     return True
 
@@ -532,6 +540,7 @@ def main():
         provider="openai-api",
         model="mundusx-agnostic",
         max_iterations=max_iterations,
+        max_tokens=8192 if max_iterations == COMPREHENSIVE_MAX_ITERATIONS else 4096,
         enabled_toolsets=enabled_toolsets,
         quiet_mode=True,
         tool_progress_mode="all",
