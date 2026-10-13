@@ -86,3 +86,10 @@ These remain available, but they are hidden from the default `--help` output so 
 LM Studio contribution is no longer supported. Its default port is excluded from discovery and explicit cluster adoption, and model listings identifying LM Studio are rejected on custom ports. The CLI removes legacy saved LM Studio connections with a notice; a directly launched node agent rejects them until setup is rerun. Generic OpenAI-compatible endpoints that conceal their runtime identity cannot reliably be distinguished. Local GGUF import remains supported independently.
 
 Cluster discovery validates the `/v1/models` or Ollama `/api/tags` response before offering a server. Port 8000 alone does not identify vLLM. ComfyUI and unrelated JSON health endpoints are excluded; contributed-node health uses the same listing validation.
+
+### Hermes project execution
+
+Hermes uses one worker by default, including new projects and large coding requests.
+Project Swarm is opt-in: explicitly ask to use Project Swarm or code in parallel.
+A request for a single worker or sequential work takes precedence. Swarm requires
+an existing repository with tracked files; otherwise the task continues with one worker.

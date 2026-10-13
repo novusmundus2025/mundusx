@@ -84,9 +84,12 @@ impl Drop for WorktreeSet {
 pub fn requested(prompt: &str) -> bool {
     let value = prompt.to_ascii_lowercase();
     [
-        "project swarm",
-        "parallel coding",
-        "parallel code",
+        "use project swarm",
+        "enable project swarm",
+        "run project swarm",
+        "start project swarm",
+        "use parallel coding",
+        "use parallel code",
         "code in parallel",
         "work in parallel",
         "separate functions at the same time",
@@ -110,79 +113,13 @@ pub fn should_coordinate(prompt: &str) -> bool {
     {
         return false;
     }
-    if requested(prompt) {
-        return true;
-    }
-
-    let substantial_scope = [
-        "complete api",
-        "entire api",
-        "crud api",
-        "full api",
-        "build an api",
-        "create an api",
-        "build a frontend",
-        "create a frontend",
-        "build a backend",
-        "create a backend",
-        "build an app",
-        "create an app",
-        "build an application",
-        "create an application",
-        "build a website",
-        "create a website",
-        "build a dashboard",
-        "create a dashboard",
-        "react ui",
-        "ui ux",
-        "ui/ux",
-        "complete ui",
-        "full ui",
-        "full stack",
-        "full-stack",
-        "end-to-end",
-        "end to end",
-        "from scratch",
-        "multiple modules",
-        "several modules",
-    ]
-    .iter()
-    .any(|marker| value.contains(marker));
-    if substantial_scope {
-        return true;
-    }
-
-    let has_build_action = [
-        "add ",
-        "build ",
-        "create ",
-        "develop ",
-        "implement ",
-        "migrate ",
-        "refactor ",
-        "rewrite ",
-    ]
-    .iter()
-    .any(|marker| value.contains(marker));
-    let domain_count = [
-        " api",
-        "frontend",
-        "front end",
-        "backend",
-        "back end",
-        "database",
-        "authentication",
-        " test",
-        "documentation",
-    ]
-    .iter()
-    .filter(|marker| value.contains(**marker))
-    .count();
-    has_build_action && domain_count >= 2
+    // Repository work stays on one Hermes worker unless the user asks for parallel work.
+    requested(prompt)
 }
 
 pub fn run(options: CoordinatorOptions) -> Result<Value, String> {
     require_clean_git_repository(&options.workspace)?;
+    let manifest = project_manifest(&options.workspace)?;
     let run_id = Uuid::new_v4().simple().to_string();
     let run_root = std::env::temp_dir().join(format!("mundusx-project-swarm-{run_id}"));
     fs::create_dir_all(&run_root)
@@ -206,7 +143,7 @@ pub fn run(options: CoordinatorOptions) -> Result<Value, String> {
         json!({"workers": DEFAULT_WORKERS}),
     );
 
-    let planner_prompt = planner_prompt(&options.objective, &project_manifest(&options.workspace)?);
+    let planner_prompt = planner_prompt(&options.objective, &manifest);
     let planner_data = journal_dir.join("planner");
     let planner = run_hermes(
         &options,
@@ -892,17 +829,22 @@ mod tests {
     }
 
     #[test]
-    fn automatically_coordinates_substantial_project_work() {
-        assert!(should_coordinate(
+    fn substantial_project_work_uses_one_worker_by_default() {
+        assert!(!should_coordinate(
             "Create a complete CRUD API for bus ticketing"
         ));
-        assert!(should_coordinate(
+        assert!(!should_coordinate(
             "Build a frontend and backend for the booking flow"
         ));
-        assert!(should_coordinate(
+        assert!(!should_coordinate(
             "Implement authentication, database, and API tests"
         ));
-        assert!(should_coordinate("Create a superb React UI UX for the taxi app"));
+        assert!(!should_coordinate("Create a superb React UI UX for the taxi app"));
+        assert!(should_coordinate("Use Project Swarm to create a CRUD API"));
+        assert!(!should_coordinate("Explain Project Swarm"));
+        assert!(!should_coordinate("What is wrong with Project Swarm?"));
+        assert!(!should_coordinate("Explain parallel coding"));
+        assert!(!should_coordinate("Create an API; do not use Project Swarm"));
         assert!(!should_coordinate("Rename the login button"));
         assert!(!should_coordinate("Create a CRUD API with a single worker"));
     }
