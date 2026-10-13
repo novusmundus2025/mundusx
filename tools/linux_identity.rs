@@ -218,6 +218,7 @@ fn load_stored_identity(storage_dir: &Path) -> io::Result<Option<StoredIdentity>
             return Err(invalid_identity("identity backup has no protected key material"));
         }
         if path.exists() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
             fs::rename(&path, storage_dir.join(format!("identity.json.corrupt-{}", uuid::Uuid::new_v4())))?;
         }
         atomic_identity_write(&path, raw.as_bytes())?;
