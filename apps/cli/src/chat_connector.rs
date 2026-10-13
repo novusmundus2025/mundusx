@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 
 const CONNECTOR_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 const TERMINAL_REPORT_ATTEMPTS: usize = 6;
-const HERMES_RECOVERY_ATTEMPTS: usize = 12;
+// A broken model protocol must not keep the browser silently retrying for an
+// hour. Preserve the checkpoint and give the user an explicit retry after a
+// small, bounded recovery budget; successful tool work keeps its own budget.
+const HERMES_RECOVERY_ATTEMPTS: usize = 3;
 const HERMES_ACCEPTANCE_REPAIR_ATTEMPTS: usize = 3;
 static CONNECTOR_ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
 

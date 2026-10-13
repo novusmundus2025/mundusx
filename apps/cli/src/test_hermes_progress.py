@@ -6,12 +6,15 @@ from hermes_bridge import (
     configure_terminal_lifecycle,
     CHECKPOINT_EVENT_LIMIT,
     EXECUTION_EFFICIENCY_GUIDANCE,
+    FRONTEND_EXECUTION_GUIDANCE,
     RECOVERY_GUIDANCE,
     SKILL_DISCOVERY_GUIDANCE,
     FRONTEND_MAX_ITERATIONS,
     COMPREHENSIVE_MAX_ITERATIONS,
     project_iteration_budget,
     project_user_prompt,
+    supplied_acceptance_task,
+    project_toolsets,
     PROJECT_COMPACTION_TOKENS,
     RecoveryCheckpoint,
     STANDARD_MAX_ITERATIONS,
@@ -25,6 +28,19 @@ from hermes_bridge import (
 
 
 class ProgressTests(unittest.TestCase):
+    def test_supplied_acceptance_skips_discovery_but_frontend_workflows_remain_available(self):
+        prompt="Build the backend API; preserve acceptance.cjs and run npm test"
+        self.assertTrue(supplied_acceptance_task(prompt))
+        self.assertEqual(project_toolsets(prompt),["file","terminal","todo"])
+        self.assertNotIn(SKILL_DISCOVERY_GUIDANCE,project_user_prompt(prompt))
+        self.assertIn("supplied acceptance tests",project_user_prompt(prompt))
+        self.assertNotIn(FRONTEND_EXECUTION_GUIDANCE,project_user_prompt(prompt))
+        self.assertIn(FRONTEND_EXECUTION_GUIDANCE,project_user_prompt("MUNDUSX_FRONTEND_ACCEPTANCE_V1 Build a frontend"))
+        self.assertFalse(supplied_acceptance_task("Build a project without a supplied contract"))
+        self.assertFalse(supplied_acceptance_task("MUNDUSX_FRONTEND_ACCEPTANCE_V1 "+prompt))
+        self.assertFalse(supplied_acceptance_task("Use the debugging skill with acceptance.cjs"))
+        self.assertIn("skills",project_toolsets("Use the debugging skill with acceptance.cjs"))
+
     def test_terminal_deadlines_are_bounded_before_the_parent_watchdog(self):
         for configured in ({}, {"TERMINAL_TIMEOUT":"900","TERMINAL_MAX_FOREGROUND_TIMEOUT":"600"}, {"TERMINAL_TIMEOUT":"bad","TERMINAL_MAX_FOREGROUND_TIMEOUT":"0"}):
             configure_terminal_lifecycle(configured)
