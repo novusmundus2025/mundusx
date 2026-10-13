@@ -54,6 +54,10 @@ If the requested edits are already present, run the required build, test, lint, 
 """
 
 EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical.
+For Node.js syntax verification use node --check <file>, never require/import the application entry point: importing it can start a server and hang.
+Start servers and other persistent processes with terminal background=true, check readiness separately, and stop only the session you started when verification is finished.
+Foreground commands default to 60 seconds and are limited to 120 seconds. Use tracked background execution for longer builds/tests, inspect their real exit status, and never treat background startup as a passing test.
+When verification fails, make a small targeted patch from the reported error. Do not rewrite a complete large file or send patch arguments to read_file. Keep each executable tool call small enough to finish within the model output budget.
 For new test apps and apps intended to run locally, default to SQLite when persistent storage is needed and the user has not explicitly specified a storage technology.
 Use a persistent SQLite file with the project's existing language and framework. Do not introduce Docker or an external database service solely for this default.
 Honor explicitly requested storage technologies and preserve existing projects' database choices. This default does not select storage for production deployments or trigger database migrations.
@@ -74,6 +78,25 @@ SWARM_PLANNER_MARKER = "MUNDUSX_SWARM_PLANNER_V1"
 PROJECT_COMPACTION_TOKENS = 16_384
 CHECKPOINT_EVENT_LIMIT = 16
 CHECKPOINT_TARGET_LIMIT = 24
+
+
+def configure_terminal_lifecycle(environ):
+    """Keep Hermes foreground results ahead of the parent's program watchdog.
+
+    Longer explicit timeouts are promoted by Hermes to tracked background
+    sessions; the model can poll them without blocking the entire bridge.
+    Set these before importing the installed runtime, which reads the cap
+    once at module import time.
+    """
+    for key, default, maximum in (
+        ("TERMINAL_TIMEOUT", 60, 120),
+        ("TERMINAL_MAX_FOREGROUND_TIMEOUT", 120, 120),
+    ):
+        try:
+            value = int(environ.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        environ[key] = str(min(maximum, value) if value > 0 else default)
 
 
 def project_iteration_budget(prompt):
@@ -429,6 +452,7 @@ def main():
     recovery_note = checkpoint.recovery_note()
     checkpoint.start()
 
+    configure_terminal_lifecycle(os.environ)
     from run_agent import AIAgent
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_tool import register_task_env_overrides

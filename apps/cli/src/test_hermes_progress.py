@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from hermes_bridge import (
     AnswerStream,
+    configure_terminal_lifecycle,
     CHECKPOINT_EVENT_LIMIT,
     EXECUTION_EFFICIENCY_GUIDANCE,
     RECOVERY_GUIDANCE,
@@ -24,6 +25,17 @@ from hermes_bridge import (
 
 
 class ProgressTests(unittest.TestCase):
+    def test_terminal_deadlines_are_bounded_before_the_parent_watchdog(self):
+        for configured in ({}, {"TERMINAL_TIMEOUT":"900","TERMINAL_MAX_FOREGROUND_TIMEOUT":"600"}, {"TERMINAL_TIMEOUT":"bad","TERMINAL_MAX_FOREGROUND_TIMEOUT":"0"}):
+            configure_terminal_lifecycle(configured)
+            self.assertGreater(int(configured["TERMINAL_TIMEOUT"]), 0)
+            self.assertLessEqual(int(configured["TERMINAL_TIMEOUT"]), 120)
+            self.assertLessEqual(int(configured["TERMINAL_MAX_FOREGROUND_TIMEOUT"]), 120)
+        shorter={"TERMINAL_TIMEOUT":"15","TERMINAL_MAX_FOREGROUND_TIMEOUT":"45"}
+        configure_terminal_lifecycle(shorter)
+        self.assertEqual(shorter["TERMINAL_TIMEOUT"], "15")
+        self.assertEqual(shorter["TERMINAL_MAX_FOREGROUND_TIMEOUT"], "45")
+
     def test_recovery_checkpoint_is_bounded_atomic_and_recovery_only(self):
         with tempfile.TemporaryDirectory() as root:
             checkpoint = RecoveryCheckpoint(root, "task/unsafe")
