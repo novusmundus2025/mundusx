@@ -7,7 +7,10 @@ const TOOL_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 const TERMINAL_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
 const BROWSER_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const CODE_EXECUTION_IDLE_TIMEOUT: Duration = Duration::from_secs(360);
-const PROGRAM_RUN_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+// Foreground Hermes commands finish or yield to a tracked background session
+// within 120 seconds. Leave room for the terminal result to be delivered so
+// a quiet command cannot terminate the whole project before Hermes recovers.
+const PROGRAM_RUN_IDLE_TIMEOUT: Duration = Duration::from_secs(240);
 
 #[derive(Clone)]
 struct ActiveTool {
@@ -219,10 +222,21 @@ mod tests {
             &json!({"type":"tool_started","data":{"call_id":"program","name":"terminal","activity":"run"}}),
             now,
         );
-        assert!(program.failure(now + Duration::from_secs(59)).is_none());
+        assert!(program.failure(now + Duration::from_secs(239)).is_none());
         assert!(program
-            .failure(now + Duration::from_secs(60))
+            .failure(now + Duration::from_secs(240))
             .unwrap()
             .contains("terminal"));
+    }
+
+    #[test]
+    fn foreground_program_result_can_resume_the_model_before_parent_timeout() {
+        let now = Instant::now();
+        let mut watch = ProgressWatchdog::new(now);
+        watch.observe(&json!({"type":"tool_started","data":{"call_id":"server","name":"terminal","activity":"run"}}), now);
+        assert!(watch.failure(now + Duration::from_secs(121)).is_none());
+        watch.observe(&json!({"type":"tool_completed","data":{"call_id":"server","name":"terminal","success":false}}), now + Duration::from_secs(121));
+        assert!(watch.failure(now + Duration::from_secs(420)).is_none());
+        assert!(watch.failure(now + Duration::from_secs(421)).unwrap().contains("model progress"));
     }
 }
