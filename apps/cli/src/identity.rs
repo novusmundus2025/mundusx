@@ -174,12 +174,12 @@ pub fn resolved_identity_path() -> PathBuf {
     }
 
     let home = identity_path();
-    if home.exists() {
+    if home.exists() || (cfg!(target_os = "linux") && home.with_file_name("identity.json.bak").exists()) {
         return home;
     }
 
     let local = local_identity_path();
-    if local.exists() {
+    if local.exists() || (cfg!(target_os = "linux") && local.with_file_name("identity.json.bak").exists()) {
         return local;
     }
 
@@ -206,11 +206,11 @@ pub fn load_identity() -> std::io::Result<Option<DeviceIdentity>> {
 
     #[cfg(target_os = "linux")]
     {
-        if !resolved_identity_path().exists() {
+        if !resolved_identity_path().exists()
+            && !resolved_identity_path().with_file_name("identity.json.bak").exists() {
             return Ok(None);
         }
         let identity = linux_secure_identity()?;
-        let _ = save_identity(&identity)?;
         return Ok(Some(identity));
     }
 
@@ -275,7 +275,11 @@ fn try_write(path: &Path, data: &str) -> std::io::Result<Option<PathBuf>> {
         fs::create_dir_all(parent)?;
     }
 
-    match fs::write(path, format!("{data}\n")) {
+    #[cfg(target_os = "linux")]
+    let result = linux_identity::persist_metadata(path, data);
+    #[cfg(not(target_os = "linux"))]
+    let result = fs::write(path, format!("{data}\n"));
+    match result {
         Ok(()) => Ok(Some(path.to_path_buf())),
         Err(error) => {
             if path == identity_path() {
@@ -316,7 +320,7 @@ fn linux_storage_dir() -> PathBuf {
     }
 
     let home = identity_dir();
-    if identity_path().exists() || !local_identity_path().exists() {
+    if identity_path().exists() || identity_path().with_file_name("identity.json.bak").exists() || (!local_identity_path().exists() && !local_identity_path().with_file_name("identity.json.bak").exists()) {
         return home;
     }
 

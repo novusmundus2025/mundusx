@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -46,6 +48,7 @@ pub struct SecureIdentity {
 }
 
 pub fn ensure_identity(storage_dir: &Path) -> io::Result<SecureIdentity> {
+    let _lock = identity_lock(storage_dir)?;
     if let Some(existing) = load_stored_identity(storage_dir)? {
         reject_plaintext_identity(&existing)?;
         if !existing.encrypted_private_key_hex.is_empty() && !existing.nonce_hex.is_empty() {
@@ -97,6 +100,7 @@ pub fn ensure_identity(storage_dir: &Path) -> io::Result<SecureIdentity> {
 }
 
 pub fn sign_message(storage_dir: &Path, message: &[u8]) -> io::Result<String> {
+    let _lock = identity_lock(storage_dir)?;
     let stored = load_stored_identity(storage_dir)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -176,27 +180,103 @@ fn reject_plaintext_identity(stored: &StoredIdentity) -> io::Result<()> {
     ))
 }
 
+fn identity_lock(storage_dir: &Path) -> io::Result<fs::File> {
+    fs::create_dir_all(storage_dir)?;
+    let file = fs::OpenOptions::new().read(true).write(true).create(true)
+        .truncate(false).mode(0o600).open(storage_dir.join("identity.lock"))?;
+    file.lock()?;
+    Ok(file)
+}
+
+fn parse_stored_identity(raw: &str) -> io::Result<StoredIdentity> {
+    let identity: StoredIdentity = serde_json::from_str(raw).map_err(invalid_identity)?;
+    reject_plaintext_identity(&identity)?;
+    let public = hex::decode(&identity.public_key_hex).map_err(invalid_identity)?;
+    let encrypted = hex::decode(&identity.encrypted_private_key_hex).map_err(invalid_identity)?;
+    let nonce = hex::decode(&identity.nonce_hex).map_err(invalid_identity)?;
+    if public.len() != 32 || encrypted.len() != 32 || nonce.len() != 12
+        || identity.fingerprint != fingerprint_from_public_key(&public) {
+        return Err(invalid_identity("device identity key metadata is invalid"));
+    }
+    Ok(identity)
+}
+
 fn load_stored_identity(storage_dir: &Path) -> io::Result<Option<StoredIdentity>> {
     let path = identity_path(storage_dir);
-    if !path.exists() {
-        return Ok(None);
+    let primary = fs::read_to_string(&path);
+    if let Ok(raw) = &primary {
+        if let Ok(identity) = parse_stored_identity(raw) {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            return Ok(Some(identity));
+        }
     }
+    let backup = storage_dir.join("identity.json.bak");
+    if let Ok(raw) = fs::read_to_string(&backup) {
+        let identity = parse_stored_identity(&raw)?;
+        reject_plaintext_identity(&identity)?;
+        if identity.encrypted_private_key_hex.is_empty() || identity.nonce_hex.is_empty() {
+            return Err(invalid_identity("identity backup has no protected key material"));
+        }
+        if path.exists() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            fs::rename(&path, storage_dir.join(format!("identity.json.corrupt-{}", uuid::Uuid::new_v4())))?;
+        }
+        atomic_identity_write(&path, raw.as_bytes())?;
+        return Ok(Some(identity));
+    }
+    match primary {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+        Ok(_) => Err(invalid_identity("device identity is corrupt and no valid backup exists; restore a backup before creating a new node identity")),
+    }
+}
 
-    let raw = fs::read_to_string(path)?;
-    let stored: StoredIdentity = serde_json::from_str(&raw)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok(Some(stored))
+fn atomic_identity_write(path: &Path, data: &[u8]) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| invalid_identity("identity path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(".identity-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        fs::File::open(parent)?.sync_all()
+    })();
+    if temporary.exists() { let _ = fs::remove_file(&temporary); }
+    result
+}
+
+pub fn persist_metadata(path: &Path, data: &str) -> io::Result<()> {
+    let storage_dir = path.parent().ok_or_else(|| invalid_identity("identity path has no parent"))?;
+    let _lock = identity_lock(storage_dir)?;
+    persist_metadata_locked(path, data)
+}
+
+fn persist_metadata_locked(path: &Path, data: &str) -> io::Result<()> {
+    let incoming = parse_stored_identity(data)?;
+    if let Err(error) = fs::read_to_string(path) {
+        if error.kind() != io::ErrorKind::NotFound { return Err(error); }
+    }
+    reject_plaintext_identity(&incoming)?;
+    if let Ok(raw) = fs::read_to_string(path) {
+        if let Ok(previous) = parse_stored_identity(&raw) {
+            reject_plaintext_identity(&previous)?;
+            if previous.public_key_hex != incoming.public_key_hex {
+                return Err(invalid_identity("refusing to replace an existing device identity with a different key"));
+            }
+        } else {
+            return Err(invalid_identity("refusing to overwrite a corrupt identity; restore its backup first"));
+        }
+    }
+    let bytes = format!("{data}\n").into_bytes();
+    // Keep a durable identical recovery copy, including on the first creation.
+    atomic_identity_write(&path.with_file_name("identity.json.bak"), &bytes)?;
+    atomic_identity_write(path, &bytes)
 }
 
 fn save_stored_identity(storage_dir: &Path, identity: &PersistedIdentity) -> io::Result<()> {
-    let path = identity_path(storage_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
     let data = serde_json::to_string_pretty(identity).expect("identity serialization");
-    fs::write(path, format!("{data}\n"))?;
-    Ok(())
+    persist_metadata_locked(&identity_path(storage_dir), &data)
 }
 
 fn identity_path(storage_dir: &Path) -> PathBuf {
@@ -374,6 +454,71 @@ fn invalid_identity(error: impl std::fmt::Display) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture() -> String {
+        serde_json::to_string(&PersistedIdentity {
+            public_key_hex: "12".repeat(32), fingerprint: "12".repeat(8),
+            encrypted_private_key_hex: "34".repeat(32), nonce_hex: "56".repeat(12),
+            keychain_label_hex: "machine".into(),
+        }).unwrap()
+    }
+    fn temp_home() -> PathBuf {
+        let root = std::env::temp_dir().join(format!("identity-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap(); root
+    }
+
+    #[test]
+    fn atomic_identity_recovers_zero_filled_primary_without_changing_key() {
+        let root = temp_home(); let path = identity_path(&root);
+        persist_metadata(&path, &fixture()).unwrap();
+        fs::write(&path, vec![0; 362]).unwrap();
+        let identity = ensure_identity(&root).unwrap();
+        assert_eq!(identity.fingerprint, "12".repeat(8));
+        assert!(!identity.created);
+        assert!(parse_stored_identity(&fs::read_to_string(&path).unwrap()).is_ok());
+        assert!(fs::read_dir(&root).unwrap().any(|f| f.unwrap().file_name().to_string_lossy().starts_with("identity.json.corrupt-")));
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_identity_does_not_rotate_unrecoverable_identity() {
+        let root = temp_home(); let path = identity_path(&root);
+        fs::write(&path, vec![0; 362]).unwrap();
+        assert!(ensure_identity(&root).is_err());
+        assert_eq!(fs::read(&path).unwrap(), vec![0; 362]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_identity_ignores_interrupted_temporary_write_and_recovers_missing_primary() {
+        let root = temp_home(); let path = identity_path(&root);
+        persist_metadata(&path, &fixture()).unwrap();
+        fs::write(root.join(".identity-interrupted.tmp"), [0; 10]).unwrap();
+        assert_eq!(ensure_identity(&root).unwrap().fingerprint, "12".repeat(8));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(ensure_identity(&root).unwrap().fingerprint, "12".repeat(8));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_identity_serializes_concurrent_writers_and_refuses_key_replacement() {
+        let root = temp_home(); let path = identity_path(&root);
+        persist_metadata(&path, &fixture()).unwrap();
+        let jobs: Vec<_> = (0..8).map(|_| {
+            let root = root.clone(); std::thread::spawn(move || {
+                for _ in 0..10 {
+                    persist_metadata(&identity_path(&root), &fixture()).unwrap();
+                    assert_eq!(ensure_identity(&root).unwrap().fingerprint, "12".repeat(8));
+                }
+            })
+        }).collect();
+        for job in jobs { job.join().unwrap(); }
+        let changed = fixture().replace(&"12".repeat(32), &"ab".repeat(32)).replace(&"12".repeat(8), &"ab".repeat(8));
+        assert!(persist_metadata(&path, &changed).is_err());
+        assert_eq!(ensure_identity(&root).unwrap().fingerprint, "12".repeat(8));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn fallback_machine_secret_key_is_deterministic_per_machine_id() {
