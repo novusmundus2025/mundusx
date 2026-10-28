@@ -352,6 +352,9 @@ download_to() {
 
 verify_checksum() {
   local checksum_file="$1"
+  # Sidecars created on Windows may use CRLF; shasum treats CR as filename text.
+  tr -d '\r' < "$checksum_file" > "${checksum_file}.lf"
+  mv "${checksum_file}.lf" "$checksum_file"
 
   if command -v shasum >/dev/null 2>&1; then
     (cd "$tmp_dir" && shasum -a 256 -c "$(basename "$checksum_file")")
