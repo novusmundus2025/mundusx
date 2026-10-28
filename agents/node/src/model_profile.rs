@@ -93,7 +93,8 @@ pub fn apply_mlx(model: &str, payload: &mut Value) {
     }
     // mlx-lm 0.32 ignores tool_choice. The managed wrapper enforces only the
     // required call opening; argument validation and execution remain upstream.
-    if is_qwen3_coder(model) && payload["tool_choice"] == "required"
+    if is_qwen3_coder(model) && (payload["tool_choice"] == "required"
+        || payload.pointer("/tool_choice/function/name").is_some_and(Value::is_string))
         && payload["tools"].as_array().is_some_and(|tools| !tools.is_empty()) {
         if payload["chat_template_kwargs"].is_null() { payload["chat_template_kwargs"] = json!({}); }
         if let Some(kwargs) = payload["chat_template_kwargs"].as_object_mut() {
@@ -129,6 +130,9 @@ mod tests {
         assert_eq!(p["max_tokens"],16384);assert_eq!(p["messages"],messages);
         assert_eq!(p["repetition_penalty"],1.05);
         assert_eq!(p["chat_template_kwargs"]["opengpu_native_tool_guard"],true);
+        p["tool_choice"]=json!({"type":"function","function":{"name":"read_file"}});
+        apply_mlx("Qwen3-Coder-30B-A3B-Instruct-4bit",&mut p);
+        assert_eq!(p["chat_template_kwargs"]["opengpu_require_tool_call"],true);
     }
     #[test]
     fn next_uses_its_own_defaults_and_preserves_actual_client_sampling() {

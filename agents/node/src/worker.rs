@@ -2871,6 +2871,13 @@ fn native_runtime_payload(payload: &serde_json::Value) -> serde_json::Value {
     let mut body = if host_managed_tools(payload) { payload.clone() }
         else { native_line_edit::prepare(&native_http_bridge::prepare(payload)) };
     if let Some(object) = body.as_object_mut() { object.remove(HOST_MANAGED_TOOLS); }
+    if host_managed_tools(payload) {
+        if let Some(name)=payload.pointer("/tool_choice/function/name").and_then(|v|v.as_str()) {
+            if let Some(tools)=body["tools"].as_array_mut() {
+                tools.retain(|tool|tool["function"]["name"].as_str()==Some(name));
+            }
+        }
+    }
     body
 }
 
@@ -3064,6 +3071,14 @@ mod host_managed_tool_tests {
             Err("native edit precondition failed: host validation".into())
         });
         assert!(result.is_err());assert_eq!(attempts,1);
+    }
+
+    #[test]
+    fn explicit_function_choice_projects_only_the_callers_selected_schema() {
+        let mut p=payload();p["tool_choice"]=json!({"type":"function","function":{"name":"create_file"}});
+        let original=p["tools"].as_array().unwrap().iter().find(|t|t["function"]["name"]=="create_file").unwrap().clone();
+        let body=native_runtime_payload(&p);assert_eq!(body["tools"],json!([original]));
+        assert_eq!(body["messages"],p["messages"]);assert_eq!(body["tool_choice"],p["tool_choice"]);
     }
 
     #[test]
