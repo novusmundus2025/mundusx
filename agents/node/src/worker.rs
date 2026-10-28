@@ -2859,6 +2859,17 @@ fn run_native_openai_tool_turn(
 
 const HOST_MANAGED_TOOLS: &str = "__opengpu_host_managed_tools";
 
+fn inherit_native_output_budget(payload: &mut serde_json::Value, job_budget: Option<u32>) {
+    if payload.get("max_tokens").is_none_or(serde_json::Value::is_null) {
+        // MLX otherwise silently defaults to 512, truncating ordinary file writes.
+        // Preserve an explicit caller budget; inherit the scheduler budget only
+        // when the host omitted it.
+        let budget = payload.get("max_completion_tokens").and_then(serde_json::Value::as_u64)
+            .or(job_budget.map(u64::from)).unwrap_or(4096);
+        payload["max_tokens"] = serde_json::json!(budget);
+    }
+}
+
 fn host_managed_tools(payload: &serde_json::Value) -> bool {
     payload[HOST_MANAGED_TOOLS] == true
 }
@@ -2893,6 +2904,7 @@ fn run_native_openai_tool_turn_with_mode(
     payload[HOST_MANAGED_TOOLS] = serde_json::json!(host_managed);
     if !host_managed { native_line_edit::normalize_read_results(&mut payload); }
     payload["model"] = serde_json::Value::String(model.to_string());
+    inherit_native_output_budget(&mut payload, request.max_tokens);
     if configured_mlx_server_url().as_deref() == Some(url) {
         crate::model_profile::apply_mlx(model, &mut payload);
     } else {
@@ -3031,6 +3043,22 @@ fn native_workflow_message(payload:&serde_json::Value,message:&serde_json::Value
 mod host_managed_tool_tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn omitted_native_budget_inherits_job_limit_instead_of_mlx_512_default() {
+        let mut omitted = json!({"messages":[]});
+        inherit_native_output_budget(&mut omitted, Some(3072));
+        assert_eq!(omitted["max_tokens"], 3072);
+        let mut explicit = json!({"max_tokens":16384});
+        inherit_native_output_budget(&mut explicit, Some(3072));
+        assert_eq!(explicit["max_tokens"], 16384);
+        let mut completion = json!({"max_tokens":null,"max_completion_tokens":8192});
+        inherit_native_output_budget(&mut completion, Some(3072));
+        assert_eq!(completion["max_tokens"], 8192);
+        let mut fallback = json!({});
+        inherit_native_output_budget(&mut fallback, None);
+        assert_eq!(fallback["max_tokens"],4096);
+    }
 
     fn payload() -> Value {
         json!({"__opengpu_host_managed_tools":true,"messages":[
