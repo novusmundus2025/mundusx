@@ -42,7 +42,7 @@ GLOBAL_BIN_DIR_OVERRIDE="${OPENGPU_GLOBAL_BIN_DIR:-}"
 GLOBAL_BIN_DIR="${OPENGPU_GLOBAL_BIN_DIR:-/usr/local/bin}"
 DEFAULT_RELEASE_BASE_URL="https://github.com/mundusx/releases/releases/download/opengpu-prod"
 if [ "$(uname -s)" = "Darwin" ]; then
-  DEFAULT_RELEASE_BASE_URL="https://github.com/mundusx/releases/releases/download/cli-macos-v0.2.55"
+  DEFAULT_RELEASE_BASE_URL="https://github.com/mundusx/releases/releases/download/cli-macos-v0.2.56"
 fi
 RELEASE_BASE_URL="${RELEASE_BASE_URL:-$DEFAULT_RELEASE_BASE_URL}"
 OPENGPU_HOME="${OPENGPU_HOME:-$HOME/.opengpu}"
