@@ -37,6 +37,7 @@ pub fn resident(home: &Path) -> bool {
 /// A live helper owns the shared GPU slot; a leftover container alone is recovery.
 pub fn active(home: &Path) -> bool {
     let media = home.join("media");
+    if locked(&media.join("worker.lock")) && locked(&media.join("job.lock")) { return true; }
     if live_owner(home).is_some() && locked(&media.join("job.lock")) { return true; }
     let Ok(bytes) = fs::read(media.join("drain-request.json")) else { return false; };
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false; };
@@ -53,21 +54,22 @@ pub fn request(home: &Path) -> Option<String> {
     if media.join("active-container.json").exists() && !resident(home) {
         return Some("container-recovery-required".to_string());
     }
-    // Keep the GPU reserved while idle without reporting a running job.
-    if resident(home) && !locked(&media.join("media.lock")) {
-        return Some("media-runtime-resident".into());
+    // A serving job also owns job.lock. Its helper's concrete handoff token
+    // must take precedence over the generic active-job marker, or the helper
+    // waits forever for an acknowledgement of a different ID.
+    if let Some(id) = fs::read(media.join("drain-request.json")).ok()
+        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+        .and_then(|value| value["id"].as_str().map(str::to_string)) {
+        if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) && locked(&media.join("media.lock")) {
+            return Some(id);
+        }
     }
-    if live_owner(home).is_some() && locked(&media.join("job.lock"))
-        && !locked(&media.join("media.lock")) {
+    if locked(&media.join("worker.lock")) && locked(&media.join("job.lock")) { return Some("media-job-active".into()); }
+    if resident(home) && !locked(&media.join("media.lock")) { return Some("media-runtime-resident".into()); }
+    if live_owner(home).is_some() && locked(&media.join("job.lock")) && !locked(&media.join("media.lock")) {
         return Some("media-job-active".into());
     }
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(media.join("drain-request.json")).ok()?).ok()?;
-    let id = value["id"].as_str()?;
-    if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) { return None; }
-    let file = fs::OpenOptions::new().read(true).write(true).open(media.join("media.lock")).ok()?;
-    // A dead helper releases its OS lock even when it cannot remove its marker.
-    if file.try_lock().is_ok() { return None; }
-    Some(id.to_string())
+    None
 }
 
 pub fn acknowledge(home: &Path, id: &str) -> Result<(), String> {
@@ -80,6 +82,30 @@ pub fn acknowledge(home: &Path, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn helper_handoff_token_precedes_the_serving_job_marker() {
+        let home=std::env::temp_dir().join(format!("handoff-{}",uuid::Uuid::new_v4()));
+        let media=home.join("media");fs::create_dir_all(&media).unwrap();
+        let open=|name:&str|fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join(name)).unwrap();
+        let worker=open("worker.lock");worker.lock().unwrap();
+        let job=open("job.lock");job.lock().unwrap();
+        let helper=open("media.lock");helper.lock().unwrap();
+        let id="0123456789abcdef0123456789abcdef";
+        fs::write(media.join("drain-request.json"),serde_json::json!({"id":id}).to_string()).unwrap();
+        assert_eq!(request(&home).as_deref(),Some(id));
+        drop(helper);
+        assert_eq!(request(&home).as_deref(),Some("media-job-active"));
+        drop(job);drop(worker);fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn native_image_job_reserves_slot_without_a_container_lease() {
+        let home=std::env::temp_dir().join(format!("native-drain-{}",uuid::Uuid::new_v4()));
+        let media=home.join("media");fs::create_dir_all(&media).unwrap();
+        let worker=fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join("worker.lock")).unwrap();worker.lock().unwrap();
+        let job=fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(media.join("job.lock")).unwrap();job.lock().unwrap();
+        assert!(active(&home));assert_eq!(request(&home).as_deref(),Some("media-job-active"));
+        drop(job);assert!(!active(&home));assert!(request(&home).is_none());drop(worker);fs::remove_dir_all(home).unwrap();
+    }
     #[test]
     fn resident_runtime_reserves_memory_but_only_a_job_occupies_the_slot() {
         let home = std::env::temp_dir().join(format!("opengpu-warm-{}", uuid::Uuid::new_v4()));

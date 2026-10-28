@@ -41,7 +41,7 @@ impl FromStr for Operation {
         match value.trim() {
             "llm" => Ok(Self::Llm),
             "image" | "text_to_image" => Ok(Self::TextToImage),
-            "image-edit" | "image_edit" => Ok(Self::ImageEdit),
+            "image-edit" | "image_edit" | "image_to_image" => Ok(Self::ImageEdit),
             "video" | "text_to_video" => Ok(Self::TextToVideo),
             "image-to-video" | "image_to_video" => Ok(Self::ImageToVideo),
             _ => Err(format!(

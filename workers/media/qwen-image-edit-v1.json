@@ -1,0 +1,51 @@
+{
+  "id": "qwen-image-edit-2509-lightning-4step-832x480-v1",
+  "operation": "image_edit",
+  "model": "Qwen/Qwen-Image-Edit-2509",
+  "license": "Apache-2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen-Image-Edit-2509/blob/main/LICENSE",
+  "source": "https://github.com/ModelTC/LightX2V-Qwen-Image-Lightning",
+  "width": 832,
+  "height": 480,
+  "steps": 4,
+  "cfg": 1.0,
+  "minimum_budget_bytes": 51539607552,
+  "timeout_seconds": 1800,
+  "comfy_revision": "30c259cac8c08ff8d015f9aff3151cb525c9b702",
+  "comfy_archive_sha256": "d80f38c2d01047d3fe86667cd662ac9f1e220577401aad83d25043d68a330a7b",
+  "container_base": "nvcr.io/nvidia/pytorch:25.09-py3",
+  "models_revision": "f68ace85e60b4a02a323e394253731947657b7d2",
+  "models_repo": "Comfy-Org/Qwen-Image-Edit_ComfyUI",
+  "files": [
+    {
+      "path": "diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+      "size": 20430698424,
+      "sha256": "318568f61951ab9da21100c7b896e3c1da67f0d2efad6421545e022cfaa2b2b4"
+    },
+    {
+      "path": "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "size": 9384670680,
+      "sha256": "cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4",
+      "repo": "Comfy-Org/Qwen-Image_ComfyUI",
+      "revision": "1f12b17be14c89b026c51a91d67c32f84bb047bc"
+    },
+    {
+      "path": "vae/qwen_image_vae.safetensors",
+      "size": 253806246,
+      "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
+      "repo": "Comfy-Org/Qwen-Image_ComfyUI",
+      "revision": "1f12b17be14c89b026c51a91d67c32f84bb047bc"
+    },
+    {
+      "path": "loras/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "size": 849608296,
+      "sha256": "2a32ce938ec71db2b49a817b4844ae86995569518dea56ee0ddc209cbe8e1377",
+      "repo": "lightx2v/Qwen-Image-Lightning",
+      "revision": "d468c534b360e0754c6bf9e38ed49e1e09cd2e2a",
+      "source_path": "Qwen-Image-Edit-2509/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors"
+    }
+  ],
+  "architecture": "qwen_image_edit_2509",
+  "variant": "lightning",
+  "input_fit": "contain"
+}

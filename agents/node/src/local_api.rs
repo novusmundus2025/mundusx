@@ -600,8 +600,8 @@ fn handle_request(
                 200,
                 serde_json::json!({
                     "total_slots": slots.capacity(),
-                    "active_slots": slots.active(),
-                    "available_slots": slots.available(),
+                    "active_slots": slots.active() + usize::from(crate::media_drain::active(&crate::storage::config_dir())),
+                    "available_slots": slots.capacity().saturating_sub(slots.active() + usize::from(crate::media_drain::active(&crate::storage::config_dir()))),
                     "model": config.active_model,
                 }),
             ));

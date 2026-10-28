@@ -1,11 +1,12 @@
 use crate::storage::AgentConfig;
 use std::process::{Child, Command, Stdio};
-pub struct MediaProcess(Option<Child>, std::time::Instant);
+pub struct MediaProcess(Option<Child>, std::time::Instant, Option<crate::media_runtime::dreamshaper::ChildGuard>);
 impl MediaProcess {
     pub fn settings_drained(&mut self) -> bool {
         self.0.as_mut().is_none_or(|child| matches!(child.try_wait(), Ok(Some(_))))
     }
     pub fn maintain(&mut self, config: &AgentConfig) {
+        if config.paused { return; }
         let running = self
             .0
             .as_mut()
@@ -16,8 +17,8 @@ impl MediaProcess {
     }
 
     pub fn start(config: &AgentConfig) -> Self {
-        if !media_selected(config) {
-            return Self(None, std::time::Instant::now());
+        if config.paused || !media_selected(config) {
+            return Self(None, std::time::Instant::now(), None);
         }
         let server = std::env::var("MUNDUSX_MEDIA_SERVER_URL").ok().or_else(|| {
             ["https://control.mundusx.ai"]
@@ -26,7 +27,7 @@ impl MediaProcess {
         });
         let Some(server) = server else {
             eprintln!("mediaWorker: set MUNDUSX_MEDIA_SERVER_URL for this custom control plane");
-            return Self(None, std::time::Instant::now());
+            return Self(None, std::time::Instant::now(), None);
         };
         let cli = std::env::var_os("OPENGPU_CLI_EXE")
             .map(std::path::PathBuf::from)
@@ -40,7 +41,7 @@ impl MediaProcess {
                 })
             });
         let Some(cli) = cli else {
-            return Self(None, std::time::Instant::now());
+            return Self(None, std::time::Instant::now(), None);
         };
         let mut command = Command::new(cli);
         command
@@ -54,10 +55,13 @@ impl MediaProcess {
             command.creation_flags(0x08000000);
         }
         match command.spawn() {
-            Ok(child) => Self(Some(child), std::time::Instant::now()),
+            Ok(mut child) => {
+                let owner=if cfg!(windows) {match crate::media_runtime::dreamshaper::own_child(&child){Ok(guard)=>Some(guard),Err(e)=>{let _=child.kill();let _=child.wait();eprintln!("mediaWorker: {e}");return Self(None,std::time::Instant::now(),None)}}}else{None};
+                Self(Some(child),std::time::Instant::now(),owner)
+            },
             Err(e) => {
                 eprintln!("mediaWorker: unable to start ({e})");
-                Self(None, std::time::Instant::now())
+                Self(None, std::time::Instant::now(), None)
             }
         }
     }
@@ -91,6 +95,7 @@ fn media_selected(config: &AgentConfig) -> bool {
             crate::contribution_contract::Operation::ImageToVideo
                 | crate::contribution_contract::Operation::TextToVideo
                 | crate::contribution_contract::Operation::TextToImage
+                | crate::contribution_contract::Operation::ImageEdit
         )
     })
 }
@@ -100,14 +105,14 @@ mod tests {
     use super::*;
     use crate::contribution_contract::Operation;
     #[test]
-    fn starts_for_image_or_video_but_not_llm_or_editing_only() {
+    fn starts_for_image_video_and_editing_but_not_llm_only() {
         let mut cfg = AgentConfig::default();
         for (operation, expected) in [
             (Operation::TextToImage, true),
             (Operation::TextToVideo, true),
             (Operation::ImageToVideo, true),
             (Operation::Llm, false),
-            (Operation::ImageEdit, false),
+            (Operation::ImageEdit, true),
         ] {
             cfg.contribution.operations = vec![operation];
             assert_eq!(media_selected(&cfg), expected);

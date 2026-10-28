@@ -55,7 +55,9 @@ def is_video(profile):
 
 
 def profile_record(root, profile, name):
-    return root / (name + ('-i2v' if profile.get('operation') == 'image_to_video' else '-video' if is_video(profile) else '') + ('-fast' if profile.get('variant') == 'lightning' else '') + (('-' + str(profile['frames']) + 'f') if name == 'verified' and is_video(profile) and profile['frames'] != profile['fps'] * 2 + 1 else '') + '.json')
+    if profile.get('local_edit_options'):
+        return root / (name + '-edit-local-' + profile_hash(profile)[:16] + '.json')
+    return root / (name + ('-edit' if profile.get('operation') == 'image_edit' else '-i2v' if profile.get('operation') == 'image_to_video' else '-video' if is_video(profile) else '') + ('-fast' if profile.get('variant') == 'lightning' else '') + (('-' + str(profile['frames']) + 'f') if name == 'verified' and is_video(profile) and profile['frames'] != profile['fps'] * 2 + 1 else '') + '.json')
 
 
 class MediaError(Exception):
@@ -221,7 +223,9 @@ class Comfy:
         models = [("UNETLoader", "unet_name", 0), ("CLIPLoader", "clip_name", 1), ("VAELoader", "vae_name", 2)]
         if profile.get('architecture') in ('wan22_t2v_a14b', 'wan22_i2v_a14b'):
             models.append(("UNETLoader", "unet_name", 3))
-        if profile.get('variant') == 'lightning':
+        if profile.get('operation') == 'image_edit' and profile.get('variant') == 'lightning':
+            models.append(("LoraLoaderModelOnly", "lora_name", 3))
+        elif profile.get('variant') == 'lightning':
             models.extend([("LoraLoaderModelOnly", "lora_name", 4), ("LoraLoaderModelOnly", "lora_name", 5)])
         for node, field, index in models:
             name = Path(profile["files"][index]["path"]).name
@@ -238,7 +242,9 @@ class Comfy:
             raise MediaError("ComfyUI is busy; verification deferred until its queue is empty")
 
 
-def workflow(profile, prompt, seed, prefix, input_image=None):
+def workflow(profile, prompt, seed, prefix, input_image=None, reference_image=None):
+    if reference_image is not None and profile.get("operation") != "image_edit":
+        raise MediaError("A second reference requires image editing")
     if not prompt.strip() or len(prompt) > 16000:
         raise MediaError("Prompt must contain 1 to 16000 characters")
     if not isinstance(seed, int) or not 0 <= seed < 2**63:
@@ -302,6 +308,36 @@ def workflow(profile, prompt, seed, prefix, input_image=None):
             # Validate H.264/MP4 after export instead of relying on the output extension.
             "10": node("SaveVideo", video=["11", 0], filename_prefix="opengpu/" + prefix, format="auto", codec="h264"),
         }
+    if profile.get('operation') == 'image_edit':
+        if input_image is None:
+            input_image = 'opengpu-inspect.png'  # Node inventory only; generation enforces a real upload.
+        graph = {
+            "1": node("UNETLoader", unet_name=Path(profile["files"][0]["path"]).name, weight_dtype="default"),
+            "2": node("CLIPLoader", clip_name=Path(profile["files"][1]["path"]).name, type="qwen_image", device="default"),
+            "3": node("VAELoader", vae_name=Path(profile["files"][2]["path"]).name),
+            "11": node("LoadImage", image=input_image),
+            "12": node("ImageScale", image=["11", 0], upscale_method="lanczos", width=profile["width"], height=profile["height"], crop="center"),
+            "4": node("TextEncodeQwenImageEditPlus", prompt=prompt, clip=["2",0], vae=["3",0], image1=["12",0]),
+            "5": node("TextEncodeQwenImageEditPlus", prompt="", clip=["2",0], vae=["3",0], image1=["12",0]),
+            "6": node("VAEEncode", pixels=["12",0], vae=["3",0]),
+            "13": node("LoraLoaderModelOnly", model=["1",0], lora_name=Path(profile["files"][3]["path"]).name, strength_model=1.0),
+            "7": node("ModelSamplingAuraFlow", model=["13",0], shift=3.1),
+            "14": node("CFGNorm", model=["7",0], strength=1.0),
+            "8": node("KSampler", model=["14",0], positive=["4",0], negative=["5",0], latent_image=["6",0], seed=seed, steps=profile["steps"], cfg=profile["cfg"], sampler_name="euler", scheduler="simple", denoise=1.0),
+            "9": node("VAEDecode", samples=["8",0], vae=["3",0]),
+            "10": node("SaveImage", images=["9",0], filename_prefix="opengpu/"+prefix),
+        }
+        if reference_image is not None:
+            graph['16'] = node('LoadImage', image=reference_image)
+            for key in ('4', '5'):
+                graph[key]['inputs']['image2'] = ['16', 0]
+        if profile.get('variant') != 'lightning':
+            del graph['13']
+            graph['7']['inputs']['model'] = ['1', 0]
+        if profile.get('output_width'):
+            graph['15'] = node('ImageCrop', image=['9', 0], width=profile['output_width'], height=profile['output_height'], x=0, y=0)
+            graph['10']['inputs']['images'] = ['15', 0]
+        return graph
     if profile.get('operation') != 'text_to_image':
         raise MediaError('Unsupported media operation')
     return {
@@ -406,12 +442,18 @@ def validate_video(path, profile):
 
 
 def fit_input_image(data, profile):
-    """Fit the complete input inside the video canvas, without cropping."""
-    if profile.get('input_fit') != 'contain':
+    """Fit an input canvas; preserve mode only pads, without resampling."""
+    if profile.get('input_fit') == 'pad_original':
+        width, height = profile['width'], profile['height']
+        if struct.unpack('>II', data[16:24]) == (width, height):
+            return data
+        filters = f'pad={width}:{height}:0:0:color=black,setsar=1'
+    elif profile.get('input_fit') != 'contain':
         return data
-    width, height = profile['width'], profile['height']
-    filters = (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
-               f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1')
+    else:
+        width, height = profile['width'], profile['height']
+        filters = (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+                   f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1')
     result = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-i', 'pipe:0',
                              '-vf', filters, '-frames:v', '1', '-threads', '1',
                              '-f', 'image2pipe', '-c:v', 'png', '-pix_fmt', 'rgb24', 'pipe:1'],
@@ -422,21 +464,31 @@ def fit_input_image(data, profile):
     return result.stdout
 
 
-def generate(client, profile, prompt, seed, output, timeout=None, input_image=None):
+def generate(client, profile, prompt, seed, output, timeout=None, input_image=None, reference_image=None):
     if is_video(profile) and (not shutil.which('ffprobe') or not shutil.which('ffmpeg')):
         raise MediaError('Video generation requires ffprobe and ffmpeg on PATH for validation')
-    if profile.get('operation') == 'image_to_video' and input_image is None:
-        raise MediaError('Image-to-video requires --input-image pointing to a PNG')
-    if input_image is not None and profile.get('operation') != 'image_to_video':
-        raise MediaError('--input-image requires the image-to-video profile')
+    if profile.get('operation') in ('image_to_video','image_edit') and input_image is None:
+        raise MediaError('Image editing and image-to-video require --input-image pointing to a PNG')
+    if input_image is not None and profile.get('operation') not in ('image_to_video','image_edit'):
+        raise MediaError('--input-image requires an image-edit or image-to-video profile')
+    if reference_image is not None and (profile.get('operation') != 'image_edit' or input_image is None):
+        raise MediaError('--reference-image requires --image-edit and --input-image')
+    # Validate both inputs before contacting or uploading to the renderer.
+    reference_data = read_input_png(reference_image) if reference_image is not None else None
     image_data = read_input_png(input_image) if input_image is not None else None
     if image_data is not None:
         image_data = fit_input_image(image_data, profile)
     client.inspect(profile)
+    if reference_data is not None:
+        info = client.request('/object_info/TextEncodeQwenImageEditPlus')
+        optional = info.get('TextEncodeQwenImageEditPlus', {}).get('input', {}).get('optional', {})
+        if 'image2' not in optional:
+            raise MediaError('Renderer does not support a second reference image; update its Qwen Image Edit Plus node')
     client.ensure_idle()
     uploaded = client.upload_image(image_data) if image_data is not None else None
+    uploaded_reference = client.upload_image(reference_data) if reference_data is not None else None
     token = uuid.uuid4().hex
-    result = client.request("/prompt", {"prompt": workflow(profile, prompt, seed, token, uploaded), "client_id": token})
+    result = client.request("/prompt", {"prompt": workflow(profile, prompt, seed, token, uploaded, uploaded_reference), "client_id": token})
     prompt_id = result.get("prompt_id")
     if not isinstance(prompt_id, str) or not prompt_id or result.get("node_errors"):
         raise MediaError("ComfyUI rejected the bundled workflow: " + json.dumps(result.get("node_errors", {}))[:2000])
@@ -474,11 +526,11 @@ def generate(client, profile, prompt, seed, output, timeout=None, input_image=No
                         finally:
                             temporary.unlink(missing_ok=True)
                     else:
-                        validate_png(data, profile["width"], profile["height"])
+                        validate_png(data, profile.get("output_width", profile["width"]), profile.get("output_height", profile["height"]))
                         with output.open("xb") as stream: stream.write(data)
                     return {"artifact": str(output), "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
                             "duration_ms": round((time.monotonic()-started)*1000), "prompt_id": prompt_id,
-                            "source_filename": filename}
+                            "source_filename": filename, "input_image_count": 2 if reference_image is not None else (1 if input_image is not None else 0)}
             emit("progress", prompt_id=prompt_id, elapsed_seconds=round(time.monotonic()-started))
             time.sleep(2)
         raise MediaError("Generation timed out; running external ComfyUI work was not interrupted")
@@ -969,6 +1021,54 @@ def preset_profile(profile, seconds):
             'timeout_seconds': max(profile['timeout_seconds'], 7200)}
 
 
+
+def edit_options(profile, args):
+    """Local edits have separate records; they never qualify a network preset."""
+    reference = getattr(args, 'reference_image', None)
+    if reference is not None:
+        if profile.get('operation') != 'image_edit' or args.input_image is None or args.action not in ('plan', 'verify', 'generate'):
+            raise MediaError('--reference-image requires image-edit plan, verify or generate with --input-image')
+        read_input_png(args.input_image)
+        read_input_png(reference)
+    requested = reference is not None or args.quality or args.preserve_size or args.width is not None or args.height is not None or args.steps is not None
+    if not requested:
+        return profile
+    if profile.get('operation') != 'image_edit':
+        raise MediaError('Quality, size and sampling overrides here require --image-edit')
+    if args.quality and args.fast:
+        raise MediaError('--quality and --fast cannot be combined')
+    if args.preserve_size and (args.width is not None or args.height is not None):
+        raise MediaError('--preserve-size cannot be combined with --width or --height')
+    if (args.width is None) != (args.height is None):
+        raise MediaError('--width and --height must be supplied together')
+    if args.steps is not None and (not args.quality or not 20 <= args.steps <= 50):
+        raise MediaError('--steps requires --quality and must be between 20 and 50')
+    updated = {**profile, 'local_edit_options': True}
+    if args.quality:
+        updated.update(variant='standard', steps=args.steps or 30, cfg=4.0,
+                       timeout_seconds=max(profile['timeout_seconds'], 7200))
+    if args.preserve_size:
+        if args.input_image is None:
+            raise MediaError('--preserve-size requires --input-image pointing to a PNG')
+        data = read_input_png(args.input_image)
+        width, height = struct.unpack('>II', data[16:24])
+        # Padding makes the latent dimensions valid without resampling source pixels.
+        canvas_width, canvas_height = ((width + 63)//64)*64, ((height + 63)//64)*64
+        updated.update(output_width=width, output_height=height, input_fit='pad_original')
+    elif args.width is not None:
+        width, height = args.width, args.height
+        if not (64 <= width <= 2048 and 64 <= height <= 2048) or width % 64 or height % 64:
+            raise MediaError('--width and --height must be multiples of 64 between 64 and 2048')
+        canvas_width, canvas_height = width, height
+    else:
+        canvas_width, canvas_height = profile['width'], profile['height']
+    if max(canvas_width, canvas_height) > 2048 or canvas_width * canvas_height > 2097152:
+        raise MediaError('Local image edits support up to 2048 per side and 2 megapixels; use a smaller input or explicit --width and --height. No silent downscaling was performed.')
+    updated.update(width=canvas_width, height=canvas_height)
+    updated['id'] = profile['id'] + '-local-' + profile_hash(updated)[:12]
+    return updated
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['plan','setup','verify','generate','status','stop','upload'])
@@ -984,7 +1084,14 @@ def main():
     parser.add_argument('--server')
     parser.add_argument('--managed-output')
     parser.add_argument('--input-image', type=Path)
+    parser.add_argument('--reference-image', type=Path)
     parser.add_argument('--image-to-video', action='store_true')
+    parser.add_argument('--image-edit', action='store_true')
+    parser.add_argument('--quality', action='store_true')
+    parser.add_argument('--preserve-size', action='store_true')
+    parser.add_argument('--width', type=int)
+    parser.add_argument('--height', type=int)
+    parser.add_argument('--steps', type=int)
     parser.add_argument('--fast', action='store_true')
     parser.add_argument('--video', action='store_true')
     parser.add_argument('--seconds', type=int, choices=range(1, 11), default=2)
@@ -1011,6 +1118,7 @@ def main():
     profile = load_json(args.profile)
     base_profile = profile
     profile = preset_profile(base_profile, args.seconds)
+    profile = edit_options(profile, args)
     if args.prompt is None:
         args.prompt = ('A red ceramic teapot slowly rotates on a wooden table, soft daylight, steady camera'
                        if is_video(profile) else 'A red ceramic teapot on a wooden table, soft daylight, photorealistic')
@@ -1024,8 +1132,10 @@ def main():
             "profile_fits_budget": budget >= max(MINIMUM_MEDIA_BUDGET, profile['minimum_budget_bytes']),
             "automatic_platform_supported": bool(native_backend()) or (platform.system() == 'Linux' and platform.machine().lower() in ('aarch64','arm64')),
             "operation": profile['operation'], "width": profile['width'], "height": profile['height'],
-            "frames": profile.get('frames'), "fps": profile.get('fps'), "steps": profile['steps'],
+            "output_width": profile.get("output_width", profile["width"]), "output_height": profile.get("output_height", profile["height"]),
+            "variant": profile.get("variant"), "frames": profile.get('frames'), "fps": profile.get('fps'), "steps": profile['steps'],
             "local_video_tools_available": bool(shutil.which('ffprobe') and shutil.which('ffmpeg')) if is_video(profile) else None,
+            "input_image_count": 2 if args.reference_image else (1 if args.input_image else 0),
             "network_dispatch_enabled": False}
     if args.action == 'plan': emit('plan', **plan); return
     if args.action == 'status':
@@ -1042,11 +1152,11 @@ def main():
              budget_bytes=budget, minimum_media_budget_bytes=MINIMUM_MEDIA_BUDGET,
              runtime_retained=retained_runtime(root), network_dispatch_enabled=False); return
     require_media_budget(budget, profile)
-    if profile.get('operation') == 'image_to_video' and args.action in ('verify', 'generate'):
-        if args.input_image is None: raise MediaError('Image-to-video requires --input-image pointing to a PNG')
+    if profile.get('operation') in ('image_to_video','image_edit') and args.action in ('verify', 'generate'):
+        if args.input_image is None: raise MediaError('Image editing and image-to-video require --input-image pointing to a PNG')
         read_input_png(args.input_image)
     elif args.input_image is not None:
-        raise MediaError('--input-image requires image-to-video verify or generate')
+        raise MediaError('--input-image requires image-edit or image-to-video verify or generate')
     with lock(root):
         if args.action == 'setup' or not persistent_owner(root): stop_owned_container(root)
         if args.action == 'setup':
@@ -1068,7 +1178,7 @@ def main():
         with drain_contributor(args.home), client_for(root, base_profile, args.endpoint, budget) as client:
             stats, _ = client.inspect(profile)
             output = root/'artifacts'/(uuid.uuid4().hex + ('.mp4' if is_video(profile) else '.png'))
-            result = generate(client, profile, args.prompt, args.seed, output, input_image=args.input_image)
+            result = generate(client, profile, args.prompt, args.seed, output, input_image=args.input_image, reference_image=args.reference_image)
             certificate = {"ready": True, "profile": profile['id'], "profile_hash": profile_hash(profile),
                            "operation": profile['operation'], "width": profile['width'], "height": profile['height'],
                            "steps": profile['steps'], "budget_bytes": budget, "cap_percent": args.cap_percent, "verified_at": int(time.time()),

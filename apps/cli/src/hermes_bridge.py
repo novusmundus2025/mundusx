@@ -41,8 +41,8 @@ def emit(prefix, value):
     print(prefix + json.dumps(value, ensure_ascii=False, default=str), flush=True)
 
 
-SKILL_DISCOVERY_GUIDANCE = """For this project task, discover relevant installed Hermes skills using skills_list
-when needed, and load applicable instructions with skill_view before using them.
+SKILL_DISCOVERY_GUIDANCE = """Installed Hermes skills are optional, not a mandatory setup phase.
+Use skills_list and skill_view when the user requests a skill or a concrete task-specific gap requires one; do not begin routine source implementation by listing skills.
 Use only skills relevant to the task; do not load the entire library or invent missing skills.
 Project instructions and the current user request still apply. A skill does not grant extra permissions.
 """
@@ -54,6 +54,10 @@ If the requested edits are already present, run the required build, test, lint, 
 """
 
 EXECUTION_EFFICIENCY_GUIDANCE = """Work directly and keep model turns economical.
+For Node.js syntax verification use node --check <file>, never require/import the application entry point: importing it can start a server and hang.
+Start servers and other persistent processes with terminal background=true, check readiness separately, and stop only the session you started when verification is finished.
+Foreground commands default to 60 seconds and are limited to 120 seconds. Use tracked background execution for longer builds/tests, inspect their real exit status, and never treat background startup as a passing test.
+When verification fails, make a small targeted patch from the reported error. Do not rewrite a complete large file or send patch arguments to read_file. Keep each executable tool call small enough to finish within the model output budget.
 For new test apps and apps intended to run locally, default to SQLite when persistent storage is needed and the user has not explicitly specified a storage technology.
 Use a persistent SQLite file with the project's existing language and framework. Do not introduce Docker or an external database service solely for this default.
 Honor explicitly requested storage technologies and preserve existing projects' database choices. This default does not select storage for production deployments or trigger database migrations.
@@ -63,8 +67,10 @@ Use the structured tool progress events for status. Reserve prose for a concise 
 Tool results and JSON representations escape real newline characters as \\n. Do not treat that display escaping as proof that a source file contains literal backslash-n text. If syntax is uncertain, run the project build or parser once and trust the result; do not repeatedly inspect the same bytes after a successful build.
 For multi-file code generation, reserve the final tool turns for dependency installation and a real build, test, lint, syntax, or smoke check. Group related work where the tools permit it; do not consume the entire budget writing one file per planning cycle.
 When the prompt contains MUNDUSX_REUSABLE_TEST_ACCEPTANCE_V1, create or update a maintainable project-owned regression test for the requested behavior or reproduced failure and run the test suite after the final implementation change. Prefer the existing framework. A build, lint command, generated output, one-off probe, or manual browser check is not a reusable regression test.
-For frontend work, reconcile every third-party source import with the package manifest that owns that source tree. Install missing dependencies in that package directory, not an unrelated parent package. Treat missing-export, unresolved-import, and equivalent bundler diagnostics as build failures even when a bundler exits with status 0. Run that frontend package's production build successfully before starting browser acceptance. Then render the changed flow in a browser, inspect the console for runtime exceptions, and exercise the requested interaction. If either check fails, repair the source and repeat both checks; never replace frontend runtime acceptance with a passing backend test.
 After the requested change and required build, lint, test, or browser acceptance checks succeed, return the final response immediately. Do not start another inspection cycle or add unrelated improvements.
+"""
+
+FRONTEND_EXECUTION_GUIDANCE = """For frontend work, reconcile every third-party source import with the package manifest that owns that source tree. Install missing dependencies in that package directory, not an unrelated parent package. Treat missing-export, unresolved-import, and equivalent bundler diagnostics as build failures even when a bundler exits with status 0. Run that frontend package's production build successfully before starting browser acceptance. Then render the changed flow in a browser, inspect the console for runtime exceptions, and exercise the requested interaction. If either check fails, repair the source and repeat both checks; never replace frontend runtime acceptance with a passing backend test.
 """
 
 STANDARD_MAX_ITERATIONS = 12
@@ -72,8 +78,28 @@ COMPREHENSIVE_MAX_ITERATIONS = 24
 FRONTEND_MAX_ITERATIONS = 24
 SWARM_PLANNER_MARKER = "MUNDUSX_SWARM_PLANNER_V1"
 PROJECT_COMPACTION_TOKENS = 16_384
+PROJECT_MAX_COMPACTION_TOKENS = 65_536
 CHECKPOINT_EVENT_LIMIT = 16
 CHECKPOINT_TARGET_LIMIT = 24
+
+
+def configure_terminal_lifecycle(environ):
+    """Keep Hermes foreground results ahead of the parent's program watchdog.
+
+    Longer explicit timeouts are promoted by Hermes to tracked background
+    sessions; the model can poll them without blocking the entire bridge.
+    Set these before importing the installed runtime, which reads the cap
+    once at module import time.
+    """
+    for key, default, maximum in (
+        ("TERMINAL_TIMEOUT", 60, 120),
+        ("TERMINAL_MAX_FOREGROUND_TIMEOUT", 120, 120),
+    ):
+        try:
+            value = int(environ.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        environ[key] = str(min(maximum, value) if value > 0 else default)
 
 
 def project_iteration_budget(prompt):
@@ -96,14 +122,33 @@ def project_user_prompt(raw_prompt, recovery_note=""):
     task_prompt = raw_prompt
     if recovery_note:
         task_prompt = recovery_note + "\n\n" + task_prompt
-    guidance = RECOVERY_GUIDANCE if recovery_note else SKILL_DISCOVERY_GUIDANCE
+    guidance = RECOVERY_GUIDANCE if recovery_note else (
+        "Use the supplied acceptance tests as the task contract. Start with those tests and implementation; do not perform skill discovery or load unrelated workflows.\n"
+        if supplied_acceptance_task(raw_prompt) else SKILL_DISCOVERY_GUIDANCE
+    )
     return (
         guidance
         + "\n"
         + EXECUTION_EFFICIENCY_GUIDANCE
+        + (FRONTEND_EXECUTION_GUIDANCE if FRONTEND_ACCEPTANCE_MARKER in raw_prompt else "")
         + "\nUser project request:\n"
         + task_prompt
     )
+
+
+def supplied_acceptance_task(prompt):
+    """A provided executable contract needs no methodology-discovery phase."""
+    value = str(prompt or "")
+    explicit_skill = re.search(r"\b(?:use|load|apply|follow)(?:\s+[\w-]+){0,6}\s+skills?\b|\b(?:skills_list|skill_view)\b", value, re.IGNORECASE)
+    return FRONTEND_ACCEPTANCE_MARKER not in value and not explicit_skill and bool(
+        re.search(r"\bacceptance\.(?:cjs|mjs|js|py)\b", value, re.IGNORECASE)
+    )
+
+
+def project_toolsets(prompt):
+    if supplied_acceptance_task(prompt):
+        return ["file", "terminal", "todo"]
+    return ["file", "terminal", "skills", "web", "vision", "todo", "delegation", "clarify"]
 
 
 class RecoveryCheckpoint:
@@ -252,9 +297,16 @@ def configure_project_compaction(agent):
     compressor = getattr(agent, "context_compressor", None)
     if compressor is None:
         return False
-    compressor.threshold_tokens_cap = PROJECT_COMPACTION_TOKENS
+    try:
+        context_length = int(getattr(compressor, "context_length", 0))
+    except (TypeError, ValueError):
+        context_length = 0
+    # Keep room for the next tool result and output without repeatedly
+    # summarizing a small project on runtimes that declare a larger window.
+    cap = min(PROJECT_MAX_COMPACTION_TOKENS, context_length // 2) if context_length > 0 else PROJECT_COMPACTION_TOKENS
+    compressor.threshold_tokens_cap = cap
     compressor.threshold_tokens = min(
-        int(compressor.threshold_tokens), PROJECT_COMPACTION_TOKENS
+        int(compressor.threshold_tokens), cap
     )
     return True
 
@@ -429,6 +481,7 @@ def main():
     recovery_note = checkpoint.recovery_note()
     checkpoint.start()
 
+    configure_terminal_lifecycle(os.environ)
     from run_agent import AIAgent
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_tool import register_task_env_overrides
@@ -496,10 +549,7 @@ def main():
         # Direct tools keep project execution observable and cancellable. The
         # execute_code wrapper runs a nested RPC kernel that can remain open
         # after its file writes finish, leaving the parent task falsely active.
-        enabled_toolsets = [
-            "file", "terminal", "skills", "web", "vision", "todo",
-            "delegation", "clarify",
-        ]
+        enabled_toolsets = project_toolsets(raw_user_prompt)
         if FRONTEND_ACCEPTANCE_MARKER in user_prompt:
             enabled_toolsets.extend(["browser", "browser-use"])
     agent = AIAgent(
@@ -508,6 +558,7 @@ def main():
         provider="openai-api",
         model="mundusx-agnostic",
         max_iterations=max_iterations,
+        max_tokens=8192 if max_iterations == COMPREHENSIVE_MAX_ITERATIONS else 4096,
         enabled_toolsets=enabled_toolsets,
         quiet_mode=True,
         tool_progress_mode="all",

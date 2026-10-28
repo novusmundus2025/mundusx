@@ -34,6 +34,7 @@ use serde::Serialize;
 use std::fs;
 use std::io::{self, Write};
 use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool,Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use storage::{
@@ -257,7 +258,7 @@ fn worker_readiness(config: &AgentConfig) -> (WorkerHealthReport, WorkerPolicyRe
         .max(1);
     let verified = media_runtime::verified_profiles(&storage::config_dir(), config.contribution.comfyui_url.as_deref(), config.contribution_percent);
     health.media_profiles = verified.into_iter().filter(|id| {
-        config.contribution.operations.contains(&if id.starts_with("qwen-") { contribution_contract::Operation::TextToImage } else if id.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo })
+        config.contribution.operations.contains(&if id.starts_with("qwen-image-edit-") { contribution_contract::Operation::ImageEdit } else if (id.starts_with("qwen-") || id.starts_with("dreamshaper-")) { contribution_contract::Operation::TextToImage } else if id.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo })
     }).collect();
     health.media_budget_bytes = media_runtime::memory::MediaBudget::detect(config.contribution_percent).contribution_budget_bytes.unwrap_or(0);
     if !config.contribution.llm_enabled() {
@@ -849,7 +850,7 @@ fn build_scheduler_capabilities(
             operations: {
                 let mut operations = if config.contribution.llm_enabled() { vec![contribution_contract::Operation::Llm] } else { vec![] };
                 for profile in &health.media_profiles {
-                    let operation = if profile.starts_with("qwen-") { contribution_contract::Operation::TextToImage } else if profile.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo };
+                    let operation = if (profile.starts_with("qwen-") || profile.starts_with("dreamshaper-")) { contribution_contract::Operation::TextToImage } else if profile.starts_with("wan22-i2v-") { contribution_contract::Operation::ImageToVideo } else { contribution_contract::Operation::TextToVideo };
                     if !operations.contains(&operation) { operations.push(operation); }
                 }
                 operations
@@ -1345,7 +1346,26 @@ fn send_registration(
     }
 }
 
-fn send_heartbeat(
+// The owner may mirror media presence to the public plane. LLM claims remain
+// confined to the primary plane; one media worker serializes both queues.
+fn send_heartbeat(config:&AgentConfig,identity:&DeviceIdentity,heartbeat:&Heartbeat,verbose:bool)->Option<NodeAdmissionStatus> {
+    let primary=send_heartbeat_once(config,identity,heartbeat,verbose);
+    if !config.contribution.llm_enabled() && std::env::var("OPENGPU_SECONDARY_CONTROL_PLANE_URL").as_deref()==Ok("https://control.mundusx.ai") && config.control_plane_url.trim_end_matches('/')!="https://control.mundusx.ai" {
+        let mut mirror=config.clone();mirror.control_plane_url="https://control.mundusx.ai".into();
+        static REGISTERED:std::sync::OnceLock<std::sync::Mutex<bool>>=std::sync::OnceLock::new();
+        if let Ok(mut registered)=REGISTERED.get_or_init(||std::sync::Mutex::new(false)).lock() {
+            if !*registered {*registered=send_registration(&mirror,identity,&build_registration(&mirror,identity),verbose);}
+            let mut mirrored = heartbeat.clone();
+            if let Ok(selected) = std::env::var("OPENGPU_MEDIA_SECONDARY_PROFILES") {
+                mirrored.worker_health.media_profiles.retain(|p| selected.split(',').any(|s| s == p));
+            }
+            if *registered && send_heartbeat_once(&mirror,identity,&mirrored,verbose).is_none(){*registered=false;}
+        }
+    }
+    primary
+}
+
+fn send_heartbeat_once(
     config: &AgentConfig,
     identity: &DeviceIdentity,
     heartbeat: &Heartbeat,
@@ -1418,9 +1438,19 @@ fn launch_admitted_worker_process(
     json: bool,
     delta_sender: Option<mpsc::Sender<String>>,
 ) -> Result<contracts::WorkerLaunchResponse, String> {
+    launch_admitted_worker_process_with_control(config,request,json,delta_sender,None)
+}
+
+fn launch_admitted_worker_process_with_control(
+    config: &AgentConfig,
+    request: WorkerLaunchRequest,
+    json: bool,
+    delta_sender: Option<mpsc::Sender<String>>,
+    cancelled: Option<Arc<AtomicBool>>,
+) -> Result<contracts::WorkerLaunchResponse, String> {
     let model_dir = config.effective_model_dir();
 
-    match worker::launch_worker_with_stream(&request, &model_dir, delta_sender) {
+    match worker::launch_worker_with_control(&request, &model_dir, delta_sender, cancelled) {
         Ok(response) => {
             if json {
                 emit_json_line(&response);
@@ -1626,6 +1656,7 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
     // response. A remote cluster needs more than the generic five-second HTTP
     // timeout to receive that larger payload after the server reserves it.
     let agent = http::request_agent_with_timeouts(CLAIM_CONNECT_TIMEOUT, CLAIM_RESPONSE_TIMEOUT);
+    let claim_started = Instant::now();
     match signed_get_json_with_agent::<JobClaimResponse>(
         &agent,
         &config.control_plane_url,
@@ -1633,7 +1664,10 @@ fn claim_next_job(config: &AgentConfig, identity: &DeviceIdentity) -> Option<Job
         &config.device_id,
         identity,
     ) {
-        Ok(response) => response.job,
+        Ok(response) => {
+            if let Some(job) = response.job.as_ref() { println!("jobTiming: claimed {} http_ms={}", job.job_id, claim_started.elapsed().as_millis()); }
+            response.job
+        },
         Err(error) => {
             eprintln!("controlPlaneClaim: {error}");
             if is_unknown_node_error(&error) {
@@ -1892,6 +1926,30 @@ fn stop_busy_heartbeat_supervisor(stop_tx: mpsc::Sender<()>, handle: thread::Joi
     let _ = handle.join();
 }
 
+fn start_assignment_monitor(
+    config:AgentConfig,identity:DeviceIdentity,job_id:String,assignment_id:String,cancelled:Arc<AtomicBool>,
+)->mpsc::Sender<()> {
+    let (stop,receiver)=mpsc::channel();
+    // Assignment checks carry no prompt, output, progress evidence or usage.
+    // A transient network failure is not evidence of cancellation.
+    thread::spawn(move || {
+        let agent=http::request_agent_with_timeouts(Duration::from_secs(3),Duration::from_secs(5));
+        loop {
+            if receiver.recv_timeout(Duration::from_secs(2))!=Err(mpsc::RecvTimeoutError::Timeout) { break; }
+            let payload=serde_json::json!({"job_id":job_id,"node_id":config.device_id,"assignment_id":assignment_id});
+            match signed_post_json_body_with_agent::<_,serde_json::Value>(&agent,&config.control_plane_url,
+                "/v1/jobs/assignment",&config.device_id,&identity,&payload) {
+                Ok(value) if value["active"].as_bool()==Some(false) => {
+                    cancelled.store(true,Ordering::Release);break;
+                }
+                Err(error) if error.starts_with("HTTP 404") || error.starts_with("HTTP 405") => break,
+                _ => {},
+            }
+        }
+    });
+    stop
+}
+
 fn execute_claimed_job(
     config: AgentConfig,
     identity: DeviceIdentity,
@@ -1899,6 +1957,12 @@ fn execute_claimed_job(
     json: bool,
     _permit: local_api::SlotPermit,
 ) {
+    let cancelled=Arc::new(AtomicBool::new(false));
+    let monitor = if job.stream && config.contributed_cluster.is_none() {
+        job.assigned_at.as_ref().map(|assignment| {
+            start_assignment_monitor(config.clone(),identity.clone(),job.job_id.clone(),assignment.clone(),cancelled.clone())
+        })
+    } else { None };
     let request = WorkerLaunchRequest {
         operation: job.operation,
         job_id: job.job_id.clone(),
@@ -1941,9 +2005,16 @@ fn execute_claimed_job(
     // Admission was already checked from the latest health snapshot before the
     // job was claimed. Re-running the full health probe here delays the first
     // response token even though the node is already admitted and ready.
-    let worker_result = launch_admitted_worker_process(&config, request, json, delta_sender);
+    let worker_result = launch_admitted_worker_process_with_control(&config, request, json, delta_sender,Some(cancelled.clone()));
+    if let Some(stop)=monitor { let _=stop.send(()); }
+    println!("jobTiming: worker {} elapsed_ms={}", job.job_id, started_at.elapsed().as_millis());
     if let Some(handle) = relay_handle {
         let _ = handle.join();
+    }
+    println!("jobTiming: relay {} elapsed_ms={}", job.job_id, started_at.elapsed().as_millis());
+    if cancelled.load(Ordering::Acquire) {
+        println!("jobCancelled: {} released its execution slot",job.job_id);
+        return;
     }
     match worker_result {
         Ok(response) => {
@@ -1952,6 +2023,7 @@ fn execute_claimed_job(
                 started_at.elapsed().as_millis() as u64,
             );
             complete_job(&config, &identity, &completion);
+            println!("jobTiming: complete {} elapsed_ms={}", completion.job_id, started_at.elapsed().as_millis());
         }
         Err(error) => {
             let completion = build_worker_error_completion(
@@ -1991,14 +2063,16 @@ fn reap_finished_jobs(handles: &mut Vec<thread::JoinHandle<()>>) {
 
 fn process_pending_jobs(
     config: &AgentConfig,
+    identity: &DeviceIdentity,
     json: bool,
     verbose: bool,
     continuously_refill_slots: bool,
     slot_pool: Arc<local_api::SlotPool>,
     heartbeat_snapshot: &Heartbeat,
-) {
-    if !config.contribution.llm_enabled() || media_drain::request(&storage::config_dir()).is_some() || settings_drain::active(&storage::config_dir()) { return; }
-    let identity = load_identity_or_exit();
+) -> bool {
+    if !config.contribution.llm_enabled() || media_drain::request(&storage::config_dir()).is_some() || settings_drain::active(&storage::config_dir()) { return false; }
+    // Reuse the identity loaded at startup rather than visiting secure storage
+    // again on every idle poll. Signing still uses the secure signing path.
     // Health probing can invoke slow external programs such as nvidia-smi and
     // contact a contributed runtime. The heartbeat path already performs those
     // probes and refreshes this policy. Re-probing before every one-second job
@@ -2019,7 +2093,7 @@ fn process_pending_jobs(
         let _ = save_agent_state(&policy_heartbeat);
         let _ = save_heartbeat(&policy_heartbeat);
         send_heartbeat(config, &identity, &policy_heartbeat, verbose);
-        return;
+        return false;
     }
 
     if verbose {
@@ -2041,7 +2115,7 @@ fn process_pending_jobs(
         if verbose {
             println!("jobPoll: none");
         }
-        return;
+        return false;
     }
 
     let busy_heartbeat = heartbeat_from_snapshot(heartbeat_snapshot, config, AgentState::Busy);
@@ -2057,7 +2131,9 @@ fn process_pending_jobs(
 
     if continuously_refill_slots {
         while !handles.is_empty() {
-            thread::sleep(Duration::from_secs(1));
+            // A client can submit its next tool turn as soon as completion is
+            // acknowledged. Refill at the same cadence as idle job claiming.
+            thread::sleep(Duration::from_millis(250));
             reap_finished_jobs(&mut handles);
 
             let refill_config = match load_agent_config() {
@@ -2100,6 +2176,7 @@ fn process_pending_jobs(
     let _ = save_agent_state(&ready_heartbeat);
     let _ = save_heartbeat(&ready_heartbeat);
     send_heartbeat(config, &identity, &ready_heartbeat, verbose);
+    true
 }
 
 fn print_status(json: bool) {
@@ -2151,6 +2228,7 @@ fn should_agent_run(config: &AgentConfig) -> bool {
 }
 
 fn clear_runtime_environment() {
+    std::env::remove_var("OPENGPU_VERIFIED_MLX_PROFILE_URL");
     std::env::remove_var("OPENGPU_LLAMA_SERVER_URL");
     std::env::remove_var("OPENGPU_MLX_SERVER_URL");
     std::env::remove_var("OPENGPU_VLLM_URL");
@@ -2214,6 +2292,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             std::process::exit(3);
         }
     };
+    worker::publish_worker_build();
     let mut config = load_config_or_exit();
     if normalize_verified_tool_capability(&mut config) {
         if let Err(error) = save_agent_config(&config) {
@@ -2230,6 +2309,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             config.active_model.as_deref(),
             resolved_backend(&config),
             runtime_parallel_slots,
+            mlx_context::prompt_cache_bytes(detect_memory_mb(), config.contribution_percent),
         ) {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -2328,7 +2408,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         std::process::exit(2);
     }
     let mut media_worker = if once { None } else { Some(media_process::MediaProcess::start(&config)) };
-    process_pending_jobs(&config, json, verbose, !once, slot_pool.clone(), &heartbeat_snapshot);
+    process_pending_jobs(&config, &identity, json, verbose, !once, slot_pool.clone(), &heartbeat_snapshot);
 
     println!("{}", green(format!("connected {}", config.device_id)));
     println!("press Ctrl-C to stop");
@@ -2337,11 +2417,12 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
         return;
     }
 
+    let mut last_paused=config.paused;
     loop {
         // Job claims should not wait for the five-second heartbeat cadence.
-        // Keep presence traffic at its normal rate while checking for work once
-        // per second so an idle, warm node starts streaming promptly.
-        thread::sleep(Duration::from_secs(1));
+        // Keep presence traffic at its normal rate while checking for work
+        // every 250 ms so an idle, warm node starts streaming promptly.
+        thread::sleep(Duration::from_millis(250));
         let mut latest_config = match load_agent_config() {
             Ok(Some(config)) => config,
             Ok(None) => {
@@ -2360,7 +2441,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             }
         };
 
-        if !should_agent_run(&latest_config) {
+        if !latest_config.connected {
             let heartbeat = heartbeat_from_snapshot(
                 &heartbeat_snapshot,
                 &latest_config,
@@ -2396,6 +2477,15 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             thread::sleep(Duration::from_millis(200));
             continue;
         }
+        if latest_config.paused {
+            if !last_paused || last_heartbeat_sent.elapsed()>=Duration::from_secs(interval) {
+                let heartbeat=heartbeat_from_snapshot(&heartbeat_snapshot,&latest_config,AgentState::Paused);
+                let _=save_agent_state(&heartbeat);let _=save_heartbeat(&heartbeat);send_heartbeat(&latest_config,&identity,&heartbeat,verbose);last_heartbeat_sent=Instant::now();
+            }
+            last_paused=true;
+            thread::sleep(Duration::from_millis(200));continue;
+        }
+        if last_paused {last_heartbeat_sent=Instant::now()-Duration::from_secs(interval);last_paused=false;}
         if let Some(worker) = media_worker.as_mut() { worker.maintain(&latest_config); }
 
         while let Ok(mut refreshed) = health_refresh_rx.try_recv() {
@@ -2483,6 +2573,7 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             match worker::start_persistent_runtime(
                 &latest_config.effective_model_dir(), latest_config.active_model.as_deref(),
                 resolved_backend(&latest_config), worker_readiness(&latest_config).0.parallel_slots,
+                mlx_context::prompt_cache_bytes(detect_memory_mb(), latest_config.contribution_percent),
             ) {
                 Ok(runtime) => {
                     persistent_runtime = runtime;
@@ -2516,14 +2607,19 @@ fn run_agent(once: bool, json: bool, verbose: bool, interval_seconds: u64) {
             }
         }
         if control_plane_blocks_jobs(control_plane_status.as_ref()).is_none() {
-            process_pending_jobs(
+            if process_pending_jobs(
                 &latest_config,
+                &identity,
                 json,
                 verbose,
                 true,
                 slot_pool.clone(),
                 &heartbeat_snapshot,
-            );
+            ) {
+                // The worker loop just sent its final Ready heartbeat. Avoid
+                // sending it again before checking for the client's next turn.
+                last_heartbeat_sent = Instant::now();
+            }
         }
         let _ = io::stdout().flush();
     }

@@ -7,6 +7,11 @@ use std::{
 };
 
 const GIB: u64 = 1 << 30;
+// Shared across all sessions, in addition to active per-slot KV caches.
+pub fn prompt_cache_bytes(physical_mb:u32, cap:u8)->u64 {
+    let budget = u64::from(physical_mb) * (1 << 20) * u64::from(cap.min(100)) / 100;
+    if budget >= 32 * GIB { 4 * GIB } else { 0 }
+}
 
 pub fn context_tokens(
     model: &ModelCapability,
@@ -126,11 +131,12 @@ fn limit(
     requested: Option<u32>,
 ) -> Option<u32> {
     let c = config.get("text_config").unwrap_or(config);
-    // These architectures use the standard dense K/V cache estimated below.
-    // Unknown/hybrid architectures retain the existing conservative fallback.
+    // Next keeps dense KV only at its full-attention layers, plus fixed
+    // recurrent and convolution state at the remaining layers.
+    let hybrid = c["model_type"] == "qwen3_next";
     if !matches!(
         c["model_type"].as_str()?,
-        "qwen3_moe" | "qwen3" | "qwen2" | "llama" | "mistral"
+        "qwen3_moe" | "qwen3" | "qwen2" | "llama" | "mistral" | "qwen3_next"
     ) {
         return None;
     }
@@ -150,7 +156,24 @@ fn limit(
         _ => return None,
     };
     // K + V. Weight quantization does not imply KV quantization.
-    let per_token = layers
+    let (kv_layers, fixed_per_slot) = if hybrid {
+        let interval=c["full_attention_interval"].as_u64()?;
+        if interval==0 || interval>layers {return None;}
+        let kv_layers=layers/interval;
+        let values=c["linear_num_value_heads"].as_u64()?;
+        let keys=c["linear_num_key_heads"].as_u64()?;
+        let key_dim=c["linear_key_head_dim"].as_u64()?;
+        let value_dim=c["linear_value_head_dim"].as_u64()?;
+        let kernel=c["linear_conv_kernel_dim"].as_u64()?;
+        if [values,keys,key_dim,value_dim,kernel].contains(&0) || values%keys!=0 {return None;}
+        // The recurrent accumulation is fp32 regardless of weight precision.
+        let recurrent=values.checked_mul(key_dim)?.checked_mul(value_dim)?.checked_mul(4)?;
+        // Reserve the entire convolution window (the implementation can retain less).
+        let convolution=keys.checked_mul(key_dim)?.checked_mul(2)?
+            .checked_add(values.checked_mul(value_dim)?)?.checked_mul(kernel)?.checked_mul(element_bytes)?;
+        (kv_layers,(layers-kv_layers).checked_mul(recurrent.checked_add(convolution)?)?)
+    } else {(layers,0)};
+    let per_token = kv_layers
         .checked_mul(kv_heads)?
         .checked_mul(head_dim)?
         .checked_mul(2 * element_bytes)?;
@@ -162,8 +185,13 @@ fn limit(
         .checked_mul(u64::from(cap.min(100)))?
         / 100;
     // Leave room for prefill activations, allocator overhead and retained prefix cache.
-    let reserve = (4 * GIB).max(weights / 4);
-    let remaining = budget.checked_sub(weights)?.checked_sub(reserve)?;
+    // MoE total weights do not determine active prefill activations. Keep a
+    // fixed 4 GiB workspace reserve for Next, separately from its full weights,
+    // fixed recurrent state, retained prefix cache and active KV allocations.
+    let workspace=if hybrid {4*GIB} else {(4*GIB).max(weights/4)};
+    let reserve = workspace + prompt_cache_bytes(physical_mb, cap);
+    let remaining = budget.checked_sub(weights)?.checked_sub(reserve)?
+        .checked_sub(fixed_per_slot.checked_mul(u64::from(slots.max(1)))?)?;
     let memory_limit = remaining / per_token.checked_mul(u64::from(slots.max(1)))?;
     let tokens = maximum
         .min(memory_limit)
@@ -175,20 +203,44 @@ fn limit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn next_accounts_for_sparse_kv_fixed_recurrent_state_and_parallel_slots() {
+        let config=serde_json::json!({"model_type":"qwen3_next","max_position_embeddings":262144,
+            "num_hidden_layers":48,"num_key_value_heads":2,"head_dim":256,"full_attention_interval":4,
+            "linear_num_value_heads":32,"linear_num_key_heads":16,"linear_key_head_dim":128,
+            "linear_value_head_dim":128,"linear_conv_kernel_dim":4});
+        let one=limit(&config,42*GIB,65536,80,1,None).unwrap();
+        let two=limit(&config,42*GIB,65536,80,2,None).unwrap();
+        assert!(one>=32768 && one<131072);assert!(two>=16384 && two<one);
+        assert_eq!(limit(&config,42*GIB,65536,80,1,Some(16384)),Some(16384));
+        let mut invalid=config.clone();invalid["full_attention_interval"]=serde_json::json!(0);
+        assert!(limit(&invalid,42*GIB,65536,80,1,None).is_none());
+        let mut larger_state=config;larger_state["linear_value_head_dim"]=serde_json::json!(256);
+        assert!(limit(&larger_state,42*GIB,65536,80,1,None).unwrap()<one);
+    }
     fn qwen() -> Value {
         serde_json::json!({"model_type":"qwen3_moe","max_position_embeddings":262144,"num_hidden_layers":48,"num_key_value_heads":4,"head_dim":128})
     }
     #[test]
     fn large_mac_can_fit_an_agent_turn_without_ignoring_parallel_cache_memory() {
         let tokens = limit(&qwen(), 16 * GIB, 65536, 70, 3, None).unwrap();
-        assert!(tokens >= 78443);
+        assert!(tokens >= 65536);
         assert!(tokens < limit(&qwen(), 16 * GIB, 65536, 70, 1, None).unwrap());
         assert!(limit(&qwen(), 16 * GIB, 32768, 70, 3, None).unwrap() < 78443);
+        // The real two-slot 64 GiB / 80% deployment still admits large agent turns.
+        assert!(limit(&qwen(), 16 * GIB, 65536, 80, 2, None).unwrap() >= 78443);
+    }
+    #[test]
+    fn retained_cache_is_disabled_when_the_contribution_budget_is_small() {
+        assert_eq!(prompt_cache_bytes(8192, 50), 0);
+        assert_eq!(prompt_cache_bytes(32768, 80), 0);
+        assert_eq!(prompt_cache_bytes(65536, 30), 0);
+        assert_eq!(prompt_cache_bytes(65536, 80), 4 * GIB);
     }
     #[test]
     fn override_is_clamped_to_model_and_memory_limits() {
         assert_eq!(
-            limit(&qwen(), 16 * GIB, 65536, 70, 3, Some(81920)),
+            limit(&qwen(), 16 * GIB, 65536, 80, 2, Some(81920)),
             Some(81920)
         );
         assert_eq!(

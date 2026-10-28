@@ -1,3 +1,5 @@
+#[path = "dreamshaper-runtime.rs"]
+pub mod dreamshaper;
 #[path = "operation-progress.rs"]
 mod operation_progress;
 // Embedded media helper used by the CLI and local node worker.
@@ -12,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub const PROFILE: &str = include_str!("../workers/media/qwen-image-v1.json");
+pub const EDIT_PROFILE: &str = include_str!("../workers/media/qwen-image-edit-v1.json");
 pub const VIDEO_PROFILE: &str = include_str!("../workers/media/wan-video-v1.json");
 pub const VIDEO_FAST_PROFILE: &str = include_str!("../workers/media/wan-t2v-fast-v1.json");
 pub const I2V_PROFILE: &str = include_str!("../workers/media/wan-i2v-v1.json");
@@ -41,6 +44,7 @@ pub fn prepare(home: &Path) -> Result<(PathBuf, PathBuf), String> {
         memory::POLICY.as_bytes(),
     )?;
     write_if_changed(&profile, PROFILE.as_bytes())?;
+    write_if_changed(&dir.join("qwen-image-edit-v1.json"), EDIT_PROFILE.as_bytes())?;
     write_if_changed(&dir.join("wan-video-v1.json"), VIDEO_PROFILE.as_bytes())?;
     write_if_changed(&dir.join("wan-t2v-fast-v1.json"), VIDEO_FAST_PROFILE.as_bytes())?;
     write_if_changed(&dir.join("wan-i2v-v1.json"), I2V_PROFILE.as_bytes())?;
@@ -87,7 +91,9 @@ pub fn run_profile_with_owner(home: &Path, cap: u8, endpoint: Option<&str>, acti
         })?;
     }
     let (helper, profile) = prepare(home)?;
-    let profile = if extra.iter().any(|arg| arg == "--fast") && !extra.iter().any(|arg| arg == "--image-to-video") {
+    let profile = if extra.iter().any(|arg| arg == "--image-edit") {
+        helper.with_file_name("qwen-image-edit-v1.json")
+    } else if extra.iter().any(|arg| arg == "--fast") && !extra.iter().any(|arg| arg == "--image-to-video") {
         helper.with_file_name("wan-t2v-fast-v1.json")
     } else if extra.iter().any(|arg| arg == "--fast") {
         helper.with_file_name("wan-i2v-fast-v1.json")
@@ -164,6 +170,7 @@ pub fn run_profile_with_owner(home: &Path, cap: u8, endpoint: Option<&str>, acti
 }
 
 pub fn verification(home: &Path, endpoint: Option<&str>, cap: u8) -> Option<Value> {
+    if dreamshaper::selected(home) { return dreamshaper::verification(home, cap); }
     profile_verification(home, endpoint, cap, false)
 }
 
@@ -223,12 +230,13 @@ fn profile_verification_with_memory(
 /// Exact duration/profile certificates eligible for queue advertisement.
 pub fn verified_profiles(home: &Path, endpoint: Option<&str>, cap: u8) -> Vec<String> {
     use sha2::{Digest, Sha256};
+    if dreamshaper::selected(home) { return if dreamshaper::require(home, cap).is_ok() { vec![dreamshaper::ID.into()] } else { vec![] }; }
     let budget = memory::MediaBudget::detect(cap);
     let mut profiles = vec![];
-    for (source, suffix) in [(PROFILE, ""), (VIDEO_PROFILE, "-video"), (VIDEO_FAST_PROFILE, "-video-fast"), (I2V_PROFILE, "-i2v"), (I2V_FAST_PROFILE, "-i2v-fast")] {
+    for (source, suffix) in [(PROFILE, ""), (EDIT_PROFILE, "-edit-fast"), (VIDEO_PROFILE, "-video"), (VIDEO_FAST_PROFILE, "-video-fast"), (I2V_PROFILE, "-i2v"), (I2V_FAST_PROFILE, "-i2v-fast")] {
         let Ok(base) = serde_json::from_str::<Value>(source) else { continue; };
         if budget.require().is_err() || budget.contribution_budget_bytes < base["minimum_budget_bytes"].as_u64() { continue; }
-        let video = !suffix.is_empty();
+        let video = base["operation"] == "text_to_video" || base["operation"] == "image_to_video";
         for seconds in 1..=if video {10} else {1} {
             let mut profile = base.clone();
             let frames = seconds * 16 + 1;

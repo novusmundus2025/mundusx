@@ -116,7 +116,7 @@ enum MediaCommands {
         #[arg(long)] ticket: PathBuf,
         #[arg(long)] server: Option<String>,
     },
-    Plan,
+    Plan { #[arg(long)] input_image: Option<PathBuf> },
     Setup { #[arg(long)] yes: bool },
     Verify { #[arg(long)] input_image: Option<PathBuf> },
     Generate { #[arg(long)] prompt: String, #[arg(long, default_value_t = 42)] seed: u64, #[arg(long)] input_image: Option<PathBuf> },
@@ -185,12 +185,30 @@ enum Commands {
         /// Select Wan image-to-video with PNG input
         #[arg(long, global = true, conflicts_with = "video", group = "media_video_profile")]
         image_to_video: bool,
+        /// Select Qwen Image Edit with a reference PNG
+        #[arg(long, global = true, conflicts_with_all = ["video", "image_to_video"])]
+        image_edit: bool,
+        /// Second PNG reference for a local image edit; the primary input remains the scene
+        #[arg(long, global = true, requires = "image_edit", conflicts_with_all = ["video", "image_to_video"])]
+        reference_image: Option<PathBuf>,
         /// Four-step Lightning video at 832x480 (default for video)
         #[arg(long, global = true, requires = "media_video_profile")]
         fast: bool,
-        /// Use the regular video profile instead of Lightning
-        #[arg(long, global = true, requires = "media_video_profile", conflicts_with = "fast")]
+        /// Use standard sampling instead of Lightning (image edits: 30 steps, no Lightning LoRA)
+        #[arg(long, global = true, conflicts_with = "fast")]
         quality: bool,
+        /// Preserve exact input PNG dimensions without resizing (image editing only)
+        #[arg(long, global = true, requires = "image_edit", conflicts_with_all = ["width", "height"])]
+        preserve_size: bool,
+        /// Image-edit canvas width, 64..2048; requires height (maximum 2 megapixels)
+        #[arg(long, global = true, requires_all = ["image_edit", "height"], value_parser = clap::value_parser!(u32).range(64..=2048))]
+        width: Option<u32>,
+        /// Image-edit canvas height, 64..2048; requires width
+        #[arg(long, global = true, requires_all = ["image_edit", "width"], value_parser = clap::value_parser!(u32).range(64..=2048))]
+        height: Option<u32>,
+        /// Standard image-edit sampling steps, 20..50; requires quality mode
+        #[arg(long, global = true, requires_all = ["image_edit", "quality"], value_parser = clap::value_parser!(u32).range(20..=50))]
+        steps: Option<u32>,
         /// Video duration: any integer from 1 to 10 seconds
         #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=10))]
         seconds: u8,
@@ -7304,7 +7322,7 @@ fn main() {
             setup_media,
             yes,
         ),
-        Commands::Media { command, video, image_to_video, fast, quality, seconds } => {
+        Commands::Media { command, video, image_to_video, image_edit, reference_image, fast, quality, preserve_size, width, height, steps, seconds } => {
             if !(1..=10).contains(&seconds) { eprintln!("Video seconds must be an integer from 1 to 10"); std::process::exit(2); }
             if let MediaCommands::Serve { server, once } = command {
                 if let Err(error) = media_worker::serve(server, once) { eprintln!("{error}"); std::process::exit(1); }
@@ -7318,7 +7336,7 @@ fn main() {
                     "--ticket".into(), ticket.to_string_lossy().into_owned(),
                     "--server".into(), server.unwrap_or_else(|| config.control_plane_url.clone()),
                 ]),
-                MediaCommands::Plan => ("plan", vec![]),
+                MediaCommands::Plan { input_image } => ("plan", input_image.map(|p| vec!["--input-image".into(), p.to_string_lossy().into_owned()]).unwrap_or_default()),
                 MediaCommands::Setup { yes } => ("setup", if yes { vec!["--yes".into()] } else { vec![] }),
                 MediaCommands::Verify { input_image } => ("verify", input_image.map(|p| vec!["--input-image".into(), p.to_string_lossy().into_owned()]).unwrap_or_default()),
                 MediaCommands::Status => ("status", vec![]),
@@ -7329,6 +7347,13 @@ fn main() {
                     ("generate", args)
                 },
             };
+            if let Some(path) = reference_image { extra.extend(["--reference-image".into(), path.to_string_lossy().into_owned()]); }
+            if image_edit { extra.push("--image-edit".into()); }
+            if image_edit && quality { extra.push("--quality".into()); }
+            if preserve_size { extra.push("--preserve-size".into()); }
+            if let Some(value) = width { extra.extend(["--width".into(), value.to_string()]); }
+            if let Some(value) = height { extra.extend(["--height".into(), value.to_string()]); }
+            if let Some(value) = steps { extra.extend(["--steps".into(), value.to_string()]); }
             if image_to_video { extra.push("--image-to-video".into()); }
             if fast_video_selected(video, image_to_video, fast, quality) { extra.push("--fast".into()); }
             extra.extend(["--seconds".into(), seconds.to_string()]);
@@ -10332,5 +10357,40 @@ mod tests {
         let hint = super::onboarding_completion_hint(&config, true, Some("Qwen"), true);
 
         assert_eq!(hint, "run `opengpu start` to bring the node online");
+    }
+}
+
+#[cfg(test)]
+mod edit_flag_tests {
+    use super::*;
+    use clap::Parser;
+    #[test]
+    fn image_edit_accepts_quality_and_original_size_flags() {
+        let cli=Cli::try_parse_from(["opengpu", "media", "--image-edit", "--quality", "--preserve-size", "--steps", "40", "generate", "--input-image", "portrait.png", "--prompt", "change background"]).unwrap();
+        assert!(matches!(cli.command, Commands::Media { image_edit:true, quality:true, preserve_size:true, steps:Some(40), .. }));
+        assert!(Cli::try_parse_from(["opengpu", "media", "--image-edit", "--quality", "--width", "1024", "--height", "1536", "plan"]).is_ok());
+        assert!(Cli::try_parse_from(["opengpu", "media", "--image-edit", "--preserve-size", "plan", "--input-image", "portrait.png"]).is_ok());
+        for args in [
+            vec!["opengpu","media","--preserve-size","plan"],
+            vec!["opengpu","media","--image-edit","--width","1024","plan"],
+            vec!["opengpu","media","--image-edit","--steps","40","plan"],
+            vec!["opengpu","media","--image-edit","--preserve-size","--width","1024","--height","1536","plan"],
+        ] { assert!(Cli::try_parse_from(args).is_err()); }
+    }
+}
+
+#[cfg(test)]
+mod reference_image_flag_tests {
+    use super::*;
+    use clap::Parser;
+    #[test]
+    fn second_reference_is_limited_to_image_edit() {
+        let cli=Cli::try_parse_from(["opengpu","media","--image-edit","--quality","--reference-image","reference.png","generate","--input-image","scene.png","--prompt","Use the reference color palette"]).unwrap();
+        assert!(matches!(cli.command,Commands::Media{reference_image:Some(_),image_edit:true,..}));
+        for args in [
+            vec!["opengpu","media","--reference-image","reference.png","plan"],
+            vec!["opengpu","media","--image-to-video","--reference-image","reference.png","plan"],
+            vec!["opengpu","media","--image-edit","--reference-image","one.png","--reference-image","two.png","plan"],
+        ] {assert!(Cli::try_parse_from(args.clone()).is_err(), "accepted {args:?}");}
     }
 }

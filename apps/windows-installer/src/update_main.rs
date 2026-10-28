@@ -1,6 +1,29 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-const UPDATE_SCRIPT: &str = include_str!("../../../update-windows-0.2.08.ps1");
+const UPDATE_SCRIPT: &str = include_str!("../../../install.ps1");
+
+fn update_arguments(script: &std::path::Path) -> Vec<String> {
+    let mut arguments = vec![
+        "-NoProfile".into(),
+        "-ExecutionPolicy".into(),
+        "Bypass".into(),
+        "-File".into(),
+        script.display().to_string(),
+        "-SkipModelRuntime".into(),
+        "-SkipContributorSetup".into(),
+        "-SkipChatConnect".into(),
+        "-AgentMode".into(),
+        "none".into(),
+        "-SetupMode".into(),
+        "developer".into(),
+    ];
+    if let Ok(base) = std::env::var("MUNDUSX_RELEASE_BASE_URL") {
+        if !base.trim().is_empty() {
+            arguments.extend(["-ReleaseBaseUrl".into(), base.trim().into()]);
+        }
+    }
+    arguments
+}
 
 fn run_update() -> Result<(), String> {
     let directory = std::env::temp_dir().join(format!("mundusx-update-{}", std::process::id()));
@@ -10,19 +33,13 @@ fn run_update() -> Result<(), String> {
     std::fs::write(&script, UPDATE_SCRIPT)
         .map_err(|error| format!("Could not prepare the update: {error}"))?;
     let result = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            &script.display().to_string(),
-        ])
+        .args(update_arguments(&script))
         .status()
         .map_err(|error| format!("Could not start the update: {error}"))?;
     let _ = std::fs::remove_dir_all(&directory);
     result.success().then_some(()).ok_or_else(|| {
         format!(
-            "MundusX update failed with exit code {}. See .opengpu\\logs\\update-0.2.08.log for details.",
+            "MundusX update failed with exit code {}. See .opengpu\\logs\\installer.log for details.",
             result.code().unwrap_or(-1)
         )
     })
@@ -41,7 +58,12 @@ fn message(title: &str, body: &str, error: bool) {
             ptr::null_mut(),
             body.as_ptr(),
             title.as_ptr(),
-            MB_OK | if error { MB_ICONERROR } else { MB_ICONINFORMATION },
+            MB_OK
+                | if error {
+                    MB_ICONERROR
+                } else {
+                    MB_ICONINFORMATION
+                },
         );
     }
 }
@@ -51,7 +73,7 @@ fn main() {
     match run_update() {
         Ok(()) => message(
             "MundusX updated",
-            "MundusX 0.2.08 is installed. Return to Chat and refresh the page.",
+            "MundusX was updated from the verified release feed. Return to Chat and refresh the page.",
             false,
         ),
         Err(error) => message("MundusX update failed", &error, true),
@@ -68,12 +90,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embeds_versioned_verified_update() {
-        assert!(UPDATE_SCRIPT.contains("cli-windows-v0.2.08"));
-        assert!(UPDATE_SCRIPT.contains("4a822dfdd4c0df90dd6d55812f85d61973e081538fe79999d6189543c63aad2f"));
-        assert!(UPDATE_SCRIPT.contains("4e1d83d87777d0d6e6e1f4956ad932b0354eefbebea13e24ef59bdad328bce40"));
-        assert!(UPDATE_SCRIPT.contains("opengpu-node-agent-x86_64-pc-windows-msvc.exe"));
-        assert!(UPDATE_SCRIPT.contains("mundusx-agent-server-x86_64-pc-windows-msvc.exe"));
-        assert!(UPDATE_SCRIPT.contains("mundusx-tray.exe"));
+    fn uses_verified_current_feed_without_legacy_downgrade() {
+        assert!(UPDATE_SCRIPT.contains("releases/download/opengpu-prod"));
+        assert!(UPDATE_SCRIPT.contains("strict installer verification failed"));
+        assert!(UPDATE_SCRIPT.contains("Stop-InstalledOpenGpuProcesses"));
+        assert!(!UPDATE_SCRIPT.contains("cli-windows-v0.2.08"));
+        let args = update_arguments(std::path::Path::new("C:\\Temp\\install.ps1"));
+        for flag in [
+            "-SkipModelRuntime",
+            "-SkipContributorSetup",
+            "-SkipChatConnect",
+        ] {
+            assert!(args.iter().any(|arg| arg == flag));
+        }
+        assert!(!args.iter().any(|arg| arg == "-AllowUnsignedLocalPreview"));
     }
 }

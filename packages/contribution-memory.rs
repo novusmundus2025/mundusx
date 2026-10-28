@@ -56,6 +56,7 @@ impl MediaBudget {
         let profile = match operation {
             Operation::Llm => return 0,
             Operation::TextToImage => Some(super::PROFILE),
+            Operation::ImageEdit => Some(super::EDIT_PROFILE),
             Operation::TextToVideo => Some(super::VIDEO_PROFILE),
             _ => None,
         };

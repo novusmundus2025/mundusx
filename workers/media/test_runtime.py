@@ -605,3 +605,17 @@ class UnifiedMemoryTests(unittest.TestCase):
         torch.cuda.get_device_name = lambda device=None:'NVIDIA RTX 4090' if device==1 else 'NVIDIA GB10'
         self.bootstrap.install_gb10_memory_accounting(torch,system)
         self.assertEqual(torch.cuda.mem_get_info(1), (10,128))
+
+class ImageEditingTests(unittest.TestCase):
+    def test_edit_uses_reference_conditioning_and_independent_certificate(self):
+        edit=json.loads(Path(__file__).with_name('qwen-image-edit-v1.json').read_text())
+        graph=media.workflow(edit,'Change the background to blue',42,'edit-test','owned.png')
+        self.assertEqual(graph['11']['inputs']['image'],'owned.png')
+        self.assertEqual(graph['4']['class_type'],'TextEncodeQwenImageEditPlus')
+        self.assertEqual(graph['8']['inputs']['steps'],4)
+        self.assertEqual(graph['6']['class_type'],'VAEEncode')
+        self.assertEqual(media.profile_record(Path('/tmp'),edit,'verified').name,'verified-edit-fast.json')
+        self.assertNotEqual(media.profile_hash(edit),media.profile_hash(PROFILE))
+    def test_edit_requires_reference_before_contacting_runtime(self):
+        edit=json.loads(Path(__file__).with_name('qwen-image-edit-v1.json').read_text())
+        with self.assertRaises(media.MediaError):media.generate(None,edit,'edit',42,Path('unused.png'))

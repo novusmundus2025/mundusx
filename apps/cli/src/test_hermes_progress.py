@@ -3,14 +3,18 @@ import tempfile
 import unittest
 from hermes_bridge import (
     AnswerStream,
+    configure_terminal_lifecycle,
     CHECKPOINT_EVENT_LIMIT,
     EXECUTION_EFFICIENCY_GUIDANCE,
+    FRONTEND_EXECUTION_GUIDANCE,
     RECOVERY_GUIDANCE,
     SKILL_DISCOVERY_GUIDANCE,
     FRONTEND_MAX_ITERATIONS,
     COMPREHENSIVE_MAX_ITERATIONS,
     project_iteration_budget,
     project_user_prompt,
+    supplied_acceptance_task,
+    project_toolsets,
     PROJECT_COMPACTION_TOKENS,
     RecoveryCheckpoint,
     STANDARD_MAX_ITERATIONS,
@@ -24,6 +28,30 @@ from hermes_bridge import (
 
 
 class ProgressTests(unittest.TestCase):
+    def test_supplied_acceptance_skips_discovery_but_frontend_workflows_remain_available(self):
+        prompt="Build the backend API; preserve acceptance.cjs and run npm test"
+        self.assertTrue(supplied_acceptance_task(prompt))
+        self.assertEqual(project_toolsets(prompt),["file","terminal","todo"])
+        self.assertNotIn(SKILL_DISCOVERY_GUIDANCE,project_user_prompt(prompt))
+        self.assertIn("supplied acceptance tests",project_user_prompt(prompt))
+        self.assertNotIn(FRONTEND_EXECUTION_GUIDANCE,project_user_prompt(prompt))
+        self.assertIn(FRONTEND_EXECUTION_GUIDANCE,project_user_prompt("MUNDUSX_FRONTEND_ACCEPTANCE_V1 Build a frontend"))
+        self.assertFalse(supplied_acceptance_task("Build a project without a supplied contract"))
+        self.assertFalse(supplied_acceptance_task("MUNDUSX_FRONTEND_ACCEPTANCE_V1 "+prompt))
+        self.assertFalse(supplied_acceptance_task("Use the debugging skill with acceptance.cjs"))
+        self.assertIn("skills",project_toolsets("Use the debugging skill with acceptance.cjs"))
+
+    def test_terminal_deadlines_are_bounded_before_the_parent_watchdog(self):
+        for configured in ({}, {"TERMINAL_TIMEOUT":"900","TERMINAL_MAX_FOREGROUND_TIMEOUT":"600"}, {"TERMINAL_TIMEOUT":"bad","TERMINAL_MAX_FOREGROUND_TIMEOUT":"0"}):
+            configure_terminal_lifecycle(configured)
+            self.assertGreater(int(configured["TERMINAL_TIMEOUT"]), 0)
+            self.assertLessEqual(int(configured["TERMINAL_TIMEOUT"]), 120)
+            self.assertLessEqual(int(configured["TERMINAL_MAX_FOREGROUND_TIMEOUT"]), 120)
+        shorter={"TERMINAL_TIMEOUT":"15","TERMINAL_MAX_FOREGROUND_TIMEOUT":"45"}
+        configure_terminal_lifecycle(shorter)
+        self.assertEqual(shorter["TERMINAL_TIMEOUT"], "15")
+        self.assertEqual(shorter["TERMINAL_MAX_FOREGROUND_TIMEOUT"], "45")
+
     def test_recovery_checkpoint_is_bounded_atomic_and_recovery_only(self):
         with tempfile.TemporaryDirectory() as root:
             checkpoint = RecoveryCheckpoint(root, "task/unsafe")
@@ -81,6 +109,18 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(Agent.context_compressor.threshold_tokens_cap, PROJECT_COMPACTION_TOKENS)
         self.assertEqual(Agent.context_compressor.threshold_tokens, PROJECT_COMPACTION_TOKENS)
         self.assertFalse(configure_project_compaction(object()))
+
+    def test_project_compaction_respects_declared_context_and_preserves_headroom(self):
+        for window, threshold, expected in [(8192,6000,4096),(65536,48000,32768),(131072,100000,65536),(262144,200000,65536)]:
+            class Compressor:
+                context_length=window
+                threshold_tokens=threshold
+                threshold_tokens_cap=None
+            class Agent:
+                context_compressor=Compressor()
+            self.assertTrue(configure_project_compaction(Agent()))
+            self.assertEqual(Agent.context_compressor.threshold_tokens_cap,expected)
+            self.assertLessEqual(Agent.context_compressor.threshold_tokens,window//2)
 
     def test_skill_progress_requires_actual_success(self):
         self.assertEqual(loaded_skill("skill_view", '{"success":true,"name":"debugging"}'), "debugging")
