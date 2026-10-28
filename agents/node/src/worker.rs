@@ -2853,20 +2853,45 @@ fn run_native_openai_tool_turn(
     model: &str,
     request: &WorkerLaunchRequest,
 ) -> Result<String, String> {
+    let host_managed = std::env::var("OPENGPU_NATIVE_WORKFLOW").as_deref() != Ok("legacy");
+    run_native_openai_tool_turn_with_mode(url, model, request, host_managed)
+}
+
+const HOST_MANAGED_TOOLS: &str = "__opengpu_host_managed_tools";
+
+fn host_managed_tools(payload: &serde_json::Value) -> bool {
+    payload[HOST_MANAGED_TOOLS] == true
+}
+
+fn legacy_file_turn(payload: &serde_json::Value) -> bool {
+    !host_managed_tools(payload) && native_tool_workflow::is_file_turn(payload)
+}
+
+fn native_runtime_payload(payload: &serde_json::Value) -> serde_json::Value {
+    let mut body = if host_managed_tools(payload) { payload.clone() }
+        else { native_line_edit::prepare(&native_http_bridge::prepare(payload)) };
+    if let Some(object) = body.as_object_mut() { object.remove(HOST_MANAGED_TOOLS); }
+    body
+}
+
+fn run_native_openai_tool_turn_with_mode(
+    url: &str, model: &str, request: &WorkerLaunchRequest, host_managed: bool,
+) -> Result<String, String> {
     let raw = request
         .prompt
         .strip_prefix(OPENAI_TOOL_TURN_PREFIX)
         .ok_or_else(|| "native OpenAI tool turn prefix is missing".to_string())?;
     let mut payload: serde_json::Value = serde_json::from_str(raw)
         .map_err(|error| format!("native OpenAI tool turn is invalid JSON: {error}"))?;
-    native_line_edit::normalize_read_results(&mut payload);
+    payload[HOST_MANAGED_TOOLS] = serde_json::json!(host_managed);
+    if !host_managed { native_line_edit::normalize_read_results(&mut payload); }
     payload["model"] = serde_json::Value::String(model.to_string());
     if configured_mlx_server_url().as_deref() == Some(url) {
         crate::model_profile::apply_mlx(model, &mut payload);
     } else {
         crate::model_profile::apply(model, &mut payload);
     }
-    if native_task_progress::is_compaction(&payload) && payload["tool_choice"].as_object().is_none() {
+    if !host_managed && native_task_progress::is_compaction(&payload) && payload["tool_choice"].as_object().is_none() {
         payload["tools"]=serde_json::json!([]);payload["tool_choice"]=serde_json::json!("none");
         payload["chat_template_kwargs"]["opengpu_require_tool_call"]=serde_json::json!(false);
         payload["chat_template_kwargs"]["opengpu_native_tool_guard"]=serde_json::json!(false);
@@ -2874,11 +2899,11 @@ fn run_native_openai_tool_turn(
     let streaming = live_delta_enabled();
     payload["stream"] = serde_json::Value::Bool(streaming);
     if streaming { payload["stream_options"] = serde_json::json!({"include_usage":true}); }
-    if let Some(message)=native_tool_workflow::literal_inspection_output(&payload) {
+    if let Some(message)=(!host_managed).then(||native_tool_workflow::literal_inspection_output(&payload)).flatten() {
         if streaming {emit_stream_delta(&serde_json::json!({"content":message["content"]}).to_string());}
         return normalize_native_openai_tool_response(&serde_json::json!({"choices":[{"message":message,"finish_reason":"stop"}]}));
     }
-    if let Some(automatic)=native_tool_workflow::literal_inspection(&payload).or_else(||native_tool_workflow::silent_validation_followup(&payload)).or_else(||native_tool_workflow::validator_after_edit(&payload)).or_else(||native_tool_workflow::requested_validator_after_edit(&payload)).or_else(||native_line_edit::preflight(&payload)) {
+    if let Some(automatic)=(!host_managed).then(||native_tool_workflow::literal_inspection(&payload).or_else(||native_tool_workflow::silent_validation_followup(&payload)).or_else(||native_tool_workflow::validator_after_edit(&payload)).or_else(||native_tool_workflow::requested_validator_after_edit(&payload)).or_else(||native_line_edit::preflight(&payload))).flatten() {
         if let Ok((message,_))=native_workflow_message(&payload,&automatic) {
             if streaming {
                 let mut calls=message["tool_calls"].clone();
@@ -2904,7 +2929,7 @@ fn run_native_openai_tool_turn(
             .as_secs()
             .max(30),
         ))
-        .send_json(native_line_edit::prepare(&native_http_bridge::prepare(payload)))
+        .send_json(native_runtime_payload(payload))
         .map_err(|error| format!("native OpenAI tool completion failed: {error}"))?;
         if streaming {
             return parse_native_openai_stream_with_context(
@@ -2949,13 +2974,33 @@ fn native_host_argument_limit(payload:Option<&serde_json::Value>,message:&serde_
     // Generated calls retain their original limit. After the adapter has
     // grounded an edit, serialized host arguments contain BOTH observed old
     // text and new text, plus JSON escaping. That is not model generation.
-    if changed&&payload.is_some_and(native_tool_workflow::is_file_turn)
+    if changed&&payload.is_some_and(legacy_file_turn)
         &&message["tool_calls"].as_array().is_some_and(|calls|!calls.is_empty()&&calls.iter().all(|c|c["function"]["name"]=="replace_string_in_file")) {
         65536
     } else if artifact {32768}else{16384}
 }
 
 fn native_workflow_message(payload:&serde_json::Value,message:&serde_json::Value)->Result<(serde_json::Value,bool),String> {
+    if host_managed_tools(payload) {
+        // The IDE owns its filesystem, tool execution, approvals and recovery.
+        // Validate the registered wire contract without inventing host actions.
+        let metadata = native_tool_workflow::terminal_metadata(payload, message);
+        validate_native_tool_schema(payload, &metadata)?;
+        let calls = metadata["tool_calls"].as_array();
+        if let Some(name) = payload.pointer("/tool_choice/function/name").and_then(|v|v.as_str()) {
+            if calls.is_none_or(|calls| calls.is_empty() || calls.iter().any(|c|c["function"]["name"].as_str()!=Some(name))) {
+                return Err(format!("native tool schema precondition failed: expected the explicitly selected function {name}"));
+            }
+        }
+        if payload["tool_choice"]=="required" && calls.is_none_or(|calls|calls.is_empty()) {
+            return Err("native tool schema precondition failed: required tool choice needs a registered tool call".into());
+        }
+        if payload["tool_choice"]=="none" && calls.is_some_and(|calls|!calls.is_empty()) {
+            return Err("native tool schema precondition failed: tool_choice none forbids tool calls".into());
+        }
+        let changed = metadata != *message;
+        return Ok((metadata, changed));
+    }
     (|| {
         let compiled=native_http_bridge::compile(payload,message)?;
         let compiled=match native_line_edit::compile(payload,&compiled) {
@@ -2973,6 +3018,85 @@ fn native_workflow_message(payload:&serde_json::Value,message:&serde_json::Value
         }
         error
     })
+}
+
+#[cfg(test)]
+mod host_managed_tool_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn payload() -> Value {
+        json!({"__opengpu_host_managed_tools":true,"messages":[
+            {"role":"user","content":"Create a converter web app"},
+            {"role":"assistant","tool_calls":[{"id":"read1","type":"function","function":{"name":"read_file","arguments":"{\"filePath\":\"D:/projects/converter/index.html\"}"}}]},
+            {"role":"tool","tool_call_id":"read1","content":"<html>Existing source</html>"}
+        ],"tools":[
+            {"type":"function","function":{"name":"read_file","parameters":{"type":"object","required":["filePath"],"properties":{"filePath":{"type":"string"}}}}},
+            {"type":"function","function":{"name":"list_dir","parameters":{"type":"object","properties":{}}}},
+            {"type":"function","function":{"name":"replace_string_in_file","parameters":{"type":"object","properties":{}}}},
+            {"type":"function","function":{"name":"create_file","parameters":{"type":"object","required":["filePath","content"],"properties":{"filePath":{"type":"string"},"content":{"type":"string"}}}}},
+            {"type":"function","function":{"name":"insert_edit_into_file","parameters":{"type":"object","properties":{}}}}
+        ]})
+    }
+
+    fn create() -> Value {
+        json!({"role":"assistant","content":"Creating the converter.","tool_calls":[{"id":"create1","type":"function","function":{"name":"create_file","arguments":json!({"filePath":"D:/projects/converter/index.html","content":"<html>New source</html>"}).to_string()}}]})
+    }
+
+    #[test]
+    fn ide_controls_existing_file_errors_and_recovery() {
+        let p=payload();let m=create();
+        assert!(validate_native_edit_preconditions(&p,&m).unwrap_err().contains("do not recreate"));
+        assert_eq!(native_workflow_message(&p,&m).unwrap(),(m,false));
+        let mut edit=create();edit["tool_calls"][0]["function"]["name"]=json!("insert_edit_into_file");
+        assert_eq!(native_workflow_message(&p,&edit).unwrap(),(edit,false));
+    }
+
+    #[test]
+    fn native_wire_preserves_history_schemas_and_tools_without_hidden_adapter() {
+        let p=payload();let body=native_runtime_payload(&p);
+        assert_eq!(body["messages"],p["messages"]);
+        assert_eq!(body["tools"],p["tools"]);
+        assert!(body.get(HOST_MANAGED_TOOLS).is_none());
+        let mut attempts=0;
+        let result=run_native_tool_attempts(p.clone(),|body,_,retry| {
+            attempts+=1;assert!(!retry);assert_eq!(body,&p);
+            Err("native edit precondition failed: host validation".into())
+        });
+        assert!(result.is_err());assert_eq!(attempts,1);
+    }
+
+    #[test]
+    fn host_mode_still_rejects_invalid_schema_and_wrong_tool_choice() {
+        let mut p=payload();let mut m=create();
+        m["tool_calls"][0]["function"]["arguments"]=json!("{}");
+        assert!(native_workflow_message(&p,&m).unwrap_err().contains("filePath"));
+        p["tool_choice"]=json!("none");assert!(native_workflow_message(&p,&create()).is_err());
+        p["tool_choice"]=json!("required");assert!(native_workflow_message(&p,&json!({"role":"assistant","content":"Done"})).is_err());
+    }
+
+    #[test]
+    fn terminal_display_labels_do_not_change_execution_inputs() {
+        let mut p=terminal_metadata_fixture();p[HOST_MANAGED_TOOLS]=json!(true);
+        let m=terminal_message(json!({"command":"npm test","mode":"sync"}));
+        let (out,changed)=native_workflow_message(&p,&m).unwrap();assert!(changed);
+        let args:Value=serde_json::from_str(out["tool_calls"][0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["command"],"npm test");assert_eq!(args["mode"],"sync");
+        assert!(args["goal"].is_string());assert!(args["explanation"].is_string());
+    }
+
+    #[test]
+    fn schema_repair_is_bounded_and_does_not_inject_task_choreography() {
+        let p=payload();let mut count=0;
+        let out=run_native_tool_attempts(p.clone(),|body,_,retry| {
+            count+=1;
+            if !retry {assert_eq!(body,&p);return Err("native tool schema precondition failed: read_file.filePath is required".into());}
+            assert_eq!(body["messages"].as_array().unwrap().len(),p["messages"].as_array().unwrap().len()+1);
+            assert_eq!(body["messages"].as_array().unwrap().last().unwrap()["name"],"opengpu_schema_repair");
+            Ok("valid native output".into())
+        }).unwrap();
+        assert_eq!(count,2);assert_eq!(out,"valid native output");
+    }
 }
 
 fn native_workflow_message_checked(payload:&serde_json::Value,message:&serde_json::Value)->Result<(serde_json::Value,bool),String> {
@@ -3189,7 +3313,7 @@ fn observed_validator_streams_a_registered_recheck_without_model_inference() {
     ]);
     let request:WorkerLaunchRequest=serde_json::from_value(serde_json::json!({"job_id":"test","node_id":"test","backend":"m","stream":true,"prompt":format!("{OPENAI_TOOL_TURN_PREFIX}{p}")})).unwrap();
     let (tx,rx)=mpsc::channel();
-    let output=with_stream_delta_sender(Some(tx),||run_native_openai_tool_turn("http://127.0.0.1:1","mock-coder",&request)).unwrap();
+    let output=with_stream_delta_sender(Some(tx),||run_native_openai_tool_turn_with_mode("http://127.0.0.1:1","mock-coder",&request,false)).unwrap();
     let mut stream=native_stream::NativeStream::default();
     for delta in rx.try_iter() {stream.push(&serde_json::from_str::<serde_json::Value>(&delta).unwrap()).unwrap();}
     let message=stream.message();
@@ -3266,6 +3390,19 @@ fn run_native_tool_attempts(
     mut payload: serde_json::Value,
     mut attempt: impl FnMut(&serde_json::Value, &mut String, bool) -> Result<String, String>,
 ) -> Result<String, String> {
+    if host_managed_tools(&payload) {
+        let mut output = String::new();
+        return match attempt(&payload, &mut output, false) {
+            Err(error) if error.starts_with("native tool schema precondition failed:")
+                || error.starts_with("native tool arguments are incomplete:") => {
+                let messages = payload["messages"].as_array_mut().ok_or_else(||error.clone())?;
+                messages.push(serde_json::json!({"role":"system","name":"opengpu_schema_repair",
+                    "content":format!("The previous model output was rejected before execution: {error}. Return one corrected function call with valid JSON arguments matching the registered schema. Include every required property. Preserve the user's operation and data. No tool was executed by this failed attempt; do not claim success.")}));
+                attempt(&payload, &mut output, true)
+            }
+            result => result,
+        };
+    }
     if let Some(progress)=native_task_progress::guidance(&payload) {
         if let Some(messages)=payload["messages"].as_array_mut() {messages.push(progress);}
     }
@@ -3534,7 +3671,7 @@ fn parse_native_openai_stream_with_context<R: BufRead>(
             }
             // Tool arguments remain private until the entire batch is valid.
             // Prose still streams immediately; recovery must not duplicate it.
-            if !retry && !payload.is_some_and(native_tool_workflow::is_file_turn) {
+            if !retry && !payload.is_some_and(legacy_file_turn) {
                 if let Some(content) = delta["content"].as_str().filter(|s| !s.is_empty()) {
                     output.push_str(content);
                     pending_content.push_str(content);
@@ -3556,7 +3693,7 @@ fn parse_native_openai_stream_with_context<R: BufRead>(
     if !done || reason.is_none() {
         return Err("native stream ended before terminal event".into());
     }
-    if !pending_content.is_empty() && !payload.is_some_and(native_tool_workflow::is_file_turn) {
+    if !pending_content.is_empty() && !payload.is_some_and(legacy_file_turn) {
         emit_stream_delta(&serde_json::json!({"content":pending_content}).to_string());
     }
     let mut message = assembled.message();
@@ -3582,7 +3719,7 @@ fn parse_native_openai_stream_with_context<R: BufRead>(
     }
     let argument_limit=native_host_argument_limit(payload,&message,workflow_changed);
     validate_native_tool_message_with_limit(&message,reason.as_deref(),argument_limit)?;
-    if payload.is_some_and(native_tool_workflow::is_file_turn) {
+    if payload.is_some_and(legacy_file_turn) {
         if let Some(content)=message["content"].as_str().filter(|s|!s.is_empty()) {
             emit_stream_delta(&serde_json::json!({"content":content}).to_string());
         }
@@ -7653,7 +7790,7 @@ mod native_delta_tests {
         };
         let (tx, rx) = mpsc::channel();
         let response = with_stream_delta_sender(Some(tx), || {
-            run_native_openai_tool_turn(&url, "mock-coder", &request)
+            run_native_openai_tool_turn_with_mode(&url, "mock-coder", &request, false)
         })
         .unwrap();
         backend.join().unwrap();

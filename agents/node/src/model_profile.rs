@@ -64,7 +64,8 @@ pub fn apply(model: &str, payload: &mut Value) {
 /// MLX otherwise penalizes only the last 20 tokens, missing longer source loops.
 /// Keep this runtime-specific option away from vLLM/llama OpenAI endpoints.
 pub fn apply_mlx(model: &str, payload: &mut Value) {
-    if is_qwen3_coder(model) { merge_leading_system_messages(payload); }
+    let host_managed = payload["__opengpu_host_managed_tools"] == true;
+    if is_qwen3_coder(model) && !host_managed { merge_leading_system_messages(payload); }
     let native_files = is_qwen3_coder(model) && payload["parallel_tool_calls"] != true
         && payload["tools"].as_array().is_some_and(|tools|
             ["read_file", "list_dir", "replace_string_in_file"].iter().all(|name|
@@ -72,7 +73,8 @@ pub fn apply_mlx(model: &str, payload: &mut Value) {
     if is_qwen3_coder(model) && payload.get("repetition_penalty").is_none_or(Value::is_null) {
         // Exact source edits must be able to copy observed identifiers and literals.
         // The native runtime guard independently stops actual argument loops.
-        payload["repetition_penalty"] = json!(if native_files || is_qwen3_coder_next(model) {1.0} else {1.1});
+        payload["repetition_penalty"] = json!(if host_managed {repetition_penalty(model)}
+            else if native_files || is_qwen3_coder_next(model) {1.0} else {1.1});
     }
     apply(model, payload);
     if native_files {
@@ -80,7 +82,9 @@ pub fn apply_mlx(model: &str, payload: &mut Value) {
         // Serial file operations must remain small enough to finish or fail
         // promptly. A 4k ceiling also permits legitimate exact-match route
         // extraction patches, whose old text counts against the output budget.
-        payload["max_tokens"]=json!(payload["max_tokens"].as_u64().unwrap_or(4096).min(4096));
+        if !host_managed {
+            payload["max_tokens"]=json!(payload["max_tokens"].as_u64().unwrap_or(4096).min(4096));
+        }
         if payload["chat_template_kwargs"].is_null() {payload["chat_template_kwargs"]=json!({});}
         payload["chat_template_kwargs"]["opengpu_native_tool_guard"]=json!(true);
     }
@@ -116,6 +120,16 @@ fn merge_leading_system_messages(payload: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_managed_turn_preserves_client_budget_and_system_messages() {
+        let messages=json!([{"role":"system","content":"IDE rules"},{"role":"system","content":"Project rules"},{"role":"user","content":"Build the app"}]);
+        let mut p=json!({"__opengpu_host_managed_tools":true,"max_tokens":16384,"messages":messages,
+            "tools":[{"function":{"name":"read_file"}},{"function":{"name":"list_dir"}},{"function":{"name":"replace_string_in_file"}}]});
+        apply_mlx("Qwen3-Coder-30B-A3B-Instruct-4bit",&mut p);
+        assert_eq!(p["max_tokens"],16384);assert_eq!(p["messages"],messages);
+        assert_eq!(p["repetition_penalty"],1.05);
+        assert_eq!(p["chat_template_kwargs"]["opengpu_native_tool_guard"],true);
+    }
     #[test]
     fn next_uses_its_own_defaults_and_preserves_actual_client_sampling() {
         let model="mlx-community/Qwen3-Coder-Next-4bit";
