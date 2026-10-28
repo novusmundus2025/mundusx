@@ -19,3 +19,5 @@ the previous contributor workflow adapter. It is not the default API behavior.
 
 Model architecture support, valid streaming and contributor isolation remain
 required. An inference-only contributor never gains access to the caller's files.
+
+When an IDE omits `max_tokens`, the worker forwards the job output budget to MLX (4,096 only if no job budget exists). Explicit caller limits are preserved. This avoids MLX’s 512-token default truncating ordinary file writes.
