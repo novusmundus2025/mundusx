@@ -2858,6 +2858,7 @@ fn run_native_openai_tool_turn(
 }
 
 const HOST_MANAGED_TOOLS: &str = "__opengpu_host_managed_tools";
+const NATIVE_OUTPUT_TRUNCATED: &str = "native generation truncated: output token budget exhausted (finish_reason=length); no tool calls were released; increase the output budget or request a smaller complete change";
 
 fn inherit_native_output_budget(payload: &mut serde_json::Value, job_budget: Option<u32>) {
     if payload.get("max_tokens").is_none_or(serde_json::Value::is_null) {
@@ -2961,8 +2962,11 @@ fn run_native_openai_tool_turn_with_mode(
         let mut value = response.into_json::<serde_json::Value>().map_err(|error| {
             format!("native OpenAI tool completion returned invalid JSON: {error}")
         })?;
-        if native_line_edit::source_response_required(payload)&&value.pointer("/choices/0/finish_reason").and_then(serde_json::Value::as_str)==Some("length") {return Err("native tool arguments are incomplete: replacement source exceeded generation limit; return a shorter complete implementation".into());}
         record_runtime_usage(&value["usage"]);
+        if host_managed_tools(payload) && value.pointer("/choices/0/finish_reason").and_then(serde_json::Value::as_str)==Some("length") {
+            return Err(NATIVE_OUTPUT_TRUNCATED.into());
+        }
+        if native_line_edit::source_response_required(payload)&&value.pointer("/choices/0/finish_reason").and_then(serde_json::Value::as_str)==Some("length") {return Err("native tool arguments are incomplete: replacement source exceeded generation limit; return a shorter complete implementation".into());}
         if let Some(error)=value.pointer("/choices/0/opengpu_tool_error").and_then(|v|v.as_str()) {
             return Err(format!("native tool arguments are incomplete: runtime rejected {error}"));
         }
@@ -3043,6 +3047,23 @@ fn native_workflow_message(payload:&serde_json::Value,message:&serde_json::Value
 mod host_managed_tool_tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn truncation_takes_precedence_over_markup_error_without_retry_or_tool_release() {
+        let p=payload();
+        let wire=format!("data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"cut","type":"function","function":{"name":"create_file","arguments":"{\"content\":\"unfinished"}}]}}]}),
+            json!({"choices":[{"delta":{},"finish_reason":"length","opengpu_tool_error":"incomplete or ambiguous tool markup"}]}),
+            json!({"choices":[],"usage":{"completion_tokens":3072,"prompt_tokens":20000}}));
+        let (tx,rx)=mpsc::channel();let mut attempts=0;
+        let error=with_stream_delta_sender(Some(tx),||run_native_tool_attempts(p,|body,output,retry| {
+            attempts+=1;assert!(!retry);
+            parse_native_openai_stream_with_context(io::Cursor::new(&wire),output,retry,Some(body))
+        })).unwrap_err();
+        assert_eq!(error,NATIVE_OUTPUT_TRUNCATED);
+        assert_eq!(attempts,1);
+        assert!(rx.try_recv().is_err());
+    }
 
     #[test]
     fn omitted_native_budget_inherits_job_limit_instead_of_mlx_512_default() {
@@ -3663,6 +3684,7 @@ fn parse_native_openai_stream_with_context<R: BufRead>(
     let mut last_content_sent = Instant::now();
     let mut reason = None;
     let mut done = false;
+    let mut runtime_tool_error = None;
     let mut last_activity:Option<Instant>=None;
     for line in reader.lines() {
         let line = line.map_err(|e| format!("native stream read failed: {e}"))?;
@@ -3692,7 +3714,7 @@ fn parse_native_openai_stream_with_context<R: BufRead>(
             return Err(format!("native stream error: {error}"));
         }
         if let Some(error)=chunk.pointer("/choices/0/opengpu_tool_error").and_then(|v|v.as_str()) {
-            return Err(format!("native tool arguments are incomplete: runtime rejected {error}"));
+            runtime_tool_error = Some(format!("native tool arguments are incomplete: runtime rejected {error}"));
         }
         if let Some(finish) = chunk
             .pointer("/choices/0/finish_reason")
@@ -3733,6 +3755,10 @@ fn parse_native_openai_stream_with_context<R: BufRead>(
         }
     }
     record_runtime_usage(&usage);
+    if reason.as_deref()==Some("length") && payload.is_some_and(host_managed_tools) {
+        return Err(NATIVE_OUTPUT_TRUNCATED.into());
+    }
+    if let Some(error)=runtime_tool_error {return Err(error);}
     if !done || reason.is_none() {
         return Err("native stream ended before terminal event".into());
     }
